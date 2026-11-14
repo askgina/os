@@ -20,7 +20,7 @@ hold and spend money without being trusted with it.
 
 An operator opens the web page, registers a passkey, and creates a workspace. Creating an agent
 in that workspace creates the agent's own wallet in the same step. The agent is any program that
-speaks MCP (Claude Code, Codex, a script, an eve agent): it connects to the gateway with its
+speaks MCP (Claude Code, Codex, a script): it connects to the gateway with its
 token and can do exactly one consequential thing, which is to propose an operation such as "send
 0.01 ETH to 0xabc… because invoice 42 is due". The proposal appears in the workspace's approval
 inbox as a readable card. A member approves it with a passkey. A separate signer service, which
@@ -63,10 +63,10 @@ Success means:
 - [x] (2026-11-14 14:20Z) Wayfinder map charted: 1 map, 15 tickets, 9 blocking edges; four delegated decisions recorded.
 - [x] (2026-11-14 14:40Z) All five spikes finished; `./verify.sh` of world, OWS, passkey and eve re-run by the maintainer, all exit 0.
 - [x] (2026-11-14 15:10Z) Monorepo scaffold; `packages/protocol` (intents, policies, envelopes, evaluation, signer API, client, request signature, authorization verifier, soft authenticator); `packages/api`; `packages/keys`; `packages/world`; `packages/testkit`; server skeleton with schema and seams.
-- [ ] Milestone 1: tests and hardening for `protocol`, `keys`, `world` (including the ciphertext-at-rest proof as a test).
-- [ ] Milestone 2: signer service.
-- [ ] Milestone 3: control plane, identity half.
-- [ ] Milestone 4: control plane, execution half (approvals engine, workflows, chain, MCP gateway).
+- [x] (2026-11-14 15:05Z) Milestone 1: tests and hardening for `protocol` (171 tests), `api` (87), `keys` (49), `world` (ciphertext-at-rest proof as a test: 0 of 8 markers on the encrypting World, 8 of 8 on the stock one). Re-run by the maintainer.
+- [x] (2026-11-14 15:12Z) Milestone 2: signer service (46 tests, including the real OWS vault). Re-run by the maintainer after his own hardening changes.
+- [x] (2026-11-14 15:15Z) Milestones 3 and 4: the control plane, both halves (74 tests against real Postgres, a local chain and the real signer in process). Re-run by the maintainer. The process entry point has not been started.
+- [ ] (2026-11-14 15:18Z) Local builds and whole-suite runs stopped: they need the owner's word (see Surprises). From here, build-level proof comes from CI.
 - [ ] Milestone 5: web UI.
 - [ ] Milestone 6: Compose stack, images, example agents, end-to-end release gates, CI.
 - [ ] Milestone 7: docs, threat model, open-source preflight.
@@ -95,6 +95,10 @@ Success means:
   Evidence: same report, findings 1 and 2. Consequence: see the Decision Log on the host.
 - Observation: eve runs today with no Vercel service, on the Postgres World; Busy does not without a fork.
   Evidence: [research/eve-without-vercel-services.md](./research/eve-without-vercel-services.md).
+- Observation: an eve agent on the encrypting World still left its test markers readable in its database (6 hits in the one run made). The cause is unknown. Our own control plane's flows pass the same scanner.
+  Evidence: the parked example's smoke test; ticket [Why does eve's data stay readable on the encrypting World?](https://github.com/askgina/os/issues/17). Consequence: the eve example is not in this repository, and nothing here claims that an agent runtime's own data is encrypted.
+- Observation: the owner's standing rule reserves local builds, whole test suites and coverage for CI unless he names the command. The maintainer read "ask for forgiveness not permission" as covering them, ran them, and told the parallel agents they could. That reading was wrong, and it was corrected when the rule was enforced at 15:18Z.
+  Evidence: this session. Consequence: everything proven before that time was proven by local runs that should have waited for his word; everything after it is proven by CI or is marked unproven.
 
 ## Decision Log
 
@@ -127,7 +131,7 @@ Each line is also a ticket on the map, where the reasoning is longer and can be 
 - Decision: the control plane is a Hono server on Node with the Workflow SDK's standalone build, not a Next.js app. The UI is a Vite and React single-page app served by that server.
   Rationale: (1) the Workflow delivery routes are unauthenticated upstream; with our own server they are mounted on a loopback-only listener and never on the public one, instead of relying on a proxy rule alone; (2) a plain Node process loads the World with `setWorld()` and shares one Postgres pool, with none of the five standalone-tracing workarounds Next.js needs; (3) a smaller image and no `next build`; (4) a REST contract shared by the UI, scripts and tests.
   Date/Author: 2026-11-14 / delegated agent
-- Decision: the agent plane is "bring your own agent over MCP". No bundled runtime or sandbox supervisor. An eve agent is shipped as an example that runs on the encrypting World; Busy is not used.
+- Decision: the agent plane is "bring your own agent over MCP". No bundled runtime or sandbox supervisor. One example ships, the scripted agent. Busy is not used. An eve example was written and is parked until its data is proven encrypted (ticket 17).
   Rationale: the reference's own conclusion ("not another agent framework") and the eve research.
   Date/Author: 2026-11-14 / delegated agent
 - Decision: TypeScript 7, Node 26, bun workspaces, Biome, Vitest, Playwright, Postgres 18, Caddy, Docker Compose, MIT.
@@ -235,7 +239,6 @@ packages/
   testkit/    throwaway test databases and the plaintext scanner
 examples/
   scripted-agent/   proposes one transfer over MCP and waits for the outcome; needs no model
-  eve-agent/        an eve agent on the encrypting World whose tool proposes over MCP
 e2e/          end-to-end release gates against the Compose stack
 deploy/       Compose files, Caddyfile, secret initialization
 docs/         documentation for operators and contributors

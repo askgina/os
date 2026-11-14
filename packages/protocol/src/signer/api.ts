@@ -144,7 +144,7 @@ export type SetPolicyRequest = z.infer<typeof SetPolicyRequest>;
 /**
  * The only parts of a transaction the caller chooses after approval. The signer derives `to`,
  * `value`, `data` and the chain from the intent, and refuses when `gas * maxFeePerGas` exceeds
- * the intent's `maxFeeWei`.
+ * the intent's `maxFeeWei` or when `maxPriorityFeePerGas` exceeds `maxFeePerGas`.
  */
 export const TransactionParams = z.strictObject({
   nonce: z.number().int().min(0),
