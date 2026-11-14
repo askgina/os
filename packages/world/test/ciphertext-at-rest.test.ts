@@ -35,6 +35,7 @@ const PORTS = {
   encB: 25751,
   encC: 25752,
   failStart: 25753,
+  bodyAttribute: 25757,
   probe: 25754,
   stockA: 25755,
   stockB: 25756,
@@ -223,6 +224,35 @@ describe("encrypting World", () => {
     expect(rows?.steps).toBeGreaterThan(0);
     expect(rows?.chunks).toBeGreaterThan(0);
     await reader.kill();
+  });
+
+  test("an attribute set in a workflow body under an unlisted key fails the run and is not stored", async () => {
+    // Replacing this one write would break replay (see src/attributes.ts), so it is refused.
+    const marker = `OSMARKBODY_${randomBytes(8).toString("hex")}`;
+    const host = await startHost({
+      port: PORTS.bodyAttribute,
+      databaseUrl: encDb.url,
+      keyringFile,
+    });
+    const started = await host.call<{ runId?: string; error?: string }>("/start-body-attribute", {
+      marker,
+    });
+    expect(started.status, started.json.error).toBe(200);
+    await expect
+      .poll(
+        async () =>
+          (
+            await sql<{ status: string }>(
+              encDb.url,
+              "SELECT status::text AS status FROM workflow.workflow_runs WHERE id = $1",
+              [started.json.runId],
+            )
+          )[0]?.status,
+        { timeout: 60_000, interval: 200 },
+      )
+      .toBe("failed");
+    expect((await scanForMarkers(encDb.url, [marker])).hits).toEqual([]);
+    await host.kill();
   });
 
   test("when the key method throws at start, start fails and no run row is written", async () => {

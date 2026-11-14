@@ -49,6 +49,11 @@ hold a setting and two run ids. Every other attribute keeps its key and loses it
 creation, on later `setAttributes` calls, and in the queued job that starts a run. Reading an
 attribute back returns `[withheld]`.
 
+One write is refused, not replaced: `setAttributes()` called in a workflow body with an unlisted
+key. The SDK compares that stored event with the body's values on every replay, so a replaced
+value would read as a diverged replay. The World rejects the write and the SDK fails the run
+with `setAttributes failed World validation`. Set the attribute from a step, or list its key.
+
 List a key as readable only if its value can never carry what a person or an agent typed. A
 runtime that reads its own attributes back needs those keys listed: eve needs its ids, kinds and
 version (see [`examples/eve-agent`](../../examples/eve-agent)), and its session title, which is
@@ -59,12 +64,13 @@ the first user message by default, must stay off the list.
 `test/ciphertext-at-rest.test.ts` runs a workflow through the real SDK runtime (standalone build
 on a small Hono host) that pushes ten unique markers through every payload kind (workflow
 input, step input, step return, hook metadata, hook payload, stream chunk, workflow return and
-step error text) and through two run attributes, one given at start and one set while the run
-is in progress. It then scans every column of every table, decoding CBOR and decompressing
+step error text) and through two run attributes, one given at start and one set from a step
+while the run is in progress. It then scans every column of every table, decoding CBOR and decompressing
 zstd/gzip, for the markers as UTF-8, hex and base64. On this World: zero hits, also while the
 run is suspended; the run completes after its host is killed with SIGKILL between hook creation
 and resume; after shredding the run's key the result and stream can no longer be read while the
-metadata rows remain; and a key failure at start writes no run row. The identical scenario on the
+metadata rows remain; an attribute set in a workflow body under an unlisted key fails the run
+and is not stored; and a key failure at start writes no run row. The identical scenario on the
 stock World must expose all ten markers, or the test fails, because then the scanner is blind.
 `test/conformance.test.ts` runs upstream's World conformance suite and allows only the failures
 the suite causes itself by decoding outputs without a key.

@@ -23,7 +23,10 @@ const manifest = (
   }
 ).default;
 const markersWorkflow = manifest.workflows["workflows/markers.ts"]?.markers;
-if (!markersWorkflow) throw new Error("harness: the build has no markers workflow");
+const bodyAttributeWorkflow = manifest.workflows["workflows/markers.ts"]?.bodyAttribute;
+if (!markersWorkflow || !bodyAttributeWorkflow) {
+  throw new Error("harness: the build lacks a workflow of workflows/markers.ts");
+}
 
 function failure(error: unknown) {
   return { error: error instanceof Error ? error.message : String(error) };
@@ -47,6 +50,15 @@ const app = new Hono()
         [{ nonce, m1: `OSMARK1_${nonce}` }],
         options,
       );
+      return c.json({ runId: run.runId });
+    } catch (error) {
+      return c.json(failure(error), 500);
+    }
+  })
+  .post("/start-body-attribute", async (c) => {
+    const { marker } = await c.req.json<{ marker: string }>();
+    try {
+      const run = await start(bodyAttributeWorkflow as never, [{ marker }], {});
       return c.json({ runId: run.runId });
     } catch (error) {
       return c.json(failure(error), 500);

@@ -6,8 +6,7 @@ export async function markers(input: { nonce: string; m1: string }) {
   "use workflow";
   const { nonce } = input;
   const m3 = await echoStep(mark(2, nonce), nonce);
-  // M10 reaches storage as a run attribute set while the run is in progress.
-  await setAttributes({ progress: mark(10, nonce) });
+  await attributeStep(nonce);
   // M6 and M8 are built inside the steps so they reach storage only as a
   // stream chunk and as error text, never as a step argument.
   await streamStep(getWritable<string>(), nonce);
@@ -28,6 +27,19 @@ export async function markers(input: { nonce: string; m1: string }) {
 async function echoStep(m2: string, nonce: string) {
   "use step";
   return `${m2 === `OSMARK2_${nonce}` ? "OSMARK3" : "BAD"}_${nonce}`;
+}
+
+// M10 reaches storage as a run attribute set while the run is in progress.
+async function attributeStep(nonce: string) {
+  "use step";
+  await setAttributes({ progress: mark(10, nonce) });
+}
+
+/** Sets an attribute from the workflow body, which the encrypting World refuses. */
+export async function bodyAttribute(input: { marker: string }) {
+  "use workflow";
+  await setAttributes({ progress: input.marker });
+  return "set";
 }
 
 async function streamStep(writable: WritableStream<string>, nonce: string) {

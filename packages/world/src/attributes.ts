@@ -1,9 +1,10 @@
-import type {
-  CreateEventParams,
-  CreateEventRequest,
-  QueuePayload,
-  RunCreatedEventRequest,
-  World,
+import {
+  AttributeValidationError,
+  type CreateEventParams,
+  type CreateEventRequest,
+  type QueuePayload,
+  type RunCreatedEventRequest,
+  type World,
 } from "@workflow/world";
 
 /**
@@ -37,6 +38,11 @@ type Change = { key: string; value: string | null };
  * {@link WITHHELD_ATTRIBUTE_VALUE}. A runtime that puts content in an attribute (eve copies the
  * first user message into `$eve.title`) then stores the placeholder, not the content.
  *
+ * One write cannot be replaced: `setAttributes()` called in a workflow body. On every replay
+ * the SDK compares the stored event with the values the body asked for, and a replaced value
+ * reads as a diverged replay. That write is refused instead, with the validation error the SDK
+ * turns into a failed run. Set such an attribute from a step, or list its key as readable.
+ *
  * The World is changed in place, so the upstream World's own references to `events` and `runs`
  * go through the same check.
  */
@@ -67,6 +73,15 @@ export function withholdRunAttributes(world: World, readableKeys: readonly strin
     }
     if (given.eventType === "attr_set") {
       const data = given.eventData;
+      if (data.writer.type === "workflow") {
+        const refused = data.changes.find(({ key, value }) => value !== null && !readable.has(key));
+        if (refused) {
+          throw new AttributeValidationError(
+            `run attribute ${JSON.stringify(refused.key)} is not listed as readable, so its value cannot be stored; set it from a step or list the key`,
+          );
+        }
+        return given;
+      }
       return { ...given, eventData: { ...data, changes: changes(data.changes) } };
     }
     return given;
