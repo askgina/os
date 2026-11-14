@@ -114,6 +114,21 @@ export const WalletPolicy = z
         });
       }
     });
+    // A contract call is capped only by its native value, so if a capped token is also a call
+    // target, `transfer(...)` sent as raw calldata to that token would move it with no cap at
+    // all. A token is either capped or callable, never both.
+    if (policy.contractCalls.mode === "allowlist") {
+      const tokens = new Set(policy.assets.map((limit) => limit.asset));
+      policy.contractCalls.targets.forEach((target, index) => {
+        if (tokens.has(target)) {
+          context.addIssue({
+            code: "custom",
+            path: ["contractCalls", "targets", index],
+            message: "a capped asset token cannot also be a contract-call target",
+          });
+        }
+      });
+    }
   });
 export type WalletPolicy = z.infer<typeof WalletPolicy>;
 

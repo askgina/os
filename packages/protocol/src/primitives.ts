@@ -68,9 +68,13 @@ export type Hex32 = z.infer<typeof Hex32>;
 export const Digest = z.string().regex(/^[0-9a-f]{64}$/, "expected a lowercase SHA-256 hex digest");
 export type Digest = z.infer<typeof Digest>;
 
-/** A CAIP-2 identifier of an EVM chain, for example `eip155:8453`. */
+/**
+ * A CAIP-2 identifier of an EVM chain, for example `eip155:8453`. At most 15 digits, so the
+ * number always fits a JavaScript number exactly: a longer id would round in `evmChainNumber`
+ * and two different chain ids could sign for the same chain.
+ */
 export const ChainId = z.custom<`eip155:${number}`>(
-  (value) => typeof value === "string" && /^eip155:[1-9][0-9]{0,15}$/.test(value),
+  (value) => typeof value === "string" && /^eip155:[1-9][0-9]{0,14}$/.test(value),
   "expected a CAIP-2 EVM chain id such as eip155:8453",
 );
 export type ChainId = z.infer<typeof ChainId>;

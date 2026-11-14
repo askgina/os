@@ -142,6 +142,38 @@ describe("policy changes", () => {
     );
   });
 
+  it("ties a wallet's threshold to the admin threshold, both ways", async () => {
+    // Policies are approved at the admin threshold, so a wallet threshold above it would let
+    // one person approve a policy that lowers the wallet back to one.
+    const world = await setUpWorld(startSigner(), { people: 2 });
+    const twoPeople = nextPolicy(world, { approvals: { threshold: 2, ttlSeconds: 600 } });
+    await refused(
+      world.t.client.setPolicy(world.walletId, {
+        policy: twoPeople,
+        authorization: setPolicyAuthorization(world, twoPeople, policyHash(world.policy)),
+      }),
+      "policy_invalid",
+    );
+
+    const tied = await setUpWorld(startSigner(), { people: 2, policyThreshold: 2 });
+    expect((await tied.t.client.getWorkspace(tied.workspaceId)).adminThreshold).toBe(2);
+    await refused(
+      tied.t.client.setAdminThreshold(
+        tied.workspaceId,
+        authorize(
+          {
+            ...header(tied.t.clock, newId("apr"), tied.workspaceId),
+            type: "set-admin-threshold",
+            adminThreshold: 1,
+          },
+          tied.people,
+        ),
+      ),
+      "threshold_unreachable",
+    );
+    expect((await tied.t.client.getWorkspace(tied.workspaceId)).adminThreshold).toBe(2);
+  });
+
   it("refuses an admin authorization signed under a threshold that was raised since", async () => {
     const world = await setUpWorld(startSigner(), { people: 2 });
     const next = nextPolicy(world);
@@ -210,7 +242,7 @@ describe("approvers and recovery", () => {
 
   it("refuses to remove an approver when the thresholds would become unreachable", async () => {
     const world = await setUpWorld(startSigner(), { people: 2, policyThreshold: 2 });
-    const [alice, bob] = world.people as [Person, Person];
+    const [, bob] = world.people as [Person, Person];
     await refused(
       world.t.client.removeApprover(
         world.workspaceId,
@@ -221,38 +253,50 @@ describe("approvers and recovery", () => {
             userId: bob.userId,
             credentialId: bob.credential.credentialId,
           },
-          [alice],
+          world.people,
         ),
       ),
       "threshold_unreachable",
     );
   });
 
-  it("recovers a workspace whose passkeys are lost: a single-use code enrolls a new approver", async () => {
+  it("has no HTTP path that adds an approver without existing passkeys", async () => {
+    // The relay (the control plane) would choose the key; only the host operator may do this.
+    const t = startSigner();
+    const world = await setUpWorld(t);
+    const response = await t.signer.app.request(`/v1/workspaces/${world.workspaceId}/approvers`, {
+      method: "POST",
+      body: JSON.stringify({ approver: newPerson().credential }),
+    });
+    expect(response.status).toBe(401);
+    await refused(
+      world.t.client.addApprover(world.workspaceId, {
+        recovery: { code: "a".repeat(32) },
+        approver: newPerson().credential,
+      } as never),
+      "invalid_request",
+    );
+    expect((await world.t.client.getWorkspace(world.workspaceId)).approvers).toHaveLength(1);
+  });
+
+  it("recovers a workspace whose passkeys are lost: the host operator enrolls a new approver", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
     const [lost] = world.people as [Person];
     const replacement = newPerson();
-    const code = t.signer.issueRecoveryCode(world.workspaceId);
 
-    await refused(
-      world.t.client.addApprover(newId("ws"), {
-        recovery: { code },
-        approver: replacement.credential,
-      }),
-      "not_found",
+    expect(() => t.signer.enrollApproverByOperator(newId("ws"), replacement.credential)).toThrow(
+      expect.objectContaining({ code: "not_found" }),
     );
-    await world.t.client.addApprover(world.workspaceId, {
-      recovery: { code },
-      approver: replacement.credential,
+    t.signer.enrollApproverByOperator(world.workspaceId, replacement.credential);
+    expect(() =>
+      t.signer.enrollApproverByOperator(world.workspaceId, replacement.credential),
+    ).toThrow(expect.objectContaining({ code: "conflict" }));
+    const { decisions } = await t.client.listDecisions(world.workspaceId);
+    expect(decisions.at(-1)).toMatchObject({
+      action: "enroll-approver-by-operator",
+      outcome: "allowed",
     });
-    await refused(
-      world.t.client.addApprover(world.workspaceId, {
-        recovery: { code },
-        approver: newPerson().credential,
-      }),
-      "recovery_code_invalid",
-    );
 
     // The new approver removes the lost passkey; the wallet and its key are untouched.
     await world.t.client.removeApprover(
@@ -286,29 +330,6 @@ describe("approvers and recovery", () => {
       "approver_unknown",
     );
   });
-
-  it("refuses an expired recovery code and a code for another workspace", async () => {
-    const t = startSigner();
-    const world = await setUpWorld(t);
-    const other = await setUpWorld(t);
-    const expired = t.signer.issueRecoveryCode(world.workspaceId);
-    t.clock.value += 15 * 60;
-    await refused(
-      t.client.addApprover(world.workspaceId, {
-        recovery: { code: expired },
-        approver: newPerson().credential,
-      }),
-      "recovery_code_invalid",
-    );
-    const foreign = t.signer.issueRecoveryCode(other.workspaceId);
-    await refused(
-      t.client.addApprover(world.workspaceId, {
-        recovery: { code: foreign },
-        approver: newPerson().credential,
-      }),
-      "recovery_code_invalid",
-    );
-  });
 });
 
 describe("decision log", () => {
@@ -318,7 +339,7 @@ describe("decision log", () => {
   });
 
   it("records allowed and denied decisions with codes, never intent contents, and detects an edit", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "osbuild-signer-log-"));
+    const dir = mkdtempSync(join(tmpdir(), "os-signer-log-"));
     dirs.push(dir);
     const sqlitePath = join(dir, "signer.sqlite");
     const t = startSigner({ sqlitePath });
@@ -367,5 +388,50 @@ describe("decision log", () => {
     editor.close();
     expect(t.signer.verifyDecisionLog(world.workspaceId)).toEqual({ ok: false, brokenAt: 6 });
     t.signer.close();
+  });
+
+  it("notices when the newest entries are deleted", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "os-signer-log-"));
+    dirs.push(dir);
+    const sqlitePath = join(dir, "signer.sqlite");
+    const t = startSigner({ sqlitePath });
+    const world = await setUpWorld(t);
+    await t.client.pauseWorkspace(world.workspaceId);
+    expect(t.signer.verifyDecisionLog(world.workspaceId)).toEqual({ ok: true, brokenAt: null });
+
+    // What remains is a valid chain on its own; only the head on the workspace row shows the cut.
+    const editor = new DatabaseSync(sqlitePath);
+    editor
+      .prepare("DELETE FROM decisions WHERE workspace_id = ? AND seq = 4")
+      .run(world.workspaceId);
+    editor.close();
+    expect(t.signer.verifyDecisionLog(world.workspaceId)).toEqual({ ok: false, brokenAt: 4 });
+    t.signer.close();
+  });
+
+  it("records a revocation in the workspace's log, and refusals of known workspaces", async () => {
+    const t = startSigner();
+    const world = await setUpWorld(t);
+    const approvalId = newId("apr");
+    await t.client.revokeApproval(approvalId, world.workspaceId);
+    // Revoking again is a no-op and adds nothing.
+    await t.client.revokeApproval(approvalId, world.workspaceId);
+    const other = await setUpWorld(t);
+    await refused(t.client.revokeApproval(approvalId, other.workspaceId), "conflict");
+    await refused(t.client.revokeApproval(newId("apr"), newId("ws")), "not_found");
+
+    const { decisions } = await t.client.listDecisions(world.workspaceId);
+    expect(decisions.at(-1)).toMatchObject({
+      action: "revoke-approval",
+      outcome: "allowed",
+      approvalId,
+    });
+    expect(decisions.filter((d) => d.action === "revoke-approval")).toHaveLength(1);
+    expect((await t.client.listDecisions(other.workspaceId)).decisions.at(-1)).toMatchObject({
+      action: "revoke-approval",
+      outcome: "denied",
+      code: "conflict",
+    });
+    expect(t.signer.verifyDecisionLog(world.workspaceId)).toEqual({ ok: true, brokenAt: null });
   });
 });

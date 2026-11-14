@@ -55,7 +55,7 @@ const funder = createWalletClient({
 const realClock = () => Math.floor(Date.now() / 1000);
 
 describe("the real OWS vault, across a restart of the signer process", () => {
-  const dir = mkdtempSync(join(tmpdir(), "osbuild-signer-ows-"));
+  const dir = mkdtempSync(join(tmpdir(), "os-signer-ows-"));
   const dataDir = join(dir, "data");
   const files = {
     hmac: join(dir, "hmac"),

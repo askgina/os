@@ -169,11 +169,35 @@ describe("signer client", () => {
           : workspaceState,
     }));
     await signer.health();
-    await signer.revokeApproval(APPROVAL);
+    await signer.revokeApproval(APPROVAL, WS);
     expect(calls.map((c) => `${c.init.method} ${new URL(c.url).pathname}`)).toEqual([
       `${signerRoutes.health.method} ${signerRoutes.health.path}`,
       `POST /v1/approvals/${APPROVAL}/revoke`,
     ]);
+    // The workspace travels in the body so the signer can record the revocation in its log.
+    const body = calls[1]?.init.body as Uint8Array;
+    expect(JSON.parse(new TextDecoder().decode(body))).toEqual({ workspaceId: WS });
+  });
+
+  it("gives up on a signer that never answers", async () => {
+    let aborted = false;
+    const hang = ((_input: string | URL | Request, init: RequestInit = {}) => {
+      const { promise, reject } = Promise.withResolvers<Response>();
+      init.signal?.addEventListener("abort", () => {
+        aborted = true;
+        reject(init.signal?.reason);
+      });
+      return promise;
+    }) as typeof globalThis.fetch;
+    const signer = createSignerClient({
+      baseUrl: "http://signer:8787",
+      secret: SECRET,
+      fetch: hang,
+      now: () => T0,
+      timeoutMs: 50,
+    });
+    await expect(signer.health()).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(aborted).toBe(true);
   });
 
   it("turns an error body into SignerError with code, status and detail", async () => {

@@ -42,7 +42,14 @@ export interface SignerClientOptions {
   fetch?: typeof globalThis.fetch;
   /** Seconds since the Unix epoch. Tests inject a clock. */
   now?: () => number;
+  /**
+   * How long one request may take, in milliseconds (default 15 000). A signer that accepts the
+   * connection and never answers would otherwise hold the caller, and whatever it serves, forever.
+   */
+  timeoutMs?: number;
 }
+
+const DEFAULT_TIMEOUT_MS = 15_000;
 
 /**
  * Everything the control plane can ask of the signer. Methods reject with {@link SignerError}
@@ -71,7 +78,7 @@ export interface SignerClient {
   setPolicy(walletId: WalletId, request: SetPolicyRequest): Promise<WalletState>;
 
   sign(request: SignRequest): Promise<SignResponse>;
-  revokeApproval(approvalId: ApprovalId): Promise<ApprovalState>;
+  revokeApproval(approvalId: ApprovalId, workspaceId: WorkspaceId): Promise<ApprovalState>;
   getApproval(approvalId: ApprovalId): Promise<ApprovalState>;
 }
 
@@ -81,6 +88,7 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
   const doFetch = options.fetch ?? globalThis.fetch;
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const baseUrl = options.baseUrl.replace(/\/+$/, "");
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   async function call<S extends z.ZodType>(
     route: Route,
@@ -110,6 +118,7 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
         }),
       },
       ...(route.method === "GET" ? {} : { body }),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     // A proxy in front of the signer may answer with a non-JSON error page; that is still a
     // refusal the caller must see as a SignerError, not a parse failure.
@@ -170,8 +179,11 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
       call(signerRoutes.setPolicy, WalletState, { params: { walletId }, body: request }),
 
     sign: (request: SignRequest) => call(signerRoutes.sign, SignResponse, { body: request }),
-    revokeApproval: (approvalId: ApprovalId) =>
-      call(signerRoutes.revokeApproval, ApprovalState, { params: { approvalId }, body: {} }),
+    revokeApproval: (approvalId: ApprovalId, workspaceId: WorkspaceId) =>
+      call(signerRoutes.revokeApproval, ApprovalState, {
+        params: { approvalId },
+        body: { workspaceId },
+      }),
     getApproval: (approvalId: ApprovalId) =>
       call(signerRoutes.getApproval, ApprovalState, { params: { approvalId } }),
   };

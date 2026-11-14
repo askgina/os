@@ -22,7 +22,6 @@ const MESSAGES: Record<SignerErrorCode, string> = {
   insufficient_approvals: "not enough approvals",
   assertion_invalid: "a passkey assertion is invalid",
   approver_unknown: "an assertion comes from a passkey that may not approve here",
-  recovery_code_invalid: "the recovery code is invalid, used or expired",
   threshold_unreachable: "the change would leave a threshold that cannot be met",
   vault_error: "the key store failed",
   internal: "internal error",

@@ -23,11 +23,11 @@ import {
 // Runs against a built image: SIGNER_IMAGE=<tag> bun run smoke:image
 const IMAGE = process.env.SIGNER_IMAGE ?? "";
 const PORT = 55702;
-const NAME = `osbuild-signer-smoke-${process.pid}`;
+const NAME = `os-signer-smoke-${process.pid}`;
 const now = () => Math.floor(Date.now() / 1000);
 
 describe("the signer image", () => {
-  const dir = mkdtempSync(join(tmpdir(), "osbuild-signer-smoke-"));
+  const dir = mkdtempSync(join(tmpdir(), "os-signer-smoke-"));
   afterAll(() => {
     execFileSync("docker", ["rm", "-f", "-v", NAME], { stdio: "ignore" });
     rmSync(dir, { recursive: true, force: true });

@@ -3,22 +3,20 @@
 #
 # node:26-slim (glibc) because the Open Wallet Standard native module has no musl build.
 
+# Every workspace's package.json is needed for the lockfile to resolve. This stage picks them out
+# of the build context, so the install below is re-run only when a manifest or the lockfile
+# changes, not on every source edit.
+FROM node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc AS manifests
+WORKDIR /repo
+COPY . .
+RUN mkdir /manifests \
+  && cp package.json bun.lock bunfig.toml /manifests/ \
+  && find apps packages examples e2e -name package.json -not -path "*/node_modules/*" \
+    -exec cp --parents {} /manifests/ \;
+
 FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS deps
 WORKDIR /app
-# Every workspace manifest is needed for the lockfile to resolve; only the signer's production
-# dependency tree is installed.
-COPY package.json bun.lock bunfig.toml ./
-COPY apps/server/package.json apps/server/
-COPY apps/signer/package.json apps/signer/
-COPY apps/web/package.json apps/web/
-COPY packages/api/package.json packages/api/
-COPY packages/keys/package.json packages/keys/
-COPY packages/protocol/package.json packages/protocol/
-COPY packages/testkit/package.json packages/testkit/
-COPY packages/world/package.json packages/world/
-COPY examples/scripted-agent/package.json examples/scripted-agent/
-COPY examples/eve-agent/package.json examples/eve-agent/
-COPY e2e/package.json e2e/
+COPY --from=manifests /manifests ./
 RUN bun install --frozen-lockfile --production --ignore-scripts --filter @askgina/os-signer
 
 FROM node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc

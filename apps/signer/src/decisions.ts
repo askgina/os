@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { DomainTag, digestHex, type WorkspaceId } from "@askgina/os-protocol";
 import type { SignerDecision } from "@askgina/os-protocol/signer";
+import { transaction } from "./db.ts";
 
 export interface DecisionInput {
   workspaceId: WorkspaceId;
@@ -39,21 +40,37 @@ function entryHash(entry: Omit<DecisionRow, "hash">): string {
   });
 }
 
-/** Append one decision. Call inside a transaction when it must commit with the action it records. */
+type Head = { decision_seq: number; decision_hash: string | null };
+
+function readHead(db: DatabaseSync, workspaceId: string): Head | undefined {
+  return db
+    .prepare("SELECT decision_seq, decision_hash FROM workspaces WHERE workspace_id = ?")
+    .get(workspaceId) as Head | undefined;
+}
+
+/**
+ * Append one decision and move the workspace's head to it. Call inside a transaction when it must
+ * commit with the action it records; on its own it opens one, so the row and the head never
+ * disagree.
+ */
 export function appendDecision(db: DatabaseSync, input: DecisionInput): void {
-  const last = db
-    .prepare("SELECT seq, hash FROM decisions WHERE workspace_id = ? ORDER BY seq DESC LIMIT 1")
-    .get(input.workspaceId) as { seq: number; hash: string } | undefined;
+  if (!db.isTransaction) {
+    transaction(db, () => appendDecision(db, input));
+    return;
+  }
+  const head = readHead(db, input.workspaceId);
+  if (!head) throw new Error("decision for a workspace that does not exist");
   const entry = {
     workspace_id: input.workspaceId,
-    seq: (last?.seq ?? 0) + 1,
+    seq: head.decision_seq + 1,
     at: input.at,
     approval_id: input.approvalId,
     action: input.action,
     outcome: input.outcome,
     code: input.code,
-    previous_hash: last?.hash ?? null,
+    previous_hash: head.decision_hash,
   };
+  const hash = entryHash(entry);
   db.prepare(
     `INSERT INTO decisions (workspace_id, seq, at, approval_id, action, outcome, code, previous_hash, hash)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -66,8 +83,11 @@ export function appendDecision(db: DatabaseSync, input: DecisionInput): void {
     entry.outcome,
     entry.code,
     entry.previous_hash,
-    entryHash(entry),
+    hash,
   );
+  db.prepare(
+    "UPDATE workspaces SET decision_seq = ?, decision_hash = ? WHERE workspace_id = ?",
+  ).run(entry.seq, hash, input.workspaceId);
 }
 
 export function listDecisions(
@@ -92,7 +112,12 @@ export function listDecisions(
   }));
 }
 
-/** Recompute the chain. `brokenAt` is the first sequence number whose row does not verify. */
+/**
+ * Recompute the chain and compare its end with the head kept on the workspace row. `brokenAt` is
+ * the first sequence number whose row does not verify or is missing. The chain is not keyed: it
+ * detects damage and partial edits, not someone with write access who rewrites the rows and the
+ * head together.
+ */
 export function verifyDecisions(
   db: DatabaseSync,
   workspaceId: WorkspaceId,
@@ -109,6 +134,12 @@ export function verifyDecisions(
     }
     previous = hash;
     expectedSeq += 1;
+  }
+  const head = readHead(db, workspaceId);
+  const lastSeq = expectedSeq - 1;
+  if (!head || head.decision_seq !== lastSeq || head.decision_hash !== previous) {
+    // Rows past the end of the chain were removed (or the head was edited).
+    return { ok: false, brokenAt: Math.min(lastSeq, head?.decision_seq ?? lastSeq) + 1 };
   }
   return { ok: true, brokenAt: null };
 }

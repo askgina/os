@@ -12,7 +12,11 @@ CREATE TABLE IF NOT EXISTS workspaces (
   admin_threshold INTEGER NOT NULL,
   paused INTEGER NOT NULL DEFAULT 0,
   created_request TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  -- The newest decision-log entry, updated in the same transaction as every append, so that
+  -- deleting the newest log rows is noticed: the chain alone cannot tell a short log from a cut one.
+  decision_seq INTEGER NOT NULL DEFAULT 0,
+  decision_hash TEXT
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS approvers (
@@ -55,7 +59,7 @@ CREATE TABLE IF NOT EXISTS used_nonces (
 -- One row per approval id the signer has acted on or refused for good.
 CREATE TABLE IF NOT EXISTS approvals (
   approval_id TEXT PRIMARY KEY,
-  workspace_id TEXT,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
   state TEXT NOT NULL CHECK (state IN ('revoked', 'signed', 'applied')),
   envelope_digest TEXT,
   at INTEGER NOT NULL
@@ -81,13 +85,6 @@ CREATE TABLE IF NOT EXISTS spends (
   at INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX IF NOT EXISTS spends_by_wallet ON spends (wallet_id, at);
-
-CREATE TABLE IF NOT EXISTS recovery_codes (
-  code_hash TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
-  expires_at INTEGER NOT NULL,
-  used_at INTEGER
-) STRICT;
 
 CREATE TABLE IF NOT EXISTS decisions (
   workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),

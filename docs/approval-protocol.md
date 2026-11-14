@@ -10,20 +10,20 @@ The words MUST, MUST NOT and SHOULD have their RFC 2119 meanings.
 
 Source: [`primitives.ts`](../packages/protocol/src/primitives.ts).
 
-| Name | Encoding | Example |
-| --- | --- | --- |
-| Identifier | A prefix, `_`, then a ULID in lowercase Crockford base32 (26 characters from `0-9a-hjkmnp-tv-z`). Prefixes: `ws` workspace, `usr` user, `agt` agent, `wal` wallet, `int` intent, `apr` approval. | `wal_01jd0000000000000000000003` |
-| `Address` | `0x` and 40 lowercase hex digits. Checksummed (EIP-55) forms are rejected; they are for display only. | `0x1111111111111111111111111111111111111111` |
-| `Hex` | `0x` and an even number of lowercase hex digits. `0x` is the empty byte string. | `0xa9059cbb…` |
-| `Hex32` | `0x` and 64 lowercase hex digits. | a transaction hash |
-| `Digest` | 64 lowercase hex digits, no prefix. A SHA-256 output. | `52d18224…9da3` |
-| `ChainId` | CAIP-2 `eip155:` and a decimal number from 1, at most 16 digits, no leading zero. | `eip155:8453` |
-| `Amount` | A base-unit integer as a decimal string (`0`, or no leading zero, at most 78 digits), at most 2^256 − 1. Strings, so no JSON number ever rounds it. | `"250000000000000000"` |
-| `PositiveAmount` | An `Amount` that is not `"0"`. | |
-| `EpochSeconds` | A JSON integer of seconds since the Unix epoch, from 0 to 32503680000. | `1700000000` |
-| `Base64Url` | Unpadded base64url text (`A-Z a-z 0-9 - _`). | |
-| `Nonce` | Exactly 16 random bytes as unpadded base64url (22 characters). | `AAAAAAAAAAAAAAAAAAAAAA` |
-| `AssetRef` | The string `"native"` for the chain's coin, or an ERC-20 contract `Address`. | |
+| Name             | Encoding                                                                                                                                                                                         | Example                                      |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- |
+| Identifier       | A prefix, `_`, then a ULID in lowercase Crockford base32 (26 characters from `0-9a-hjkmnp-tv-z`). Prefixes: `ws` workspace, `usr` user, `agt` agent, `wal` wallet, `int` intent, `apr` approval. | `wal_01jd0000000000000000000003`             |
+| `Address`        | `0x` and 40 lowercase hex digits. Checksummed (EIP-55) forms are rejected; they are for display only.                                                                                            | `0x1111111111111111111111111111111111111111` |
+| `Hex`            | `0x` and an even number of lowercase hex digits. `0x` is the empty byte string.                                                                                                                  | `0xa9059cbb…`                                |
+| `Hex32`          | `0x` and 64 lowercase hex digits.                                                                                                                                                                | a transaction hash                           |
+| `Digest`         | 64 lowercase hex digits, no prefix. A SHA-256 output.                                                                                                                                            | `52d18224…9da3`                              |
+| `ChainId`        | CAIP-2 `eip155:` and a decimal number from 1, at most 15 digits (so it is exact as a JavaScript number), no leading zero.                                                                        | `eip155:8453`                                |
+| `Amount`         | A base-unit integer as a decimal string (`0`, or no leading zero, at most 78 digits), at most 2^256 − 1. Strings, so no JSON number ever rounds it.                                              | `"250000000000000000"`                       |
+| `PositiveAmount` | An `Amount` that is not `"0"`.                                                                                                                                                                   |                                              |
+| `EpochSeconds`   | A JSON integer of seconds since the Unix epoch, from 0 to 32503680000.                                                                                                                           | `1700000000`                                 |
+| `Base64Url`      | Unpadded base64url text (`A-Z a-z 0-9 - _`).                                                                                                                                                     |                                              |
+| `Nonce`          | Exactly 16 random bytes as unpadded base64url (22 characters).                                                                                                                                   | `AAAAAAAAAAAAAAAAAAAAAA`                     |
+| `AssetRef`       | The string `"native"` for the chain's coin, or an ERC-20 contract `Address`.                                                                                                                     |                                              |
 
 **Sets.** Hashed structures store sets as JSON arrays sorted in strictly ascending order by
 plain string comparison (UTF-16 code units, as JavaScript `<` compares). Strict order also
@@ -54,12 +54,12 @@ digest(tag, value) = SHA-256( UTF-8( tag || "\n" || canonicalJson(value) ) )
 `"\n"` is one line-feed byte (0x0A). The tags separate the kinds of structure, so a digest of one
 kind can never stand in for another kind:
 
-| Tag | Used for |
-| --- | --- |
-| `askgina.os/v1/intent` | `intentHash(intent)` |
-| `askgina.os/v1/policy` | `policyHash(policy)` |
+| Tag                       | Used for                                              |
+| ------------------------- | ----------------------------------------------------- |
+| `askgina.os/v1/intent`    | `intentHash(intent)`                                  |
+| `askgina.os/v1/policy`    | `policyHash(policy)`                                  |
 | `askgina.os/v1/authorize` | `envelopeChallenge(envelope)`, the WebAuthn challenge |
-| `askgina.os/v1/audit` | audit log entries |
+| `askgina.os/v1/audit`     | audit log entries                                     |
 
 `intentHash` and `policyHash` are the digest as a lowercase hex `Digest`. `envelopeChallenge` is
 the raw 32 bytes.
@@ -73,26 +73,29 @@ Source: [`intent.ts`](../packages/protocol/src/intent.ts). An intent is one oper
 asks one wallet to perform. It is immutable: change any field and it is a different intent with
 a different hash.
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `v` | `1` | Protocol version. |
-| `id` | `int_…` | The intent's identifier. |
-| `workspaceId` | `ws_…` | The workspace. |
-| `agentId` | `agt_…` | The agent that proposed it. |
-| `walletId` | `wal_…` | The wallet that would act. |
-| `chainId` | `ChainId` | The chain the transaction is for. |
-| `operation` | one of three, below | What happens. |
-| `maxFeeWei` | `PositiveAmount` | Ceiling on `gas × maxFeePerGas` of the signed transaction. |
-| `memo` | string, at most 280 UTF-16 code units | The agent's stated reason. It is hashed, so the text a person read is the text that was approved. It MUST NOT contain U+0000–U+001F, U+007F–U+009F, U+2028, U+2029, U+200E, U+200F, U+061C, U+202A–U+202E or U+2066–U+2069 (control characters, line separators and bidirectional marks and overrides, which could make a card show something other than what is stored). |
-| `createdAt` | `EpochSeconds` | When it was made. |
+| Field         | Type                                  | Meaning                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v`           | `1`                                   | Protocol version.                                                                                                                                                                                                                                                                                                                                                         |
+| `id`          | `int_…`                               | The intent's identifier.                                                                                                                                                                                                                                                                                                                                                  |
+| `workspaceId` | `ws_…`                                | The workspace.                                                                                                                                                                                                                                                                                                                                                            |
+| `agentId`     | `agt_…`                               | The agent that proposed it.                                                                                                                                                                                                                                                                                                                                               |
+| `walletId`    | `wal_…`                               | The wallet that would act.                                                                                                                                                                                                                                                                                                                                                |
+| `chainId`     | `ChainId`                             | The chain the transaction is for.                                                                                                                                                                                                                                                                                                                                         |
+| `operation`   | one of three, below                   | What happens.                                                                                                                                                                                                                                                                                                                                                             |
+| `maxFeeWei`   | `PositiveAmount`                      | Ceiling on `gas × maxFeePerGas` of the signed transaction.                                                                                                                                                                                                                                                                                                                |
+| `memo`        | string, at most 280 UTF-16 code units | The agent's stated reason. It is hashed, so the text a person read is the text that was approved. It MUST NOT contain U+0000–U+001F, U+007F–U+009F, U+2028, U+2029, U+200E, U+200F, U+061C, U+202A–U+202E or U+2066–U+2069 (control characters, line separators and bidirectional marks and overrides, which could make a card show something other than what is stored). |
+| `createdAt`   | `EpochSeconds`                        | When it was made.                                                                                                                                                                                                                                                                                                                                                         |
 
 Operations, discriminated by `type`:
 
-| `type` | Fields | Meaning |
-| --- | --- | --- |
-| `evm.transfer` | `to: Address`, `valueWei: PositiveAmount` | Send the native coin. |
-| `evm.erc20.transfer` | `token: Address`, `to: Address`, `amount: PositiveAmount` | Call `transfer(to, amount)` on the token. |
-| `evm.call` | `to: Address`, `valueWei: Amount`, `data: Hex` of at least 4 bytes | Call a contract with raw calldata. |
+| `type`               | Fields                                                             | Meaning                                   |
+| -------------------- | ------------------------------------------------------------------ | ----------------------------------------- |
+| `evm.transfer`       | `to: Address`, `valueWei: PositiveAmount`                          | Send the native coin.                     |
+| `evm.erc20.transfer` | `token: Address`, `to: Address`, `amount: PositiveAmount`          | Call `transfer(to, amount)` on the token. |
+| `evm.call`           | `to: Address`, `valueWei: Amount`, `data: Hex` of at least 4 bytes | Call a contract with raw calldata.        |
+
+No address in an operation may be the zero address, and an `evm.erc20.transfer` may not send a
+token to the token's own contract: both lose the funds and are easy to miss on an approval card.
 
 **Spend.** `intentSpend(intent)` is what the intent moves out of the wallet, without fees:
 `(native, valueWei)` for `evm.transfer` and `evm.call`; `(token, amount)` for
@@ -103,21 +106,21 @@ Operations, discriminated by `type`:
 Source: [`policy.ts`](../packages/protocol/src/policy.ts). The signer holds the authoritative
 copy and enforces it when it signs.
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `v` | `1` | |
-| `workspaceId` | `ws_…` | |
-| `walletId` | `wal_…` | |
-| `revision` | integer ≥ 1 | Revision number. |
-| `previousHash` | `Digest` or `null` | `null` if and only if `revision` is 1. Otherwise the `policyHash` of the revision this one replaces. The revisions form a hash chain. |
-| `chains` | sorted set of `ChainId`, at most 32 | Chains the wallet may act on. |
-| `requesters` | sorted set of `agt_…`, at most 64 | Agents that may propose from this wallet. |
-| `assets` | array of `AssetLimit`, at most 128, sorted by the key `chainId + "\|" + asset`, unique | Caps. An asset with no entry cannot leave the wallet. |
-| `recipients` | `{ "mode": "any" }` or `{ "mode": "allowlist", "addresses": sorted set of Address, at most 256 }` | Who may receive transfers. Does not apply to contract-call targets. |
-| `contractCalls` | `{ "mode": "deny" }` or `{ "mode": "allowlist", "targets": sorted set of Address, at most 256 }` | Which contracts `evm.call` may target. |
-| `fees.maxPerTxWei` | `PositiveAmount` | Largest `maxFeeWei` an intent may carry. |
-| `approvals.threshold` | integer 1–16 | How many different people must approve each transaction. |
-| `approvals.ttlSeconds` | integer 60–86400 | Longest time an `approve-intent` envelope may stay valid. |
+| Field                  | Type                                                                                              | Meaning                                                                                                                                                                                                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v`                    | `1`                                                                                               |                                                                                                                                                                                                                                                                              |
+| `workspaceId`          | `ws_…`                                                                                            |                                                                                                                                                                                                                                                                              |
+| `walletId`             | `wal_…`                                                                                           |                                                                                                                                                                                                                                                                              |
+| `revision`             | integer ≥ 1                                                                                       | Revision number.                                                                                                                                                                                                                                                             |
+| `previousHash`         | `Digest` or `null`                                                                                | `null` if and only if `revision` is 1. Otherwise the `policyHash` of the revision this one replaces. The revisions form a hash chain.                                                                                                                                        |
+| `chains`               | sorted set of `ChainId`, at most 32                                                               | Chains the wallet may act on.                                                                                                                                                                                                                                                |
+| `requesters`           | sorted set of `agt_…`, at most 64                                                                 | Agents that may propose from this wallet.                                                                                                                                                                                                                                    |
+| `assets`               | array of `AssetLimit`, at most 128, sorted by the key `chainId + "\|" + asset`, unique            | Caps. An asset with no entry cannot leave the wallet.                                                                                                                                                                                                                        |
+| `recipients`           | `{ "mode": "any" }` or `{ "mode": "allowlist", "addresses": sorted set of Address, at most 256 }` | Who may receive transfers. Does not apply to contract-call targets.                                                                                                                                                                                                          |
+| `contractCalls`        | `{ "mode": "deny" }` or `{ "mode": "allowlist", "targets": sorted set of Address, at most 256 }`  | Contracts an `evm.call` may target. A token that has an `AssetLimit` may not also be a target: a raw `transfer` call to it would move the token with no cap.                                                                                                                 |
+| `fees.maxPerTxWei`     | `PositiveAmount`                                                                                  | Largest `maxFeeWei` an intent may carry.                                                                                                                                                                                                                                     |
+| `approvals.threshold`  | integer 1–16                                                                                      | How many different people must approve each transaction. The signer refuses a policy whose threshold exceeds the workspace's `adminThreshold` (`policy_invalid`), because policies are approved at the admin threshold and could otherwise lower it again with fewer people. |
+| `approvals.ttlSeconds` | integer 60–86400                                                                                  | Longest time an `approve-intent` envelope may stay valid.                                                                                                                                                                                                                    |
 
 `AssetLimit` is `{ chainId, asset: AssetRef, maxPerTx: PositiveAmount, maxPerDay: PositiveAmount }`.
 `maxPerDay` covers any rolling 24 hours. Each limit's `chainId` MUST be in `chains`, and
@@ -131,26 +134,26 @@ be moved to any other: not to another intent, wallet, policy, workspace, expiry 
 
 Every envelope has this header:
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `v` | `1` | |
-| `type` | string, below | Which kind of envelope. |
-| `approvalId` | `apr_…` | The control plane's approval request. The signer acts at most once per approval id. |
-| `workspaceId` | `ws_…` | |
-| `nonce` | `Nonce` | Single use. The signer records it when it acts and refuses to see it again. |
-| `issuedAt` | `EpochSeconds` | |
-| `expiresAt` | `EpochSeconds` | MUST be greater than `issuedAt`. |
+| Field         | Type           | Meaning                                                                             |
+| ------------- | -------------- | ----------------------------------------------------------------------------------- |
+| `v`           | `1`            |                                                                                     |
+| `type`        | string, below  | Which kind of envelope.                                                             |
+| `approvalId`  | `apr_…`        | The control plane's approval request. The signer acts at most once per approval id. |
+| `workspaceId` | `ws_…`         |                                                                                     |
+| `nonce`       | `Nonce`        | Single use. The signer records it when it acts and refuses to see it again.         |
+| `issuedAt`    | `EpochSeconds` |                                                                                     |
+| `expiresAt`   | `EpochSeconds` | MUST be greater than `issuedAt`.                                                    |
 
 The kinds and their extra fields:
 
-| `type` | Extra fields | Authorizes |
-| --- | --- | --- |
-| `approve-intent` | `intentHash: Digest`, `walletId`, `agentId`, `chainId`, `policyHash: Digest` | Sign exactly one transaction for exactly one intent under exactly one policy revision. |
-| `set-policy` | `walletId`, `policyHash: Digest`, `previousPolicyHash: Digest \| null` | Replace a wallet's policy. `previousPolicyHash` is `null` only for the wallet's first policy. |
-| `add-approver` | `userId`, `credentialId: Base64Url`, `publicKey: Base64Url` (the COSE public key) | Let one more passkey approve for this workspace. |
-| `remove-approver` | `userId`, `credentialId: Base64Url` | Stop one passkey from approving for this workspace. |
-| `set-admin-threshold` | `adminThreshold`: integer 1–16 | Change how many people must approve changes to approvers and policies. |
-| `resume-workspace` | none | Let a paused workspace sign again. Pausing needs no envelope, because it only removes authority. |
+| `type`                | Extra fields                                                                      | Authorizes                                                                                                                                               |
+| --------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `approve-intent`      | `intentHash: Digest`, `walletId`, `agentId`, `chainId`, `policyHash: Digest`      | Sign exactly one transaction for exactly one intent under exactly one policy revision.                                                                   |
+| `set-policy`          | `walletId`, `policyHash: Digest`, `previousPolicyHash: Digest \| null`            | Replace a wallet's policy. `previousPolicyHash` is `null` only for the wallet's first policy.                                                            |
+| `add-approver`        | `userId`, `credentialId: Base64Url`, `publicKey: Base64Url` (the COSE public key) | Let one more passkey approve for this workspace.                                                                                                         |
+| `remove-approver`     | `userId`, `credentialId: Base64Url`                                               | Stop one passkey from approving for this workspace.                                                                                                      |
+| `set-admin-threshold` | `adminThreshold`: integer 1–16                                                    | Change how many people must approve changes to approvers and policies. Never below any wallet's current `approvals.threshold` (`threshold_unreachable`). |
+| `resume-workspace`    | none                                                                              | Let a paused workspace sign again. Pausing needs no envelope, because it only removes authority.                                                         |
 
 ```text
 challenge = digest("askgina.os/v1/authorize", envelope)    (32 bytes)
@@ -236,8 +239,10 @@ Rules, in this order. The first that fails decides:
 The signer's HTTP contract is [`signer/api.ts`](../packages/protocol/src/signer/api.ts). A sign
 request (`POST /v1/sign`) carries `{ intent, authorization, transaction }`. The plan
 ([`specs/agent-workspaces-v0.1.md`](../specs/agent-workspaces-v0.1.md), Milestone 2) fixes these
-checks, in order. Every failure is recorded in the signer's decision log and returned with its
-code.
+checks, in order. Every refusal is returned with its code. A refusal is recorded in the
+workspace's decision log when the request passed step 1 and names a workspace the signer knows;
+requests with a bad request signature or a malformed body, and requests naming an unknown
+workspace or wallet (`not_found`), are only logged to the signer's stdout.
 
 1. The request signature (section 10) and the body's schema.
 2. Idempotency. If this approval id was already signed with an identical envelope, return the
@@ -246,7 +251,9 @@ code.
    and the wallet's. `intentHash(intent)` equals `envelope.intentHash`. Otherwise
    `intent_mismatch` or `envelope_mismatch`.
 4. The workspace is not paused (`workspace_paused`). The approval is not revoked
-   (`approval_revoked`).
+   (`approval_revoked`). Because step 2 comes first, a repeat of an approval already signed
+   returns the stored transaction even while paused: pausing stops new signatures, it does not
+   recall one that exists.
 5. The wallet has a policy (`policy_missing`), and its hash equals `envelope.policyHash`
    (`policy_changed`).
 6. Section 6 passes, with the approvers from the signer's own table, the policy's
@@ -256,7 +263,9 @@ code.
 8. In one database transaction with nothing awaited inside it: the nonce is unused
    (`nonce_reused`); `evaluateIntent` against the ledger of the last 24 hours passes
    (`policy_denied`, with the rule's code as `detail`); record the nonce and the spend; build the
-   EIP-1559 transaction from the intent; sign it; store the signed transaction.
+   EIP-1559 transaction from the intent; sign it; check that the signature recovers to the
+   wallet's address over exactly that transaction and has a low `s` (EIP-2), so an approval is
+   never spent on a transaction nodes would reject; store the signed transaction.
 
 The signer builds `to`, `value`, `data` and the chain id of the transaction from the intent
 itself. It never signs bytes it was handed.
@@ -270,20 +279,27 @@ the signed transaction may still never be mined.
 The other envelope kinds (`set-policy`, `add-approver`, `remove-approver`,
 `set-admin-threshold`, `resume-workspace`) follow the same shape, verified with the workspace's
 `adminThreshold` instead of the policy's threshold. Pausing a workspace and revoking an approval
-need only the request signature, because they only remove authority. `GET /v1/approvals/:id`
-reports `unknown`, `revoked`, `signed` (with the transaction hash) or `applied`.
+need only the request signature, because they only remove authority. A revocation
+(`POST /v1/approvals/:id/revoke` with `{ workspaceId }`) is recorded in that workspace's decision
+log. `GET /v1/approvals/:id` reports `unknown`, `revoked`, `signed` (with the transaction hash)
+or `applied`.
+
+There is no HTTP route that adds an approver without assertions from existing approvers. When
+every passkey of a workspace is lost, the operator enrolls a new one with the signer's admin
+command line on the signer host, which records `enroll-approver-by-operator` in the decision log.
+Host access is the root of trust.
 
 ## 9. What may vary after approval
 
 Only these four fields of the signed transaction are chosen after approval
 (`TransactionParams`):
 
-| Field | Type | Bound |
-| --- | --- | --- |
-| `nonce` | integer ≥ 0 | none from the protocol; the chain orders it |
-| `gas` | `PositiveAmount` | `gas × maxFeePerGas ≤ intent.maxFeeWei` |
-| `maxFeePerGas` | `PositiveAmount` | same product bound |
-| `maxPriorityFeePerGas` | `Amount` | `≤ maxFeePerGas` |
+| Field                  | Type             | Bound                                       |
+| ---------------------- | ---------------- | ------------------------------------------- |
+| `nonce`                | integer ≥ 0      | none from the protocol; the chain orders it |
+| `gas`                  | `PositiveAmount` | `gas × maxFeePerGas ≤ intent.maxFeeWei`     |
+| `maxFeePerGas`         | `PositiveAmount` | same product bound                          |
+| `maxPriorityFeePerGas` | `Amount`         | `≤ maxFeePerGas`                            |
 
 Everything else is fixed by the intent, and the intent is fixed by its hash inside the approved
 envelope. The fee ceiling `maxFeeWei` is part of the intent, so the approver saw it.
@@ -327,7 +343,22 @@ printf '%s\n%s' "askgina.os/v1/authorize" '<envelope JSON>' | openssl dgst -sha2
 Intent JSON (canonical):
 
 ```json
-{"agentId":"agt_01jd0000000000000000000002","chainId":"eip155:8453","createdAt":1700000000,"id":"int_01jd0000000000000000000004","maxFeeWei":"1000000000000000","memo":"pay invoice 42","operation":{"to":"0x1111111111111111111111111111111111111111","type":"evm.transfer","valueWei":"250000000000000000"},"v":1,"walletId":"wal_01jd0000000000000000000003","workspaceId":"ws_01jd0000000000000000000001"}
+{
+  "agentId": "agt_01jd0000000000000000000002",
+  "chainId": "eip155:8453",
+  "createdAt": 1700000000,
+  "id": "int_01jd0000000000000000000004",
+  "maxFeeWei": "1000000000000000",
+  "memo": "pay invoice 42",
+  "operation": {
+    "to": "0x1111111111111111111111111111111111111111",
+    "type": "evm.transfer",
+    "valueWei": "250000000000000000"
+  },
+  "v": 1,
+  "walletId": "wal_01jd0000000000000000000003",
+  "workspaceId": "ws_01jd0000000000000000000001"
+}
 ```
 
 `intentHash` = `52d1822482a0fe3dc28883d06413ec38fe1efe50aba28c51167af733e24f9da3`
@@ -335,7 +366,27 @@ Intent JSON (canonical):
 Policy JSON (canonical):
 
 ```json
-{"approvals":{"threshold":1,"ttlSeconds":3600},"assets":[{"asset":"native","chainId":"eip155:8453","maxPerDay":"5000000000000000000","maxPerTx":"1000000000000000000"}],"chains":["eip155:8453"],"contractCalls":{"mode":"deny"},"fees":{"maxPerTxWei":"10000000000000000"},"previousHash":null,"recipients":{"mode":"any"},"requesters":["agt_01jd0000000000000000000002"],"revision":1,"v":1,"walletId":"wal_01jd0000000000000000000003","workspaceId":"ws_01jd0000000000000000000001"}
+{
+  "approvals": { "threshold": 1, "ttlSeconds": 3600 },
+  "assets": [
+    {
+      "asset": "native",
+      "chainId": "eip155:8453",
+      "maxPerDay": "5000000000000000000",
+      "maxPerTx": "1000000000000000000"
+    }
+  ],
+  "chains": ["eip155:8453"],
+  "contractCalls": { "mode": "deny" },
+  "fees": { "maxPerTxWei": "10000000000000000" },
+  "previousHash": null,
+  "recipients": { "mode": "any" },
+  "requesters": ["agt_01jd0000000000000000000002"],
+  "revision": 1,
+  "v": 1,
+  "walletId": "wal_01jd0000000000000000000003",
+  "workspaceId": "ws_01jd0000000000000000000001"
+}
 ```
 
 `policyHash` = `968a11eb9c37f06f745249bfc4a94d48b8aa8b4ed6a3ebbc7673b888970668b5`
@@ -347,7 +398,20 @@ separates otherwise equal inputs.
 `approve-intent` envelope JSON (canonical):
 
 ```json
-{"agentId":"agt_01jd0000000000000000000002","approvalId":"apr_01jd0000000000000000000005","chainId":"eip155:8453","expiresAt":1700000600,"intentHash":"52d1822482a0fe3dc28883d06413ec38fe1efe50aba28c51167af733e24f9da3","issuedAt":1700000000,"nonce":"AAAAAAAAAAAAAAAAAAAAAA","policyHash":"968a11eb9c37f06f745249bfc4a94d48b8aa8b4ed6a3ebbc7673b888970668b5","type":"approve-intent","v":1,"walletId":"wal_01jd0000000000000000000003","workspaceId":"ws_01jd0000000000000000000001"}
+{
+  "agentId": "agt_01jd0000000000000000000002",
+  "approvalId": "apr_01jd0000000000000000000005",
+  "chainId": "eip155:8453",
+  "expiresAt": 1700000600,
+  "intentHash": "52d1822482a0fe3dc28883d06413ec38fe1efe50aba28c51167af733e24f9da3",
+  "issuedAt": 1700000000,
+  "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+  "policyHash": "968a11eb9c37f06f745249bfc4a94d48b8aa8b4ed6a3ebbc7673b888970668b5",
+  "type": "approve-intent",
+  "v": 1,
+  "walletId": "wal_01jd0000000000000000000003",
+  "workspaceId": "ws_01jd0000000000000000000001"
+}
 ```
 
 Challenge (base64url) = `SoAiEpNpEeP2ex9Y_3B7aWINGGXHZFbp3OvzZU6dC80`

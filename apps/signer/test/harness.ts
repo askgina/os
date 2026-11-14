@@ -34,6 +34,8 @@ export const ORIGIN = RP.origins[0];
 export const CHAIN = "eip155:31337" as const;
 export const RECIPIENT = "0x00000000000000000000000000000000000000aa" as const;
 export const TOKEN = "0x00000000000000000000000000000000000000bb" as const;
+/** A contract-call target. Never a capped token: the policy schema refuses that combination. */
+export const ROUTER = "0x00000000000000000000000000000000000000cc" as const;
 export const ETH = 10n ** 18n;
 
 /** A person with a passkey in a software authenticator. */
@@ -144,7 +146,7 @@ export function basePolicy(input: {
       },
     ],
     recipients: { mode: "any" },
-    contractCalls: { mode: "allowlist", targets: [TOKEN] },
+    contractCalls: { mode: "allowlist", targets: [ROUTER] },
     fees: { maxPerTxWei: String(10n ** 16n) },
     approvals: { threshold: input.threshold ?? 1, ttlSeconds: 600 },
   };
@@ -170,7 +172,8 @@ export async function setUpWorld(
   const workspaceId = newId("ws");
   const walletId = newId("wal");
   const agentId = newId("agt");
-  const adminThreshold = options.adminThreshold ?? 1;
+  // A wallet threshold may not exceed the admin threshold, so default the one to the other.
+  const adminThreshold = options.adminThreshold ?? options.policyThreshold ?? 1;
   await t.client.createWorkspace({
     workspaceId,
     adminThreshold,

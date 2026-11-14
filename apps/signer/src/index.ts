@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import {
   ApprovalId,
+  type ApproverCredential,
   WalletId,
   type WorkspaceId,
   WorkspaceId as WorkspaceIdSchema,
@@ -11,6 +12,7 @@ import {
   CreateWalletRequest,
   CreateWorkspaceRequest,
   MAX_CLOCK_SKEW_SECONDS,
+  RevokeApprovalRequest,
   SetPolicyRequest,
   SIGNATURE_HEADER,
   SignRequest,
@@ -29,7 +31,6 @@ import type { Vault } from "./vault.ts";
 
 export type { Logger } from "./log.ts";
 export { createLogger } from "./log.ts";
-export { RECOVERY_CODE_TTL_SECONDS } from "./signer.ts";
 export {
   createTestVault,
   type EvmTransaction,
@@ -62,8 +63,11 @@ export interface SignerOptions {
 
 export interface Signer {
   app: Hono;
-  /** A one-time code that enrolls one approver for the workspace within 15 minutes. */
-  issueRecoveryCode(workspaceId: WorkspaceId): string;
+  /**
+   * Enroll an approver without passkey assertions, for an operator who lost every passkey. Not
+   * reachable over HTTP: only the admin CLI on the signer host calls it.
+   */
+  enrollApproverByOperator(workspaceId: WorkspaceId, approver: ApproverCredential): void;
   verifyDecisionLog(workspaceId: WorkspaceId): { ok: boolean; brokenAt: number | null };
   close(): void;
 }
@@ -85,22 +89,49 @@ const compiledRoutes = Object.entries(signerRoutes).map(([name, route]) => {
   };
 });
 
-function matchRoute(method: string, path: string) {
+type MatchedRoute = { name: RouteName; params: Record<string, string> };
+
+/** The contract route for a request; a path that names none, or does not decode, is not found. */
+function matchRoute(method: string, path: string): MatchedRoute {
   for (const route of compiledRoutes) {
     if (route.method !== method) continue;
     const match = route.regex.exec(path);
     if (!match) continue;
     const params: Record<string, string> = {};
-    route.names.forEach((name, index) => {
-      params[name] = decodeURIComponent(match[index + 1] ?? "");
-    });
+    for (const [index, name] of route.names.entries()) {
+      try {
+        params[name] = decodeURIComponent(match[index + 1] ?? "");
+      } catch {
+        throw new SignerFailure("not_found");
+      }
+    }
     return { name: route.name, params };
   }
-  return null;
+  throw new SignerFailure("not_found");
 }
 
 /** Far above any valid request (a policy with every list full is about 60 KiB). */
 const MAX_BODY_BYTES = 256 * 1024;
+
+/**
+ * Read the body, giving up as soon as it passes the limit. Content-Length is only a hint (a
+ * chunked request has none), so the count is taken while reading, before anything is buffered
+ * past the limit and before the request is authenticated.
+ */
+async function readBody(stream: ReadableStream<Uint8Array> | null): Promise<Uint8Array> {
+  if (!stream) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for await (const chunk of stream) {
+    total += chunk.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      await stream.cancel().catch(() => undefined);
+      throw new SignerFailure("invalid_request");
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
 
 function parse<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
   const result = schema.safeParse(value);
@@ -193,7 +224,10 @@ export function createSigner(options: SignerOptions): Signer {
       case "sign":
         return core.sign(parse(SignRequest, parseBody(body)));
       case "revokeApproval":
-        return core.revokeApproval(parse(ApprovalId, params.approvalId));
+        return core.revokeApproval(
+          parse(ApprovalId, params.approvalId),
+          parse(RevokeApprovalRequest, parseBody(body)).workspaceId,
+        );
       case "getApproval":
         return core.getApproval(parse(ApprovalId, params.approvalId));
     }
@@ -202,14 +236,13 @@ export function createSigner(options: SignerOptions): Signer {
   const app = new Hono();
   app.all("*", async (c) => {
     const url = new URL(c.req.url);
-    const route = matchRoute(c.req.method, url.pathname);
+    let route: MatchedRoute | null = null;
     try {
-      if (!route) throw new SignerFailure("not_found");
+      route = matchRoute(c.req.method, url.pathname);
       if (Number(c.req.header("content-length") ?? 0) > MAX_BODY_BYTES) {
         throw new SignerFailure("invalid_request");
       }
-      const body = new Uint8Array(await c.req.arrayBuffer());
-      if (body.byteLength > MAX_BODY_BYTES) throw new SignerFailure("invalid_request");
+      const body = await readBody(c.req.raw.body);
       if (route.name !== "health") {
         const signature = c.req.header(SIGNATURE_HEADER) ?? "";
         const timestampText = c.req.header(TIMESTAMP_HEADER) ?? "";
@@ -247,7 +280,7 @@ export function createSigner(options: SignerOptions): Signer {
 
   return {
     app,
-    issueRecoveryCode: core.issueRecoveryCode,
+    enrollApproverByOperator: core.enrollApproverByOperator,
     verifyDecisionLog: core.verifyDecisionLog,
     close: () => db.close(),
   };

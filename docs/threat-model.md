@@ -54,7 +54,9 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
 - **Not stopped:** a persuasive memo that talks a person into approving. Within its policy, an
   approved intent spends real money. A raw contract call to an allowlisted contract can move
   things the caps cannot measure ([`policy.ts`](../packages/protocol/src/policy.ts),
-  `CallOperation` comment in `intent.ts`).
+  `CallOperation` comment in `intent.ts`). A capped token cannot itself be a call target (the
+  policy schema refuses it), but an allowlisted contract that holds or can pull the wallet's
+  tokens (a router with an approval, for example) is outside the caps.
 
 ### A stolen agent token
 
@@ -94,7 +96,8 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
 
 - **Can:** ask the signer anything the request signature allows; read sealed content (the
   server holds the keyring); show a person a misleading approval card; pause workspaces and
-  revoke approvals.
+  revoke approvals. Pausing stops new signatures; a repeat of an approval the signer already
+  signed still returns that stored transaction, because it already exists.
 - **Stopped by:** it cannot produce a passkey assertion. It cannot exceed the signer's policy
   caps, reuse an approval, or change policy or approvers without passkey approval of the exact
   new value. The signer builds every transaction from the approved intent.
@@ -117,8 +120,10 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
   `verify-authorization.ts`).
 - **Stolen passkey (or a device unlocked by someone else):** can approve as that person, within
   the policy's caps and the workspace's thresholds. A threshold above 1 means one stolen passkey
-  is not enough. Removing the approver invalidates pending authorizations they took part in,
-  because every assertion must come from a current approver.
+  is not enough to sign, and since a wallet's threshold may never exceed the workspace's admin
+  threshold, it is not enough to rewrite that wallet's policy either. Removing the approver
+  invalidates pending authorizations they took part in, because every assertion must come from a
+  current approver.
 
 ### A malicious member
 
@@ -127,7 +132,8 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
   approver can approve any intent inside the caps.
 - **Owner:** can propose policy and approver changes. These take effect only with the
   workspace's `adminThreshold` of approvals. With an admin threshold of 1, one owner who is an
-  approver can raise caps.
+  approver can raise caps. The signer keeps every wallet's threshold at or below the admin
+  threshold, so the admin threshold is the real bar for a wallet's rules.
 
 ### The signer host
 
@@ -159,21 +165,21 @@ Back up each trust domain separately and protect the signer's backups as you wou
 
 ## What is encrypted at rest
 
-| Data | Where | Encrypted? | Why |
-| --- | --- | --- | --- |
-| The canonical intent (operation, recipient, amount, calldata, memo) | `intents.payload` | Sealed, workspace key | What people and agents typed about an operation |
-| What the approval card shows, and the simulation result | `intents.presentation` | Sealed, workspace key | Same |
-| What an approval kind needs to apply its effect, for example a proposed policy | `approvals.detail` | Sealed, workspace key | Same |
-| The signed raw transaction | `transactions.raw` | Sealed, workspace key | Kept only to rebroadcast; it contains the operation |
-| Audit details | `audit_events.detail` | Sealed, workspace key | Free-form content; its digest stays readable so the chain verifies without the key |
-| Workflow inputs, outputs, hook payloads, stream chunks, step errors | `workflow` schema | AES-256-GCM, per-run key ([`packages/world/src/index.ts`](../packages/world/src/index.ts)) | The upstream Postgres World stores these in plaintext |
-| Data keys | `os_keys` schema | Wrapped by a KEK from the keyring file | The database alone must not be enough |
-| Identifiers, names given to workspaces, agents and wallets, roles, statuses, timestamps, hashes | `os` schema | No | Needed to list, join and display without keys |
-| Wallet addresses and policies | `wallets` | No | Public on chain, and needed to show limits |
-| WebAuthn public keys and assertions | `credentials`, `approver_credentials`, `approval_assertions` | No | Public keys and signatures over digests; not secret |
-| Session, invite, agent and setup tokens | various | Stored as SHA-256 hashes | Only needed for comparison |
-| Workflow names, ids, hook tokens, run attributes | `workflow` schema | No | The Workflow SDK does not encrypt them (finding 2 of the World research) |
-| Server log lines | stdout | No | They carry identifiers, codes and counts only, never content ([`apps/server/src/log.ts`](../apps/server/src/log.ts)) |
+| Data                                                                                            | Where                                                        | Encrypted?                                                                                 | Why                                                                                                                  |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| The canonical intent (operation, recipient, amount, calldata, memo)                             | `intents.payload`                                            | Sealed, workspace key                                                                      | What people and agents typed about an operation                                                                      |
+| What the approval card shows, and the simulation result                                         | `intents.presentation`                                       | Sealed, workspace key                                                                      | Same                                                                                                                 |
+| What an approval kind needs to apply its effect, for example a proposed policy                  | `approvals.detail`                                           | Sealed, workspace key                                                                      | Same                                                                                                                 |
+| The signed raw transaction                                                                      | `transactions.raw`                                           | Sealed, workspace key                                                                      | Kept only to rebroadcast; it contains the operation                                                                  |
+| Audit details                                                                                   | `audit_events.detail`                                        | Sealed, workspace key                                                                      | Free-form content; its digest stays readable so the chain verifies without the key                                   |
+| Workflow inputs, outputs, hook payloads, stream chunks, step errors                             | `workflow` schema                                            | AES-256-GCM, per-run key ([`packages/world/src/index.ts`](../packages/world/src/index.ts)) | The upstream Postgres World stores these in plaintext                                                                |
+| Data keys                                                                                       | `os_keys` schema                                             | Wrapped by a KEK from the keyring file                                                     | The database alone must not be enough                                                                                |
+| Identifiers, names given to workspaces, agents and wallets, roles, statuses, timestamps, hashes | `os` schema                                                  | No                                                                                         | Needed to list, join and display without keys                                                                        |
+| Wallet addresses and policies                                                                   | `wallets`                                                    | No                                                                                         | Public on chain, and needed to show limits                                                                           |
+| WebAuthn public keys and assertions                                                             | `credentials`, `approver_credentials`, `approval_assertions` | No                                                                                         | Public keys and signatures over digests; not secret                                                                  |
+| Session, invite, agent and setup tokens                                                         | various                                                      | Stored as SHA-256 hashes                                                                   | Only needed for comparison                                                                                           |
+| Workflow names, ids, hook tokens, run attributes                                                | `workflow` schema                                            | No                                                                                         | The Workflow SDK does not encrypt them (finding 2 of the World research)                                             |
+| Server log lines                                                                                | stdout                                                       | No                                                                                         | They carry identifiers, codes and counts only, never content ([`apps/server/src/log.ts`](../apps/server/src/log.ts)) |
 
 The plaintext scanner used to check this decompresses and decodes workflow payloads before
 searching ([`packages/testkit/src/scan.ts`](../packages/testkit/src/scan.ts)). A naive scan reports
@@ -218,8 +224,18 @@ verdict and F2–F5). The signer process is the boundary.
 the signer cannot check who its first approvers are. It only keeps the set from changing later
 without their passkeys (`CreateWorkspaceRequest` in
 [`signer/api.ts`](../packages/protocol/src/signer/api.ts)). The operator can also enroll a new
-approver with a one-time recovery code from the signer's admin command line (`AddApproverRequest`
-in the same file), so whoever controls the signer host controls recovery.
+approver directly from the signer's admin command line (`enroll-approver`, recorded as
+`enroll-approver-by-operator` in the decision log); there is no HTTP route for it, so the control
+plane cannot choose the enrolled key. Host access is the root of trust: whoever controls the
+signer host controls recovery.
+
+**The signer's decision log detects damage, not a determined writer.** Each workspace's log is a
+hash chain whose head (`seq` and `hash`) is kept on the workspace row and updated in the same
+transaction as every append, so edited, inserted or deleted rows, including the newest ones, are
+found by `verify-log`. The chain is not keyed: someone who can write the SQLite file can rewrite
+every row and the head together. The log records allowed changes and refusals of requests that
+passed the request signature and schema for a known workspace; unauthenticated or malformed
+requests and unknown workspaces appear only in the signer's stdout.
 
 **A signed amount counts against the daily cap even if the transaction never lands.** The signer
 records the spend in the same database transaction as the signature (plan, Milestone 2, step 8).

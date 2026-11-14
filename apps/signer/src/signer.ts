@@ -1,4 +1,3 @@
-import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { open, seal } from "@askgina/os-keys/seal";
 import {
@@ -52,7 +51,6 @@ import type { Logger } from "./log.ts";
 import { type EvmTransaction, type Vault, VaultError } from "./vault.ts";
 
 const DAY_SECONDS = 86_400;
-export const RECOVERY_CODE_TTL_SECONDS = 15 * 60;
 
 export interface SignerCoreOptions {
   db: DatabaseSync;
@@ -82,7 +80,7 @@ type WalletRow = {
 };
 type ApprovalRow = {
   approval_id: string;
-  workspace_id: string | null;
+  workspace_id: string;
   state: "revoked" | "signed" | "applied";
   envelope_digest: string | null;
 };
@@ -93,7 +91,6 @@ type SignatureRow = {
   transaction_hash: string;
 };
 
-const hashCode = (code: string) => createHash("sha256").update(code, "utf8").digest("hex");
 const envelopeDigest = (envelope: Envelope) =>
   Buffer.from(envelopeChallenge(envelope)).toString("hex");
 const credentialContext = (walletId: string) => `signer.wallets.credential:${walletId}`;
@@ -102,7 +99,8 @@ const credentialContext = (walletId: string) => `signer.wallets.credential:${wal
  * True when `signed` is exactly `expected` plus a signature made by `address`. The vault is
  * native code behind a string interface; this check means a vault that returns a signature for
  * another key, another transaction or a malformed one is caught before anything is recorded, so
- * the approval is not spent on a transaction that could never be the approved one.
+ * the approval is not spent on a transaction that could never be the approved one. A signature
+ * with a high `s` is refused too: it recovers to the right key, but nodes reject it (EIP-2).
  */
 function isSignedBy(signed: Hex, expected: EvmTransaction, address: string): boolean {
   try {
@@ -110,7 +108,9 @@ function isSignedBy(signed: Hex, expected: EvmTransaction, address: string): boo
     if (r === undefined || s === undefined || yParity === undefined) return false;
     const rebuilt = serializeTransaction({ ...unsigned, type: "eip1559" } as EvmTransaction);
     if (rebuilt !== serializeTransaction({ ...expected, type: "eip1559" })) return false;
-    const publicKey = new secp256k1.Signature(BigInt(r), BigInt(s))
+    const signature = new secp256k1.Signature(BigInt(r), BigInt(s));
+    if (signature.hasHighS()) return false;
+    const publicKey = signature
       .addRecoveryBit(yParity)
       .recoverPublicKey(hexToBytes(keccak256(rebuilt)))
       .toBytes(false);
@@ -396,18 +396,24 @@ export function createSignerCore(options: SignerCoreOptions) {
     });
   }
 
-  // The most any current threshold requires: removing approvers may not go below it.
-  function requiredApprovers(workspaceId: string): number {
-    const workspace = requireWorkspace(workspaceId);
-    let required = workspace.admin_threshold;
+  function highestPolicyThreshold(workspaceId: string): number {
     const wallets = db
       .prepare("SELECT wallet_id FROM wallets WHERE workspace_id = ?")
       .all(workspaceId) as { wallet_id: string }[];
+    let highest = 0;
     for (const wallet of wallets) {
       const policy = currentPolicy(wallet.wallet_id);
-      if (policy) required = Math.max(required, policy.policy.approvals.threshold);
+      if (policy) highest = Math.max(highest, policy.policy.approvals.threshold);
     }
-    return required;
+    return highest;
+  }
+
+  // The most any current threshold requires: removing approvers may not go below it.
+  function requiredApprovers(workspaceId: string): number {
+    return Math.max(
+      requireWorkspace(workspaceId).admin_threshold,
+      highestPolicyThreshold(workspaceId),
+    );
   }
 
   function insertApprover(workspaceId: string, approver: ApproverCredential): void {
@@ -476,52 +482,47 @@ export function createSignerCore(options: SignerCoreOptions) {
     });
   }
 
-  async function addApprover(
-    workspaceId: string,
-    request: AddApproverRequest,
-  ): Promise<WorkspaceState> {
-    if ("authorization" in request) {
-      return authorizedChange({
+  function addApprover(workspaceId: string, request: AddApproverRequest): Promise<WorkspaceState> {
+    return authorizedChange({
+      workspaceId,
+      authorization: request.authorization,
+      type: "add-approver",
+      action: "add-approver",
+      apply: (envelope) => {
+        if (envelope.type !== "add-approver") throw new SignerFailure("envelope_mismatch");
+        insertApprover(workspaceId, {
+          userId: envelope.userId,
+          credentialId: envelope.credentialId,
+          publicKey: envelope.publicKey,
+        });
+      },
+      state: () => workspaceState(workspaceId),
+    });
+  }
+
+  /**
+   * Enroll an approver with no passkey assertions, for an operator who has lost every passkey.
+   * Only reachable from the admin CLI on the signer host: whoever can run it there is the root of
+   * trust, and the key enrolled is the one the operator typed, not one a relay chose.
+   */
+  function enrollApproverByOperator(workspaceId: WorkspaceId, approver: ApproverCredential): void {
+    transaction(db, () => {
+      requireWorkspace(workspaceId);
+      insertApprover(workspaceId, approver);
+      appendDecision(db, {
         workspaceId,
-        authorization: request.authorization,
-        type: "add-approver",
-        action: "add-approver",
-        apply: (envelope) => {
-          if (envelope.type !== "add-approver") throw new SignerFailure("envelope_mismatch");
-          insertApprover(workspaceId, {
-            userId: envelope.userId,
-            credentialId: envelope.credentialId,
-            publicKey: envelope.publicKey,
-          });
-        },
-        state: () => workspaceState(workspaceId),
+        approvalId: null,
+        action: "enroll-approver-by-operator",
+        outcome: "allowed",
+        code: null,
+        at: options.now(),
       });
-    }
-    requireWorkspace(workspaceId);
-    return decide(workspaceId, null, "add-approver-by-recovery", (allow) =>
-      transaction(db, () => {
-        const code = db
-          .prepare("SELECT * FROM recovery_codes WHERE code_hash = ?")
-          .get(hashCode(request.recovery.code)) as
-          | { workspace_id: string; expires_at: number; used_at: number | null }
-          | undefined;
-        if (
-          !code ||
-          code.workspace_id !== workspaceId ||
-          code.used_at !== null ||
-          options.now() >= code.expires_at
-        ) {
-          throw new SignerFailure("recovery_code_invalid");
-        }
-        db.prepare("UPDATE recovery_codes SET used_at = ? WHERE code_hash = ?").run(
-          options.now(),
-          hashCode(request.recovery.code),
-        );
-        insertApprover(workspaceId, request.approver);
-        allow();
-        return workspaceState(workspaceId);
-      }),
-    );
+    });
+    log.info("decision", {
+      action: "enroll-approver-by-operator",
+      outcome: "allowed",
+      workspaceId,
+    });
   }
 
   function removeApprover(workspaceId: string, authorization: Authorization) {
@@ -555,6 +556,11 @@ export function createSignerCore(options: SignerCoreOptions) {
       apply: (envelope) => {
         if (envelope.type !== "set-admin-threshold") throw new SignerFailure("envelope_mismatch");
         if (envelope.adminThreshold > distinctApproverCount(workspaceId)) {
+          throw new SignerFailure("threshold_unreachable");
+        }
+        // Lowering the admin threshold below a wallet's threshold would let fewer people
+        // approve a policy that lowers the wallet's threshold, voiding it.
+        if (envelope.adminThreshold < highestPolicyThreshold(workspaceId)) {
           throw new SignerFailure("threshold_unreachable");
         }
         db.prepare("UPDATE workspaces SET admin_threshold = ? WHERE workspace_id = ?").run(
@@ -634,6 +640,11 @@ export function createSignerCore(options: SignerCoreOptions) {
       }
       if (policy.approvals.threshold > distinctApproverCount(wallet.workspace_id)) {
         throw new SignerFailure("threshold_unreachable");
+      }
+      // Policies are approved at the admin threshold, so a wallet threshold above it protects
+      // nothing: fewer people could approve a policy that lowers it.
+      if (policy.approvals.threshold > requireWorkspace(wallet.workspace_id).admin_threshold) {
+        throw new SignerFailure("policy_invalid");
       }
       // A policy that lets approvals live longer than this signer accepts would produce
       // approvals that can never be used; refuse it now, where the person can still fix it.
@@ -816,18 +827,27 @@ export function createSignerCore(options: SignerCoreOptions) {
     });
   }
 
-  function revokeApproval(approvalId: string): ApprovalState {
-    return transaction(db, () => {
-      const row = findApproval(approvalId);
-      if (row && row.state !== "revoked") throw new SignerFailure("conflict");
-      if (!row) {
-        db.prepare(
-          "INSERT INTO approvals (approval_id, workspace_id, state, envelope_digest, at) VALUES (?, NULL, 'revoked', NULL, ?)",
-        ).run(approvalId, options.now());
-      }
-      log.info("decision", { action: "revoke-approval", outcome: "allowed", approvalId });
-      return getApproval(approvalId);
-    });
+  /**
+   * Refuse an approval id for good. Revoking twice is a no-op; an id already signed or applied,
+   * or revoked in another workspace, is a conflict. Recorded in the workspace's decision log.
+   */
+  function revokeApproval(approvalId: string, workspaceId: string): Promise<ApprovalState> {
+    requireWorkspace(workspaceId);
+    return decide(workspaceId, approvalId, "revoke-approval", (allow) =>
+      transaction(db, () => {
+        const row = findApproval(approvalId);
+        if (row && (row.state !== "revoked" || row.workspace_id !== workspaceId)) {
+          throw new SignerFailure("conflict");
+        }
+        if (!row) {
+          db.prepare(
+            "INSERT INTO approvals (approval_id, workspace_id, state, envelope_digest, at) VALUES (?, ?, 'revoked', NULL, ?)",
+          ).run(approvalId, workspaceId, options.now());
+          allow();
+        }
+        return getApproval(approvalId);
+      }),
+    );
   }
 
   function getApproval(approvalId: string): ApprovalState {
@@ -852,26 +872,6 @@ export function createSignerCore(options: SignerCoreOptions) {
     return listDecisions(db, workspaceId as WorkspaceId, after, limit);
   }
 
-  function issueRecoveryCode(workspaceId: WorkspaceId): string {
-    requireWorkspace(workspaceId);
-    const code = randomBytes(24).toString("base64url");
-    transaction(db, () => {
-      db.prepare(
-        "INSERT INTO recovery_codes (code_hash, workspace_id, expires_at, used_at) VALUES (?, ?, ?, NULL)",
-      ).run(hashCode(code), workspaceId, options.now() + RECOVERY_CODE_TTL_SECONDS);
-      appendDecision(db, {
-        workspaceId,
-        approvalId: null,
-        action: "issue-recovery-code",
-        outcome: "allowed",
-        code: null,
-        at: options.now(),
-      });
-    });
-    log.info("recovery code issued", { workspaceId });
-    return code;
-  }
-
   return {
     createWorkspace,
     getWorkspace: workspaceState,
@@ -887,7 +887,7 @@ export function createSignerCore(options: SignerCoreOptions) {
     sign,
     revokeApproval,
     getApproval,
-    issueRecoveryCode,
+    enrollApproverByOperator,
     verifyDecisionLog: (workspaceId: WorkspaceId) => {
       // An unknown workspace has no log; reporting it as intact would mislead an operator.
       requireWorkspace(workspaceId);

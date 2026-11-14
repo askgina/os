@@ -110,6 +110,15 @@ describe("chain ids", () => {
     expect(ok(ChainId, `eip155:${"9".repeat(17)}`)).toBe(false);
     expect(evmChainNumber("eip155:8453")).toBe(8453);
   });
+
+  it("stop at 15 digits, so no two ids collapse to one chain number", () => {
+    const largest = "eip155:999999999999999" as const;
+    expect(ok(ChainId, largest)).toBe(true);
+    expect(evmChainNumber(largest)).toBe(999_999_999_999_999);
+    // 2^53 + 1 rounds to 2^53 as a JavaScript number.
+    expect(ok(ChainId, "eip155:9007199254740993")).toBe(false);
+    expect(ok(ChainId, `eip155:1${"0".repeat(15)}`)).toBe(false);
+  });
 });
 
 describe("nonce", () => {
@@ -188,6 +197,40 @@ describe("intent", () => {
     expect(ok(Intent, { ...intent(), v: 2 })).toBe(false);
     expect(ok(Intent, intent({ memo: "a\u202eb" }))).toBe(false);
   });
+
+  it("refuses the zero address as recipient, token or call target", () => {
+    const zero = "0x0000000000000000000000000000000000000000" as const;
+    expect(
+      ok(Intent, intent({ operation: { type: "evm.transfer", to: zero, valueWei: "1" } })),
+    ).toBe(false);
+    expect(
+      ok(
+        Intent,
+        intent({ operation: { type: "evm.erc20.transfer", token: zero, to: BOB, amount: "1" } }),
+      ),
+    ).toBe(false);
+    expect(
+      ok(
+        Intent,
+        intent({ operation: { type: "evm.erc20.transfer", token: TOKEN, to: zero, amount: "1" } }),
+      ),
+    ).toBe(false);
+    expect(
+      ok(
+        Intent,
+        intent({ operation: { type: "evm.call", to: zero, valueWei: "0", data: "0xa9059cbb" } }),
+      ),
+    ).toBe(false);
+  });
+
+  it("refuses a token transfer to the token's own contract", () => {
+    expect(
+      ok(
+        Intent,
+        intent({ operation: { type: "evm.erc20.transfer", token: TOKEN, to: TOKEN, amount: "1" } }),
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("wallet policy", () => {
@@ -239,6 +282,26 @@ describe("wallet policy", () => {
     expect(ok(WalletPolicy, policy({ revision: 2, previousHash: null }))).toBe(false);
     expect(ok(WalletPolicy, policy({ revision: 2, previousHash: DIGEST_A }))).toBe(true);
     expect(ok(WalletPolicy, policy({ revision: 0 }))).toBe(false);
+  });
+
+  it("refuses a capped token that is also a contract-call target", () => {
+    const native = policy().assets[0];
+    if (!native) throw new Error("fixture");
+    const token = { ...native, asset: TOKEN };
+    const withToken = { assets: [token, native] };
+    // Calling the token directly would move it with no cap, so the two may not coexist.
+    expect(
+      ok(
+        WalletPolicy,
+        policy({ ...withToken, contractCalls: { mode: "allowlist", targets: [TOKEN, ROUTER] } }),
+      ),
+    ).toBe(false);
+    expect(
+      ok(
+        WalletPolicy,
+        policy({ ...withToken, contractCalls: { mode: "allowlist", targets: [ROUTER] } }),
+      ),
+    ).toBe(true);
   });
 
   it("refuses an asset limit on a chain the wallet may not use", () => {

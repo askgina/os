@@ -66,6 +66,8 @@ function hasUnsafeMemoCharacter(value: string): boolean {
   return false;
 }
 
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
 export const Memo = z
   .string()
   .max(280)
@@ -75,20 +77,50 @@ export const Memo = z
  * One operation an agent asks a wallet to perform. An intent is immutable: its hash is what a
  * person approves and what the signer signs for, so changing any field makes a different intent.
  */
-export const Intent = z.strictObject({
-  v: z.literal(PROTOCOL_VERSION),
-  id: IntentId,
-  workspaceId: WorkspaceId,
-  agentId: AgentId,
-  walletId: WalletId,
-  chainId: ChainId,
-  operation: Operation,
-  /** Ceiling on `gas * maxFeePerGas`. Nonce and gas fields may vary below it after approval. */
-  maxFeeWei: PositiveAmount,
-  /** The agent's stated reason. Hashed, so the text a person read is the text that was approved. */
-  memo: Memo,
-  createdAt: EpochSeconds,
-});
+export const Intent = z
+  .strictObject({
+    v: z.literal(PROTOCOL_VERSION),
+    id: IntentId,
+    workspaceId: WorkspaceId,
+    agentId: AgentId,
+    walletId: WalletId,
+    chainId: ChainId,
+    operation: Operation,
+    /** Ceiling on `gas * maxFeePerGas`. Nonce and gas fields may vary below it after approval. */
+    maxFeeWei: PositiveAmount,
+    /** The agent's stated reason. Hashed, so the text a person read is the text that was approved. */
+    memo: Memo,
+    createdAt: EpochSeconds,
+  })
+  .superRefine((intent, context) => {
+    const { operation } = intent;
+    // The zero address has no key: coins sent there are burned and a call there does nothing
+    // useful, so it is almost always a mistake a person would not catch on an approval card.
+    const addresses: [string, string][] =
+      operation.type === "evm.erc20.transfer"
+        ? [
+            ["to", operation.to],
+            ["token", operation.token],
+          ]
+        : [["to", operation.to]];
+    for (const [field, value] of addresses) {
+      if (value === ZERO_ADDRESS) {
+        context.addIssue({
+          code: "custom",
+          path: ["operation", field],
+          message: "the zero address cannot be a recipient, token or call target",
+        });
+      }
+    }
+    // Most tokens keep what is sent to their own contract for good.
+    if (operation.type === "evm.erc20.transfer" && operation.to === operation.token) {
+      context.addIssue({
+        code: "custom",
+        path: ["operation", "to"],
+        message: "a token transfer cannot send the token to its own contract",
+      });
+    }
+  });
 export type Intent = z.infer<typeof Intent>;
 
 /** The digest that an approval and a signature are bound to. */

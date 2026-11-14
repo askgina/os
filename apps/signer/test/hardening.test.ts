@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { newId, policyHash, type WalletId } from "@askgina/os-protocol";
-import { recoverTransactionAddress } from "viem";
+import { parseTransaction, recoverTransactionAddress, serializeTransaction } from "viem";
 import { afterAll, describe, expect, it } from "vitest";
 import { createTestVault, OwsVault, type Vault } from "../src/index.ts";
 import {
@@ -71,6 +71,47 @@ describe("a vault that misbehaves", () => {
     );
     expect((await world.t.client.getWallet(world.walletId)).spent).toEqual([]);
   });
+
+  it("cannot make the signer spend an approval on a high-s signature nodes would reject", async () => {
+    // The order of secp256k1's group: (r, n - s) with the other parity is the same signature
+    // mathematically and recovers to the same key, but EIP-2 makes nodes refuse it.
+    const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+    const world = await setUpWorld(
+      startSigner({
+        vault: vaultThatSigns((honest, walletId, credential, transaction) => {
+          const { r, s, yParity } = parseTransaction(
+            honest.signEvmTransaction(walletId, credential, transaction),
+          );
+          return serializeTransaction(
+            { ...transaction, type: "eip1559" },
+            {
+              r: r as `0x${string}`,
+              s: `0x${(N - BigInt(s as string)).toString(16).padStart(64, "0")}`,
+              yParity: yParity === 0 ? 1 : 0,
+            },
+          );
+        }),
+      }),
+    );
+    const intent = intentFor(world);
+    const authorization = approveIntent(world, intent);
+    await refused(
+      world.t.client.sign({ intent, authorization, transaction: txParams() }),
+      "vault_error",
+    );
+    expect((await world.t.client.getApproval(authorization.envelope.approvalId)).state).toBe(
+      "unknown",
+    );
+  });
+});
+
+describe("requests the router cannot place", () => {
+  it("answers a path that does not decode with the contract's 404 body", async () => {
+    const { signer } = startSigner();
+    const response = await signer.app.request("http://signer.test/v1/wallets/%zz");
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: { code: "not_found", message: "not found" } });
+  });
 });
 
 describe("limits on what the signer accepts", () => {
@@ -112,10 +153,33 @@ describe("limits on what the signer accepts", () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ error: { code: "invalid_request" } });
   });
+
+  it("stops reading a body with no Content-Length once it passes the limit, before authenticating", async () => {
+    const { signer } = startSigner();
+    let pulls = 0;
+    // An endless stream: a signer that buffered before checking would never answer.
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(new Uint8Array(64 * 1024).fill(0x20));
+      },
+    });
+    const request = new Request("http://signer.test/v1/sign", {
+      method: "POST",
+      body,
+      duplex: "half",
+    } as RequestInit);
+    expect(request.headers.get("content-length")).toBeNull();
+    const response = await signer.app.request(request);
+    // Unsigned, yet refused as too large: the limit applies before the signature is checked.
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { code: "invalid_request" } });
+    expect(pulls).toBeLessThan(10);
+  });
 });
 
 describe("the OWS vault after a crash during wallet creation", () => {
-  const dir = mkdtempSync(join(tmpdir(), "osbuild-signer-adopt-"));
+  const dir = mkdtempSync(join(tmpdir(), "os-signer-adopt-"));
   const passphraseFile = join(dir, "passphrase");
   writeFileSync(passphraseFile, "a long enough owner passphrase");
   afterAll(() => rmSync(dir, { recursive: true, force: true }));

@@ -9,6 +9,7 @@ import {
   header,
   intentFor,
   RECIPIENT,
+  ROUTER,
   refused,
   setUpWorld,
   startSigner,
@@ -152,7 +153,7 @@ describe("signing an approved intent", () => {
         amount: "1",
       });
       const authorization = approveIntent(world, intent);
-      const altered = { ...intent, operation: { ...intent.operation, token: RECIPIENT } };
+      const altered = { ...intent, operation: { ...intent.operation, token: ROUTER } };
       await refused(
         world.t.client.sign({ intent: altered, authorization, transaction: txParams() }),
         "intent_mismatch",
@@ -163,7 +164,7 @@ describe("signing an approved intent", () => {
       const world = await setUpWorld(startSigner());
       const intent = intentFor(world, {
         type: "evm.call",
-        to: TOKEN,
+        to: ROUTER,
         valueWei: "0",
         data: "0xa9059cbb00",
       });
@@ -274,7 +275,10 @@ describe("signing an approved intent", () => {
     const world = await setUpWorld(startSigner());
     const intent = intentFor(world);
     const authorization = approveIntent(world, intent);
-    const revoked = await world.t.client.revokeApproval(authorization.envelope.approvalId);
+    const revoked = await world.t.client.revokeApproval(
+      authorization.envelope.approvalId,
+      world.workspaceId,
+    );
     expect(revoked.state).toBe("revoked");
     await refused(
       world.t.client.sign({ intent, authorization, transaction: txParams() }),
@@ -284,7 +288,30 @@ describe("signing an approved intent", () => {
     const other = intentFor(world);
     const otherAuth = approveIntent(world, other);
     await world.t.client.sign({ intent: other, authorization: otherAuth, transaction: txParams() });
-    await refused(world.t.client.revokeApproval(otherAuth.envelope.approvalId), "conflict");
+    await refused(
+      world.t.client.revokeApproval(otherAuth.envelope.approvalId, world.workspaceId),
+      "conflict",
+    );
+  });
+
+  it("returns an already signed transaction while paused: pausing stops new signatures, not old ones", async () => {
+    const world = await setUpWorld(startSigner());
+    const intent = intentFor(world);
+    const authorization = approveIntent(world, intent);
+    const transaction = txParams();
+    const signed = await world.t.client.sign({ intent, authorization, transaction });
+    await world.t.client.pauseWorkspace(world.workspaceId);
+    // The transaction already exists; returning it again creates nothing new.
+    expect(await world.t.client.sign({ intent, authorization, transaction })).toEqual(signed);
+    const fresh = intentFor(world);
+    await refused(
+      world.t.client.sign({
+        intent: fresh,
+        authorization: approveIntent(world, fresh),
+        transaction: txParams(),
+      }),
+      "workspace_paused",
+    );
   });
 
   it("refuses while the workspace is paused and signs again after a passkey resume", async () => {

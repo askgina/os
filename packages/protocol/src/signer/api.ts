@@ -75,16 +75,12 @@ export const AuthorizedRequest = z.strictObject({ authorization: Authorization }
 export type AuthorizedRequest = z.infer<typeof AuthorizedRequest>;
 
 /**
- * Add an approver either with assertions from existing approvers, or with a one-time recovery
- * code that the operator created with the signer's admin CLI on the signer host.
+ * Add an approver with assertions from existing approvers. There is no way over HTTP to add one
+ * without them: recovery after every passkey is lost happens on the signer host itself, through
+ * the operator's admin CLI, because whoever relays a request over HTTP (the control plane) would
+ * otherwise choose the key that gets enrolled.
  */
-export const AddApproverRequest = z.union([
-  AuthorizedRequest,
-  z.strictObject({
-    recovery: z.strictObject({ code: z.string().min(16).max(128) }),
-    approver: ApproverCredential,
-  }),
-]);
+export const AddApproverRequest = AuthorizedRequest;
 export type AddApproverRequest = z.infer<typeof AddApproverRequest>;
 
 /** One line of the signer's own append-only, hash-chained record of what it allowed and refused. */
@@ -104,6 +100,12 @@ export type SignerDecision = z.infer<typeof SignerDecision>;
 
 export const ListDecisionsResponse = z.strictObject({ decisions: z.array(SignerDecision) });
 export type ListDecisionsResponse = z.infer<typeof ListDecisionsResponse>;
+
+// --- approvals --------------------------------------------------------------------------------
+
+/** Names the workspace, so the revocation is recorded in that workspace's decision log. */
+export const RevokeApprovalRequest = z.strictObject({ workspaceId: WorkspaceId });
+export type RevokeApprovalRequest = z.infer<typeof RevokeApprovalRequest>;
 
 // --- wallets ----------------------------------------------------------------------------------
 
@@ -217,7 +219,6 @@ export const SignerErrorCode = z.enum([
   "insufficient_approvals",
   "assertion_invalid",
   "approver_unknown",
-  "recovery_code_invalid",
   "threshold_unreachable",
   // 500
   "vault_error",
@@ -246,7 +247,6 @@ export const signerErrorStatus: Record<SignerErrorCode, 400 | 401 | 403 | 404 | 
   insufficient_approvals: 403,
   assertion_invalid: 403,
   approver_unknown: 403,
-  recovery_code_invalid: 403,
   threshold_unreachable: 403,
   vault_error: 500,
   internal: 500,
