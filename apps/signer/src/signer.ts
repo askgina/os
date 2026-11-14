@@ -72,14 +72,14 @@ export interface SignerCoreOptions {
   log: Logger;
 }
 
-type WorkspaceRow = {
+export type WorkspaceRow = {
   workspace_id: string;
   admin_threshold: number;
   paused: number;
   created_request: string;
 };
 type ApproverRow = { credential_id: string; user_id: string; public_key: string; added_at: number };
-type WalletRow = {
+export type WalletRow = {
   wallet_id: string;
   workspace_id: string;
   kind: string;
@@ -87,7 +87,7 @@ type WalletRow = {
   address: string;
   sealed_credential: Uint8Array;
 };
-type ApprovalRow = {
+export type ApprovalRow = {
   approval_id: string;
   workspace_id: string;
   state: "revoked" | "signed" | "applied";
@@ -100,7 +100,8 @@ type SignatureRow = {
   transaction_hash: string;
 };
 
-const envelopeDigest = (envelope: Envelope) =>
+/** The envelope's challenge in hex, as stored next to what the signer did with it. */
+export const envelopeDigest = (envelope: Envelope) =>
   Buffer.from(envelopeChallenge(envelope)).toString("hex");
 const credentialContext = (walletId: string) => `signer.wallets.credential:${walletId}`;
 
@@ -196,6 +197,24 @@ export function createSignerCore(options: SignerCoreOptions) {
       .get(walletId) as { policy: string; policy_hash: string } | undefined;
     if (!row) return null;
     return { policy: WalletPolicy.parse(JSON.parse(row.policy)), hash: row.policy_hash };
+  }
+
+  /** A revision of a wallet's policy by its hash, current or earlier; null when it never was one. */
+  function policyByHash(walletId: string, hash: string): WalletPolicy | null {
+    const row = db
+      .prepare("SELECT policy FROM policies WHERE wallet_id = ? AND policy_hash = ? LIMIT 1")
+      .get(walletId, hash) as { policy: string } | undefined;
+    return row ? WalletPolicy.parse(JSON.parse(row.policy)) : null;
+  }
+
+  /** Where a sweep of `walletId` may go besides its allowlist: the workspace's other treasuries. */
+  function treasuryAddresses(workspaceId: string, walletId: string): Address[] {
+    const rows = db
+      .prepare(
+        "SELECT address FROM wallets WHERE workspace_id = ? AND kind = 'treasury' AND wallet_id <> ? ORDER BY address",
+      )
+      .all(workspaceId, walletId) as { address: string }[];
+    return rows.map((row) => row.address as Address);
   }
 
   function spentSince(walletId: string, since: number): Map<string, bigint> {
@@ -328,11 +347,13 @@ export function createSignerCore(options: SignerCoreOptions) {
    * database still returns what it got, and checked again inside the transaction, because the
    * operator may set the fence while the signer runs.
    */
-  function assertNotFenced(envelope: Envelope): void {
+  function isFenced(envelope: Envelope): boolean {
     const fence = readFence(db);
-    if (fence !== null && envelope.issuedAt < fence + CLOCK_SKEW_SECONDS) {
-      throw new SignerFailure("envelope_fenced");
-    }
+    return fence !== null && envelope.issuedAt < fence + CLOCK_SKEW_SECONDS;
+  }
+
+  function assertNotFenced(envelope: Envelope): void {
+    if (isFenced(envelope)) throw new SignerFailure("envelope_fenced");
   }
 
   /** Re-checked inside the transaction: an approver removed during verification no longer counts. */
@@ -915,12 +936,8 @@ export function createSignerCore(options: SignerCoreOptions) {
     if (sweep.to === wallet.address) throw new SignerFailure("sweep_destination_not_allowed");
     const allowlisted =
       policy?.recipients.mode === "allowlist" && policy.recipients.addresses.includes(sweep.to);
-    const treasury = db
-      .prepare(
-        "SELECT 1 FROM wallets WHERE workspace_id = ? AND kind = 'treasury' AND address = ? AND wallet_id <> ?",
-      )
-      .get(wallet.workspace_id, sweep.to, wallet.wallet_id);
-    if (!allowlisted && treasury === undefined) {
+    const treasury = treasuryAddresses(wallet.workspace_id, wallet.wallet_id).includes(sweep.to);
+    if (!allowlisted && !treasury) {
       throw new SignerFailure("sweep_destination_not_allowed");
     }
   }
@@ -1046,6 +1063,19 @@ export function createSignerCore(options: SignerCoreOptions) {
     return listDecisions(db, workspaceId as WorkspaceId, after, limit);
   }
 
+  const records: SignerRecords = {
+    findWorkspace,
+    approvers,
+    findWallet,
+    currentPolicy,
+    policyByHash,
+    treasuryAddresses,
+    findApproval,
+    isFenced,
+    spentInLastDay: (walletId, chainId, asset) =>
+      spentSince(walletId, options.now() - DAY_SECONDS).get(`${chainId}|${asset}`) ?? 0n,
+  };
+
   return {
     createWorkspace,
     getWorkspace: workspaceState,
@@ -1068,5 +1098,26 @@ export function createSignerCore(options: SignerCoreOptions) {
       requireWorkspace(workspaceId);
       return verifyDecisions(db, workspaceId);
     },
+    records,
   };
+}
+
+/**
+ * Read-only access to the records the signer decides with, for the confirmation views
+ * (`confirmations.ts`), so a view states exactly what signing and applying would check.
+ */
+export interface SignerRecords {
+  findWorkspace(workspaceId: string): WorkspaceRow | undefined;
+  approvers(workspaceId: string): ApproverCredential[];
+  findWallet(walletId: string): WalletRow | undefined;
+  currentPolicy(walletId: string): { policy: WalletPolicy; hash: string } | null;
+  /** A revision of a wallet's policy by its hash, current or earlier. */
+  policyByHash(walletId: string, hash: string): WalletPolicy | null;
+  /** The workspace's treasury wallets other than `walletId`: where a sweep of it may go. */
+  treasuryAddresses(workspaceId: string, walletId: string): Address[];
+  findApproval(approvalId: string): ApprovalRow | undefined;
+  /** Issued before the restore fence: the signer refuses it, whatever approvals it has. */
+  isFenced(envelope: Envelope): boolean;
+  /** What the wallet signed for in the last 24 hours in one asset, as the caps count it. */
+  spentInLastDay(walletId: string, chainId: ChainId, asset: AssetRef): bigint;
 }

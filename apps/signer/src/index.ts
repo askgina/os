@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import {
   ApprovalId,
   type ApproverCredential,
+  type AssetLabel,
+  type ChainLabel,
   WalletId,
   type WorkspaceId,
   WorkspaceId as WorkspaceIdSchema,
@@ -9,13 +11,17 @@ import {
 import {
   AddApproverRequest,
   AuthorizedRequest,
+  CONFIRM_TOKEN_HEADER,
   CreateWalletRequest,
   CreateWorkspaceRequest,
   MAX_CLOCK_SKEW_SECONDS,
+  MIN_SECRET_BYTES,
+  OpenConfirmationRequest,
   RevokeApprovalRequest,
   SetPolicyRequest,
   SIGNATURE_HEADER,
   SignRequest,
+  SubmitConfirmationRequest,
   SweepRequest,
   signerRoutes,
   TIMESTAMP_HEADER,
@@ -24,6 +30,7 @@ import {
 import type { RelyingParty } from "@askgina/os-protocol/webauthn";
 import { Hono } from "hono";
 import type { z } from "zod";
+import { createConfirmations } from "./confirmations.ts";
 import { openDatabase, transaction } from "./db.ts";
 import { SignerFailure } from "./errors.ts";
 import { FENCE_BY_OPERATOR, fenceReplacedDatabase, raiseFence } from "./fence.ts";
@@ -52,9 +59,27 @@ export interface SignerOptions {
   /** SQLite file, or ":memory:" for tests. */
   sqlitePath: string;
   vault: Vault;
+  /**
+   * The RP ID, and the control plane's approval page among `origins`. Until the cutover the
+   * signer accepts approvals for signing and applying from those origins and from
+   * `approvalOrigin`.
+   */
   relyingParty: RelyingParty;
-  /** Shared with the control plane; authenticates every request except the health check. */
+  /** Shared with the control plane; authenticates every control-scope route. */
   requestSecret: Uint8Array;
+  /**
+   * Shared with the `approve` service; authenticates the two confirm-scope routes and nothing
+   * else. At least 32 bytes, and not the request secret.
+   */
+  confirmSecret: Uint8Array;
+  /** The confirmation page's exact origin, a host under the RP ID. */
+  approvalOrigin: string;
+  /** The control plane's origin, where the confirmation page sends the person afterwards. */
+  returnOrigin: string;
+  /** Chain names and native coins, from the operator's chains file. */
+  chains: readonly ChainLabel[];
+  /** Token symbols and decimals, from the operator's assets file. */
+  assets: readonly AssetLabel[];
   /** 32 bytes. Seals the vault credentials stored in SQLite. */
   tokenKey: Uint8Array;
   maxIntentTtlSeconds: number;
@@ -166,6 +191,14 @@ function pageNumber(raw: string | null, fallback: number, max: number): number {
 
 export function createSigner(options: SignerOptions): Signer {
   if (options.tokenKey.byteLength !== 32) throw new RangeError("tokenKey must be 32 bytes");
+  if (options.confirmSecret.byteLength < MIN_SECRET_BYTES) {
+    throw new RangeError(`confirmSecret must be at least ${MIN_SECRET_BYTES} bytes`);
+  }
+  // One secret for both scopes would let the `approve` service call every route.
+  if (Buffer.from(options.confirmSecret).equals(Buffer.from(options.requestSecret))) {
+    throw new RangeError("confirmSecret must differ from requestSecret");
+  }
+  const secrets = { control: options.requestSecret, confirm: options.confirmSecret };
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const log = options.log ?? silentLogger;
   const { db, created } = openDatabase(options.sqlitePath);
@@ -180,8 +213,24 @@ export function createSigner(options: SignerOptions): Signer {
   const core = createSignerCore({
     db,
     vault: options.vault,
-    relyingParty: options.relyingParty,
+    relyingParty: {
+      id: options.relyingParty.id,
+      origins: [...new Set([...options.relyingParty.origins, options.approvalOrigin])],
+    },
     tokenKey: options.tokenKey,
+    maxIntentTtlSeconds: options.maxIntentTtlSeconds,
+    maxAdminTtlSeconds: options.maxAdminTtlSeconds,
+    now,
+    log,
+  });
+  const confirmations = createConfirmations({
+    db,
+    records: core.records,
+    rpId: options.relyingParty.id,
+    approvalOrigin: options.approvalOrigin,
+    returnOrigin: options.returnOrigin,
+    chains: options.chains,
+    assets: options.assets,
     maxIntentTtlSeconds: options.maxIntentTtlSeconds,
     maxAdminTtlSeconds: options.maxAdminTtlSeconds,
     now,
@@ -193,8 +242,10 @@ export function createSigner(options: SignerOptions): Signer {
     params: Record<string, string>,
     query: URLSearchParams,
     body: Uint8Array,
+    confirmToken: string,
   ): Promise<unknown> {
     const workspaceId = () => parse(WorkspaceIdSchema, params.workspaceId);
+    const approvalId = () => parse(ApprovalId, params.approvalId);
     switch (name) {
       case "health":
         return { ok: true, version: VERSION };
@@ -244,11 +295,26 @@ export function createSigner(options: SignerOptions): Signer {
         return core.sweep(parse(WalletId, params.walletId), parse(SweepRequest, parseBody(body)));
       case "revokeApproval":
         return core.revokeApproval(
-          parse(ApprovalId, params.approvalId),
+          approvalId(),
           parse(RevokeApprovalRequest, parseBody(body)).workspaceId,
         );
       case "getApproval":
-        return core.getApproval(parse(ApprovalId, params.approvalId));
+        return core.getApproval(approvalId());
+      case "openConfirmation":
+        return confirmations.openConfirmation(
+          approvalId(),
+          parse(OpenConfirmationRequest, parseBody(body)),
+        );
+      case "listConfirmationAssertions":
+        return confirmations.listConfirmationAssertions(approvalId());
+      case "getConfirmation":
+        return confirmations.getConfirmation(approvalId(), confirmToken);
+      case "submitConfirmation":
+        return confirmations.submitConfirmation(
+          approvalId(),
+          confirmToken,
+          parse(SubmitConfirmationRequest, parseBody(body)).response,
+        );
     }
   }
 
@@ -262,12 +328,15 @@ export function createSigner(options: SignerOptions): Signer {
         throw new SignerFailure("invalid_request");
       }
       const body = await readBody(c.req.raw.body);
-      if (route.name !== "health") {
+      // Each route is reachable only with its own scope's secret: the `approve` service's
+      // cannot sign or apply anything, and the control plane's cannot submit an assertion.
+      const { scope } = signerRoutes[route.name];
+      if (scope !== "unsigned") {
         const signature = c.req.header(SIGNATURE_HEADER) ?? "";
         const timestampText = c.req.header(TIMESTAMP_HEADER) ?? "";
         const authentic =
           /^[0-9]{1,12}$/.test(timestampText) &&
-          verifyRequestSignature(options.requestSecret, {
+          verifyRequestSignature(secrets[scope], {
             method: c.req.method,
             pathWithQuery: `${url.pathname}${url.search}`,
             timestamp: Number(timestampText),
@@ -277,7 +346,13 @@ export function createSigner(options: SignerOptions): Signer {
           });
         if (!authentic) throw new SignerFailure("unauthenticated");
       }
-      const result = await dispatch(route.name, route.params, url.searchParams, body);
+      const result = await dispatch(
+        route.name,
+        route.params,
+        url.searchParams,
+        body,
+        c.req.header(CONFIRM_TOKEN_HEADER) ?? "",
+      );
       log.info("request", { route: route.name, status: 200 });
       return c.json(result as object, 200);
     } catch (error) {

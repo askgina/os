@@ -1,9 +1,13 @@
 import { randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   type AgentId,
   type ApprovalId,
   type ApproverCredential,
+  type AssetLabel,
   type Authorization,
+  type ChainLabel,
   type Envelope,
   type Intent,
   intentHash,
@@ -16,6 +20,8 @@ import {
   type WorkspaceId,
 } from "@askgina/os-protocol";
 import {
+  type ConfirmClient,
+  createConfirmClient,
   createSignerClient,
   type SignerClient,
   SignerError,
@@ -37,6 +43,38 @@ export const TOKEN = "0x00000000000000000000000000000000000000bb" as const;
 /** A contract-call target. Never a capped token: the policy schema refuses that combination. */
 export const ROUTER = "0x00000000000000000000000000000000000000cc" as const;
 export const ETH = 10n ** 18n;
+
+/** The confirmation page: another port on the RP ID's host. `ORIGIN` is the control plane's. */
+export const APPROVAL_ORIGIN = "http://localhost:8081";
+export const CHAINS: ChainLabel[] = [{ chainId: CHAIN, name: "Local chain", nativeSymbol: "ETH" }];
+export const ASSETS: AssetLabel[] = [{ chainId: CHAIN, asset: TOKEN, symbol: "TKN", decimals: 6 }];
+
+/** What `createSigner` needs for confirmation pages, with the test origins and labels. */
+export const CONFIRMATION_SETTINGS = {
+  approvalOrigin: APPROVAL_ORIGIN,
+  returnOrigin: ORIGIN,
+  chains: CHAINS,
+  assets: ASSETS,
+};
+
+/**
+ * Write a signer process's confirmation files into `dir` and return the environment that names
+ * them, with the test origins.
+ */
+export function confirmationEnvironment(
+  dir: string,
+  confirmSecret: Uint8Array = randomBytes(32),
+): Record<string, string> {
+  const files = {
+    SIGNER_CONFIRM_SECRET_FILE: join(dir, "confirm-secret"),
+    SIGNER_CHAINS_FILE: join(dir, "chains.json"),
+    SIGNER_ASSETS_FILE: join(dir, "assets.json"),
+  };
+  writeFileSync(files.SIGNER_CONFIRM_SECRET_FILE, Buffer.from(confirmSecret).toString("base64"));
+  writeFileSync(files.SIGNER_CHAINS_FILE, JSON.stringify(CHAINS));
+  writeFileSync(files.SIGNER_ASSETS_FILE, JSON.stringify(ASSETS));
+  return { ...files, SIGNER_APPROVAL_ORIGIN: APPROVAL_ORIGIN, SIGNER_RETURN_ORIGIN: ORIGIN };
+}
 
 /** A person with a passkey in a software authenticator. */
 export interface Person {
@@ -76,9 +114,13 @@ export class Clock {
 
 export interface TestSigner {
   signer: Signer;
+  /** The control plane's client, with `secret`. */
   client: SignerClient;
+  /** The `approve` service's client, with `confirmSecret`. */
+  confirm: ConfirmClient;
   clock: Clock;
   secret: Uint8Array;
+  confirmSecret: Uint8Array;
   vault: Vault;
   tokenKey: Uint8Array;
 }
@@ -89,6 +131,7 @@ export function startSigner(
 ) {
   const clock = input.clock ?? new Clock();
   const secret = new Uint8Array(randomBytes(32));
+  const confirmSecret = new Uint8Array(randomBytes(32));
   const vault = input.vault ?? createTestVault();
   const tokenKey = input.tokenKey ?? new Uint8Array(randomBytes(32));
   const signer = createSigner({
@@ -96,18 +139,37 @@ export function startSigner(
     vault,
     relyingParty: RP,
     requestSecret: secret,
+    confirmSecret,
+    ...CONFIRMATION_SETTINGS,
     tokenKey,
     maxIntentTtlSeconds: 3600,
     maxAdminTtlSeconds: 86_400,
     now: clock.now,
   });
+  const fetch: typeof globalThis.fetch = (url, init) =>
+    Promise.resolve(signer.app.request(String(url), init));
   const client = createSignerClient({
     baseUrl: "http://signer.test",
     secret,
     now: clock.now,
-    fetch: (url, init) => Promise.resolve(signer.app.request(String(url), init)),
+    fetch,
   });
-  return { signer, client, clock, secret, vault, tokenKey } satisfies TestSigner;
+  const confirm = createConfirmClient({
+    baseUrl: "http://signer.test",
+    secret: confirmSecret,
+    now: clock.now,
+    fetch,
+  });
+  return {
+    signer,
+    client,
+    confirm,
+    clock,
+    secret,
+    confirmSecret,
+    vault,
+    tokenKey,
+  } satisfies TestSigner;
 }
 
 export function header(

@@ -8,6 +8,7 @@ import { newId } from "@askgina/os-protocol";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   approveIntent,
+  confirmationEnvironment,
   intentFor,
   newPerson,
   type Person,
@@ -35,6 +36,7 @@ describe("the admin CLI on the signer host", () => {
     SIGNER_VAULT_PASSPHRASE_FILE: join(dir, "passphrase"),
     WEBAUTHN_RP_ID: RP.id,
     WEBAUTHN_ORIGINS: RP.origins.join(","),
+    ...confirmationEnvironment(dir),
   };
 
   async function admin(args: string[]): Promise<{ code: number; line: Record<string, unknown> }> {

@@ -21,9 +21,11 @@ import {
   WalletPolicy,
   WorkspaceId,
 } from "../src/index.ts";
+import { OpenConfirmationResponse, SubmitConfirmationResponse } from "../src/signer/index.ts";
 import {
   AGENT,
   ALICE,
+  APPROVAL,
   approveIntent,
   BASE,
   BOB,
@@ -37,6 +39,7 @@ import {
   sweepWallet,
   T0,
   TOKEN,
+  WS,
 } from "./fixtures.ts";
 
 const ok = (schema: { safeParse(v: unknown): { success: boolean } }, value: unknown) =>
@@ -385,6 +388,35 @@ describe("sweeps", () => {
     expect(ok(Sweep, { ...sweep(), v: 2 })).toBe(false);
     expect(ok(Envelope, { ...sweepWallet(), amount: "1" })).toBe(false);
     expect(ok(Envelope, { ...sweepWallet(), type: "approve-intent" })).toBe(false);
+  });
+});
+
+describe("confirmation messages", () => {
+  const LINK_TOKEN = "AAAAAAAAAAAAAAAAAAAAAA";
+
+  // The control plane appends the path to the confirmation page's origin, so a path that can
+  // change the host or carry something else would send people elsewhere.
+  it("a confirmation link is exactly /a/<approval id>#<token>", () => {
+    const path = (value: string) => ok(OpenConfirmationResponse, { path: value });
+    expect(path(`/a/${APPROVAL}#${LINK_TOKEN}`)).toBe(true);
+    expect(path(`//evil.example/a/${APPROVAL}#${LINK_TOKEN}`)).toBe(false);
+    expect(path(`@evil.example/a/${APPROVAL}#${LINK_TOKEN}`)).toBe(false);
+    expect(path(`/a/${APPROVAL}/../x#${LINK_TOKEN}`)).toBe(false);
+    expect(path(`/a/${APPROVAL}?x=1#${LINK_TOKEN}`)).toBe(false);
+    expect(path(`/a/${APPROVAL}#${LINK_TOKEN}#${LINK_TOKEN}`)).toBe(false);
+    expect(path(`/a/${APPROVAL}#${LINK_TOKEN.slice(1)}`)).toBe(false);
+    expect(path(`/a/${APPROVAL}`)).toBe(false);
+    expect(path(`/a/${WS}#${LINK_TOKEN}`)).toBe(false);
+  });
+
+  // The confirmation page navigates to it after an approval.
+  it("the page is sent back only to an http or https address", () => {
+    const back = (returnUrl: string) =>
+      ok(SubmitConfirmationResponse, { collected: 1, required: 1, returnUrl });
+    expect(back(`https://os.example/w/${WS}/approvals/${APPROVAL}`)).toBe(true);
+    expect(back("javascript:alert(1)")).toBe(false);
+    expect(back("data:text/html,x")).toBe(false);
+    expect(back("/relative")).toBe(false);
   });
 });
 

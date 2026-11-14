@@ -1,6 +1,6 @@
 # @askgina/os-signer
 
-The signer holds every wallet key of a deployment and decides, on its own, whether to sign. It is a small HTTP service on an internal network that only the control plane can reach.
+The signer holds every wallet key of a deployment and decides, on its own, whether to sign. It is a small HTTP service on internal networks that only the control plane and the keyless `approve` service (which serves the confirmation page) can reach.
 
 The control plane can ask the signer for things. It cannot make it sign. Every operation that adds authority (signing a transaction, changing a policy, adding an approver, lowering or raising a threshold, resuming a paused workspace) must carry passkey assertions over a statement of that exact operation (an _envelope_). The signer recomputes the envelope's digest, checks each assertion against its own registry of approvers, and acts at most once per approval and per nonce.
 
@@ -8,10 +8,11 @@ The contract is [`packages/protocol/src/signer/api.ts`](../../packages/protocol/
 
 ## What it trusts
 
-- **Its own SQLite file** (`$SIGNER_DATA_DIR/signer.sqlite`): workspaces, approvers, wallet policies with their hash chain, used nonces, signed transactions, the spend ledger, the decision log and the restore fence. Its schema version is `PRAGMA user_version`; the signer migrates it in one transaction when it opens the file, and refuses to open a file written by a newer signer (`SchemaTooNewError`, logged as `schema_too_new`).
+- **Its own SQLite file** (`$SIGNER_DATA_DIR/signer.sqlite`): workspaces, approvers, wallet policies with their hash chain, used nonces, signed transactions, the spend ledger, the decision log, the restore fence, and open confirmations with the assertions made on them. Its schema version is `PRAGMA user_version`; the signer migrates it in one transaction when it opens the file, and refuses to open a file written by a newer signer (`SchemaTooNewError`, logged as `schema_too_new`).
 - **Its vault** (`$SIGNER_DATA_DIR/vault`): an [Open Wallet Standard](https://github.com/open-wallet-standard/core) key store, one wallet with its own mnemonic per wallet id. OWS is used only to keep keys encrypted and sign; it enforces nothing. The signer builds every transaction itself from the approved intent (`to`, `value`, `data`, the chain; ERC-20 calldata is encoded here), so it never signs bytes a caller handed it.
-- **The request-signing secret**, shared with the control plane. It proves a request came from the control plane within the last minute. Pausing a workspace and revoking an approval need only that, because they only remove authority.
-- **The relying party** (`WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS`). Assertions from any other origin or RP ID are refused.
+- **Two request-signing secrets**, one per scope. The control plane's (`SIGNER_HMAC_SECRET_FILE`) proves a request came from the control plane within the last minute; it reaches every route except the two confirm routes. The `approve` service's (`SIGNER_CONFIRM_SECRET_FILE`) reaches only those two, so a compromised confirmation page cannot sign, apply or read anything else. Pausing a workspace and revoking an approval need only the control plane's secret, because they only remove authority.
+- **The relying party** (`WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS`, `SIGNER_APPROVAL_ORIGIN`). For signing and applying, assertions made on the control plane's page (`WEBAUTHN_ORIGINS`) or on the confirmation page are accepted until the cutover in `specs/trusted-display.md` milestone 3, which leaves the confirmation page only. Assertions from any other origin or RP ID are refused.
+- **The operator's label files** (`SIGNER_CHAINS_FILE`, `SIGNER_ASSETS_FILE`): chain names, native coins, token symbols and decimals shown on the confirmation page. They change what a person reads, never what is signed.
 
 It does **not** trust the control plane's database, its idea of who is an approver, or anything it says about a challenge. A compromised control plane can withhold requests and can show a person one operation while asking them to approve another. For a payment, the per-wallet caps the signer enforces bound what that can cost; a sweep is bounded by where it may go; a misled change of policy or approvers is not bounded (see "Limits" in [`docs/threat-model.md`](../../docs/threat-model.md)).
 
@@ -33,6 +34,17 @@ It does **not** trust the control plane's database, its idea of who is an approv
 
 There is no route for messages, typed data, raw hashes or EIP-7702 authorizations. Any path or method the contract does not name answers 404.
 
+## Confirmation pages
+
+The confirmation page lets a person read an approval as the signer holds it and approve it there, on its own origin, so the control plane cannot show one operation and collect a passkey assertion for another (`specs/trusted-display.md`). Every envelope kind goes through it. Four routes, in `confirmations.ts`:
+
+- `POST /v1/approvals/:approvalId/confirmation` (control scope) opens it with `{ envelope, subject }`, where the subject is the intent, the policy or the sweep whose hash the envelope names, or `envelope-only`. The signer checks that the subject is exactly what the envelope names (`intent_mismatch`, `envelope_mismatch`), that the workspace and wallet exist, that the envelope has not expired, that the approval was not revoked (`approval_revoked`) or used (`confirmation_closed`), and that it could still act on it: not fenced (`envelope_fenced`), and for a payment or a policy change the wallet's policy is still the one it names (`policy_missing`, `policy_changed`). It stores both and answers `{ path: "/a/<approvalId>#<token>" }` with a fresh 16-byte token, keeping only its SHA-256. Opening again with the same envelope issues a new token and the old link stops working; another envelope for the same approval is `conflict`.
+- `GET /v1/confirm/:approvalId` (confirm scope, token in `x-confirm-token`) returns the view: its state (`open`, `complete`, `expired`, `revoked`, `used` or `superseded`), the lines `renderConfirmation` builds from the stored envelope and subject and the signer's own records (wallet label and address, current policy, 24-hour spend in the payment's asset, admin threshold, treasury wallets, the operator's labels), the approvals collected and required, and the WebAuthn options: the envelope's digest as challenge, the passkeys of approvers who have not approved yet, user verification required. A wrong token is `not_found`.
+- `POST /v1/confirm/:approvalId/assertions` (confirm scope) takes `{ response }`, one assertion. More than 64 submissions per approval are `rate_limited`. The state must be `open` (`confirmation_closed`); the passkey must be one of the workspace's approvers (`approver_unknown`); the browser must have made the assertion at `SIGNER_APPROVAL_ORIGIN` and not in a cross-origin frame (`assertion_invalid`); one per person (`conflict`). It answers `{ collected, required, returnUrl }`.
+- `GET /v1/approvals/:approvalId/assertions` (control scope) lists the stored assertions of people who are still approvers with the same passkey, with the signer's own user id for each. The control plane sends them back to sign or apply as before, and the signer verifies them again there.
+
+A payment needs its policy's threshold; every other kind needs the admin threshold. Confirmations add no authority, so they are logged to stdout (`confirmation.opened`, `confirmation.assertion` with outcome and code, `confirmation.rate_limited`), not to the decision log. Nothing in a log line carries a token, an intent or an assertion.
+
 ## Refusal codes
 
 | Code                            | HTTP | Meaning                                                                                                                                            |
@@ -41,6 +53,8 @@ There is no route for messages, typed data, raw hashes or EIP-7702 authorization
 | `unauthenticated`               | 401  | The request signature is missing, wrong, or more than 60 seconds from the signer's clock.                                                          |
 | `not_found`                     | 404  | Unknown route, workspace, wallet or approver.                                                                                                      |
 | `conflict`                      | 409  | An id already exists with different content, or an approval already acted on cannot change.                                                        |
+| `confirmation_closed`           | 409  | The approval can no longer collect assertions: revoked, used, expired, superseded or complete.                                                     |
+| `rate_limited`                  | 429  | More than 64 assertions were submitted for one confirmation.                                                                                       |
 | `workspace_paused`              | 403  | The workspace is paused; nothing signs until a passkey-approved resume.                                                                            |
 | `approval_revoked`              | 403  | The approval id was revoked; it will never sign or apply.                                                                                          |
 | `envelope_mismatch`             | 403  | The envelope is the wrong kind, or names another workspace, wallet, agent, chain or policy.                                                        |
@@ -70,14 +84,19 @@ There is no route for messages, typed data, raw hashes or EIP-7702 authorization
 | `SIGNER_PORT`                   | Listener port (default 8787).                                                                      |
 | `SIGNER_DATA_DIR`               | Holds `signer.sqlite` and `vault/`.                                                                |
 | `SIGNER_HMAC_SECRET_FILE`       | Base64 file, at least 32 bytes: the request-signing secret shared with the control plane.          |
+| `SIGNER_CONFIRM_SECRET_FILE`    | Base64 file, at least 32 bytes, not the request secret: shared with the `approve` service.         |
 | `SIGNER_KEY_FILE`               | Base64 file, exactly 32 bytes: seals the per-wallet OWS tokens stored in SQLite.                   |
 | `SIGNER_VAULT_PASSPHRASE_FILE`  | The OWS owner passphrase, read only when a wallet is created. Absent: existing wallets still sign. |
 | `WEBAUTHN_RP_ID`                | The relying party ID passkeys were registered under.                                               |
-| `WEBAUTHN_ORIGINS`              | Comma-separated exact origins of the approval page.                                                |
+| `WEBAUTHN_ORIGINS`              | Comma-separated exact origins of the control plane's approval page, until the cutover.             |
+| `SIGNER_APPROVAL_ORIGIN`        | The confirmation page's exact origin: a host under `WEBAUTHN_RP_ID` or another port on it.         |
+| `SIGNER_RETURN_ORIGIN`          | The control plane's origin, where the confirmation page sends people afterwards.                   |
+| `SIGNER_CHAINS_FILE`            | The control plane's chains file; the signer reads each chain's id, `name` and `nativeSymbol`.      |
+| `SIGNER_ASSETS_FILE`            | JSON array of `{ chainId, asset, symbol, decimals }` for the tokens the page names.                |
 | `SIGNER_MAX_INTENT_TTL_SECONDS` | Ceiling on an intent approval's lifetime (default 3600).                                           |
 | `SIGNER_MAX_ADMIN_TTL_SECONDS`  | Ceiling on other envelopes' lifetime (default 86400).                                              |
 
-The signer refuses to start when a secret is missing or malformed, runs with umask 077, and on SIGTERM finishes requests in flight before closing the database.
+The signer refuses to start when a secret is missing or malformed, when the confirm secret equals the request secret, when `SIGNER_APPROVAL_ORIGIN` is not under the RP ID or is the control plane's origin, or when a label file has a name or symbol that could pass for something else (symbols `^[A-Za-z0-9.]{1,11}$`, chain names printable ASCII up to 40 characters, decimals 0 to 36). It runs with umask 077, and on SIGTERM finishes requests in flight before closing the database.
 
 ```sh
 node src/main.ts

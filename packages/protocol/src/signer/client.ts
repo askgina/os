@@ -1,18 +1,24 @@
 import type { z } from "zod";
-import type { Authorization } from "../envelopes.ts";
+import { ConfirmationView } from "../confirmation.ts";
+import type { AssertionResponse, Authorization } from "../envelopes.ts";
 import type { ApprovalId, WalletId, WorkspaceId } from "../primitives.ts";
 import {
   type AddApproverRequest,
   ApprovalState,
+  CONFIRM_TOKEN_HEADER,
   type CreateWalletRequest,
   type CreateWorkspaceRequest,
   HealthResponse,
+  ListConfirmationAssertionsResponse,
   ListDecisionsResponse,
+  type OpenConfirmationRequest,
+  OpenConfirmationResponse,
   type SetPolicyRequest,
   SignerErrorBody,
   type SignerErrorCode,
   type SignRequest,
   SignResponse,
+  SubmitConfirmationResponse,
   type SweepRequest,
   signerRoutes,
   WalletState,
@@ -38,7 +44,10 @@ export class SignerError extends Error {
 export interface SignerClientOptions {
   /** For example `http://signer:8787`. */
   baseUrl: string;
-  /** The shared request-signing secret, at least 32 bytes. */
+  /**
+   * The request-signing secret of the client's scope, at least 32 bytes: the control plane's for
+   * {@link createSignerClient}, the `approve` service's for {@link createConfirmClient}.
+   */
   secret: Uint8Array;
   fetch?: typeof globalThis.fetch;
   /** Seconds since the Unix epoch. Tests inject a clock. */
@@ -82,20 +91,50 @@ export interface SignerClient {
   sweep(walletId: WalletId, request: SweepRequest): Promise<SignResponse>;
   revokeApproval(approvalId: ApprovalId, workspaceId: WorkspaceId): Promise<ApprovalState>;
   getApproval(approvalId: ApprovalId): Promise<ApprovalState>;
+
+  /** Open, or reopen with a fresh token, the confirmation page for a pending approval. */
+  openConfirmation(
+    approvalId: ApprovalId,
+    request: OpenConfirmationRequest,
+  ): Promise<OpenConfirmationResponse>;
+  /** The assertions people made on the confirmation page, as the signer recorded them. */
+  listConfirmationAssertions(approvalId: ApprovalId): Promise<ListConfirmationAssertionsResponse>;
+}
+
+/**
+ * Everything the `approve` service can ask of the signer: the view of one approval and the
+ * submission of one assertion, each with the token from the confirmation link. Its secret
+ * reaches no other route.
+ */
+export interface ConfirmClient {
+  getConfirmation(approvalId: ApprovalId, token: string): Promise<ConfirmationView>;
+  submitConfirmation(
+    approvalId: ApprovalId,
+    token: string,
+    response: AssertionResponse,
+  ): Promise<SubmitConfirmationResponse>;
 }
 
 type Route = (typeof signerRoutes)[keyof typeof signerRoutes];
 
-export function createSignerClient(options: SignerClientOptions): SignerClient {
+type CallInput = {
+  params?: Record<string, string>;
+  query?: Record<string, string>;
+  body?: unknown;
+  headers?: Record<string, string>;
+};
+
+/** One signed request to the signer, answered with a schema-checked body or a SignerError. */
+function createCaller(options: SignerClientOptions) {
   const doFetch = options.fetch ?? globalThis.fetch;
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const baseUrl = options.baseUrl.replace(/\/+$/, "");
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  async function call<S extends z.ZodType>(
+  return async function call<S extends z.ZodType>(
     route: Route,
     schema: S,
-    input: { params?: Record<string, string>; query?: Record<string, string>; body?: unknown },
+    input: CallInput,
   ): Promise<z.infer<S>> {
     let path: string = route.path;
     for (const [name, value] of Object.entries(input.params ?? {})) {
@@ -110,6 +149,7 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
     const response = await doFetch(`${baseUrl}${pathWithQuery}`, {
       method: route.method,
       headers: {
+        ...input.headers,
         "content-type": "application/json",
         [TIMESTAMP_HEADER]: String(timestamp),
         [SIGNATURE_HEADER]: signRequest(options.secret, {
@@ -134,8 +174,11 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
       throw new SignerError("internal", `signer answered HTTP ${response.status}`, response.status);
     }
     return schema.parse(payload);
-  }
+  };
+}
 
+export function createSignerClient(options: SignerClientOptions): SignerClient {
+  const call = createCaller(options);
   const workspace = (workspaceId: WorkspaceId) => ({ params: { workspaceId } });
 
   return {
@@ -190,5 +233,33 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
       }),
     getApproval: (approvalId: ApprovalId) =>
       call(signerRoutes.getApproval, ApprovalState, { params: { approvalId } }),
+
+    openConfirmation: (approvalId: ApprovalId, request: OpenConfirmationRequest) =>
+      call(signerRoutes.openConfirmation, OpenConfirmationResponse, {
+        params: { approvalId },
+        body: request,
+      }),
+    listConfirmationAssertions: (approvalId: ApprovalId) =>
+      call(signerRoutes.listConfirmationAssertions, ListConfirmationAssertionsResponse, {
+        params: { approvalId },
+      }),
+  };
+}
+
+export function createConfirmClient(options: SignerClientOptions): ConfirmClient {
+  const call = createCaller(options);
+  const confirm = (approvalId: ApprovalId, token: string) => ({
+    params: { approvalId },
+    headers: { [CONFIRM_TOKEN_HEADER]: token },
+  });
+
+  return {
+    getConfirmation: (approvalId: ApprovalId, token: string) =>
+      call(signerRoutes.getConfirmation, ConfirmationView, confirm(approvalId, token)),
+    submitConfirmation: (approvalId: ApprovalId, token: string, response: AssertionResponse) =>
+      call(signerRoutes.submitConfirmation, SubmitConfirmationResponse, {
+        ...confirm(approvalId, token),
+        body: { response },
+      }),
   };
 }

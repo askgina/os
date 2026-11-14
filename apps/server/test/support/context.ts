@@ -35,6 +35,8 @@ import type { LogFields, Logger } from "../../src/log.ts";
 
 /** Where the test browser pretends to be. Passkeys are bound to its host. */
 export const TEST_ORIGIN = "http://localhost:55710";
+/** Where the signer's confirmation page would be: another port on the same host. */
+export const TEST_APPROVAL_ORIGIN = "http://localhost:55711";
 export const TEST_CHAIN_ID = "eip155:31337";
 export const TEST_RPC_URL = process.env.TEST_RPC_URL ?? "http://127.0.0.1:55545";
 
@@ -162,6 +164,16 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
     vault: createTestVault(),
     relyingParty: { id: config.relyingParty.id, origins: config.relyingParty.origins },
     requestSecret: config.signerSecret,
+    confirmSecret: randomBytes(32),
+    approvalOrigin: TEST_APPROVAL_ORIGIN,
+    returnOrigin: TEST_ORIGIN,
+    // The signer reads the control plane's chains file and keeps only these fields.
+    chains: config.chains.map(({ chainId, name, nativeSymbol }) => ({
+      chainId,
+      name,
+      nativeSymbol,
+    })),
+    assets: [],
     tokenKey: randomBytes(32),
     maxIntentTtlSeconds: 86_400,
     maxAdminTtlSeconds: 86_400,

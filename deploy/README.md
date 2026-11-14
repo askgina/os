@@ -12,6 +12,14 @@ For a public host name with HTTPS, set `OS_HOSTNAME` and `PUBLIC_HOST` in `.env`
 `docker compose -f compose.yaml -f compose.tls.yaml up -d --build`. Ports 80 and 443 must be
 reachable so Caddy can obtain certificates. Changing the host name later invalidates every passkey.
 
+Every layout also names the origin of the signer's confirmation page, `APPROVE_ORIGIN`, where
+people will approve with their passkeys (`specs/trusted-display.md`). It is a host under
+`OS_HOSTNAME`, for example `https://approve.os.example.com` with its own DNS record, or another
+port on `OS_HOSTNAME`, for example `https://os.example.com:8443`. Machine names under `*.ts.net`
+have no subdomains, so they use a port. It must not be `PUBLIC_ORIGIN`. Without the TLS overlay
+it defaults to `http://localhost:8081`, which fits only `OS_HOSTNAME=localhost`; the TLS
+overlay requires it. The signer refuses to start when it is not under `OS_HOSTNAME`.
+
 If something else already terminates HTTPS in front of this machine (Tailscale Serve, a tunnel,
 a load balancer), keep the plain `compose.yaml` and tell the stack the address people will use.
 For `https://box.example.ts.net:8444` forwarded to port 18080 on this machine, `.env` is:
@@ -20,6 +28,7 @@ For `https://box.example.ts.net:8444` forwarded to port 18080 on this machine, `
     OS_HOSTNAME=box.example.ts.net
     PUBLIC_HOST=box.example.ts.net:8444
     HTTP_PORT=18080
+    APPROVE_ORIGIN=https://box.example.ts.net:8445
 
 The proxy must pass the `Host` header through unchanged. With Tailscale:
 `tailscale serve --bg --https=8444 http://127.0.0.1:18080`.
@@ -54,7 +63,7 @@ The proxy must pass the `Host` header through unchanged. With Tailscale:
 | `postgres-data`  | The database.                                                                                 | postgres |
 | `signer-data`    | The wallet vault and the signer's SQLite (used approvals, policies, audit, restore fence).    | signer   |
 | `server-secrets` | `keyring.json` (key-encryption keys), `signer-request-secret`, a copy of `postgres-password`. | server   |
-| `signer-secrets` | `signer-request-secret`, `token-key`, `vault-passphrase`.                                     | signer   |
+| `signer-secrets` | `signer-request-secret`, `confirm-request-secret`, `token-key`, `vault-passphrase`.           | signer   |
 | `db-secrets`     | `postgres-password`.                                                                          | postgres |
 
 ## Backups and restoring

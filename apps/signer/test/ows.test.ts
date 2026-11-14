@@ -23,6 +23,8 @@ import {
   authorize,
   basePolicy,
   Clock,
+  CONFIRMATION_SETTINGS,
+  confirmationEnvironment,
   ETH,
   header,
   intentFor,
@@ -64,6 +66,7 @@ describe("the real OWS vault, across a restart of the signer process", () => {
     passphrase: join(dir, "passphrase"),
   };
   const secret = randomBytes(32);
+  const confirmSecret = randomBytes(32);
   const tokenKey = randomBytes(32);
   let child: ChildProcess | undefined;
 
@@ -89,6 +92,8 @@ describe("the real OWS vault, across a restart of the signer process", () => {
       vault: new OwsVault({ vaultPath: join(dataDir, "vault"), passphraseFile: files.passphrase }),
       relyingParty: RP,
       requestSecret: secret,
+      confirmSecret,
+      ...CONFIRMATION_SETTINGS,
       tokenKey,
       maxIntentTtlSeconds: 3600,
       maxAdminTtlSeconds: 86_400,
@@ -209,6 +214,7 @@ describe("the real OWS vault, across a restart of the signer process", () => {
         SIGNER_VAULT_PASSPHRASE_FILE: files.passphrase,
         WEBAUTHN_RP_ID: RP.id,
         WEBAUTHN_ORIGINS: RP.origins.join(","),
+        ...confirmationEnvironment(dir, confirmSecret),
       },
       stdio: ["ignore", "pipe", "inherit"],
     });

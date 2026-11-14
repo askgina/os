@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  CONFIRM_TOKEN_HEADER,
+  createConfirmClient,
   createSignerClient,
   MAX_CLOCK_SKEW_SECONDS,
   SIGNATURE_HEADER,
@@ -10,7 +12,7 @@ import {
   TIMESTAMP_HEADER,
   verifyRequestSignature,
 } from "../src/signer/index.ts";
-import { APPROVAL, approveIntent, sweep, sweepWallet, T0, WALLET, WS } from "./fixtures.ts";
+import { APPROVAL, approveIntent, intent, sweep, sweepWallet, T0, WALLET, WS } from "./fixtures.ts";
 
 const SECRET = new Uint8Array(32).fill(7);
 const encode = (text: string) => new TextEncoder().encode(text);
@@ -97,11 +99,11 @@ function client(respond: Parameters<typeof fakeFetch>[0]) {
   };
 }
 
-function verifyRecorded(call: Recorded): boolean {
+function verifyRecorded(call: Recorded, secret: Uint8Array = SECRET): boolean {
   const url = new URL(call.url);
   const headers = new Headers(call.init.headers);
   const body = call.init.body;
-  return verifyRequestSignature(SECRET, {
+  return verifyRequestSignature(secret, {
     method: call.init.method ?? "GET",
     pathWithQuery: `${url.pathname}${url.search}`,
     timestamp: Number(headers.get(TIMESTAMP_HEADER)),
@@ -138,7 +140,7 @@ describe("signer client", () => {
     await signer.listDecisions(WS);
     expect(calls[0]?.url).toBe(`http://signer:8787/v1/workspaces/${WS}/decisions?after=5&limit=10`);
     expect(calls[1]?.url).toBe(`http://signer:8787/v1/workspaces/${WS}/decisions`);
-    expect(calls.every(verifyRecorded)).toBe(true);
+    expect(calls.every((call) => verifyRecorded(call))).toBe(true);
   });
 
   it("a signature over one request does not verify for another", async () => {
@@ -250,6 +252,96 @@ describe("signer client", () => {
       code: "internal",
       status: 403,
     });
+  });
+
+  it("sends confirmation calls to their routes, the token only in its header, each signed with its own secret", async () => {
+    const CONFIRM_SECRET = new Uint8Array(32).fill(9);
+    const TOKEN = "AAAAAAAAAAAAAAAAAAAAAA";
+    const view = `/v1/confirm/${APPROVAL}`;
+    const fake = fakeFetch((url) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/confirmation"))
+        return { status: 200, body: { path: `/a/${APPROVAL}#${TOKEN}` } };
+      if (path.endsWith("/assertions") && !path.startsWith("/v1/confirm/")) {
+        return { status: 200, body: { assertions: [] } };
+      }
+      if (path === view) {
+        return { status: 409, body: { error: { code: "confirmation_closed", message: "closed" } } };
+      }
+      return {
+        status: 200,
+        body: {
+          collected: 1,
+          required: 2,
+          returnUrl: `https://os.example/w/${WS}/approvals/${APPROVAL}`,
+        },
+      };
+    });
+    const control = createSignerClient({
+      baseUrl: "http://signer:8787",
+      secret: SECRET,
+      fetch: fake.fetch,
+      now: () => T0,
+    });
+    const confirm = createConfirmClient({
+      baseUrl: "http://signer:8787",
+      secret: CONFIRM_SECRET,
+      fetch: fake.fetch,
+      now: () => T0,
+    });
+    const request = {
+      envelope: approveIntent(),
+      subject: { kind: "approve-intent" as const, intent: intent() },
+    };
+    const response = {
+      id: "Y3JlZC1h",
+      rawId: "Y3JlZC1h",
+      type: "public-key" as const,
+      response: { clientDataJSON: "e30", authenticatorData: "AA", signature: "AA" },
+      clientExtensionResults: {},
+    };
+
+    expect(await control.openConfirmation(APPROVAL, request)).toEqual({
+      path: `/a/${APPROVAL}#${TOKEN}`,
+    });
+    expect(await control.listConfirmationAssertions(APPROVAL)).toEqual({ assertions: [] });
+    await expect(confirm.getConfirmation(APPROVAL, TOKEN)).rejects.toMatchObject({
+      code: "confirmation_closed",
+      status: 409,
+    });
+    expect(await confirm.submitConfirmation(APPROVAL, TOKEN, response)).toMatchObject({
+      collected: 1,
+      required: 2,
+    });
+
+    const [opened, listed, viewed, submitted] = fake.calls as [
+      Recorded,
+      Recorded,
+      Recorded,
+      Recorded,
+    ];
+    expect(fake.calls.map((call) => `${call.init.method} ${new URL(call.url).pathname}`)).toEqual([
+      `POST /v1/approvals/${APPROVAL}/confirmation`,
+      `GET /v1/approvals/${APPROVAL}/assertions`,
+      `GET ${view}`,
+      `POST ${view}/assertions`,
+    ]);
+    for (const call of [opened, listed]) {
+      expect(verifyRecorded(call, SECRET)).toBe(true);
+      expect(verifyRecorded(call, CONFIRM_SECRET)).toBe(false);
+      expect(new Headers(call.init.headers).has(CONFIRM_TOKEN_HEADER)).toBe(false);
+    }
+    for (const call of [viewed, submitted]) {
+      expect(verifyRecorded(call, CONFIRM_SECRET)).toBe(true);
+      expect(verifyRecorded(call, SECRET)).toBe(false);
+      expect(new Headers(call.init.headers).get(CONFIRM_TOKEN_HEADER)).toBe(TOKEN);
+      // The token never travels in the URL, where a proxy's access log would keep it.
+      expect(call.url).not.toContain(TOKEN);
+    }
+    const body = (call: Recorded) =>
+      JSON.parse(new TextDecoder().decode(call.init.body as Uint8Array));
+    expect(body(opened)).toEqual(request);
+    expect(body(submitted)).toEqual({ response });
   });
 
   it("rejects a malformed success body instead of returning it", async () => {

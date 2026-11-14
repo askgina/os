@@ -1,7 +1,7 @@
 # Approve on a page the control plane cannot change: a trusted display for passkey approvals
 
-- Branch: none yet
-- Status: Draft
+- Branch: main
+- Status: In Progress
 - Owner(s): Eric Juta
 - Created: 2026-11-14
 - Last Updated: 2026-11-14
@@ -63,8 +63,20 @@ Success means:
 - [x] (2026-11-14 21:40Z) Research current behavior and relevant code paths
       (`specs/research/trusted-display.md`).
 - [x] (2026-11-14 21:40Z) Define the implementation approach and validation plan (this file).
-- [ ] Owner decisions D1 to D7 in the Decision Log.
-- [ ] Milestone 1: signer confirmation records and views.
+- [x] (2026-11-14) Owner decisions D1 to D7 in the Decision Log: the recommended option of each.
+- [x] (2026-11-14 22:45Z) Milestone 1: signer confirmation records and views. Built: the pure
+      view module (`packages/protocol/src/confirmation.ts`), the four routes and their schemas,
+      `createConfirmClient`, the signer's tables (schema version 3), `apps/signer/src/confirmations.ts`,
+      route scoping by secret, the five settings, `deploy/assets.json`, the signer's Compose
+      environment and the confirm secret in `init`. Proven locally, one file at a time:
+      `apps/signer/test/confirmations.test.ts` (13), `apps/signer/test/config.test.ts` (5),
+      `packages/protocol/test/confirmation.test.ts` (38), `signer-client.test.ts` (18),
+      `schemas.test.ts` (46), and the existing signer files `signing`, `governance`, `hardening`,
+      `fence`, `sweep`, `admin`, `ows`; `tsc --noEmit` in `packages/protocol`, `apps/signer`,
+      `apps/server`. Still to prove in CI: the whole `test` job, and the `stack` jobs, where the
+      signer now starts only with the new settings and files (`compose.yaml`,
+      `compose.tls.yaml` with `APPROVE_ORIGIN` from `e2e/run.sh`, `init` creating
+      `confirm-request-secret`). No image was built locally.
 - [ ] Milestone 2: the `approve` service, its page, Compose and Caddy wiring, collection in the
       control plane.
 - [ ] Milestone 3: cutover; the signer accepts approvals only from the confirmation origin;
@@ -89,20 +101,45 @@ Success means:
   machine names have no subdomains. Development and Tailscale hosts use another port.
   Evidence: report findings F5.4 and F5.5 (both inferences, proven or disproven by milestone 2's
   gates).
+- Observation: the check that refuses `crossOrigin: true` is what stops a framed assertion; the
+  library alone accepts it.
+  Evidence: with the check in `submitConfirmation` disabled, the test "an assertion made at
+  another origin is refused with assertion_invalid" fails on its cross-origin case
+  (2026-11-14, local run).
+- Observation: an open confirmation can become one the signer will never act on. The restore
+  fence (landed after this plan was drafted) refuses envelopes issued before it, and a payment
+  or policy change names the policy it was proposed under. Neither fits the five states the
+  plan listed.
+  Evidence: `apps/signer/src/fence.ts`, `apps/signer/src/signer.ts` (`sign`, `setPolicy`).
+- Observation: `deploy/chains.json` is the control plane's file and carries `rpcUrl`,
+  `explorerUrl` and `confirmations` next to the labels, so the strict `ChainLabels` schema
+  cannot read it as it is. Its RPC URL may hold an API key and is now also readable by the
+  signer.
+  Evidence: `apps/server/src/config.ts` (`ChainConfig`), `deploy/chains.json`.
+- Observation: the signer migrates by `PRAGMA user_version` since the restore fence landed. An
+  older signer refuses a database at a newer version (`schema_too_new`) instead of ignoring new
+  tables, as this plan's "Idempotence and Recovery" assumed.
+  Evidence: `apps/signer/src/db.ts` (`migrate`, `SchemaTooNewError`).
+- Observation: the new signer settings are required, so the signer in Compose would not start
+  without them before milestone 2. Its environment, the two mounted files and the confirm
+  secret had to land with milestone 1.
+  Evidence: `apps/signer/src/config.ts` (`loadConfig`), `compose.yaml`.
 
 ## Decision Log
 
-Decisions the owner must take are marked "Pending owner decision". The plan is written for the
-recommended option of each.
+The owner took the recommended option of D1 to D7 on 2026-11-14. Each entry keeps the options
+and the research agent's rationale.
 
-- Decision D1 (pending owner decision): which mechanism closes the gap.
+- Decision D1 (owner, 2026-11-14: A, a confirmation page on its own origin): which mechanism
+  closes the gap.
   Options: A, a confirmation page on its own origin (recommended); B, Secure Payment
   Confirmation; D, hardware approvers over EIP-712; F, keep v0.1 and document.
   Rationale: A works in every browser with WebAuthn, covers all six envelope kinds and needs no
   re-enrollment. B is Chromium-only and covers only transfers with a 3-letter ticker. D needs a
   protocol change and hardware. Report, "Options compared".
   Date/Author: 2026-11-14 / research agent.
-- Decision D2 (pending owner decision): where the confirmation page lives.
+- Decision D2 (owner, 2026-11-14: `approve.<host>`, or a port on the same host where no
+  subdomain is possible): where the confirmation page lives.
   Options: a subdomain `approve.<host>` with a port on the same host where no subdomain is
   possible (recommended); a port on the same host only; another domain with Related Origin
   Requests; a separate RP ID with a second passkey per approver.
@@ -111,20 +148,23 @@ recommended option of each.
   iOS 18, Firefox 152 and a list served by the control plane. A separate RP ID doubles
   enrollment. The plan reads one setting, `APPROVE_ORIGIN`, so both recommended layouts work.
   Date/Author: 2026-11-14 / research agent.
-- Decision D3 (pending owner decision): what serves the page.
+- Decision D3 (owner, 2026-11-14: a keyless `approve` service in the signer's trust domain):
+  what serves the page.
   Options: a keyless `approve` service in the signer's trust domain (recommended); the signer
   process on a second listener; static files in Caddy with the signer's API exposed through
   Caddy.
   Rationale: the signer stays unreachable from browsers. A compromise of the public-facing
   service brings back the display gap but cannot sign or read keys.
   Date/Author: 2026-11-14 / research agent.
-- Decision D4 (pending owner decision): cutover.
+- Decision D4 (owner, 2026-11-14: refuse control-plane-origin approvals outright at milestone
+  3): cutover.
   Options: refuse approvals made on the control-plane origin outright from milestone 3
   (recommended); keep an operator flag that still accepts them.
   Rationale: a flag would keep the gap open for anyone who sets it, and v0.1 has no installed
   base to migrate.
   Date/Author: 2026-11-14 / research agent.
-- Decision D5 (pending owner decision): binding a new approver's key to the person.
+- Decision D5 (owner, 2026-11-14: proof of possession plus a fingerprint the people compare):
+  binding a new approver's key to the person.
   Options: proof of possession on the confirmation page plus a fingerprint the people compare
   (recommended, milestone 4); a fingerprint only; confirmation by the operator on the signer
   host.
@@ -132,14 +172,16 @@ recommended option of each.
   comparison catches a swap routed to another request; the operator CLI does not scale to
   everyday invites.
   Date/Author: 2026-11-14 / research agent.
-- Decision D6 (pending owner decision): where token names and decimals come from on the page.
+- Decision D6 (owner, 2026-11-14: the operator file `deploy/assets.json` mounted into the
+  signer): where token names and decimals come from on the page.
   Options: an operator file `deploy/assets.json` mounted into the signer (recommended); add
   `symbol` and `decimals` to the policy's asset limits (a protocol v2 change); show base units
   and the contract address only.
   Rationale: the signer has no chain access, and a name the control plane supplies would be
   untrusted. The file is in the operator's trust domain and changes no hash.
   Date/Author: 2026-11-14 / research agent.
-- Decision D7 (pending owner decision): correcting v0.1 documents before this plan lands.
+- Decision D7 (owner, 2026-11-14: correct the statements now and recommend an admin threshold
+  of 2; done): correcting v0.1 documents before this plan lands.
   Options: correct the "caps bound the loss" statements now and recommend an admin threshold of
   2 where two approvers exist (recommended); correct the statements only; wait for milestone 3.
   Rationale: the statements are wrong today (report, "Stale or wrong statements").
@@ -153,12 +195,61 @@ recommended option of each.
   Rationale: all decisions about what to show live where the authoritative data is, in one pure
   function that unit tests can cover. The page uses `textContent` and no framework.
   Date/Author: 2026-11-14 / research agent.
+- Decision: a sixth view state, `superseded`, for an approval the signer would refuse whatever
+  approvals it gets: issued before the restore fence, or a payment or policy change whose
+  wallet policy changed since. `openConfirmation` refuses such an envelope with the signer's own
+  code (`envelope_fenced`, `policy_missing`, `policy_changed`); `submitConfirmation` refuses it
+  with `confirmation_closed`, like every state other than `open`.
+  Rationale: the page must not invite an approval that can never be used, and its state must
+  say why it is closed.
+  Date/Author: 2026-11-14 / milestone 1.
+- Decision: the approvals required are what the signer checks when it acts: a payment's policy
+  threshold (the policy its envelope names), the admin threshold for every other kind. Only
+  assertions whose passkey is still an approver of the workspace with the same person are
+  counted, listed or kept from a new one; a stale assertion by a person is replaced by their
+  new one.
+  Rationale: one assertion from a removed passkey fails the whole authorization at signing.
+  Date/Author: 2026-11-14 / milestone 1.
+- Decision: the 64-submission limit counts every submission with a valid token, whatever its
+  outcome, and is not reset when the control plane reopens the confirmation.
+  Rationale: the control plane is not trusted to reset a limit that protects the signer.
+  Date/Author: 2026-11-14 / milestone 1.
+- Decision: `signerRoutes` carries `scope: "control" | "confirm" | "unsigned"`; the health check
+  is `unsigned`. Each request verifies only under its route's scope secret.
+  Rationale: one table names each route's method, path and secret, so no route can be missed.
+  Date/Author: 2026-11-14 / milestone 1.
+- Decision: confirmation routes are logged to stdout (`confirmation.opened`,
+  `confirmation.assertion`, `confirmation.rate_limited`), not to the decision log.
+  Rationale: they add no authority; the decision log records what the signer allowed and
+  refused, and an assertion is verified again when the signer acts.
+  Date/Author: 2026-11-14 / milestone 1.
+- Decision: the signer reads `SIGNER_CHAINS_FILE` from the control plane's `deploy/chains.json`
+  and keeps only `chainId`, `name` and `nativeSymbol` of each entry, then checks them as labels.
+  It also refuses to start when `SIGNER_APPROVAL_ORIGIN` is one of `WEBAUTHN_ORIGINS`.
+  Rationale: one chains file for the operator; an approval page on the control plane's own
+  origin would protect nothing.
+  Date/Author: 2026-11-14 / milestone 1.
+- Decision: the signer's part of milestone 2's Compose wiring lands with milestone 1: its five
+  settings in `compose.yaml` (`SIGNER_APPROVAL_ORIGIN: ${APPROVE_ORIGIN:-http://localhost:8081}`),
+  the two label files mounted read-only, `SIGNER_APPROVAL_ORIGIN` and `SIGNER_RETURN_ORIGIN` in
+  `compose.tls.yaml` (`APPROVE_ORIGIN` required there), `APPROVE_ORIGIN` in `.env.example` and
+  `deploy/README.md`, `init` creating `confirm-request-secret` in the signer's volume, and
+  `e2e/run.sh` exporting `APPROVE_ORIGIN=https://localhost:8443` with `E2E_TLS=1`.
+  Rationale: the settings are required, so the stack would not start without them.
+  Date/Author: 2026-11-14 / milestone 1.
 
 ## Outcomes & Retrospective
 
 - Outcome: research done, plan drafted; nothing built.
   Evidence: `specs/research/trusted-display.md`.
   Remaining: owner decisions D1 to D7, then milestones 1 to 4.
+- Outcome (milestone 1): the signer opens a confirmation for every envelope kind, serves its
+  view from its own records, accepts an assertion only from `SIGNER_APPROVAL_ORIGIN` outside a
+  cross-origin frame, and lists collected assertions to the control plane, which can sign with
+  them. The two request secrets are scoped. Signing is unchanged except that assertions from
+  the approval origin are accepted too until milestone 3.
+  Evidence: the single-file runs listed under Progress (2026-11-14 22:45Z).
+  Remaining: CI (`test`, all `stack` jobs); milestones 2 to 4.
 
 ## Context and Orientation
 
@@ -446,6 +537,12 @@ Files and interfaces:
   `e2e/test/browser.spec.ts`.
 - Tests: `apps/approve/test/app.test.ts`, `apps/server/test/execution/confirmation.test.ts`.
 
+Already done in milestone 1 (see the Decision Log): the signer's five settings and both label
+files in `compose.yaml`, the signer's `SIGNER_APPROVAL_ORIGIN` and `SIGNER_RETURN_ORIGIN` in
+`compose.tls.yaml`, `init` creating `confirm-request-secret` in the signer's volume,
+`APPROVE_ORIGIN` in `.env.example` and `deploy/README.md`, and `APPROVE_ORIGIN` in `e2e/run.sh`
+for `E2E_TLS=1`. Steps 5, 7, 8 and 11 below add only the rest.
+
 Work:
 
 1. `apps/approve/src/app.ts` builds a Hono app with exactly these routes:
@@ -673,7 +770,7 @@ Local interfaces:
 - `ChainLabel = { chainId: ChainId; name: string; nativeSymbol: string }`;
   `AssetLabel = { chainId: ChainId; asset: Address; symbol: string; decimals: number }`.
 - `ConfirmationView` (strict): `{ v: 1, approvalId, workspaceId, kind: Envelope["type"],
-  state: "open" | "complete" | "expired" | "revoked" | "used", expiresAt, title, lines,
+  state: "open" | "complete" | "expired" | "revoked" | "used" | "superseded", expiresAt, title, lines,
   warnings, approvals: { collected, required }, envelope, subject, webauthn: { rpId,
   challenge, allowCredentials: Base64Url[], userVerification: "required", timeoutMs },
   returnUrl }`.
@@ -691,6 +788,21 @@ Local interfaces:
   Failures: the existing codes plus `confirmation_closed` (409), `rate_limited` (429),
   `possession_unproven` (409); a wrong token is `not_found` (404); a request signed with the
   other scope's secret is `unauthenticated` (401).
+  Built in milestone 1, in `packages/protocol/src/signer/api.ts`: `SignerRouteScope`, a `scope`
+  on every entry of `signerRoutes`, `CONFIRM_TOKEN_HEADER = "x-confirm-token"`, `ConfirmToken`,
+  `OpenConfirmationRequest`, `OpenConfirmationResponse` (exactly `/a/<approvalId>#<token>`),
+  `ListConfirmationAssertionsResponse`, `SubmitConfirmationRequest`,
+  `SubmitConfirmationResponse` (`returnUrl` http or https only).
+- `packages/protocol/src/signer/client.ts`: `SignerClient.openConfirmation(approvalId, { envelope,
+  subject })`, `SignerClient.listConfirmationAssertions(approvalId)`;
+  `createConfirmClient(options: SignerClientOptions): ConfirmClient` with
+  `getConfirmation(approvalId, token): Promise<ConfirmationView>` and
+  `submitConfirmation(approvalId, token, response): Promise<SubmitConfirmationResponse>`. The
+  token travels only in its header.
+- `apps/signer/src/confirmations.ts`: `createConfirmations(options: ConfirmationOptions):
+  Confirmations`, reading the signer's records through `SignerRecords`
+  (`apps/signer/src/signer.ts`). `createSigner` takes `confirmSecret`, `approvalOrigin`,
+  `returnOrigin`, `chains` and `assets`.
 - `ApprovalKindHandler.confirmationSubject(ctx, approval, detail): Promise<ConfirmationSubject>`
   in `apps/server/src/approvals/kinds.ts`.
 - `Engine.collect(row: ApprovalRow): Promise<void>` in `apps/server/src/execution/approvals.ts`;
@@ -782,8 +894,9 @@ Regression checks:
 - `collect` is safe to repeat: assertions are unique per approval and person, and the
   approve-and-wake transaction runs once (the same lock as today's `approve`).
 - `submitConfirmation` is safe to repeat; a second assertion by the same person is `conflict`.
-- New signer tables are created with `CREATE TABLE IF NOT EXISTS`; starting an older signer on
-  the new database ignores them.
+- New signer tables arrive as schema version 3, created with `CREATE TABLE IF NOT EXISTS`. A
+  signer image from before milestone 1 refuses a version 3 database (`schema_too_new`), so
+  milestone 1 is backed out by fixing forward, not by starting an older image.
 - Upgrade across milestone 3: approvals that were approved on the control-plane page but not yet
   executed fail at the signer with `assertion_invalid` and end `failed`. The agent proposes
   again, or an owner reopens the policy change. Pending approvals without assertions just gain a
@@ -839,7 +952,7 @@ Regression checks:
 - Open question: whether mandates (askgina/os#19) render their grants on this page.
   Owner/next step: the mandates plan; this plan's `renderConfirmation` takes a new subject kind.
 - Open question: decisions D1 to D7.
-  Owner/next step: the owner, before milestone 1.
+  Owner/next step: answered by the owner on 2026-11-14 (recommended options).
 
 ## Artifacts and Notes
 
@@ -858,3 +971,9 @@ Regression checks:
 ## Revision Notes
 
 - 2026-11-14: Draft created from the research report for askgina/os#20. Nothing built.
+- 2026-11-14: Owner decisions recorded (recommended options of D1 to D7). Milestone 1 built:
+  signer routes, tables, views and secret scoping, plus the signer's Compose settings brought
+  forward from milestone 2. Added the `superseded` state, the chains-file field selection and
+  the schema-version note in "Idempotence and Recovery", each for a reason in "Surprises &
+  Discoveries". `apps/signer/test/config.test.ts`, named in milestone 3, now exists already,
+  because the checks it covers landed here.

@@ -6,6 +6,8 @@ const MESSAGES: Record<SignerErrorCode, string> = {
   unauthenticated: "the request signature is missing, invalid or stale",
   not_found: "not found",
   conflict: "the request conflicts with what the signer already holds",
+  confirmation_closed: "the request can no longer be approved",
+  rate_limited: "too many attempts for this request",
   workspace_paused: "the workspace is paused",
   approval_revoked: "the approval was revoked",
   envelope_mismatch: "the envelope does not match the request",

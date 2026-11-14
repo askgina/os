@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { ApproverCredential, Authorization } from "../envelopes.ts";
+import { ConfirmationSubject } from "../confirmation.ts";
+import {
+  ApproverCredential,
+  Assertion,
+  AssertionResponse,
+  Authorization,
+  Envelope,
+} from "../envelopes.ts";
 import { Intent } from "../intent.ts";
 import { WalletPolicy } from "../policy.ts";
 import {
@@ -21,29 +28,70 @@ import {
 import { Sweep } from "../sweep.ts";
 
 /**
- * The signer's HTTP API. Only the control plane can reach it, and every request except the
- * health check carries a request signature (see `request-signature.ts`). That signature only
- * says "this came from the control plane". Whatever adds authority (signing, a new policy, a new
- * approver, resuming) also needs passkey assertions that the signer verifies itself.
+ * Which secret signs a route's requests (see `request-signature.ts`).
+ * - `control`: the control plane's secret. Everything except the two confirm routes.
+ * - `confirm`: the `approve` service's secret. Only the routes the confirmation page needs.
+ * - `unsigned`: the health check.
+ * A request signed with the other scope's secret is `unauthenticated`.
+ */
+export type SignerRouteScope = "control" | "confirm" | "unsigned";
+
+/**
+ * The signer's HTTP API. Only the control plane and the `approve` service can reach it, and every
+ * request except the health check carries a request signature made with the secret of its
+ * route's scope. That signature only says which of the two sent it. Whatever adds authority
+ * (signing, a new policy, a new approver, resuming) also needs passkey assertions that the
+ * signer verifies itself.
  */
 export const signerRoutes = {
-  health: { method: "GET", path: "/healthz" },
-  createWorkspace: { method: "POST", path: "/v1/workspaces" },
-  getWorkspace: { method: "GET", path: "/v1/workspaces/:workspaceId" },
-  pauseWorkspace: { method: "POST", path: "/v1/workspaces/:workspaceId/pause" },
-  resumeWorkspace: { method: "POST", path: "/v1/workspaces/:workspaceId/resume" },
-  addApprover: { method: "POST", path: "/v1/workspaces/:workspaceId/approvers" },
-  removeApprover: { method: "POST", path: "/v1/workspaces/:workspaceId/approvers/remove" },
-  setAdminThreshold: { method: "POST", path: "/v1/workspaces/:workspaceId/admin-threshold" },
-  listDecisions: { method: "GET", path: "/v1/workspaces/:workspaceId/decisions" },
-  createWallet: { method: "POST", path: "/v1/wallets" },
-  getWallet: { method: "GET", path: "/v1/wallets/:walletId" },
-  setPolicy: { method: "PUT", path: "/v1/wallets/:walletId/policy" },
-  sign: { method: "POST", path: "/v1/sign" },
-  sweep: { method: "POST", path: "/v1/wallets/:walletId/sweep" },
-  revokeApproval: { method: "POST", path: "/v1/approvals/:approvalId/revoke" },
-  getApproval: { method: "GET", path: "/v1/approvals/:approvalId" },
-} as const;
+  health: { method: "GET", path: "/healthz", scope: "unsigned" },
+  createWorkspace: { method: "POST", path: "/v1/workspaces", scope: "control" },
+  getWorkspace: { method: "GET", path: "/v1/workspaces/:workspaceId", scope: "control" },
+  pauseWorkspace: { method: "POST", path: "/v1/workspaces/:workspaceId/pause", scope: "control" },
+  resumeWorkspace: {
+    method: "POST",
+    path: "/v1/workspaces/:workspaceId/resume",
+    scope: "control",
+  },
+  addApprover: { method: "POST", path: "/v1/workspaces/:workspaceId/approvers", scope: "control" },
+  removeApprover: {
+    method: "POST",
+    path: "/v1/workspaces/:workspaceId/approvers/remove",
+    scope: "control",
+  },
+  setAdminThreshold: {
+    method: "POST",
+    path: "/v1/workspaces/:workspaceId/admin-threshold",
+    scope: "control",
+  },
+  listDecisions: { method: "GET", path: "/v1/workspaces/:workspaceId/decisions", scope: "control" },
+  createWallet: { method: "POST", path: "/v1/wallets", scope: "control" },
+  getWallet: { method: "GET", path: "/v1/wallets/:walletId", scope: "control" },
+  setPolicy: { method: "PUT", path: "/v1/wallets/:walletId/policy", scope: "control" },
+  sign: { method: "POST", path: "/v1/sign", scope: "control" },
+  sweep: { method: "POST", path: "/v1/wallets/:walletId/sweep", scope: "control" },
+  revokeApproval: { method: "POST", path: "/v1/approvals/:approvalId/revoke", scope: "control" },
+  getApproval: { method: "GET", path: "/v1/approvals/:approvalId", scope: "control" },
+  openConfirmation: {
+    method: "POST",
+    path: "/v1/approvals/:approvalId/confirmation",
+    scope: "control",
+  },
+  listConfirmationAssertions: {
+    method: "GET",
+    path: "/v1/approvals/:approvalId/assertions",
+    scope: "control",
+  },
+  getConfirmation: { method: "GET", path: "/v1/confirm/:approvalId", scope: "confirm" },
+  submitConfirmation: {
+    method: "POST",
+    path: "/v1/confirm/:approvalId/assertions",
+    scope: "confirm",
+  },
+} as const satisfies Record<
+  string,
+  { method: "GET" | "POST" | "PUT"; path: string; scope: SignerRouteScope }
+>;
 
 export const HealthResponse = z.strictObject({ ok: z.literal(true), version: z.string() });
 export type HealthResponse = z.infer<typeof HealthResponse>;
@@ -206,6 +254,67 @@ export const ApprovalState = z.strictObject({
 });
 export type ApprovalState = z.infer<typeof ApprovalState>;
 
+// --- confirmations ----------------------------------------------------------------------------
+
+/**
+ * The header that carries a confirmation token on the two confirm routes. The token is the
+ * secret part of a confirmation link: 16 random bytes, base64url. The signer keeps only its
+ * SHA-256, and a wrong token is `not_found`.
+ */
+export const CONFIRM_TOKEN_HEADER = "x-confirm-token";
+export const ConfirmToken = z.string().regex(/^[A-Za-z0-9_-]{22}$/, "expected 16 bytes, base64url");
+
+/**
+ * Open the confirmation page for a pending approval (control scope). The signer checks that the
+ * subject is exactly what the envelope names and stores both; the page is then built from them
+ * and the signer's own records. Opening again with the same envelope issues a new token and the
+ * old link stops working; another envelope for the same approval is a `conflict`.
+ */
+export const OpenConfirmationRequest = z.strictObject({
+  envelope: Envelope,
+  subject: ConfirmationSubject,
+});
+export type OpenConfirmationRequest = z.infer<typeof OpenConfirmationRequest>;
+
+/** `/a/<approvalId>#<token>`, to append to the confirmation page's origin. */
+export const OpenConfirmationResponse = z.strictObject({
+  path: z.string().refine((path) => {
+    const parts = /^\/a\/([^/#]+)#([^#]*)$/.exec(path);
+    return (
+      parts !== null &&
+      ApprovalId.safeParse(parts[1]).success &&
+      ConfirmToken.safeParse(parts[2]).success
+    );
+  }, "expected /a/<approval id>#<token>"),
+});
+export type OpenConfirmationResponse = z.infer<typeof OpenConfirmationResponse>;
+
+/**
+ * The assertions people made on the confirmation page for one approval (control scope), from
+ * people who are still approvers of the workspace, each with the signer's own record of who
+ * they are. The control plane counts them and sends them back to sign or apply as today.
+ */
+export const ListConfirmationAssertionsResponse = z.strictObject({
+  assertions: z.array(Assertion).max(256),
+});
+export type ListConfirmationAssertionsResponse = z.infer<typeof ListConfirmationAssertionsResponse>;
+
+/**
+ * One person's passkey assertion, made on the confirmation page (confirm scope). The signer
+ * finds the approver by the credential id and accepts only an assertion the browser made at the
+ * approval origin, not in a cross-origin frame.
+ */
+export const SubmitConfirmationRequest = z.strictObject({ response: AssertionResponse });
+export type SubmitConfirmationRequest = z.infer<typeof SubmitConfirmationRequest>;
+
+export const SubmitConfirmationResponse = z.strictObject({
+  collected: z.number().int().min(0),
+  required: z.number().int().min(1),
+  /** The control plane's page for the request, where the page sends the person next. */
+  returnUrl: z.url({ protocol: /^https?$/ }),
+});
+export type SubmitConfirmationResponse = z.infer<typeof SubmitConfirmationResponse>;
+
 // --- errors -----------------------------------------------------------------------------------
 
 export const SignerErrorCode = z.enum([
@@ -217,6 +326,11 @@ export const SignerErrorCode = z.enum([
   "not_found",
   // 409
   "conflict",
+  /** The approval can no longer collect assertions: revoked, used, expired, superseded or complete. */
+  "confirmation_closed",
+  // 429
+  /** More than 64 assertions were submitted for one confirmation. */
+  "rate_limited",
   // 403: the request was understood and refused
   "workspace_paused",
   "approval_revoked",
@@ -245,11 +359,13 @@ export const SignerErrorCode = z.enum([
 ]);
 export type SignerErrorCode = z.infer<typeof SignerErrorCode>;
 
-export const signerErrorStatus: Record<SignerErrorCode, 400 | 401 | 403 | 404 | 409 | 500> = {
+export const signerErrorStatus: Record<SignerErrorCode, 400 | 401 | 403 | 404 | 409 | 429 | 500> = {
   invalid_request: 400,
   unauthenticated: 401,
   not_found: 404,
   conflict: 409,
+  confirmation_closed: 409,
+  rate_limited: 429,
   workspace_paused: 403,
   approval_revoked: 403,
   envelope_mismatch: 403,

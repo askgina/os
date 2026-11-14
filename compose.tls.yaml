@@ -21,6 +21,8 @@ services:
   signer:
     environment:
       WEBAUTHN_ORIGINS: https://${OS_HOSTNAME:?set OS_HOSTNAME in .env}
+      SIGNER_APPROVAL_ORIGIN: ${APPROVE_ORIGIN:?set APPROVE_ORIGIN in .env}
+      SIGNER_RETURN_ORIGIN: https://${OS_HOSTNAME:?set OS_HOSTNAME in .env}
 
   agent-gateway:
     environment:

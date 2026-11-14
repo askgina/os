@@ -8,9 +8,12 @@ import { createSignerClient } from "@askgina/os-protocol/signer";
 import { recoverTransactionAddress } from "viem";
 import { afterAll, describe, expect, it } from "vitest";
 import {
+  APPROVAL_ORIGIN,
+  ASSETS,
   approveIntent,
   authorize,
   basePolicy,
+  CHAINS,
   Clock,
   header,
   intentFor,
@@ -38,9 +41,14 @@ describe("the signer image", () => {
     writeFileSync(join(dir, "hmac"), secret.toString("base64"));
     writeFileSync(join(dir, "key"), randomBytes(32).toString("base64"));
     writeFileSync(join(dir, "passphrase"), "a long enough owner passphrase");
+    writeFileSync(join(dir, "confirm"), randomBytes(32).toString("base64"));
+    writeFileSync(join(dir, "chains.json"), JSON.stringify(CHAINS));
+    writeFileSync(join(dir, "assets.json"), JSON.stringify(ASSETS));
     // The image runs as its own unprivileged user, which must be able to read the mounted files.
     chmodSync(dir, 0o755);
-    for (const file of ["hmac", "key", "passphrase"]) chmodSync(join(dir, file), 0o644);
+    for (const file of ["hmac", "key", "passphrase", "confirm", "chains.json", "assets.json"]) {
+      chmodSync(join(dir, file), 0o644);
+    }
     execFileSync("docker", [
       "run",
       "-d",
@@ -60,6 +68,16 @@ describe("the signer image", () => {
       `WEBAUTHN_RP_ID=${RP.id}`,
       "-e",
       `WEBAUTHN_ORIGINS=${RP.origins.join(",")}`,
+      "-e",
+      "SIGNER_CONFIRM_SECRET_FILE=/secrets/confirm",
+      "-e",
+      `SIGNER_APPROVAL_ORIGIN=${APPROVAL_ORIGIN}`,
+      "-e",
+      `SIGNER_RETURN_ORIGIN=${RP.origins[0]}`,
+      "-e",
+      "SIGNER_CHAINS_FILE=/secrets/chains.json",
+      "-e",
+      "SIGNER_ASSETS_FILE=/secrets/assets.json",
       IMAGE,
     ]);
     const deadline = Date.now() + 60_000;

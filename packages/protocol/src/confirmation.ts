@@ -208,7 +208,25 @@ export const ConfirmationWarning = z.enum([
 ]);
 export type ConfirmationWarning = z.infer<typeof ConfirmationWarning>;
 
-export const ConfirmationState = z.enum(["open", "complete", "expired", "revoked", "used"]);
+/**
+ * Where an approval stands, as the signer sees it.
+ * - `open`: it can collect assertions.
+ * - `complete`: enough current approvers approved; the control plane can now use it.
+ * - `expired`: the envelope's `expiresAt` has passed.
+ * - `revoked`: the approval id was revoked; it will never sign or apply.
+ * - `used`: the signer already signed or applied it.
+ * - `superseded`: the signer would refuse it whatever approvals it gets, because the wallet's
+ *   policy changed since it was proposed or it was issued before the signer's restore fence.
+ *   It must be proposed again.
+ */
+export const ConfirmationState = z.enum([
+  "open",
+  "complete",
+  "expired",
+  "revoked",
+  "used",
+  "superseded",
+]);
 export type ConfirmationState = z.infer<typeof ConfirmationState>;
 
 /** What the signer returns to the confirmation page for one approval. */

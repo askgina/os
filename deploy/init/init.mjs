@@ -44,6 +44,9 @@ ensure(SERVER, "signer-request-secret", NODE_UID, () => {
 ensure(SIGNER, "signer-request-secret", NODE_UID, () =>
   readFileSync(join(SERVER, "signer-request-secret")),
 );
+// The confirm secret lets the `approve` service reach the signer's two confirmation routes and
+// nothing else, so it is never the request secret.
+ensure(SIGNER, "confirm-request-secret", NODE_UID, () => b64());
 ensure(SIGNER, "token-key", NODE_UID, () => b64());
 ensure(SIGNER, "vault-passphrase", NODE_UID, () => b64());
 ensure(DB, "postgres-password", POSTGRES_UID, () => {

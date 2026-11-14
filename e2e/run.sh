@@ -25,6 +25,8 @@ if [ "$tls" = "1" ]; then
   export PUBLIC_ORIGIN="https://localhost"
   export PUBLIC_HOST="localhost"
   export E2E_ORIGIN="${PUBLIC_ORIGIN}"
+  # The TLS overlay requires the confirmation page's origin: another port on the same host.
+  export APPROVE_ORIGIN="https://localhost:8443"
   overlay=(-f compose.yaml -f compose.tls.yaml -f e2e/compose.e2e.yaml --profile dev --profile agent)
 fi
 compose=(docker compose -p "$E2E_PROJECT" "${overlay[@]}")

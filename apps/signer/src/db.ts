@@ -114,8 +114,37 @@ CREATE TABLE IF NOT EXISTS signer_meta (
 ) STRICT;
 `;
 
+/**
+ * Version 3: confirmation pages (`confirmations.ts`). A confirmation keeps the envelope and the
+ * subject its hash names, so the page can show exactly what a passkey approves, and only the
+ * SHA-256 of the link's token. `attempts` counts submitted assertions. Assertions are kept per
+ * person until the control plane collects them; the signer verifies them again when it acts.
+ */
+const VERSION_3 = `
+CREATE TABLE IF NOT EXISTS confirmations (
+  approval_id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+  envelope_digest TEXT NOT NULL,
+  envelope TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  token_hash TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  possession_proven_at INTEGER,
+  created_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS confirmation_assertions (
+  approval_id TEXT NOT NULL REFERENCES confirmations(approval_id),
+  user_id TEXT NOT NULL,
+  credential_id TEXT NOT NULL,
+  response TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (approval_id, user_id)
+) STRICT;
+`;
+
 /** Migration `n` (from 1) takes a database from version `n - 1` to version `n`. */
-const MIGRATIONS: readonly string[] = [VERSION_1, VERSION_2];
+const MIGRATIONS: readonly string[] = [VERSION_1, VERSION_2, VERSION_3];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
 /** A database written by a newer signer. Opening it with older code could lose what it records. */
