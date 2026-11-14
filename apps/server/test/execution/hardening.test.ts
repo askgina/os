@@ -511,4 +511,37 @@ describe("the chain", () => {
     for (let i = 0; i < 20 && !(await steps().followUp(approvalId)).done; i += 1);
     expect((await intentOf(intentId)).status).toBe("confirmed");
   });
+
+  it("keeps a stuck transaction's nonce, offers it to the chain again, and both payments land", async () => {
+    const { client } = await agentClient("Dropped");
+    const first = await propose(client);
+    await approveOnly(first.approvalId);
+    await steps().execute(first.approvalId);
+    const chains = chainAccess(f.t.ctx);
+    // The node never holds the transaction, as after it dropped one it had kept for long.
+    await patched(
+      chains,
+      "broadcast",
+      async () => {},
+      async () => {
+        await steps().followUp(first.approvalId);
+        f.t.clock.advance(f.t.ctx.config.reconcileTimeoutSeconds + 1);
+        await steps().followUp(first.approvalId);
+      },
+    );
+    expect((await intentOf(first.intentId)).status).toBe("stuck");
+    const stuckNonce = (await transactionOf(first.approvalId)).nonce;
+
+    const second = await propose(client);
+    await approveOnly(second.approvalId);
+    expect(await steps().execute(second.approvalId)).toEqual({ ok: true });
+    expect((await transactionOf(second.approvalId)).nonce).toBe(stuckNonce + 1);
+
+    // The next look at the stuck one sends it again, and then both can be mined in order.
+    f.t.clock.advance(61);
+    for (let i = 0; i < 20 && !(await steps().followUp(first.approvalId)).done; i += 1);
+    for (let i = 0; i < 20 && !(await steps().followUp(second.approvalId)).done; i += 1);
+    expect((await intentOf(first.intentId)).status).toBe("confirmed");
+    expect((await intentOf(second.intentId)).status).toBe("confirmed");
+  });
 });

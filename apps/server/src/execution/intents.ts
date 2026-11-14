@@ -669,7 +669,9 @@ async function reserveNonce(
         and(
           eq(transactions.walletId, wallet.id),
           eq(transactions.chainId, chainId),
-          inArray(transactions.status, ["signed", "broadcast"]),
+          // A stuck transaction is still valid and still offered to the chain, so it keeps its
+          // nonce: handing it to another approval would leave one of the two unmined for ever.
+          inArray(transactions.status, ["signed", "broadcast", "stuck"]),
         ),
       );
     const [reserved] = await tx
@@ -869,12 +871,14 @@ async function followUpIntent(
     await moveIntent(ctx, intent, ["broadcast", "stuck", "signed"], receipt.state);
     return { done: true, waitSeconds: 0 };
   }
-  if (receipt.state === "missing" && transaction.status === "broadcast") {
-    if (overdue) {
+  if (receipt.state === "missing") {
+    if (transaction.status === "broadcast" && overdue) {
       await touch("stuck");
       await moveIntent(ctx, intent, ["broadcast"], "stuck");
       return { done: false, waitSeconds: STUCK_POLL_SECONDS };
     }
+    // A node may drop a transaction it has held for long. It is offered again, also while
+    // stuck: later transactions of the wallet wait behind this nonce and need it mined.
     if (now - seconds(transaction.updatedAt) >= REBROADCAST_SECONDS) {
       await chains.broadcast(chainId, raw, transaction.hash as ViemHex).catch(() => {});
       await touch(transaction.status);
