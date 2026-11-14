@@ -1,6 +1,6 @@
 [
   {
-    "chainId": 31337,
+    "chainId": "eip155:31337",
     "name": "Local chain",
     "rpcUrl": "http://anvil:8545",
     "nativeSymbol": "ETH",

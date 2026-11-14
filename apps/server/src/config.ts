@@ -61,8 +61,14 @@ const Environment = z.object({
   /** How long a broadcast transaction is watched before it is reported as stuck. */
   RECONCILE_TIMEOUT_SECONDS: integer(3_600, 30, 604_800),
   WORKFLOW_WORKER_CONCURRENCY: integer(10, 1, 200),
-  /** If set, receives a POST with no transaction details whenever an approval is waiting. */
-  NOTIFY_WEBHOOK_URL: z.url().optional(),
+  /**
+   * If set, receives a POST with no transaction details whenever an approval is waiting. An
+   * empty value means unset: Compose passes `${NOTIFY_WEBHOOK_URL:-}` through as "".
+   */
+  NOTIFY_WEBHOOK_URL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.url().optional(),
+  ),
 });
 
 export interface Config {

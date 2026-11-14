@@ -22,7 +22,7 @@ import {
 
 // Runs against a built image: SIGNER_IMAGE=<tag> bun run smoke:image
 const IMAGE = process.env.SIGNER_IMAGE ?? "";
-const PORT = 55702;
+const PORT = 25702;
 const NAME = `os-signer-smoke-${process.pid}`;
 const now = () => Math.floor(Date.now() / 1000);
 

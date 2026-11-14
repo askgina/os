@@ -26,14 +26,16 @@ import {
   waitForHook,
 } from "./harness/host.ts";
 
+// Below Linux's default ephemeral range (32768 and up), so a server that another test starts on
+// "any free port" cannot be handed one of these first.
 const PORTS = {
-  encA: 55750,
-  encB: 55751,
-  encC: 55752,
-  failStart: 55753,
-  probe: 55754,
-  stockA: 55755,
-  stockB: 55756,
+  encA: 25750,
+  encB: 25751,
+  encC: 25752,
+  failStart: 25753,
+  probe: 25754,
+  stockA: 25755,
+  stockB: 25756,
 };
 const dir = mkdtempSync(join(tmpdir(), "os-world-proof-"));
 const keyringFile = join(dir, "keyring.json");

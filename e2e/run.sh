@@ -42,14 +42,19 @@ status=0
 
 # First stack: the gates that drive people through the API. The backup gate ends on a restored
 # copy of this stack under a second project name.
-"${compose[@]}" up -d --wait --wait-timeout 300 "${services[@]}"
-(cd e2e && bunx playwright test release-gates.spec.ts) || status=$?
+# A stack that does not come up healthy is a failed gate too: its logs are printed below.
+"${compose[@]}" up -d --wait --wait-timeout 300 "${services[@]}" || status=$?
+if [ "$status" -eq 0 ]; then
+  (cd e2e && bunx playwright test release-gates.spec.ts) || status=$?
+fi
 
 # Second stack, empty: the browser gate, which claims a fresh installation through the UI.
 if [ "$status" -eq 0 ]; then
   remove
-  "${ui[@]}" up -d --wait --wait-timeout 300 "${services[@]}"
-  (cd e2e && E2E_PROJECT="${E2E_PROJECT}-ui" bunx playwright test browser.spec.ts) || status=$?
+  "${ui[@]}" up -d --wait --wait-timeout 300 "${services[@]}" || status=$?
+  if [ "$status" -eq 0 ]; then
+    (cd e2e && E2E_PROJECT="${E2E_PROJECT}-ui" bunx playwright test browser.spec.ts) || status=$?
+  fi
 fi
 
 if [ "$status" -ne 0 ]; then

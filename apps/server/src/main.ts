@@ -3,6 +3,7 @@ import { createSignerClient } from "@askgina/os-protocol/signer";
 import { serve } from "@hono/node-server";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
+import { ZodError } from "zod";
 import type { ApprovalEngine } from "./approvals/kinds.ts";
 import { loadConfig } from "./config.ts";
 import type { AppContext } from "./context.ts";
@@ -89,10 +90,15 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  // Boot errors can quote configuration values; log only their kind.
+  // Boot errors can quote configuration values; log only their kind, and for a rejected
+  // setting, which one it was and why in a word.
   createLogger("server").error("failed to start", {
     name: error instanceof Error ? error.name : "unknown",
     code: (error as { code?: string } | null)?.code,
+    invalid:
+      error instanceof ZodError
+        ? error.issues.map((issue) => `${issue.path.join(".")}: ${issue.code}`).join("; ")
+        : undefined,
   });
   process.exit(1);
 });

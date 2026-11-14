@@ -35,7 +35,8 @@ import {
 } from "./harness.ts";
 
 const RPC = "http://127.0.0.1:55545";
-const PORT = 55701;
+// Below Linux's default ephemeral range, so no "any free port" listener can take it first.
+const PORT = 25701;
 const anvil = defineChain({
   id: 31337,
   name: "anvil",
