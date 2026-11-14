@@ -142,9 +142,22 @@ describe("the approval workflow", () => {
   it("completes an approval whose wake-up was lost, and waking twice is harmless", async () => {
     const engine = engineOf(f.t.ctx);
     const { intentId, approvalId } = await proposeOverMcp("lost wake-up");
-    await until(
+    const { runId } = await until(
       () => approvalRow(approvalId),
       (row) => row.runId !== null,
+    );
+    // Wait until the run has looked at the request once and is waiting. A run that takes its
+    // first look after the decision reads it without any wake-up, which is correct, and is not
+    // the case this test is about.
+    await until(
+      async () =>
+        (
+          await f.t.ctx.pool.query<{ n: number }>(
+            "SELECT count(*)::int AS n FROM workflow.workflow_steps WHERE run_id = $1 AND status = 'completed'",
+            [runId],
+          )
+        ).rows[0]?.n ?? 0,
+      (completed) => completed >= 1,
     );
     // The process "dies" between the decision and the wake-up: nothing resumes the workflow.
     engine.attachRuntime(null);
