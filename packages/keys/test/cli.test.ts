@@ -85,6 +85,24 @@ describe("keys CLI", () => {
     expect(result.stdout).not.toContain(k2.keys.k2);
   });
 
+  test("takes the database password from a file when the URL carries none", async () => {
+    const url = new URL(db.url);
+    const passwordFile = join(dir, "db-password");
+    writeFileSync(passwordFile, `${url.password}\n`, { mode: 0o600 });
+    url.password = "";
+    const env = { DATABASE_URL: url.toString(), KEYRING_FILE: ringFile("k2-file.json", k2) };
+    const result = await runCli(["rewrap"], { ...env, DATABASE_PASSWORD_FILE: passwordFile });
+    expect(result.code).toBe(0);
+    expect(result.lines[0]).toMatchObject({ event: "keys.rewrap", failedCount: 0 });
+
+    const unreadable = await runCli(["rewrap"], {
+      ...env,
+      DATABASE_PASSWORD_FILE: join(dir, "no-such-file"),
+    });
+    expect(unreadable.code).toBe(1);
+    expect(unreadable.lines[0]).toMatchObject({ message: "DATABASE_PASSWORD_FILE cannot be read" });
+  });
+
   test("rewrap exits 2 and lists rows it could not unwrap", async () => {
     const store = new DataKeyStore({ pool, provider: new LocalKeyring(k2), cacheTtlMs: 0 });
     await store.getOrCreate("run", "wrun_bad");

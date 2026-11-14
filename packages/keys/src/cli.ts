@@ -4,7 +4,9 @@
  *   node packages/keys/src/cli.ts rewrap [--batch <n>]
  *   node packages/keys/src/cli.ts shred <run|workspace> <id>
  *
- * Both read `DATABASE_URL` and `KEYRING_FILE` from the environment. Each prints one JSON line
+ * Both read `DATABASE_URL` and `KEYRING_FILE` from the environment, and `DATABASE_PASSWORD_FILE`
+ * where the database password is kept in a file instead of in the URL (as in the Compose stack,
+ * so the commands work inside the server's container as they are). Each prints one JSON line
  * with identifiers and counts, never key material.
  *
  * Exit codes: 0 done; 1 usage or configuration error; 2 `rewrap` finished but some rows could
@@ -12,6 +14,7 @@
  * dealt with); 3 `shred` found no live key (already shredded, or never created; a tombstone is
  * in place either way).
  */
+import { readFileSync } from "node:fs";
 import pg from "pg";
 import { DataKeyStore, type KeyScope } from "./data-key-store.ts";
 import { LocalKeyring } from "./keyring.ts";
@@ -69,7 +72,16 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
     return 1;
   }
 
-  const pool = new pg.Pool({ connectionString: env.DATABASE_URL, max: 2 });
+  const databaseUrl = new URL(env.DATABASE_URL);
+  if (env.DATABASE_PASSWORD_FILE) {
+    try {
+      databaseUrl.password = readFileSync(env.DATABASE_PASSWORD_FILE, "utf8").trim();
+    } catch {
+      emit({ event: "keys.cli.usage_error", message: "DATABASE_PASSWORD_FILE cannot be read" });
+      return 1;
+    }
+  }
+  const pool = new pg.Pool({ connectionString: databaseUrl.toString(), max: 2 });
   try {
     const store = new DataKeyStore({ pool, provider, cacheTtlMs: 0 });
     if (operation.kind === "rewrap") {
