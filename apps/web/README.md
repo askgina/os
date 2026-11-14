@@ -9,6 +9,12 @@ memo, the fee ceiling, the wallet's limits, the time left and how many approvals
 It is a Vite, React 19 and Tailwind 4 single-page app. It talks only to `/api/v1` through
 `createApiClient()` from `@askgina/os-api`, and passkeys go through `@simplewebauthn/browser`.
 
+A page opened while signed out, such as an approval link sent to a phone, sends the person to
+`/login?next=<path>` and back to that page after sign-in. The same happens when a session ends
+while a page is open. `src/lib/return-path.ts` decides what `next` may be: a path on this site with
+one leading `/`. It refuses `//host`, `/\host`, any backslash, schemes, absolute URLs and control
+characters, and then lands on the workspace list instead.
+
 ## Development
 
 The UI runs against `dev/fixture-server.ts`, an in-memory stand-in for the control plane that
@@ -29,8 +35,8 @@ the React plugin's Fast Refresh: a change reloads the page.
 
 ## Tests
 
-- `bunx vitest run test/<file>.test.ts`: plain logic, such as the status sentences and the
-  operator command.
+- `bunx vitest run test/<file>.test.ts`: plain logic, such as the status sentences, the
+  operator command and the sign-in return path.
 - `bunx playwright test --project=<phone-light|phone-dark|desktop-light|desktop-dark>`: the
   first-day journey in Chromium with a virtual authenticator. Playwright starts the fixture and
   the Vite dev server itself, fails on any console error or failed request, and writes

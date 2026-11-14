@@ -7,6 +7,7 @@ import {
   useInfiniteQuery,
   useQuery,
 } from "@tanstack/react-query";
+import { signInHref } from "@/lib/return-path.ts";
 
 /** Every request goes to the page's own origin; the session cookie rides along. */
 export const api = createApiClient();
@@ -18,7 +19,8 @@ export const queryClient = new QueryClient({
     onError: (error) => {
       if (error instanceof ApiError && error.code === "unauthenticated") {
         queryClient.clear();
-        window.location.assign("/login");
+        const { pathname, search, hash } = window.location;
+        window.location.assign(signInHref(`${pathname}${search}${hash}`));
       }
     },
   }),

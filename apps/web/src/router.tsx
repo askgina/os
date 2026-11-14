@@ -1,6 +1,7 @@
 import { createRootRoute, createRoute, createRouter, redirect } from "@tanstack/react-router";
 import { AppShell, NotFound, ShellError } from "@/components/app-shell.tsx";
 import { api, keys, queryClient } from "@/lib/api.ts";
+import { DEFAULT_LANDING, safeReturnPath, signInHref } from "@/lib/return-path.ts";
 import { ActivityPage } from "@/routes/activity.tsx";
 import { AgentPage } from "@/routes/agent.tsx";
 import { ApprovalPage } from "@/routes/approval.tsx";
@@ -26,13 +27,15 @@ const rootRoute = createRootRoute({
     const path = location.pathname;
     if (session.setupRequired) {
       if (path !== "/setup") throw redirect({ to: "/setup", replace: true });
-      return;
+      return { session };
     }
     if (path === "/setup") throw redirect({ to: "/", replace: true });
     if (!session.user && !PUBLIC_PATHS.some((pattern) => pattern.test(path))) {
-      throw redirect({ to: "/login", replace: true });
+      // Remember the page asked for (an approval link opened on a phone, say), so signing in
+      // opens it instead of the workspace list.
+      throw redirect({ href: signInHref(location.href), replace: true });
     }
-    if (session.user && path === "/login") throw redirect({ to: "/", replace: true });
+    return { session };
   },
   component: AppShell,
   errorComponent: ShellError,
@@ -47,6 +50,17 @@ const setup = createRoute({
 const login = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login",
+  // `next` is kept only when it is a path on this site; anything else is dropped here, so the
+  // page never sees an unsafe value.
+  validateSearch: (search: Record<string, unknown>): { next?: string } => {
+    const next = safeReturnPath(search.next);
+    return next === DEFAULT_LANDING ? {} : { next };
+  },
+  beforeLoad: ({ context, search }) => {
+    if (context.session.user) {
+      throw redirect({ href: search.next ?? DEFAULT_LANDING, replace: true });
+    }
+  },
   component: LoginPage,
 });
 const join = createRoute({

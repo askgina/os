@@ -1,6 +1,6 @@
 import type { SessionInfo } from "@askgina/os-api";
 import { useMutation } from "@tanstack/react-query";
-import { useNavigate, useParams } from "@tanstack/react-router";
+import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { KeyRound, UserPlus } from "lucide-react";
 import { type FormEvent, type ReactNode, useState } from "react";
 import { ErrorState, FormError, Loading } from "@/components/common.tsx";
@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
 import { api, keys, queryClient, useInvite, useSession } from "@/lib/api.ts";
 import { createPasskey, signWithPasskey } from "@/lib/passkey.ts";
+import { DEFAULT_LANDING } from "@/lib/return-path.ts";
 
 function Centered({ children }: { children: ReactNode }) {
   return <div className="mx-auto mt-6 max-w-md sm:mt-16">{children}</div>;
@@ -114,15 +115,17 @@ export function SetupPage() {
 export function LoginPage() {
   const navigate = useNavigate();
   const session = useSession();
+  // Already checked by the route: a path on this site, or absent.
+  const { next } = useSearch({ from: "/login" });
   const login = useMutation({
     mutationFn: async () => {
       const start = await api.call("startLogin", { body: {} });
       const response = await signWithPasskey(start.options);
       return api.call("finishLogin", { body: { ceremonyId: start.ceremonyId, response } });
     },
-    onSuccess: async (next) => {
-      await signedIn(next);
-      await navigate({ to: "/" });
+    onSuccess: async (signedInSession) => {
+      await signedIn(signedInSession);
+      await navigate({ href: next ?? DEFAULT_LANDING, replace: true });
     },
   });
   return (

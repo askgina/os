@@ -334,8 +334,13 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await page.goto(new URL(joinPageUrl).pathname);
     await expect(page.getByRole("heading", { name: "Join Research team" })).toBeVisible();
     await shot("22-join");
-    await page.goto("/login");
+    // An approval link opened while signed out comes back to that approval after sign-in.
+    await page.goto(approvalUrl);
+    await expect(page).toHaveURL(/\/login\?next=/);
     await page.getByRole("button", { name: "Sign in with passkey" }).click();
+    await expect(page.getByRole("heading", { name: /^Send 0\.015 ETH to 0x5290/ })).toBeVisible();
+    expect(new URL(page.url()).pathname).toBe(approvalUrl);
+    await page.goto("/");
     await expect(page.getByRole("heading", { name: "Workspaces" })).toBeVisible();
     await expect(page.getByText("Research team")).toBeVisible();
   });
