@@ -56,6 +56,18 @@ export class DataKeyUnavailableError extends Error {
   }
 }
 
+/**
+ * A caller named a tenant that is not the one the key was created for. Serving the key anyway
+ * would let one tenant's code path read another tenant's data, so this is a refusal.
+ */
+export class DataKeyTenantMismatchError extends Error {
+  override readonly name = "DataKeyTenantMismatchError";
+
+  constructor(scope: KeyScope, keyId: string) {
+    super(`data key for ${scope} ${keyId} belongs to a different tenant`);
+  }
+}
+
 export interface DataKeyStoreOptions {
   pool: Pool;
   provider: KeyProvider;
@@ -80,7 +92,10 @@ export class DataKeyStore {
   readonly #pool: Pool;
   readonly #provider: KeyProvider;
   readonly #ttl: number;
-  readonly #cache = new Map<string, { key: Uint8Array; expires: number }>();
+  readonly #cache = new Map<
+    string,
+    { key: Uint8Array; tenantId: string | null; expires: number }
+  >();
   readonly #onEvent: DataKeyStoreOptions["onEvent"];
   #migrated: Promise<void> | undefined;
 
@@ -102,7 +117,8 @@ export class DataKeyStore {
   /**
    * The key for (scope, id), created on first use. Concurrent first uses, in this process or
    * another, converge on one key. `tenantId` is recorded when the key is created and bound into
-   * its wrapping; later calls may omit it.
+   * its wrapping; later calls may omit it, but a later call that names a different tenant is
+   * refused with {@link DataKeyTenantMismatchError}.
    */
   async getOrCreate(
     scope: KeyScope,
@@ -113,6 +129,9 @@ export class DataKeyStore {
     const cached = this.#cache.get(cacheKey);
     if (cached && cached.expires > Date.now()) {
       this.#onEvent?.("cache-hit");
+      if (tenantId !== null && cached.tenantId !== tenantId) {
+        throw new DataKeyTenantMismatchError(scope, keyId);
+      }
       return cached.key;
     }
     await this.ensureMigrated();
@@ -136,7 +155,17 @@ export class DataKeyStore {
       if (!row) throw new DataKeyUnavailableError(scope, keyId);
     }
     const key = await this.#unwrap(scope, keyId, row);
-    if (this.#ttl > 0) this.#cache.set(cacheKey, { key, expires: Date.now() + this.#ttl });
+    // Checked after unwrapping, so a tombstone still reports "unavailable" rather than this.
+    if (tenantId !== null && row.tenant_id !== tenantId) {
+      throw new DataKeyTenantMismatchError(scope, keyId);
+    }
+    if (this.#ttl > 0) {
+      this.#cache.set(cacheKey, {
+        key,
+        tenantId: row.tenant_id,
+        expires: Date.now() + this.#ttl,
+      });
+    }
     return key;
   }
 

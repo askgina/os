@@ -21,6 +21,10 @@
   },
   "devDependencies": {
     "@askgina/os-testkit": "workspace:*",
-    "@types/pg": "8.23.1"
+    "@hono/node-server": "2.1.8",
+    "@types/pg": "8.23.1",
+    "@workflow/world-testing": "5.1.0",
+    "hono": "4.13.18",
+    "workflow": "5.5.0"
   }
 }

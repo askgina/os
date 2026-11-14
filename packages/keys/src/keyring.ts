@@ -20,6 +20,26 @@ export interface KeyringFile {
   keys: Record<string, string>;
 }
 
+/** Check the shape of a parsed keyring file. Messages name fields, never values. */
+function parseKeyringFile(value: unknown): KeyringFile {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("keyring: the keyring file must be a JSON object");
+  }
+  const { active, keys } = value as Record<string, unknown>;
+  if (typeof active !== "string" || active === "") {
+    throw new Error("keyring: `active` must be a non-empty string");
+  }
+  if (typeof keys !== "object" || keys === null || Array.isArray(keys)) {
+    throw new Error("keyring: `keys` must be an object of KEK id to base64 key");
+  }
+  const out: Record<string, string> = {};
+  for (const [id, key] of Object.entries(keys)) {
+    if (typeof key !== "string") throw new Error(`keyring: KEK ${id} is not a base64 string`);
+    out[id] = key;
+  }
+  return { active, keys: out };
+}
+
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
 
@@ -30,8 +50,12 @@ export class LocalKeyring implements KeyProvider {
   constructor(file: KeyringFile) {
     this.#keys = new Map();
     for (const [id, b64] of Object.entries(file.keys)) {
+      // Buffer.from silently skips characters outside the alphabet, so a typo could still
+      // decode to 32 bytes of a different key. Require canonical base64.
       const key = Buffer.from(b64, "base64");
-      if (key.length !== 32) throw new Error(`keyring: KEK ${id} is not 32 bytes`);
+      if (key.length !== 32 || key.toString("base64") !== b64) {
+        throw new Error(`keyring: KEK ${id} is not 32 bytes of canonical base64`);
+      }
       this.#keys.set(id, key);
     }
     if (!this.#keys.has(file.active)) {
@@ -41,7 +65,16 @@ export class LocalKeyring implements KeyProvider {
   }
 
   static fromFile(path: string): LocalKeyring {
-    return new LocalKeyring(JSON.parse(readFileSync(path, "utf8")) as KeyringFile);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(path, "utf8"));
+    } catch (cause) {
+      // JSON.parse quotes the text it could not parse, which here is key material, so the
+      // original message must never travel on. Only the error kind is kept.
+      const kind = cause instanceof SyntaxError ? "not valid JSON" : "unreadable";
+      throw new Error(`keyring: the keyring file is ${kind}`);
+    }
+    return new LocalKeyring(parseKeyringFile(parsed));
   }
 
   /** A fresh keyring file body with one random KEK. */
