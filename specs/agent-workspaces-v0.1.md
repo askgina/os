@@ -493,7 +493,7 @@ The release gates. Each line is a test; the name in brackets is where it lives.
   Mitigation: CI runs every release gate on an arm64 runner (`stack (arm64)`).
 - Risk: a signed transaction that is never mined blocks later nonces of that wallet on that chain.
   Mitigation: reported as `stuck` with that explanation; repricing is on the map.
-- Risk: a key-provider outage stalls workflow runs (the queue retries up to 73 times).
+- Risk: a key-provider outage stalls workflow runs (the runtime fails a run after 49 deliveries, and the queue's backoff grows to hours, so recovery after a long outage is slow).
   Mitigation: alert on key-provider failures; documented in operations.
 - Open question: the product's name. The code avoids it (`@askgina/os-*` packages, one `WEBAUTHN_RP_NAME` default).
   Owner/next step: the owner.

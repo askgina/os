@@ -82,6 +82,12 @@ then start the stack as usual. `init` leaves existing secrets alone. Keep the sa
 A chain is not part of a backup. Approvals that were waiting when the backup was taken can still
 be approved after the restore; approvals that were already used stay used.
 
+That is only safe when nothing was signed after the backup was taken. A restore puts the signer's
+record of used approvals back to that moment too. An approval that was paid after the backup
+shows as waiting again, and approving it would pay a second time, for as long as the approval
+has not expired (24 hours at most by default). After restoring a backup that may be older than
+the last payment, reject every waiting approval and have the agents propose again.
+
 ## Rotating the keyring
 
 The keyring holds the key-encryption keys that wrap every data key in the database. Rotating
