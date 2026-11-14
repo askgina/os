@@ -122,7 +122,7 @@ Each line is also a ticket on the map, where the reasoning is longer and can be 
 - Decision: one OWS wallet with its own mnemonic per agent and per treasury.
   Rationale: an OWS key file holds the whole mnemonic, so derived accounts would share a blast radius.
   Date/Author: 2026-11-14 / delegated agent
-- Decision: passkeys only, through SimpleWebAuthn directly; setup token for the first owner; invites; recovery through the signer's admin CLI.
+- Decision: passkeys only, through SimpleWebAuthn directly; setup token for the first owner; invites. When no approver is left, the operator enrolls one with the signer's admin CLI on the signer's host; there are no recovery codes (a code relayed through the control plane would let the control plane choose the key).
   Rationale: one WebAuthn library for sign-in and approvals keeps the critical path small.
   Date/Author: 2026-11-14 / delegated agent
 - Decision: key hierarchy is keyring file outside Postgres → one wrapped data key per workflow run and per workspace. Missing keys throw; shredding leaves a tombstone; rotation rewraps.
@@ -133,6 +133,18 @@ Each line is also a ticket on the map, where the reasoning is longer and can be 
   Date/Author: 2026-11-14 / delegated agent
 - Decision: the agent plane is "bring your own agent over MCP". No bundled runtime or sandbox supervisor. One example ships, the scripted agent. Busy is not used. An eve example was written and is parked until its data is proven encrypted (ticket 17).
   Rationale: the reference's own conclusion ("not another agent framework") and the eve research.
+  Date/Author: 2026-11-14 / delegated agent
+- Decision: a wallet's approval threshold may not exceed the workspace's admin threshold, and the admin threshold may not drop below any wallet's.
+  Rationale: found in review. With an admin threshold of 1, one stolen passkey could add an approver and then meet any transaction threshold alone.
+  Date/Author: 2026-11-14 / delegated agent
+- Decision: a policy may not list a token both as a capped asset and as a contract-call target.
+  Rationale: found in review. A raw call to the token would move it outside its caps.
+  Date/Author: 2026-11-14 / delegated agent
+- Decision: the signer does not track account nonces; the control plane reserves one per approval before it asks for a signature.
+  Rationale: a local chain that was reset counts from zero again, and a transaction the chain never accepted must give its nonce back. The reservation closes the window in which a crash could hand one nonce to two approvals.
+  Date/Author: 2026-11-14 / delegated agent
+- Decision: a transaction the chain never accepted ends `rejected` and its intent `failed`; a transaction that was sent and not mined in time is `stuck` and keeps being watched, because it can still be mined.
+  Rationale: found in review. Without an end state the wallet's later transactions queued behind it forever.
   Date/Author: 2026-11-14 / delegated agent
 - Decision: TypeScript 7, Node 26, bun workspaces, Biome, Vitest, Playwright, Postgres 18, Caddy, Docker Compose, MIT.
   Rationale: latest stable of each; `node:26-slim` because OWS needs glibc.
@@ -264,7 +276,7 @@ Acceptance:
 
 Scope: `apps/signer`. A Hono server on Node that implements `packages/protocol/src/signer/api.ts` exactly.
 
-State: `node:sqlite` in `SIGNER_DATA_DIR/signer.sqlite` (WAL), tables for workspaces, approvers, wallets, policy revisions, used nonces, signatures, revocations, recovery codes and a hash-chained decision log. The OWS vault is `SIGNER_DATA_DIR/vault`. Per-wallet OWS tokens are sealed under the signer's own key (`@askgina/os-keys/seal`).
+State: `node:sqlite` in `SIGNER_DATA_DIR/signer.sqlite` (WAL), tables for workspaces, approvers, wallets, policy revisions, used nonces, signatures, revocations and a hash-chained decision log whose head is kept on the workspace row. The OWS vault is `SIGNER_DATA_DIR/vault`. Per-wallet OWS tokens are sealed under the signer's own key (`@askgina/os-keys/seal`).
 
 The signing rule, in order. Any failure is recorded in the decision log and returned with its code:
 
@@ -279,7 +291,7 @@ The signing rule, in order. Any failure is recorded in the decision log and retu
 
 Everything else that adds authority (`set-policy`, `add-approver`, `remove-approver`, `set-admin-threshold`, `resume-workspace`) follows the same shape with the workspace's `adminThreshold`. Pausing and revoking need only the request signature, because they only remove authority. No route signs messages, typed data or raw hashes.
 
-An admin CLI in the same package (`node apps/signer/src/admin.ts`) issues one-time recovery codes and verifies the decision log.
+An admin CLI in the same package (`node apps/signer/src/admin.ts`) enrolls an approver directly (`enroll-approver`, for when no approver is left) and verifies the decision log (`verify-log`). Host access is the root of trust.
 
 Acceptance:
 
@@ -290,7 +302,7 @@ Acceptance:
 
 Scope: `apps/server/src/identity/`, `apps/server/src/directory/`, `apps/server/src/http/` (app assembly, sessions, static files), `apps/server/src/main.ts`.
 
-- Boot (`main.ts`): load config; open the pool; run `migrateDatabase`, the key store's migration and the World's `bootstrap`; build the context; `setWorld(createEncryptedWorld(...))`; start the World; listen on the public port and on the loopback port; start the sweepers.
+- Boot (`main.ts`): load config; open the pool; run `migrateDatabase` and the key store's migration; build the context and the approvals engine; listen on the public port and on the loopback port; print the setup token if there is no owner yet; then `startBackground`, which migrates and starts the one encrypted World (installed with `setWorld()` by the execution module), loads the generated workflow bundle and starts the sweepers.
 - Identity: first-run setup token (printed once to the log, stored hashed); passkey registration and sign-in ceremonies with SimpleWebAuthn; sessions as rows behind an httpOnly, SameSite=Strict cookie; adding and removing passkeys; invites.
 - Directory: workspaces, members and roles, agents (token shown once, stored hashed), wallets and treasury, policy drafts. Creating a workspace registers it at the signer with the creator's passkeys. Creating an agent creates its wallet at the signer.
 - Approval kinds owned here: `set-policy`, `add-approver`, `remove-approver`, `set-admin-threshold`, `resume-workspace`. Each is an `ApprovalKindHandler` registered with the engine.
@@ -372,18 +384,19 @@ MCP tools (agent-facing):
 
 Configuration (environment):
 
-| Service | Variable                                                                                                                              | Meaning                                                                                                    |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| server  | `PUBLIC_ORIGIN`                                                                                                                       | exact origin people open; passkeys are bound to its host                                                   |
-| server  | `PORT`, `INTERNAL_PORT`, `HOST`                                                                                                       | public listener; loopback listener for Workflow delivery                                                   |
-| server  | `DATABASE_URL`, `KEYRING_FILE`, `CHAINS_FILE`                                                                                         | Postgres; keyring outside it; chains with RPC URLs                                                         |
-| server  | `SIGNER_URL`, `SIGNER_HMAC_SECRET_FILE`                                                                                               | the signer and the shared request-signing secret                                                           |
-| server  | `WEB_DIST_DIR`                                                                                                                        | built UI                                                                                                   |
-| server  | `SESSION_TTL_SECONDS`, `ADMIN_APPROVAL_TTL_SECONDS`, `RECONCILE_TIMEOUT_SECONDS`, `WORKFLOW_WORKER_CONCURRENCY`, `NOTIFY_WEBHOOK_URL` | tuning and the optional webhook                                                                            |
-| signer  | `SIGNER_PORT`, `SIGNER_DATA_DIR`                                                                                                      | listener; vault and SQLite                                                                                 |
-| signer  | `SIGNER_HMAC_SECRET_FILE`, `SIGNER_KEY_FILE`, `SIGNER_VAULT_PASSPHRASE_FILE`                                                          | request-signing secret; key that seals stored tokens; OWS owner passphrase (needed only to create wallets) |
-| signer  | `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS`                                                                                                  | the relying party assertions must match                                                                    |
-| signer  | `SIGNER_MAX_INTENT_TTL_SECONDS`, `SIGNER_MAX_ADMIN_TTL_SECONDS`                                                                       | ceilings on envelope lifetimes                                                                             |
+| Service | Variable                                                                                                                              | Meaning                                                                                                                                                             |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| server  | `PUBLIC_ORIGIN`                                                                                                                       | exact origin people open; passkeys are bound to its host                                                                                                            |
+| server  | `PORT`, `INTERNAL_PORT`, `HOST`                                                                                                       | public listener; loopback listener for Workflow delivery                                                                                                            |
+| server  | `WEBAUTHN_RP_ID`, `WEBAUTHN_RP_NAME`, `DATABASE_PASSWORD_FILE`                                                                        | passkey relying-party id (default: the host of `PUBLIC_ORIGIN`) and display name; a file with the database password, for setups that keep it out of the environment |
+| server  | `DATABASE_URL`, `KEYRING_FILE`, `CHAINS_FILE`                                                                                         | Postgres; keyring outside it; chains with RPC URLs                                                                                                                  |
+| server  | `SIGNER_URL`, `SIGNER_HMAC_SECRET_FILE`                                                                                               | the signer and the shared request-signing secret                                                                                                                    |
+| server  | `WEB_DIST_DIR`                                                                                                                        | built UI                                                                                                                                                            |
+| server  | `SESSION_TTL_SECONDS`, `ADMIN_APPROVAL_TTL_SECONDS`, `RECONCILE_TIMEOUT_SECONDS`, `WORKFLOW_WORKER_CONCURRENCY`, `NOTIFY_WEBHOOK_URL` | tuning and the optional webhook                                                                                                                                     |
+| signer  | `SIGNER_PORT`, `SIGNER_DATA_DIR`                                                                                                      | listener; vault and SQLite                                                                                                                                          |
+| signer  | `SIGNER_HMAC_SECRET_FILE`, `SIGNER_KEY_FILE`, `SIGNER_VAULT_PASSPHRASE_FILE`                                                          | request-signing secret; key that seals stored tokens; OWS owner passphrase (needed only to create wallets)                                                          |
+| signer  | `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS`                                                                                                  | the relying party assertions must match                                                                                                                             |
+| signer  | `SIGNER_MAX_INTENT_TTL_SECONDS`, `SIGNER_MAX_ADMIN_TTL_SECONDS`                                                                       | ceilings on envelope lifetimes                                                                                                                                      |
 
 External dependencies:
 
@@ -427,7 +440,7 @@ The release gates. Each line is a test; the name in brackets is where it lives.
 - Isolation: a container on the `agents` network cannot resolve or reach the signer, the server's internal port or Postgres; the Workflow delivery routes answer 404 on the public listener and through Caddy. [`e2e`]
 - Crash recovery: killing the server after an approval and before the broadcast, then restarting, ends with exactly one transaction on chain. [`e2e`]
 - Backup and restore: a restored database, keyring and signer volume decrypt workflow history, keep wallet addresses, and refuse an approval that was already used. [`e2e`]
-- Recovery is independent: removing every passkey of a workspace leaves its wallets intact, and a recovery code from the signer's CLI enrolls a new approver. [`apps/signer`]
+- Recovery is independent: removing every passkey of a workspace leaves its wallets intact, and the operator enrolls a new approver with the signer's CLI on the signer's host. [`apps/signer`]
 - The browser flow: setup, workspace, agent, policy approval, intent approval and confirmation, in Chromium with a virtual authenticator. [`e2e`]
 
 ## Idempotence and Recovery

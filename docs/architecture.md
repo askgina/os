@@ -18,21 +18,21 @@ files fix. Two companion documents go deeper:
 Each term below has one meaning everywhere in this repository. The definitions follow the plan's
 "Terms" list.
 
-| Term | Meaning |
-| --- | --- |
-| Workspace | The unit people share. It has members, agents and wallets. |
-| Member | A person in a workspace with one role: `owner`, `approver` or `viewer`. |
-| Approver | A member whose passkey the signer accepts for that workspace. |
-| Agent | A program you bring that talks to the system over MCP (Model Context Protocol). It has a token and one wallet of its own. |
-| Wallet | An EVM address whose private key lives only in the signer. Kind `agent` or `treasury`. |
-| Intent | One operation an agent proposes, such as "send 0.25 ETH to 0x1111…". It never changes after it is made. Its hash identifies it. |
-| Policy | The rules for one wallet: chains, which agents may propose, caps, allowed recipients and contracts, fee ceiling, how many approvals. The signer holds it. |
-| Envelope | A small statement of one thing a person authorizes, such as "sign this intent under this policy". Its digest is what the passkey signs. |
-| Authorization | An envelope together with the passkey signatures (WebAuthn "assertions") over it. |
-| Signer | The isolated service that holds the wallet keys and decides whether to sign. |
-| Control plane | The server that people and agents talk to. It can ask the signer. It cannot make the signer sign. |
-| World | The Workflow SDK's name for its storage and job-queue backend. |
-| KEK / data key | A key-encryption key kept in a keyring file outside the database, and a per-run or per-workspace key that the KEK wraps inside the database. |
+| Term           | Meaning                                                                                                                                                   |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workspace      | The unit people share. It has members, agents and wallets.                                                                                                |
+| Member         | A person in a workspace with one role: `owner`, `approver` or `viewer`.                                                                                   |
+| Approver       | A member whose passkey the signer accepts for that workspace.                                                                                             |
+| Agent          | A program you bring that talks to the system over MCP (Model Context Protocol). It has a token and one wallet of its own.                                 |
+| Wallet         | An EVM address whose private key lives only in the signer. Kind `agent` or `treasury`.                                                                    |
+| Intent         | One operation an agent proposes, such as "send 0.25 ETH to 0x1111…". It never changes after it is made. Its hash identifies it.                           |
+| Policy         | The rules for one wallet: chains, which agents may propose, caps, allowed recipients and contracts, fee ceiling, how many approvals. The signer holds it. |
+| Envelope       | A small statement of one thing a person authorizes, such as "sign this intent under this policy". Its digest is what the passkey signs.                   |
+| Authorization  | An envelope together with the passkey signatures (WebAuthn "assertions") over it.                                                                         |
+| Signer         | The isolated service that holds the wallet keys and decides whether to sign.                                                                              |
+| Control plane  | The server that people and agents talk to. It can ask the signer. It cannot make the signer sign.                                                         |
+| World          | The Workflow SDK's name for its storage and job-queue backend.                                                                                            |
+| KEK / data key | A key-encryption key kept in a keyring file outside the database, and a per-run or per-workspace key that the KEK wraps inside the database.              |
 
 The schemas for intent, policy and envelope are in
 [`packages/protocol/src/intent.ts`](../packages/protocol/src/intent.ts),
@@ -122,16 +122,16 @@ The signer's checks, in order, are in
 
 ## Where state lives
 
-| State | Where | Who can change it |
-| --- | --- | --- |
-| Wallet private keys | OWS vault in the signer's data volume | Only the signer |
-| Authoritative wallet policy, approver registry, admin threshold, paused flag | Signer's SQLite | Only the signer, on passkey authorization (pausing and revoking need none, because they only remove authority) |
-| Used envelope nonces, spend ledger, signed transactions, hash-chained decision log | Signer's SQLite | Only the signer |
-| People, passkeys for sign-in, sessions, workspaces, memberships, agents, wallets (addresses and a mirror of the policy), approvals, intents, transactions, audit log | Postgres, schema `os` ([`apps/server/src/db/schema.ts`](../apps/server/src/db/schema.ts)) | The server |
-| Workflow runs, steps, events, hooks, streams | Postgres, schemas `workflow` and `graphile_worker` | The Workflow runtime |
-| Wrapped data keys and shred tombstones | Postgres, schema `os_keys` ([`packages/keys/src/data-key-store.ts`](../packages/keys/src/data-key-store.ts)) | The server |
-| Key-encryption keys | Keyring JSON file outside Postgres ([`packages/keys/src/keyring.ts`](../packages/keys/src/keyring.ts)) | The operator |
-| Shared request-signing secret | A file read by both server and signer | The operator |
+| State                                                                                                                                                                | Where                                                                                                        | Who can change it                                                                                              |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| Wallet private keys                                                                                                                                                  | OWS vault in the signer's data volume                                                                        | Only the signer                                                                                                |
+| Authoritative wallet policy, approver registry, admin threshold, paused flag                                                                                         | Signer's SQLite                                                                                              | Only the signer, on passkey authorization (pausing and revoking need none, because they only remove authority) |
+| Used envelope nonces, spend ledger, signed transactions, hash-chained decision log                                                                                   | Signer's SQLite                                                                                              | Only the signer                                                                                                |
+| People, passkeys for sign-in, sessions, workspaces, memberships, agents, wallets (addresses and a mirror of the policy), approvals, intents, transactions, audit log | Postgres, schema `os` ([`apps/server/src/db/schema.ts`](../apps/server/src/db/schema.ts))                    | The server                                                                                                     |
+| Workflow runs, steps, events, hooks, streams                                                                                                                         | Postgres, schemas `workflow` and `graphile_worker`                                                           | The Workflow runtime                                                                                           |
+| Wrapped data keys and shred tombstones                                                                                                                               | Postgres, schema `os_keys` ([`packages/keys/src/data-key-store.ts`](../packages/keys/src/data-key-store.ts)) | The server                                                                                                     |
+| Key-encryption keys                                                                                                                                                  | Keyring JSON file outside Postgres ([`packages/keys/src/keyring.ts`](../packages/keys/src/keyring.ts))       | The operator                                                                                                   |
+| Shared request-signing secret                                                                                                                                        | A file read by both server and signer                                                                        | The operator                                                                                                   |
 
 Some rows in Postgres mirror the signer's state for display (the policy on `wallets`, the paused
 flag on `workspaces`, the `approver_credentials` table). The schema's comments say so. The

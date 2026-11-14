@@ -27,21 +27,21 @@ bun run services:down   # stop the test services and delete their data
 
 ## Repository layout
 
-| Path | What it holds |
-| --- | --- |
-| `apps/server` | The control plane: REST API, MCP gateway, Workflow runtime; serves the built UI. |
-| `apps/signer` | The isolated signer: wallet vault, policy, approver registry, signatures. |
-| `apps/web` | The web UI (Vite and React), built to static files. |
+| Path                | What it holds                                                                                                                                                   |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/server`       | The control plane: REST API, MCP gateway, Workflow runtime; serves the built UI.                                                                                |
+| `apps/signer`       | The isolated signer: wallet vault, policy, approver registry, signatures.                                                                                       |
+| `apps/web`          | The web UI (Vite and React), built to static files.                                                                                                             |
 | `packages/protocol` | Intents, policies, envelopes, digests, policy evaluation, the signer's API contract and client, the authorization verifier, a software authenticator for tests. |
-| `packages/api` | The control plane's HTTP contract and typed client. |
-| `packages/keys` | Keyring, wrapped data keys, sealing. |
-| `packages/world` | The encrypting Postgres World for the Workflow SDK. |
-| `packages/testkit` | Throwaway test databases and the plaintext scanner. |
-| `examples` | Example agents that connect over MCP. |
-| `e2e` | End-to-end tests against the whole stack. |
-| `deploy` | Compose files and deployment configuration. |
-| `docs` | Documentation. Start with [`docs/architecture.md`](docs/architecture.md). `docs/references/` is vendored outside material: context, not authority. |
-| `specs` | The ExecPlan, research reports and tracker conventions. |
+| `packages/api`      | The control plane's HTTP contract and typed client.                                                                                                             |
+| `packages/keys`     | Keyring, wrapped data keys, sealing.                                                                                                                            |
+| `packages/world`    | The encrypting Postgres World for the Workflow SDK.                                                                                                             |
+| `packages/testkit`  | Throwaway test databases and the plaintext scanner.                                                                                                             |
+| `examples`          | Example agents that connect over MCP.                                                                                                                           |
+| `e2e`               | End-to-end tests against the whole stack.                                                                                                                       |
+| `deploy`            | Compose files and deployment configuration.                                                                                                                     |
+| `docs`              | Documentation. Start with [`docs/architecture.md`](docs/architecture.md). `docs/references/` is vendored outside material: context, not authority.              |
+| `specs`             | The ExecPlan, research reports and tracker conventions.                                                                                                         |
 
 ## Conventions reviews enforce
 
