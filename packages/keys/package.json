@@ -1,0 +1,23 @@
+{
+  "name": "@askgina/os-keys",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Key-encryption keys kept outside the database, wrapped data keys kept inside it, and sealing of values with those data keys.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./seal": "./src/seal.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "@askgina/os-testkit": "workspace:*",
+    "@types/pg": "8.23.1"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@askgina/os-world",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "The Workflow SDK's Postgres World with payload encryption switched on: one wrapped data key per run.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./target": "./src/target.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@askgina/os-keys": "workspace:*",
+    "@workflow/world": "5.2.0",
+    "@workflow/world-postgres": "5.2.0",
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "@askgina/os-testkit": "workspace:*",
+    "@types/pg": "8.23.1"
+  }
+}
