@@ -13,6 +13,7 @@ import {
   DisplayName,
   IntentDetail,
   IntentSummary,
+  InviteSummary,
   Member,
   PasskeySummary,
   PolicyDraft,
@@ -138,7 +139,7 @@ export const routes = {
     z.strictObject({
       ceremonyId: CeremonyId,
       response: RegistrationResponse,
-      label: z.string().trim().min(1).max(64),
+      label: DisplayName,
     }),
     z.strictObject({ passkey: PasskeySummary, approvals: z.array(ApprovalSummary) }),
   ),
@@ -149,7 +150,7 @@ export const routes = {
   listWorkspaces: get("/api/v1/workspaces", items(WorkspaceSummary)),
   createWorkspace: post(
     "/api/v1/workspaces",
-    z.strictObject({ name: z.string().trim().min(1).max(64) }),
+    z.strictObject({ name: DisplayName }),
     WorkspaceDetail,
   ),
   getWorkspace: get("/api/v1/workspaces/:workspaceId", WorkspaceDetail),
@@ -168,6 +169,10 @@ export const routes = {
     z.strictObject({ role: Role }),
     z.strictObject({ url: z.string(), expiresAt: z.number().int() }),
   ),
+  /** Owners only: invites still waiting to be used, without their tokens. */
+  listInvites: get("/api/v1/workspaces/:workspaceId/invites", items(InviteSummary)),
+  /** Owners only: the invite's link stops working at once. */
+  revokeInvite: del("/api/v1/workspaces/:workspaceId/invites/:inviteId", NoBody),
   getInvite: publicGet(
     "/api/v1/invites/:token",
     z.strictObject({ workspaceName: z.string(), role: Role, invitedBy: z.string() }),
@@ -200,7 +205,7 @@ export const routes = {
   /** Creates the agent, its dedicated wallet and its token. The token is shown only here. */
   createAgent: post(
     "/api/v1/workspaces/:workspaceId/agents",
-    z.strictObject({ name: z.string().trim().min(1).max(64) }),
+    z.strictObject({ name: DisplayName }),
     z.strictObject({
       agent: AgentSummary,
       wallet: WalletSummary,
@@ -220,7 +225,7 @@ export const routes = {
   ),
   createTreasury: post(
     "/api/v1/workspaces/:workspaceId/treasury",
-    z.strictObject({ label: z.string().trim().min(1).max(64) }),
+    z.strictObject({ label: DisplayName }),
     WalletSummary,
   ),
   getWallet: get("/api/v1/workspaces/:workspaceId/wallets/:walletId", WalletDetail),

@@ -68,7 +68,13 @@ export const passkey: PasskeySummary = {
   backedUp: true,
 };
 
-export const member: Member = { user, role: "owner", approver: "active", joinedAt: T0 };
+export const member: Member = {
+  user,
+  role: "owner",
+  approver: "active",
+  joinedAt: T0,
+  pendingPasskeys: [{ credentialId: "Y3JlZDI", publicKey: "pQECAyYgASFYIA", label: "Phone" }],
+};
 
 export const policy: WalletPolicy = {
   v: 1,

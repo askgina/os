@@ -1,8 +1,10 @@
+import { randomBytes } from "node:crypto";
 import type { AuditVerification } from "@askgina/os-api";
 import { DomainTag, digestHex, type WorkspaceId } from "@askgina/os-protocol";
-import { asc, desc, eq, sql } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
+import { z } from "zod";
 import type { AppContext, Executor } from "./context.ts";
-import { auditEvents } from "./db/schema.ts";
+import { auditEvents, workspaces } from "./db/schema.ts";
 
 export interface AuditInput {
   workspaceId: WorkspaceId;
@@ -13,6 +15,17 @@ export interface AuditInput {
   /** Stored sealed. Anything a person or agent typed belongs here, not in `action`. */
   detail?: Record<string, unknown>;
 }
+
+/**
+ * What is sealed for an event. The random salt keeps the plaintext digest in the chain from
+ * confirming a guess about the sealed detail: without it, anyone who reads the database could
+ * hash a candidate memo and compare.
+ */
+const SealedDetail = z.strictObject({
+  salt: z.string(),
+  detail: z.record(z.string(), z.unknown()),
+});
+type SealedDetail = z.infer<typeof SealedDetail>;
 
 interface ChainedFields {
   workspaceId: string;
@@ -28,11 +41,14 @@ interface ChainedFields {
 }
 
 const entryHash = (fields: ChainedFields) => digestHex(DomainTag.audit, { entry: fields });
+const sealContext = (workspaceId: string, seq: number) =>
+  `audit_events.detail:${workspaceId}:${seq}`;
 
 /**
- * Append one event to a workspace's log. Each entry's hash covers the entry before it, so
- * removing or editing a past entry breaks every hash after it. The detail is sealed; its digest
- * is in the chain, so the chain can be checked without the data key.
+ * Append one event to a workspace's log. Each entry's hash covers the entry before it, and the
+ * workspace row keeps the newest one, so removing or editing any entry, the newest included, is
+ * detected. The detail is sealed; its salted digest is in the chain, so the chain can be checked
+ * without the data key.
  *
  * Pass `tx` to make the event part of a transaction that also changes state.
  */
@@ -42,19 +58,20 @@ export async function appendAudit(
   tx?: Executor,
 ): Promise<void> {
   const write = async (executor: Executor) => {
-    // One writer per workspace at a time, so `seq` has no gaps and no forks.
-    await executor.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`audit:${input.workspaceId}`}, 0))`,
-    );
-    const [last] = await executor
-      .select({ seq: auditEvents.seq, hash: auditEvents.hash })
-      .from(auditEvents)
-      .where(eq(auditEvents.workspaceId, input.workspaceId))
-      .orderBy(desc(auditEvents.seq))
-      .limit(1);
-    const seq = (last?.seq ?? 0) + 1;
+    // Locking the workspace row gives one writer per workspace at a time, so `seq` has no gaps
+    // and no forks, and the head moves with the entry.
+    const [head] = await executor
+      .select({ seq: workspaces.auditSeq, hash: workspaces.auditHead })
+      .from(workspaces)
+      .where(eq(workspaces.id, input.workspaceId))
+      .for("update");
+    if (!head) throw new Error("audit append for a workspace that does not exist");
+    const seq = head.seq + 1;
     const at = ctx.now();
-    const detail = input.detail ?? {};
+    const sealed: SealedDetail = {
+      salt: randomBytes(16).toString("base64url"),
+      detail: input.detail ?? {},
+    };
     const fields: ChainedFields = {
       workspaceId: input.workspaceId,
       seq,
@@ -64,9 +81,10 @@ export async function appendAudit(
       action: input.action,
       subjectType: input.subject?.type ?? null,
       subjectId: input.subject?.id ?? null,
-      detailDigest: digestHex(DomainTag.audit, { detail }),
-      previousHash: last?.hash ?? null,
+      detailDigest: digestHex(DomainTag.audit, sealed),
+      previousHash: head.hash,
     };
+    const hash = entryHash(fields);
     await executor.insert(auditEvents).values({
       workspaceId: input.workspaceId,
       seq,
@@ -78,22 +96,43 @@ export async function appendAudit(
       subjectId: fields.subjectId,
       detailDigest: fields.detailDigest,
       previousHash: fields.previousHash,
-      detail: await ctx.sealer.seal(
-        input.workspaceId,
-        `audit_events.detail:${input.workspaceId}:${seq}`,
-        detail,
-      ),
-      hash: entryHash(fields),
+      detail: await ctx.sealer.seal(input.workspaceId, sealContext(input.workspaceId, seq), sealed),
+      hash,
     });
+    await executor
+      .update(workspaces)
+      .set({ auditSeq: seq, auditHead: hash })
+      .where(eq(workspaces.id, input.workspaceId));
   };
   await (tx ? write(tx) : ctx.db.transaction(write));
 }
 
-/** Recompute the whole chain of a workspace and report the first entry that does not follow. */
+/** Open one event's sealed detail. */
+export async function openAuditDetail(
+  ctx: Pick<AppContext, "sealer">,
+  row: { workspaceId: WorkspaceId; seq: number; detail: Buffer },
+): Promise<Record<string, unknown>> {
+  const opened = await ctx.sealer.open(
+    row.workspaceId,
+    sealContext(row.workspaceId, row.seq),
+    row.detail,
+  );
+  return SealedDetail.parse(opened).detail;
+}
+
+/**
+ * Recompute the whole chain of a workspace and report the first entry that does not follow.
+ * Missing newest entries show up against the head kept on the workspace row; `brokenAt` is then
+ * the first missing sequence number.
+ */
 export async function verifyAudit(
   ctx: Pick<AppContext, "db">,
   workspaceId: WorkspaceId,
 ): Promise<AuditVerification> {
+  const [workspace] = await ctx.db
+    .select({ seq: workspaces.auditSeq, head: workspaces.auditHead })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId));
   const rows = await ctx.db
     .select()
     .from(auditEvents)
@@ -119,6 +158,11 @@ export async function verifyAudit(
     }
     previousHash = row.hash;
     expectedSeq += 1;
+  }
+  const headSeq = workspace?.seq ?? 0;
+  const headHash = workspace?.head ?? null;
+  if (rows.length !== headSeq || previousHash !== headHash) {
+    return { ok: false, checked: rows.length, brokenAt: rows.length + 1 };
   }
   return { ok: true, checked: rows.length, brokenAt: null };
 }

@@ -8,7 +8,6 @@ import {
   credentials,
   installation,
   memberships,
-  sessions,
   users,
 } from "../db/schema.ts";
 import { openAddApprover, withdrawApprover } from "../directory/approvers.ts";
@@ -21,6 +20,7 @@ import {
   startLogin,
   startRegistration,
 } from "./ceremonies.ts";
+import { revokePasskey } from "./passkeys.ts";
 import { endSession, issueSession } from "./sessions.ts";
 import { checkSetupToken, setupRequired, setupTokenKey } from "./setup.ts";
 
@@ -177,32 +177,54 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
     if (live.length === 1) {
       throw new HttpError("conflict", "add another passkey before removing your last one");
     }
-    const at = new Date(ctx.now() * 1000);
-    // Sign-in stops at once; approving stops when each workspace's approvers agree.
-    await ctx.db.transaction(async (tx) => {
-      await tx
-        .update(credentials)
-        .set({ revokedAt: at })
-        .where(eq(credentials.id, params.credentialId));
-      await tx
-        .update(sessions)
-        .set({ revokedAt: at })
-        .where(and(eq(sessions.credentialId, params.credentialId), isNull(sessions.revokedAt)));
-    });
-    const rows = await ctx.db
-      .selectDistinct({ workspaceId: approverCredentials.workspaceId })
+    const mine = await ctx.db
+      .select()
       .from(approverCredentials)
-      .where(eq(approverCredentials.credentialId, params.credentialId));
+      .where(eq(approverCredentials.userId, session.user.id));
+    const approving = mine.filter(
+      (row) => row.credentialId === params.credentialId && row.state !== "pending",
+    );
+    // Removing the person's only active approver passkey in a workspace would leave them no
+    // passkey able to approve its own removal, or anything else, there.
+    for (const row of approving) {
+      const otherActive = mine.some(
+        (other) =>
+          other.workspaceId === row.workspaceId &&
+          other.credentialId !== params.credentialId &&
+          other.state === "active",
+      );
+      if (!otherActive) {
+        throw new HttpError(
+          "conflict",
+          "this is your only passkey that can approve in a workspace; add and activate another passkey first",
+        );
+      }
+    }
+    const workspaceIds = [
+      ...new Set(
+        mine
+          .filter((row) => row.credentialId === params.credentialId)
+          .map((row) => row.workspaceId),
+      ),
+    ];
     const opened: ApprovalSummary[] = [];
-    for (const { workspaceId } of rows) {
+    for (const workspaceId of workspaceIds) {
       opened.push(
         ...(await withdrawApprover(ctx, {
           workspaceId,
           userId: session.user.id,
           credentialIds: [params.credentialId],
           afterwards: "keep",
+          revokeSignIn: true,
           requestedBy: { type: "user", id: session.user.id },
         })),
+      );
+    }
+    // A passkey that approves nowhere stops signing in at once. One that still approves stops
+    // when its last `remove-approver` request is applied (see the remove-approver kind).
+    if (opened.length === 0) {
+      await ctx.db.transaction((tx) =>
+        revokePasskey(tx, params.credentialId, new Date(ctx.now() * 1000)),
       );
     }
     ctx.log.info("passkey removed", { event: "passkey.removed", userId: session.user.id });

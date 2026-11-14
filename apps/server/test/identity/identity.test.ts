@@ -193,6 +193,41 @@ describe("passkeys", () => {
     );
     expect(code).toBe("conflict");
   });
+
+  it("will not remove the only active approver passkey, and ends a removed approver passkey's sign-in only once the signer drops it", async () => {
+    const api = t.owner.browser.api;
+    const workspace = await api.call("createWorkspace", { body: { name: "Keys" } });
+    const start = await api.call("startAddPasskey", { body: {} });
+    const phone = t.register(start.options);
+    const added = await api.call("finishAddPasskey", {
+      body: { ceremonyId: start.ceremonyId, response: phone.response as never, label: "Phone" },
+    });
+    expect(added.approvals).toHaveLength(1);
+
+    // The new passkey only waits to approve: removing the old one now would leave nobody able
+    // to approve anything in this workspace, the new passkey included.
+    expect(
+      await refusal(api.call("removePasskey", { params: { credentialId: t.owner.credentialId } })),
+    ).toBe("conflict");
+
+    expect((await t.approve(added.approvals[0]?.id as never, [t.owner])).status).toBe("executed");
+    const removal = await api.call("removePasskey", {
+      params: { credentialId: t.owner.credentialId },
+    });
+    expect(removal.approvals).toHaveLength(1);
+    // The signer still accepts it, so it still signs in: it may be needed to approve.
+    await t.signIn(t.owner.credentialId);
+
+    const viaPhone = { ...t.owner, credentialId: phone.credentialId };
+    expect((await t.approve(removal.approvals[0]?.id as never, [viaPhone])).status).toBe(
+      "executed",
+    );
+    expect(await refusal(t.signIn(t.owner.credentialId))).toBe("unauthenticated");
+    const atSigner = await t.ctx.signer.getWorkspace(workspace.id);
+    expect(atSigner.approvers.map((a) => a.credentialId)).toEqual([phone.credentialId]);
+    // Later tests use the owner's browser; its session ended with the old passkey.
+    await t.signIn(phone.credentialId, t.owner.browser);
+  });
 });
 
 describe("origin check", () => {

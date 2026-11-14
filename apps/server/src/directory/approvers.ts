@@ -1,6 +1,7 @@
 import type { ApprovalSummary } from "@askgina/os-api";
 import type { UserId, WorkspaceId } from "@askgina/os-protocol";
 import { and, eq, inArray, isNull } from "drizzle-orm";
+import { appendAudit } from "../audit.ts";
 import type { AppContext } from "../context.ts";
 import { approvals, approverCredentials, credentials, workspaces } from "../db/schema.ts";
 import { HttpError } from "../http/errors.ts";
@@ -17,6 +18,11 @@ export interface RemoveApproverDetail {
   userId: UserId;
   credentialId: string;
   afterwards: AfterRemoval;
+  /**
+   * The person removed the passkey itself. Its sign-in ends once no workspace's signer accepts
+   * it any more: ending it earlier would leave someone unable to approve their own removal.
+   */
+  revokeSignIn?: boolean;
 }
 
 type Requester = { type: "user"; id: string };
@@ -82,6 +88,7 @@ export async function openRemoveApprover(
     userId: UserId;
     credentialId: string;
     afterwards: AfterRemoval;
+    revokeSignIn: boolean;
     requestedBy: Requester;
   },
 ): Promise<ApprovalSummary> {
@@ -89,6 +96,7 @@ export async function openRemoveApprover(
     userId: input.userId,
     credentialId: input.credentialId,
     afterwards: input.afterwards,
+    revokeSignIn: input.revokeSignIn,
   };
   return ctx.approvals.open({
     workspaceId: input.workspaceId,
@@ -125,6 +133,8 @@ export async function withdrawApprover(
     userId: UserId;
     credentialIds?: string[];
     afterwards: AfterRemoval;
+    /** See {@link RemoveApproverDetail.revokeSignIn}. */
+    revokeSignIn?: boolean;
     requestedBy: Requester;
   },
 ): Promise<ApprovalSummary[]> {
@@ -179,9 +189,73 @@ export async function withdrawApprover(
         userId: input.userId,
         credentialId: row.credentialId,
         afterwards: input.afterwards,
+        revokeSignIn: input.revokeSignIn ?? false,
         requestedBy: input.requestedBy,
       }),
     );
   }
   return opened;
+}
+
+/**
+ * Notice approvers an operator enrolled directly at the signer (its admin CLI, the way back in
+ * when no approver is left). Each of our `pending` passkeys the signer already accepts becomes
+ * `active`, and the request that waited for it is cancelled.
+ */
+export async function reconcileApprovers(ctx: AppContext, workspaceId: WorkspaceId): Promise<void> {
+  const pending = await ctx.db
+    .select()
+    .from(approverCredentials)
+    .where(
+      and(
+        eq(approverCredentials.workspaceId, workspaceId),
+        eq(approverCredentials.state, "pending"),
+      ),
+    );
+  if (pending.length === 0) return;
+  const state = await ctx.signer.getWorkspace(workspaceId);
+  const enrolled = new Set(state.approvers.map((approver) => approver.credentialId));
+  for (const row of pending) {
+    if (!enrolled.has(row.credentialId)) continue;
+    const changed = await ctx.db.transaction(async (tx) => {
+      const updated = await tx
+        .update(approverCredentials)
+        .set({ state: "active" })
+        .where(
+          and(
+            eq(approverCredentials.workspaceId, workspaceId),
+            eq(approverCredentials.credentialId, row.credentialId),
+            eq(approverCredentials.state, "pending"),
+          ),
+        )
+        .returning();
+      if (updated.length === 0) return false;
+      await appendAudit(
+        ctx,
+        {
+          workspaceId,
+          actor: { type: "signer", id: null },
+          action: "approver.enrolled_by_operator",
+          subject: { type: "user", id: row.userId },
+          detail: { credentialId: row.credentialId },
+        },
+        tx,
+      );
+      return true;
+    });
+    if (!changed) continue;
+    // The row is `active` now, so the kind's `abandon` (which deletes `pending` rows) leaves it.
+    const open = await ctx.db
+      .select({ id: approvals.id })
+      .from(approvals)
+      .where(
+        and(
+          eq(approvals.workspaceId, workspaceId),
+          eq(approvals.kind, "add-approver"),
+          eq(approvals.status, "pending"),
+          eq(approvals.subjectId, row.credentialId),
+        ),
+      );
+    for (const approval of open) await ctx.approvals.cancel(approval.id);
+  }
 }

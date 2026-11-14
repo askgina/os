@@ -13,6 +13,7 @@ import {
   Hex32,
   Intent,
   IntentId,
+  Memo,
   UserId,
   WalletId,
   WalletPolicy,
@@ -60,7 +61,17 @@ export const apiErrorStatus: Record<ApiErrorCode, number> = {
 
 // --- people and sessions ----------------------------------------------------------------------
 
-export const DisplayName = z.string().trim().min(1).max(64);
+/**
+ * A name a person typed that is later shown next to approval cards: workspace, agent, wallet,
+ * person and passkey names. It follows the memo rule (no control or bidirectional characters),
+ * so a name cannot make a card read differently from what is stored.
+ */
+export const DisplayName = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .refine((value) => Memo.safeParse(value).success, "contains control or bidi characters");
 
 export const UserSummary = z.strictObject({ id: UserId, displayName: z.string() });
 export type UserSummary = z.infer<typeof UserSummary>;
@@ -119,11 +130,24 @@ export type Role = z.infer<typeof Role>;
 export const ApproverState = z.enum(["none", "pending", "active"]);
 export type ApproverState = z.infer<typeof ApproverState>;
 
+/**
+ * A passkey of a member that waits to approve. Shown to owners with its COSE public key
+ * (base64url), so an operator can enroll it directly at the signer when no approver is left.
+ */
+export const PendingPasskey = z.strictObject({
+  credentialId: Base64Url,
+  publicKey: Base64Url,
+  label: z.string(),
+});
+export type PendingPasskey = z.infer<typeof PendingPasskey>;
+
 export const Member = z.strictObject({
   user: UserSummary,
   role: Role,
   approver: ApproverState,
   joinedAt: EpochSeconds,
+  /** Filled for owners only; empty for everyone else. */
+  pendingPasskeys: z.array(PendingPasskey),
 });
 export type Member = z.infer<typeof Member>;
 
@@ -303,7 +327,8 @@ export const IntentDetail = IntentSummary.extend({
   transaction: z
     .strictObject({
       hash: Hex32,
-      status: z.enum(["signed", "broadcast", "confirmed", "reverted", "stuck"]),
+      /** `rejected`: signed, never accepted by the chain, and no longer retried. */
+      status: z.enum(["signed", "broadcast", "confirmed", "reverted", "stuck", "rejected"]),
       blockNumber: z.number().int().nullable(),
       explorerUrl: z.string().nullable(),
     })
@@ -438,10 +463,23 @@ export const AuditEvent = z.strictObject({
 });
 export type AuditEvent = z.infer<typeof AuditEvent>;
 
+/** An invite still waiting to be used. Its token is never shown again. */
+export const InviteSummary = z.strictObject({
+  id: z.string().min(1).max(64),
+  role: Role,
+  createdBy: UserSummary,
+  createdAt: EpochSeconds,
+  expiresAt: EpochSeconds,
+});
+export type InviteSummary = z.infer<typeof InviteSummary>;
+
 export const AuditVerification = z.strictObject({
   ok: z.boolean(),
   checked: z.number().int().min(0),
-  /** The first `seq` whose hash does not follow from the entry before it. */
+  /**
+   * The first `seq` whose hash does not follow from the entry before it, or the first missing
+   * one when the newest entries are gone.
+   */
   brokenAt: z.number().int().nullable(),
 });
 export type AuditVerification = z.infer<typeof AuditVerification>;

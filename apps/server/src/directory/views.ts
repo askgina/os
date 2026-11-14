@@ -13,6 +13,7 @@ import {
   agents,
   approvals,
   approverCredentials,
+  credentials,
   memberships,
   users,
   wallets,
@@ -71,7 +72,15 @@ export async function pendingApprovalCount(
   return row?.n ?? 0;
 }
 
-export async function listMembers(ctx: AppContext, workspaceId: WorkspaceId): Promise<Member[]> {
+/**
+ * The workspace's members. `viewerRole` is the asking person's role: only owners see the public
+ * keys of passkeys waiting to approve, which an operator needs to enroll one at the signer.
+ */
+export async function listMembers(
+  ctx: AppContext,
+  workspaceId: WorkspaceId,
+  viewerRole: Role,
+): Promise<Member[]> {
   const rows = await ctx.db
     .select({ membership: memberships, user: users })
     .from(memberships)
@@ -79,8 +88,15 @@ export async function listMembers(ctx: AppContext, workspaceId: WorkspaceId): Pr
     .where(eq(memberships.workspaceId, workspaceId))
     .orderBy(asc(memberships.createdAt));
   const approverRows = await ctx.db
-    .select({ userId: approverCredentials.userId, state: approverCredentials.state })
+    .select({
+      userId: approverCredentials.userId,
+      state: approverCredentials.state,
+      credentialId: credentials.id,
+      publicKey: credentials.publicKey,
+      label: credentials.label,
+    })
     .from(approverCredentials)
+    .innerJoin(credentials, eq(credentials.id, approverCredentials.credentialId))
     .where(eq(approverCredentials.workspaceId, workspaceId));
   return rows.map(({ membership, user }) => {
     const states = approverRows.filter((row) => row.userId === user.id).map((row) => row.state);
@@ -96,6 +112,16 @@ export async function listMembers(ctx: AppContext, workspaceId: WorkspaceId): Pr
       role: membership.role,
       approver,
       joinedAt: seconds(membership.createdAt),
+      pendingPasskeys:
+        viewerRole === "owner"
+          ? approverRows
+              .filter((row) => row.userId === user.id && row.state === "pending")
+              .map((row) => ({
+                credentialId: row.credentialId,
+                publicKey: row.publicKey.toString("base64url"),
+                label: row.label,
+              }))
+          : [],
     };
   });
 }
@@ -124,7 +150,7 @@ export async function workspaceDetail(
     paused: workspace.paused,
     pendingApprovals: await pendingApprovalCount(ctx, workspaceId),
     adminThreshold: workspace.adminThreshold,
-    members: await listMembers(ctx, workspaceId),
+    members: await listMembers(ctx, workspaceId, role),
     agents: agentRows.map(agentSummary),
     wallets: walletRows.map((wallet) =>
       walletSummary(wallet, agentRows.find((agent) => agent.walletId === wallet.id)?.id ?? null),

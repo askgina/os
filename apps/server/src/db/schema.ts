@@ -9,6 +9,7 @@ import type {
   WalletPolicy,
   WorkspaceId,
 } from "@askgina/os-protocol";
+import { sql } from "drizzle-orm";
 import {
   bigint,
   boolean,
@@ -121,6 +122,12 @@ export const workspaces = os.table("workspaces", {
   /** Mirror of the signer's flag, for display. The signer's own value is what counts. */
   paused: boolean("paused").notNull().default(false),
   adminThreshold: integer("admin_threshold").notNull().default(1),
+  /**
+   * Head of the workspace's audit chain, moved in the same transaction as every append. Without
+   * it, deleting the newest entries (or all of them) would leave a chain that still verifies.
+   */
+  auditSeq: integer("audit_seq").notNull().default(0),
+  auditHead: text("audit_head"),
 });
 
 export const memberships = os.table(
@@ -172,23 +179,29 @@ export const approverCredentials = os.table(
   ],
 );
 
-export const invites = os.table("invites", {
-  /** SHA-256 hex of the invite token. The token itself is shown once and never stored. */
-  tokenHash: text("token_hash").primaryKey(),
-  workspaceId: text("workspace_id")
-    .$type<WorkspaceId>()
-    .notNull()
-    .references(() => workspaces.id),
-  role: text("role").$type<"owner" | "approver" | "viewer">().notNull(),
-  createdBy: text("created_by")
-    .$type<UserId>()
-    .notNull()
-    .references(() => users.id),
-  createdAt: createdAt(),
-  expiresAt: time("expires_at").notNull(),
-  acceptedBy: text("accepted_by").$type<UserId>(),
-  acceptedAt: time("accepted_at"),
-});
+export const invites = os.table(
+  "invites",
+  {
+    /** SHA-256 hex of the invite token. The token itself is shown once and never stored. */
+    tokenHash: text("token_hash").primaryKey(),
+    /** Names the invite to owners who list or revoke it; unlike the token it grants nothing. */
+    id: text("id").notNull(),
+    workspaceId: text("workspace_id")
+      .$type<WorkspaceId>()
+      .notNull()
+      .references(() => workspaces.id),
+    role: text("role").$type<"owner" | "approver" | "viewer">().notNull(),
+    createdBy: text("created_by")
+      .$type<UserId>()
+      .notNull()
+      .references(() => users.id),
+    createdAt: createdAt(),
+    expiresAt: time("expires_at").notNull(),
+    acceptedBy: text("accepted_by").$type<UserId>(),
+    acceptedAt: time("accepted_at"),
+  },
+  (table) => [uniqueIndex("invites_id_idx").on(table.id)],
+);
 
 // --- agents and wallets -----------------------------------------------------------------------
 
@@ -209,7 +222,13 @@ export const wallets = os.table(
     policyHash: text("policy_hash"),
     createdAt: createdAt(),
   },
-  (table) => [index("wallets_workspace_idx").on(table.workspaceId)],
+  (table) => [
+    index("wallets_workspace_idx").on(table.workspaceId),
+    // A workspace has at most one treasury, even when two requests race to create it.
+    uniqueIndex("wallets_one_treasury_idx")
+      .on(table.workspaceId)
+      .where(sql`${table.kind} = 'treasury'`),
+  ],
 );
 
 export const agents = os.table(
@@ -234,6 +253,8 @@ export const agents = os.table(
   },
   (table) => [
     uniqueIndex("agents_token_hash_idx").on(table.tokenHash),
+    // A wallet belongs to at most one agent.
+    uniqueIndex("agents_wallet_idx").on(table.walletId),
     index("agents_workspace_idx").on(table.workspaceId),
   ],
 );
@@ -395,8 +416,9 @@ export const transactions = os.table(
     hash: text("hash").notNull(),
     /** Sealed. The signed raw transaction, kept so it can be rebroadcast. */
     raw: bytea("raw").notNull(),
+    /** `rejected`: signed, never accepted by the chain, and no longer retried. */
     status: text("status")
-      .$type<"signed" | "broadcast" | "confirmed" | "reverted" | "stuck">()
+      .$type<"signed" | "broadcast" | "confirmed" | "reverted" | "stuck" | "rejected">()
       .notNull()
       .default("signed"),
     blockNumber: bigint("block_number", { mode: "number" }),
@@ -433,4 +455,27 @@ export const auditEvents = os.table(
     hash: text("hash").notNull(),
   },
   (table) => [primaryKey({ columns: [table.workspaceId, table.seq] })],
+);
+
+/**
+ * The account nonce an approval was given, recorded before the signer is asked to sign. A crash
+ * between the signature and the `transactions` row then cannot hand the same nonce to another
+ * approval.
+ */
+export const nonceReservations = os.table(
+  "nonce_reservations",
+  {
+    approvalId: text("approval_id")
+      .$type<ApprovalId>()
+      .primaryKey()
+      .references(() => approvals.id),
+    walletId: text("wallet_id")
+      .$type<WalletId>()
+      .notNull()
+      .references(() => wallets.id),
+    chainId: text("chain_id").notNull(),
+    nonce: integer("nonce").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [index("nonce_reservations_wallet_chain_idx").on(table.walletId, table.chainId)],
 );

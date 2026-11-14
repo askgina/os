@@ -1,8 +1,20 @@
 import { ApiError, type PolicyDraft } from "@askgina/os-api";
-import type { ApprovalId, WorkspaceId } from "@askgina/os-protocol";
-import { eq } from "drizzle-orm";
+import { type ApprovalId, DomainTag, digestHex, type WorkspaceId } from "@askgina/os-protocol";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, approvals } from "../../src/db/schema.ts";
+import type { ApprovalKindHandler } from "../../src/approvals/kinds.ts";
+import { appendAudit, verifyAudit } from "../../src/audit.ts";
+import type { AppContext } from "../../src/context.ts";
+import {
+  agents,
+  approvals,
+  auditEvents,
+  credentials,
+  memberships,
+  wallets,
+} from "../../src/db/schema.ts";
+import { registerDirectoryKinds } from "../../src/directory/kinds.ts";
+import { engineOf } from "../../src/execution/approvals.ts";
 import {
   createTestContext,
   TEST_CHAIN_ID,
@@ -37,7 +49,7 @@ async function join(role: "owner" | "approver" | "viewer", name: string): Promis
     params: { workspaceId },
     body: { role },
   });
-  const token = url.split("/invite/")[1] ?? "";
+  const token = url.split("/join/")[1] ?? "";
   const browser = t.browser();
   const start = await browser.api.call("startInviteRegistration", {
     params: { token },
@@ -137,7 +149,7 @@ describe("members", () => {
       params: { workspaceId },
       body: { role: "viewer" },
     });
-    const token = url.split("/invite/")[1] ?? "";
+    const token = url.split("/join/")[1] ?? "";
     const someone = await t.signIn(approver.credentialId);
     const first = t.browser();
     const start = await first.api.call("startInviteRegistration", {
@@ -162,7 +174,7 @@ describe("members", () => {
       params: { workspaceId },
       body: { role: "viewer" },
     });
-    const token = url.split("/invite/")[1] ?? "";
+    const token = url.split("/join/")[1] ?? "";
     expect((await t.browser().api.call("getInvite", { params: { token } })).role).toBe("viewer");
     t.clock.advance(7 * 24 * 3600 + 1);
     expect(await refusal(t.browser().api.call("getInvite", { params: { token } }))).toBe(
@@ -344,5 +356,398 @@ describe("audit", () => {
     expect(await api.call("verifyAudit", { params: { workspaceId } })).toMatchObject({ ok: true });
     const decisions = await api.call("listSignerDecisions", { params: { workspaceId }, query: {} });
     expect(decisions.items.some((d) => d.outcome === "allowed")).toBe(true);
+  });
+});
+
+// --- hardening ----------------------------------------------------------------------------------
+
+async function freshWorkspace(name: string): Promise<WorkspaceId> {
+  return (await t.owner.browser.api.call("createWorkspace", { body: { name } })).id;
+}
+
+async function joinInto(
+  target: WorkspaceId,
+  role: "owner" | "approver" | "viewer",
+  name: string,
+  inviter: TestPerson = t.owner,
+): Promise<TestPerson> {
+  const { url } = await inviter.browser.api.call("createInvite", {
+    params: { workspaceId: target },
+    body: { role },
+  });
+  const token = url.split("/join/")[1] ?? "";
+  const browser = t.browser();
+  const start = await browser.api.call("startInviteRegistration", {
+    params: { token },
+    body: { displayName: name },
+  });
+  const passkey = t.register(start.options);
+  const session = await browser.api.call("finishInviteRegistration", {
+    params: { token },
+    body: { ceremonyId: start.ceremonyId, response: passkey.response as never },
+  });
+  if (!session.user) throw new Error("joining did not sign in");
+  return {
+    userId: session.user.id,
+    displayName: name,
+    credentialId: passkey.credentialId,
+    browser,
+  };
+}
+
+/** Join as an approver or owner and have the owner let the new passkey approve. */
+async function joinActive(target: WorkspaceId, role: "owner" | "approver", name: string) {
+  const person = await joinInto(target, role, name);
+  const approvalId = await pendingFor("add-approver", person.credentialId);
+  expect((await t.approve(approvalId, [t.owner])).status).toBe("executed");
+  return person;
+}
+
+/** The directory's approval kinds, called directly to replay a step that runs again late. */
+function directoryKinds(): Map<string, ApprovalKindHandler> {
+  const kinds = new Map<string, ApprovalKindHandler>();
+  const collector: Pick<AppContext["approvals"], "register"> = {
+    register: (handler) => {
+      kinds.set(handler.kind, handler as unknown as ApprovalKindHandler);
+    },
+  };
+  registerDirectoryKinds(collector as AppContext["approvals"]);
+  return kinds;
+}
+
+async function replay(approvalId: ApprovalId): Promise<void> {
+  const engine = engineOf(t.ctx);
+  const row = await engine.row(approvalId);
+  const handler = directoryKinds().get(row.kind);
+  if (!handler) throw new Error(`no handler for ${row.kind}`);
+  // The signer already applied this approval, so the handler never uses the authorization.
+  await handler.execute(t.ctx, row, {} as never, await engine.openDetail(row));
+}
+
+describe("invites", () => {
+  it("links point at the web app's join page, and owners can list and revoke them", async () => {
+    const target = await freshWorkspace("Invites");
+    const api = t.owner.browser.api;
+    const { url } = await api.call("createInvite", {
+      params: { workspaceId: target },
+      body: { role: "approver" },
+    });
+    expect(url.startsWith(`${t.ctx.config.publicOrigin}/join/`)).toBe(true);
+    const token = url.split("/join/")[1] ?? "";
+    const listed = await api.call("listInvites", { params: { workspaceId: target } });
+    expect(listed.items).toHaveLength(1);
+    expect(listed.items[0]).toMatchObject({ role: "approver", createdBy: { id: t.owner.userId } });
+    expect(JSON.stringify(listed)).not.toContain(token);
+
+    await api.call("revokeInvite", {
+      params: { workspaceId: target, inviteId: listed.items[0]?.id ?? "" },
+    });
+    expect(await refusal(t.browser().api.call("getInvite", { params: { token } }))).toBe(
+      "not_found",
+    );
+    expect((await api.call("listInvites", { params: { workspaceId: target } })).items).toEqual([]);
+  });
+
+  it("an owner who is demoted cannot come back with an invite they made earlier", async () => {
+    const target = await freshWorkspace("Rejoin");
+    const bob = await joinInto(target, "owner", "Bob");
+    const { url } = await bob.browser.api.call("createInvite", {
+      params: { workspaceId: target },
+      body: { role: "owner" },
+    });
+    const token = url.split("/join/")[1] ?? "";
+    // Bob's passkey still waits to approve, so demoting him takes effect at once.
+    await t.owner.browser.api.call("setMemberRole", {
+      params: { workspaceId: target, userId: bob.userId },
+      body: { role: "viewer" },
+    });
+    expect(await refusal(t.browser().api.call("getInvite", { params: { token } }))).toBe(
+      "not_found",
+    );
+    await t.owner.browser.api.call("removeMember", {
+      params: { workspaceId: target, userId: bob.userId },
+    });
+    expect(
+      await refusal(bob.browser.api.call("acceptInvite", { params: { token }, body: {} })),
+    ).toBe("not_found");
+  });
+
+  it("an invite stops working when its creator is no longer an owner, however that came about", async () => {
+    const target = await freshWorkspace("Authority");
+    const carol = await joinInto(target, "owner", "Carol");
+    const { url } = await carol.browser.api.call("createInvite", {
+      params: { workspaceId: target },
+      body: { role: "owner" },
+    });
+    const token = url.split("/join/")[1] ?? "";
+    await t.ctx.db
+      .update(memberships)
+      .set({ role: "viewer" })
+      .where(and(eq(memberships.workspaceId, target), eq(memberships.userId, carol.userId)));
+    expect(await refusal(t.browser().api.call("getInvite", { params: { token } }))).toBe(
+      "not_found",
+    );
+    const stranger = await join("viewer", "Sam");
+    expect(
+      await refusal(stranger.browser.api.call("acceptInvite", { params: { token }, body: {} })),
+    ).toBe("not_found");
+  });
+});
+
+describe("members and approvers", () => {
+  it("owners see the public key of a passkey waiting to approve; others do not", async () => {
+    const target = await freshWorkspace("Pending");
+    const ada = await joinInto(target, "approver", "Ada");
+    const asOwner = await t.owner.browser.api.call("getWorkspace", {
+      params: { workspaceId: target },
+    });
+    const [credential] = await t.ctx.db
+      .select()
+      .from(credentials)
+      .where(eq(credentials.id, ada.credentialId));
+    expect(asOwner.members.find((m) => m.user.id === ada.userId)?.pendingPasskeys).toEqual([
+      {
+        credentialId: ada.credentialId,
+        publicKey: credential?.publicKey.toString("base64url"),
+        label: "First passkey",
+      },
+    ]);
+    const asAda = await ada.browser.api.call("getWorkspace", { params: { workspaceId: target } });
+    expect(asAda.members.every((m) => m.pendingPasskeys.length === 0)).toBe(true);
+  });
+
+  it("notices an approver an operator enrolled at the signer, and cancels the request that waited", async () => {
+    const target = await freshWorkspace("Operator");
+    const ada = await joinInto(target, "approver", "Ada");
+    const waiting = await pendingFor("add-approver", ada.credentialId);
+    const [credential] = await t.ctx.db
+      .select()
+      .from(credentials)
+      .where(eq(credentials.id, ada.credentialId));
+    t.signer.enrollApproverByOperator(target, {
+      userId: ada.userId,
+      credentialId: ada.credentialId,
+      publicKey: credential?.publicKey.toString("base64url") ?? "",
+    });
+    const detail = await t.owner.browser.api.call("getWorkspace", {
+      params: { workspaceId: target },
+    });
+    expect(detail.members.find((m) => m.user.id === ada.userId)?.approver).toBe("active");
+    const [row] = await t.ctx.db.select().from(approvals).where(eq(approvals.id, waiting));
+    expect(row?.status).toBe("cancelled");
+    const audit = await t.owner.browser.api.call("listAudit", {
+      params: { workspaceId: target },
+      query: {},
+    });
+    expect(audit.items.some((e) => e.action === "approver.enrolled_by_operator")).toBe(true);
+  });
+
+  it("a removal that waited does not take the workspace's last owner away", async () => {
+    const target = await freshWorkspace("Owners");
+    const bob = await joinActive(target, "owner", "Bob");
+    // The signer never removes its last approver, so a third person approves both removals.
+    const ada = await joinActive(target, "approver", "Ada");
+    const removeBob = await t.owner.browser.api.call("removeMember", {
+      params: { workspaceId: target, userId: bob.userId },
+    });
+    const removeOlivia = await bob.browser.api.call("setMemberRole", {
+      params: { workspaceId: target, userId: t.owner.userId },
+      body: { role: "viewer" },
+    });
+    expect((await t.approve(removeOlivia.approvals[0]?.id as never, [ada])).status).toBe(
+      "executed",
+    );
+    expect((await t.approve(removeBob.approvals[0]?.id as never, [ada])).status).toBe("executed");
+    const rows = await t.ctx.db
+      .select()
+      .from(memberships)
+      .where(and(eq(memberships.workspaceId, target), eq(memberships.role, "owner")));
+    expect(rows.map((r) => r.userId)).toEqual([bob.userId]);
+  });
+
+  it("refuses names that could make an approval card read differently", async () => {
+    expect(
+      await refusal(
+        t.owner.browser.api.call("createWorkspace", { body: { name: "Pay\u202eevil" } }),
+      ),
+    ).toBe("invalid_request");
+  });
+
+  it("a workspace has one treasury and a wallet one agent, even past the route checks", async () => {
+    const target = await freshWorkspace("Unique");
+    const treasury = await t.owner.browser.api.call("createTreasury", {
+      params: { workspaceId: target },
+      body: { label: "Treasury" },
+    });
+    await expect(
+      t.ctx.db.insert(wallets).values({
+        id: "wal_01j0000000000000000000000x" as never,
+        workspaceId: target,
+        kind: "treasury",
+        label: "Second",
+        address: "0x0000000000000000000000000000000000000001",
+      }),
+    ).rejects.toThrow();
+    const agent = await t.owner.browser.api.call("createAgent", {
+      params: { workspaceId: target },
+      body: { name: "Bot" },
+    });
+    await expect(
+      t.ctx.db.insert(agents).values({
+        id: "agt_01j0000000000000000000000x" as never,
+        workspaceId: target,
+        name: "Twin",
+        tokenHash: "x".repeat(64),
+        tokenPrefix: "osa_twin",
+        walletId: agent.wallet.id,
+      }),
+    ).rejects.toThrow();
+    expect(treasury.kind).toBe("treasury");
+  });
+});
+
+describe("thresholds", () => {
+  it("a policy may not need more approvals than the admin threshold, and the admin threshold may not drop below a policy", async () => {
+    const target = await freshWorkspace("Thresholds");
+    const ada = await joinActive(target, "approver", "Ada");
+    const agent = await t.owner.browser.api.call("createAgent", {
+      params: { workspaceId: target },
+      body: { name: "Bot" },
+    });
+    const params = { workspaceId: target, walletId: agent.wallet.id };
+    const two = { ...draft(agent.agent.id), approvals: { threshold: 2, ttlSeconds: 600 } };
+    expect(
+      await refusal(t.owner.browser.api.call("requestPolicy", { params, body: { draft: two } })),
+    ).toBe("invalid_request");
+
+    const raise = await t.owner.browser.api.call("requestAdminThreshold", {
+      params: { workspaceId: target },
+      body: { adminThreshold: 2 },
+    });
+    expect((await t.approve(raise.id, [t.owner])).status).toBe("executed");
+    const policy = await t.owner.browser.api.call("requestPolicy", {
+      params,
+      body: { draft: two },
+    });
+    expect((await t.approve(policy.id, [t.owner, ada])).status).toBe("executed");
+    expect(
+      await refusal(
+        t.owner.browser.api.call("requestAdminThreshold", {
+          params: { workspaceId: target },
+          body: { adminThreshold: 1 },
+        }),
+      ),
+    ).toBe("invalid_request");
+  });
+});
+
+describe("mirrors", () => {
+  it("a policy step that runs again late does not put an older policy back", async () => {
+    const target = await freshWorkspace("Mirror");
+    const agent = await t.owner.browser.api.call("createAgent", {
+      params: { workspaceId: target },
+      body: { name: "Bot" },
+    });
+    const params = { workspaceId: target, walletId: agent.wallet.id };
+    const first = await t.owner.browser.api.call("requestPolicy", {
+      params,
+      body: { draft: draft(agent.agent.id) },
+    });
+    expect((await t.approve(first.id, [t.owner])).status).toBe("executed");
+    const second = await t.owner.browser.api.call("requestPolicy", {
+      params,
+      body: { draft: { ...draft(agent.agent.id), fees: { maxPerTxWei: "7" } } },
+    });
+    expect((await t.approve(second.id, [t.owner])).status).toBe("executed");
+    await replay(first.id);
+    const [row] = await t.ctx.db.select().from(wallets).where(eq(wallets.id, agent.wallet.id));
+    expect(row?.policy?.revision).toBe(2);
+    expect(row?.policyHash).toBe((await t.ctx.signer.getWallet(agent.wallet.id)).policyHash);
+  });
+
+  it("a resume step that runs again after a new pause leaves the workspace shown paused", async () => {
+    const target = await freshWorkspace("Brake");
+    const api = t.owner.browser.api;
+    await api.call("pauseWorkspace", { params: { workspaceId: target }, body: {} });
+    const resume = await api.call("requestResume", { params: { workspaceId: target }, body: {} });
+    expect((await t.approve(resume.id, [t.owner])).status).toBe("executed");
+    await api.call("pauseWorkspace", { params: { workspaceId: target }, body: {} });
+    await replay(resume.id);
+    expect((await api.call("getWorkspace", { params: { workspaceId: target } })).paused).toBe(true);
+  });
+});
+
+describe("audit chain", () => {
+  it("salts the digest of the sealed detail, so equal details do not look equal", async () => {
+    const target = await freshWorkspace("Salt");
+    const detail = { memo: "rent for March" };
+    await appendAudit(t.ctx, {
+      workspaceId: target,
+      actor: { type: "system", id: null },
+      action: "test.a",
+      detail,
+    });
+    await appendAudit(t.ctx, {
+      workspaceId: target,
+      actor: { type: "system", id: null },
+      action: "test.b",
+      detail,
+    });
+    const rows = await t.ctx.db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.workspaceId, target));
+    const tested = rows.filter((r) => r.action.startsWith("test."));
+    expect(tested[0]?.detailDigest).not.toBe(tested[1]?.detailDigest);
+    const guess = digestHex(DomainTag.audit, { detail });
+    expect(rows.map((r) => r.detailDigest)).not.toContain(guess);
+    const page = await t.owner.browser.api.call("listAudit", {
+      params: { workspaceId: target },
+      query: {},
+    });
+    expect(page.items.find((e) => e.action === "test.a")?.detail).toEqual(detail);
+    expect(await verifyAudit(t.ctx, target)).toMatchObject({ ok: true });
+  });
+
+  async function chainOf(name: string, extra: number): Promise<WorkspaceId> {
+    const target = await freshWorkspace(name);
+    for (let i = 0; i < extra; i += 1) {
+      await appendAudit(t.ctx, {
+        workspaceId: target,
+        actor: { type: "system", id: null },
+        action: "test.event",
+        detail: { i },
+      });
+    }
+    return target;
+  }
+
+  it("notices an edited entry", async () => {
+    const target = await chainOf("Edited", 3);
+    await t.ctx.db
+      .update(auditEvents)
+      .set({ action: "test.forged" })
+      .where(and(eq(auditEvents.workspaceId, target), eq(auditEvents.seq, 2)));
+    expect(await verifyAudit(t.ctx, target)).toEqual({ ok: false, checked: 1, brokenAt: 2 });
+  });
+
+  it("notices a deleted entry in the middle", async () => {
+    const target = await chainOf("Middle", 3);
+    await t.ctx.db
+      .delete(auditEvents)
+      .where(and(eq(auditEvents.workspaceId, target), eq(auditEvents.seq, 2)));
+    expect(await verifyAudit(t.ctx, target)).toMatchObject({ ok: false, brokenAt: 3 });
+  });
+
+  it("notices deleted newest entries and a deleted chain", async () => {
+    const tail = await chainOf("Tail", 3);
+    await t.ctx.db
+      .delete(auditEvents)
+      .where(and(eq(auditEvents.workspaceId, tail), eq(auditEvents.seq, 4)));
+    expect(await verifyAudit(t.ctx, tail)).toEqual({ ok: false, checked: 3, brokenAt: 4 });
+
+    const whole = await chainOf("Whole", 1);
+    await t.ctx.db.delete(auditEvents).where(eq(auditEvents.workspaceId, whole));
+    expect(await verifyAudit(t.ctx, whole)).toEqual({ ok: false, checked: 0, brokenAt: 1 });
   });
 });

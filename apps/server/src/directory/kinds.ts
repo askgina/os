@@ -10,7 +10,7 @@ import { SignerError } from "@askgina/os-protocol/signer";
 import { and, eq, ne, sql } from "drizzle-orm";
 import { ApprovalFailure, type ApprovalKindHandler } from "../approvals/kinds.ts";
 import { appendAudit } from "../audit.ts";
-import type { AppContext } from "../context.ts";
+import type { AppContext, Executor } from "../context.ts";
 import {
   approverCredentials,
   credentials,
@@ -19,7 +19,9 @@ import {
   wallets,
   workspaces,
 } from "../db/schema.ts";
+import { revokePasskey } from "../identity/passkeys.ts";
 import type { AddApproverDetail, RemoveApproverDetail } from "./approvers.ts";
+import { anotherOwnerRemains, dropInvitesOf } from "./members.ts";
 import { loadWallet, walletSummary } from "./views.ts";
 
 export interface SetPolicyDetail {
@@ -61,6 +63,20 @@ async function personAndPasskey(ctx: AppContext, detail: AddApproverDetail) {
 }
 
 const systemActor = { type: "system", id: null } as const;
+
+/**
+ * End sign-in for a passkey its owner removed, once no workspace still lists it as an approver.
+ * Runs in the transaction that deleted the last such row.
+ */
+async function revokeSignInOnceUnused(ctx: AppContext, tx: Executor, credentialId: string) {
+  const [still] = await tx
+    .select({ id: approverCredentials.credentialId })
+    .from(approverCredentials)
+    .where(eq(approverCredentials.credentialId, credentialId))
+    .limit(1);
+  if (still) return;
+  await revokePasskey(tx, credentialId, new Date(ctx.now() * 1000));
+}
 
 const addApprover: ApprovalKindHandler<"add-approver"> = {
   kind: "add-approver",
@@ -131,7 +147,7 @@ const removeApprover: ApprovalKindHandler<"remove-approver"> = {
     return { kind: "remove-approver", user, credentialId, passkeyLabel: label };
   },
   async execute(ctx, approval, authorization, detail) {
-    const { credentialId, userId, afterwards } = detail as RemoveApproverDetail;
+    const { credentialId, userId, afterwards, revokeSignIn } = detail as RemoveApproverDetail;
     if (!(await alreadyApplied(ctx, approval.id))) {
       await atSigner(() => ctx.signer.removeApprover(approval.workspaceId, authorization));
     }
@@ -157,6 +173,9 @@ const removeApprover: ApprovalKindHandler<"remove-approver"> = {
         },
         tx,
       );
+      // Only now did the signer stop accepting this passkey here; once it approves nowhere, a
+      // passkey the person removed stops signing in too.
+      if (revokeSignIn === true) await revokeSignInOnceUnused(ctx, tx, credentialId);
       if (afterwards === "keep") return;
       // The role changes only once none of the member's passkeys can approve any more.
       const remaining = await tx
@@ -173,6 +192,30 @@ const removeApprover: ApprovalKindHandler<"remove-approver"> = {
         eq(memberships.workspaceId, approval.workspaceId),
         eq(memberships.userId, userId),
       );
+      const [current] = await tx
+        .select({ role: memberships.role })
+        .from(memberships)
+        .where(membership);
+      if (!current) return;
+      if (current.role === "owner") {
+        // Another owner may have been removed while this request waited. The passkey is gone at
+        // the signer either way; the workspace keeps this person as its owner.
+        if (!(await anotherOwnerRemains(tx, approval.workspaceId, userId))) {
+          await appendAudit(
+            ctx,
+            {
+              workspaceId: approval.workspaceId,
+              actor: systemActor,
+              action: "member.kept_last_owner",
+              subject: { type: "user", id: userId },
+              detail: { approvalId: approval.id },
+            },
+            tx,
+          );
+          return;
+        }
+        await dropInvitesOf(tx, approval.workspaceId, userId);
+      }
       if (afterwards === "viewer") {
         await tx.update(memberships).set({ role: "viewer" }).where(membership);
       } else {
@@ -229,16 +272,21 @@ const setPolicy: ApprovalKindHandler<"set-policy"> = {
       await atSigner(() => ctx.signer.setPolicy(policy.walletId, { policy, authorization }));
     }
     const hash = policyHash(policy);
-    await ctx.db.transaction(async (tx) => {
+    const applied = await ctx.db.transaction(async (tx) => {
+      // Only move the mirror forward from the policy this one replaces. A step that runs late,
+      // after a newer policy was mirrored, must not put the older one back.
       const changed = await tx
         .update(wallets)
         .set({ policy, policyHash: hash })
-        // IS DISTINCT FROM, because a wallet's first policy replaces NULL.
+        // IS NOT DISTINCT FROM, because a wallet's first policy replaces NULL.
         .where(
-          and(eq(wallets.id, policy.walletId), sql`${wallets.policyHash} IS DISTINCT FROM ${hash}`),
+          and(
+            eq(wallets.id, policy.walletId),
+            sql`${wallets.policyHash} IS NOT DISTINCT FROM ${policy.previousHash}`,
+          ),
         )
         .returning({ id: wallets.id });
-      if (changed.length === 0) return;
+      if (changed.length === 0) return false;
       await appendAudit(
         ctx,
         {
@@ -250,7 +298,16 @@ const setPolicy: ApprovalKindHandler<"set-policy"> = {
         },
         tx,
       );
+      return true;
     });
+    if (applied) return;
+    // The mirror had moved on (or was never this policy's predecessor): copy what the signer
+    // enforces now.
+    const state = await atSigner(() => ctx.signer.getWallet(policy.walletId));
+    await ctx.db
+      .update(wallets)
+      .set({ policy: state.policy, policyHash: state.policyHash })
+      .where(eq(wallets.id, policy.walletId));
   },
 };
 
@@ -288,18 +345,21 @@ const setAdminThreshold: ApprovalKindHandler<"set-admin-threshold"> = {
     if (!(await alreadyApplied(ctx, approval.id))) {
       await atSigner(() => ctx.signer.setAdminThreshold(approval.workspaceId, authorization));
     }
+    // Mirror what the signer holds now, not what this request asked for: a late re-run after a
+    // newer change must not bring the old value back.
+    const state = await atSigner(() => ctx.signer.getWorkspace(approval.workspaceId));
     await ctx.db.transaction(async (tx) => {
       const changed = await tx
         .update(workspaces)
-        .set({ adminThreshold: envelope.adminThreshold })
+        .set({ adminThreshold: state.adminThreshold })
         .where(
           and(
             eq(workspaces.id, approval.workspaceId),
-            ne(workspaces.adminThreshold, envelope.adminThreshold),
+            ne(workspaces.adminThreshold, state.adminThreshold),
           ),
         )
         .returning({ id: workspaces.id });
-      if (changed.length === 0) return;
+      if (changed.length === 0 || state.adminThreshold !== envelope.adminThreshold) return;
       await appendAudit(
         ctx,
         {
@@ -327,13 +387,16 @@ const resumeWorkspace: ApprovalKindHandler<"resume-workspace"> = {
     if (!(await alreadyApplied(ctx, approval.id))) {
       await atSigner(() => ctx.signer.resumeWorkspace(approval.workspaceId, authorization));
     }
+    // Mirror the signer's flag now: if someone paused again after this resume, a late re-run
+    // must not show the workspace as running.
+    const state = await atSigner(() => ctx.signer.getWorkspace(approval.workspaceId));
     await ctx.db.transaction(async (tx) => {
       const changed = await tx
         .update(workspaces)
-        .set({ paused: false })
-        .where(and(eq(workspaces.id, approval.workspaceId), eq(workspaces.paused, true)))
+        .set({ paused: state.paused })
+        .where(and(eq(workspaces.id, approval.workspaceId), ne(workspaces.paused, state.paused)))
         .returning({ id: workspaces.id });
-      if (changed.length === 0) return;
+      if (changed.length === 0 || state.paused) return;
       await appendAudit(
         ctx,
         {

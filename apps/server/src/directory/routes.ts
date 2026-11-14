@@ -12,10 +12,11 @@ import {
   type WalletPolicy,
   type WorkspaceId,
 } from "@askgina/os-protocol";
-import { and, asc, count, desc, eq, gt, inArray, isNull, lt } from "drizzle-orm";
+import { SignerError } from "@askgina/os-protocol/signer";
+import { and, asc, desc, eq, gt, inArray, isNull, lt } from "drizzle-orm";
 import type { Hono } from "hono";
 import { requireMember } from "../access.ts";
-import { appendAudit, verifyAudit } from "../audit.ts";
+import { appendAudit, openAuditDetail, verifyAudit } from "../audit.ts";
 import type { AppContext, Executor, Session } from "../context.ts";
 import {
   agents,
@@ -35,8 +36,9 @@ import { finishRegistration, insertPasskey, startRegistration } from "../identit
 import { sessionInfo } from "../identity/routes.ts";
 import { randomToken, sha256Hex } from "../identity/secrets.ts";
 import { issueSession } from "../identity/sessions.ts";
-import { openAddApprover, withdrawApprover } from "./approvers.ts";
+import { openAddApprover, reconcileApprovers, withdrawApprover } from "./approvers.ts";
 import type { SetPolicyDetail } from "./kinds.ts";
+import { anotherOwnerRemains, dropInvitesOf, isOwner } from "./members.ts";
 import {
   agentSummary,
   listMembers,
@@ -79,7 +81,11 @@ async function liveInvite(ctx: AppContext, token: string) {
         gt(invites.expiresAt, new Date(ctx.now() * 1000)),
       ),
     );
-  if (!invite) throw new HttpError("not_found", "this invite is not valid any more");
+  // An invite is only as good as its creator's authority: once they are no longer an owner,
+  // it does not let anyone in.
+  if (!invite || !(await isOwner(ctx.db, invite.workspaceId, invite.createdBy))) {
+    throw new HttpError("not_found", "this invite is not valid any more");
+  }
   return invite;
 }
 
@@ -101,7 +107,9 @@ async function joinByInvite(
       and(eq(invites.tokenHash, tokenHash), isNull(invites.acceptedAt), gt(invites.expiresAt, now)),
     )
     .returning();
-  if (!invite) throw new HttpError("not_found", "this invite is not valid any more");
+  if (!invite || !(await isOwner(tx, invite.workspaceId, invite.createdBy))) {
+    throw new HttpError("not_found", "this invite is not valid any more");
+  }
   const [already] = await tx
     .select({ role: memberships.role })
     .from(memberships)
@@ -150,13 +158,7 @@ async function enrollPasskeys(
   return opened;
 }
 
-async function ownerCount(ctx: AppContext, workspaceId: WorkspaceId): Promise<number> {
-  const [row] = await ctx.db
-    .select({ n: count() })
-    .from(memberships)
-    .where(and(eq(memberships.workspaceId, workspaceId), eq(memberships.role, "owner")));
-  return row?.n ?? 0;
-}
+const LAST_OWNER = "a workspace needs at least one owner";
 
 async function memberRole(ctx: AppContext, workspaceId: WorkspaceId, userId: string) {
   const [row] = await ctx.db
@@ -198,7 +200,9 @@ async function createWallet(
     })
     .onConflictDoNothing();
   const [row] = await ctx.db.select().from(wallets).where(eq(wallets.id, input.walletId));
-  if (!row) throw new HttpError("internal", "the wallet was not stored");
+  // The only conflict other than a retry of this same wallet is a second treasury that lost a
+  // race with the first (the unique index allows one per workspace).
+  if (!row) throw new HttpError("conflict", "this workspace already has a treasury");
   return row;
 }
 
@@ -280,6 +284,16 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   handle(app, ctx, "getWorkspace", async ({ session, params }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     const role = await requireMember(ctx, session, workspaceId);
+    try {
+      await reconcileApprovers(ctx, workspaceId);
+    } catch (error) {
+      // The page still shows the mirror; the next visit tries again.
+      ctx.log.warn("approver reconcile failed", {
+        event: "approvers.reconcile_failed",
+        workspaceId,
+        code: error instanceof SignerError ? error.code : "unavailable",
+      });
+    }
     return workspaceDetail(ctx, workspaceId, role);
   });
 
@@ -337,6 +351,17 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
       .from(workspaces)
       .where(eq(workspaces.id, workspaceId));
     if (!workspace) throw new HttpError("not_found", "no such workspace");
+    const policies = await ctx.db
+      .select({ policy: wallets.policy })
+      .from(wallets)
+      .where(eq(wallets.workspaceId, workspaceId));
+    const highest = Math.max(0, ...policies.map((row) => row.policy?.approvals.threshold ?? 0));
+    if (body.adminThreshold < highest) {
+      throw new HttpError(
+        "invalid_request",
+        `adminThreshold: a wallet policy needs ${highest} approvals, and policies may not need more than the admin threshold; lower those policies first`,
+      );
+    }
     return ctx.approvals.open({
       workspaceId,
       kind: "set-admin-threshold",
@@ -357,9 +382,11 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
     await requireMember(ctx, session, workspaceId, "owner");
     const token = randomToken(32);
     const expiresAt = ctx.now() + INVITE_TTL_SECONDS;
+    const inviteId = `inv_${randomToken(16)}`;
     await ctx.db.transaction(async (tx) => {
       await tx.insert(invites).values({
         tokenHash: sha256Hex(token),
+        id: inviteId,
         workspaceId,
         role: body.role,
         createdBy: session.user.id,
@@ -371,12 +398,68 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
           workspaceId,
           actor: actorOf(session),
           action: "invite.created",
-          detail: { role: body.role, expiresAt },
+          detail: { inviteId, role: body.role, expiresAt },
         },
         tx,
       );
     });
-    return { url: `${ctx.config.publicOrigin}/invite/${token}`, expiresAt };
+    // `/join/<token>` is the web app's route for accepting an invite.
+    return { url: `${ctx.config.publicOrigin}/join/${token}`, expiresAt };
+  });
+
+  handle(app, ctx, "listInvites", async ({ session, params }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    await requireMember(ctx, session, workspaceId, "owner");
+    const rows = await ctx.db
+      .select({ invite: invites, creator: users })
+      .from(invites)
+      .innerJoin(users, eq(users.id, invites.createdBy))
+      .where(
+        and(
+          eq(invites.workspaceId, workspaceId),
+          isNull(invites.acceptedAt),
+          gt(invites.expiresAt, new Date(ctx.now() * 1000)),
+        ),
+      )
+      .orderBy(asc(invites.createdAt));
+    return {
+      items: rows.map(({ invite, creator }) => ({
+        id: invite.id,
+        role: invite.role,
+        createdBy: { id: creator.id, displayName: creator.displayName },
+        createdAt: seconds(invite.createdAt),
+        expiresAt: seconds(invite.expiresAt),
+      })),
+    };
+  });
+
+  handle(app, ctx, "revokeInvite", async ({ session, params }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    await requireMember(ctx, session, workspaceId, "owner");
+    await ctx.db.transaction(async (tx) => {
+      const deleted = await tx
+        .delete(invites)
+        .where(
+          and(
+            eq(invites.workspaceId, workspaceId),
+            eq(invites.id, params.inviteId),
+            isNull(invites.acceptedAt),
+          ),
+        )
+        .returning({ id: invites.id });
+      if (deleted.length === 0) throw new HttpError("not_found", "no such invite");
+      await appendAudit(
+        ctx,
+        {
+          workspaceId,
+          actor: actorOf(session),
+          action: "invite.revoked",
+          detail: { inviteId: params.inviteId },
+        },
+        tx,
+      );
+    });
+    return {};
   });
 
   handle(app, ctx, "getInvite", async ({ params }) => {
@@ -436,15 +519,19 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
     await requireMember(ctx, session, workspaceId, "owner");
     const userId = params.userId as UserId;
     const current = await memberRole(ctx, workspaceId, userId);
-    if (
-      current === "owner" &&
-      body.role !== "owner" &&
-      (await ownerCount(ctx, workspaceId)) === 1
-    ) {
-      throw new HttpError("conflict", "a workspace needs at least one owner");
+    const demotingOwner = current === "owner" && body.role !== "owner";
+    // Checked early for a clear answer, and again inside the transaction that changes the role.
+    if (demotingOwner && !(await anotherOwnerRemains(ctx.db, workspaceId, userId))) {
+      throw new HttpError("conflict", LAST_OWNER);
     }
     const setRole = async (role: Role) => {
       await ctx.db.transaction(async (tx) => {
+        if (demotingOwner) {
+          if (!(await anotherOwnerRemains(tx, workspaceId, userId))) {
+            throw new HttpError("conflict", LAST_OWNER);
+          }
+          await dropInvitesOf(tx, workspaceId, userId);
+        }
         await tx
           .update(memberships)
           .set({ role })
@@ -478,7 +565,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
       await setRole(body.role);
       if (current === "viewer") opened = await enrollPasskeys(ctx, workspaceId, userId);
     }
-    const member = (await listMembers(ctx, workspaceId)).find((m) => m.user.id === userId);
+    const member = (await listMembers(ctx, workspaceId, "owner")).find((m) => m.user.id === userId);
     if (!member) throw new HttpError("not_found", "no such member");
     return { member, approvals: opened };
   });
@@ -488,8 +575,8 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
     await requireMember(ctx, session, workspaceId, "owner");
     const userId = params.userId as UserId;
     const current = await memberRole(ctx, workspaceId, userId);
-    if (current === "owner" && (await ownerCount(ctx, workspaceId)) === 1) {
-      throw new HttpError("conflict", "a workspace needs at least one owner");
+    if (current === "owner" && !(await anotherOwnerRemains(ctx.db, workspaceId, userId))) {
+      throw new HttpError("conflict", LAST_OWNER);
     }
     const opened = await withdrawApprover(ctx, {
       workspaceId,
@@ -499,6 +586,12 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
     });
     if (opened.length === 0) {
       await ctx.db.transaction(async (tx) => {
+        if (current === "owner") {
+          if (!(await anotherOwnerRemains(tx, workspaceId, userId))) {
+            throw new HttpError("conflict", LAST_OWNER);
+          }
+        }
+        await dropInvitesOf(tx, workspaceId, userId);
         await tx
           .delete(memberships)
           .where(and(eq(memberships.workspaceId, workspaceId), eq(memberships.userId, userId)));
@@ -701,6 +794,12 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
       .where(eq(workspaces.id, workspaceId));
     if (!workspace) throw new HttpError("not_found", "no such workspace");
     const draft = body.draft;
+    if (draft.approvals.threshold > workspace.adminThreshold) {
+      throw new HttpError(
+        "invalid_request",
+        `draft.approvals.threshold: may not exceed the workspace's admin threshold (${workspace.adminThreshold}); raise that first`,
+      );
+    }
     const configured = new Set<string>(ctx.chains.list().map((chain) => chain.chainId));
     const unknownChain = draft.chains.find((chainId) => !configured.has(chainId));
     if (unknownChain !== undefined) {
@@ -778,11 +877,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
     const names = await actorNames(ctx, pageRows);
     const items: AuditEvent[] = [];
     for (const row of pageRows) {
-      const detail = await ctx.sealer.open(
-        workspaceId,
-        `audit_events.detail:${workspaceId}:${row.seq}`,
-        row.detail,
-      );
+      const detail = await openAuditDetail(ctx, row);
       items.push({
         seq: row.seq,
         at: seconds(row.at),
@@ -796,7 +891,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
           row.subjectType === null || row.subjectId === null
             ? null
             : { type: row.subjectType, id: row.subjectId },
-        detail: detail as Record<string, unknown>,
+        detail,
         previousHash: row.previousHash,
         hash: row.hash,
       });

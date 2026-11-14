@@ -5,6 +5,7 @@ import {
   ApprovalSubject,
   apiErrorStatus,
   createApiClient,
+  DisplayName,
   type RouteName,
   routes,
 } from "../src/index.ts";
@@ -47,8 +48,22 @@ const examples: { [N in RouteName]: { body?: unknown; query?: unknown; response:
   requestAdminThreshold: { body: { adminThreshold: 2 }, response: f.approvalSummary },
   createInvite: {
     body: { role: "approver" },
-    response: { url: "https://os.example.com/invite/tok", expiresAt: 1_700_000_600 },
+    response: { url: "https://os.example.com/join/tok", expiresAt: 1_700_000_600 },
   },
+  listInvites: {
+    response: {
+      items: [
+        {
+          id: "inv_0123456789abcdef",
+          role: "owner",
+          createdBy: f.member.user,
+          createdAt: 1_700_000_000,
+          expiresAt: 1_700_604_800,
+        },
+      ],
+    },
+  },
+  revokeInvite: { response: {} },
   getInvite: { response: { workspaceName: "Acme", role: "approver", invitedBy: "Ada" } },
   startInviteRegistration: { body: { displayName: "Grace" }, response: f.ceremony },
   finishInviteRegistration: {
@@ -128,6 +143,28 @@ describe("route contract", () => {
       expect(status).toBeGreaterThanOrEqual(400);
       expect(status).toBeLessThan(600);
     }
+  });
+
+  it("names shown next to approval cards refuse control and bidirectional characters", () => {
+    const names = [
+      routes.createWorkspace.body,
+      routes.createAgent.body,
+      routes.createTreasury.body,
+    ] as const;
+    for (const hostile of ["Pay\u202eevil", "line\nbreak", "tab\there", "mark\u200f", "\u2066x"]) {
+      expect(names[0].safeParse({ name: hostile }).success).toBe(false);
+      expect(names[1].safeParse({ name: hostile }).success).toBe(false);
+      expect(names[2].safeParse({ label: hostile }).success).toBe(false);
+      expect(DisplayName.safeParse(hostile).success).toBe(false);
+      expect(
+        routes.finishAddPasskey.body.safeParse({
+          ceremonyId: f.ceremony.ceremonyId,
+          response: f.registrationResponse,
+          label: hostile,
+        }).success,
+      ).toBe(false);
+    }
+    expect(names[0].safeParse({ name: "Ops — café 東京" }).success).toBe(true);
   });
 
   it("approval subjects refuse fields of another kind", () => {
