@@ -3,7 +3,7 @@
  * authenticated with the agent's token. Through it the agent can read its own state and
  * propose; it cannot sign, approve or administer anything.
  *
- *   MCP_URL      the gateway, for example http://gateway:8080/mcp
+ *   MCP_URL      the gateway, for example http://agent-gateway/mcp
  *   AGENT_TOKEN  the token shown once when the agent was created in the UI (osa_…)
  */
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";

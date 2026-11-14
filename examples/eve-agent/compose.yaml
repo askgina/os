@@ -1,6 +1,7 @@
-# The eve agent with its own Postgres. The agent joins the stack's `agents` network, where it can
-# reach only the MCP gateway; that network cannot reach the stack's database, so the agent keeps
-# its conversation in this separate one.
+# The eve agent with its own Postgres. The agent joins the stack's `agents` network, where the
+# only askgina/os host it can reach is the MCP gateway; that network cannot reach the stack's
+# database, so the agent keeps its conversation in this separate one. Unlike the scripted
+# example, this container also has a route out (`egress`), because it must reach its model.
 #
 #   AGENT_TOKEN=osa_… EVE_CHAT_PASSWORD=… docker compose -f examples/eve-agent/compose.yaml up
 name: os-eve-agent
@@ -76,7 +77,7 @@ services:
       # title is not among them. ("$$" is a literal "$" in Compose.)
       WORLD_READABLE_ATTRIBUTE_KEYS: "$$eve.type,$$eve.version,$$eve.session,$$eve.parent,$$eve.root,$$eve.parent_call,$$eve.parent_turn,$$eve.subagent,$$eve.trigger,$$eve.prewarm"
       WORKFLOW_POSTGRES_MAX_POOL_SIZE: "52"
-      MCP_URL: ${MCP_URL:-http://agent-gateway:8080/mcp}
+      MCP_URL: ${MCP_URL:-http://agent-gateway/mcp}
       AGENT_TOKEN: ${AGENT_TOKEN:?create an agent in the UI and set AGENT_TOKEN}
       EVE_CHAT_PASSWORD: ${EVE_CHAT_PASSWORD:?set a chat password of at least 16 characters}
       OFFLINE_MODEL: ${OFFLINE_MODEL:-}
@@ -87,7 +88,7 @@ services:
       - secrets:/run/secrets:ro
     ports:
       - "127.0.0.1:${EVE_AGENT_PORT:-55810}:3000"
-    networks: [internal, agents]
+    networks: [internal, agents, egress]
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -103,6 +104,8 @@ volumes:
 networks:
   internal:
     internal: true
+  # The model endpoint, and the published chat port, need a network that is not internal.
+  egress: {}
   agents:
     external: true
-    name: ${AGENTS_NETWORK:-askgina-os_agents}
+    name: ${AGENTS_NETWORK:-os_agents}

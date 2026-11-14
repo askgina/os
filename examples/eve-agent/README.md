@@ -42,7 +42,7 @@ What it shows:
 1. Start the stack from the repository root (`docker compose up -d`) and sign in.
 2. In the UI, create an agent. Copy the token it shows once (`osa_…`).
 3. Start the example (the stack's `agents` network must exist; set `AGENTS_NETWORK` if your
-   stack's project name is not `askgina-os`):
+   stack's Compose project is not named `os`, in which case the network is `<project>_agents`):
 
    ```sh
    AGENT_TOKEN=osa_… EVE_CHAT_PASSWORD=$(openssl rand -base64 18) \
@@ -79,6 +79,12 @@ Gateway's catalog.
   eve authorizes nothing in askgina/os.
 - Metadata (run ids, timestamps, step names, event types, attribute keys) is stored in
   plaintext; payloads are not, and attribute values are withheld unless listed as readable.
+- **This Compose file has never been started.** CI builds the image and runs the smoke test,
+  which starts eve as a plain process. Expect to fix something the first time you run it.
+- The agent's container can reach the internet, because it has to reach its model. The scripted
+  example cannot. What it can reach inside askgina/os is still only the MCP gateway.
+- eve's invocation API will not work: it reads back the run attribute `$eve.invocation_token`,
+  which is not on the readable list because it is a token.
 - Only eve's own HTTP channel and one session were tested. Other channels (Slack, Discord and
   so on), subagents and schedules were not. The World withholds their attributes too, but an
   attribute eve needs to read back and that is not on the list would stop that feature working.
