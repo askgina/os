@@ -62,8 +62,9 @@ const Environment = z.object({
   RECONCILE_TIMEOUT_SECONDS: integer(3_600, 30, 604_800),
   WORKFLOW_WORKER_CONCURRENCY: integer(10, 1, 200),
   /**
-   * If set, receives a POST with no transaction details whenever an approval is waiting. An
-   * empty value means unset: Compose passes `${NOTIFY_WEBHOOK_URL:-}` through as "".
+   * If set, receives one unsigned POST with no transaction details when an approval is opened.
+   * It is sent once and not retried. An empty value means unset: Compose passes
+   * `${NOTIFY_WEBHOOK_URL:-}` through as "".
    */
   NOTIFY_WEBHOOK_URL: z.preprocess(
     (value) => (value === "" ? undefined : value),

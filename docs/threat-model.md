@@ -149,8 +149,8 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
 - **The signer volume:** the vault and its records. The OWS research found that a token plus
   read access to the vault directory is the wallet's mnemonic (findings F6 and F7 of
   [`specs/research/ows-node-sdk-in-an-isolated-signer.md`](../specs/research/ows-node-sdk-in-an-isolated-signer.md)).
-  The plan seals those tokens under the signer's own key (Milestone 2); a backup that contains
-  that key as well contains the wallets.
+  The signer seals those tokens under its own key (`token-key`); a backup that contains that key
+  as well contains the wallets.
 
 Back up each trust domain separately and protect the signer's backups as you would the funds.
 
@@ -261,7 +261,8 @@ From the map's "Not yet specified" list ([askgina/os#1](https://github.com/askgi
 - Operations that are not EVM transactions: other chains, and off-chain venues.
 - Shipping agent runtimes or sandboxes.
 - Operating beyond one machine: KMS or OpenBao key providers, HA Postgres, Kubernetes.
-- Notifications outside the inbox: web push and chat.
+- Notifications outside the inbox: web push and chat. The optional webhook (`NOTIFY_WEBHOOK_URL`)
+  exists: it sends identifiers only, unsigned, once, to an address the operator chose.
 - Workspace lifecycle: clone, export, and delete with assets still in the wallets.
 - Repricing stuck transactions.
 

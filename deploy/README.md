@@ -121,6 +121,17 @@ passkey on another device while you can.
 Database migrations run when the server starts. Take a backup first. The Workflow SDK and its
 Postgres backend must stay on the same release line; this repository pins both.
 
+## The approval webhook
+
+Set `NOTIFY_WEBHOOK_URL` in `.env` to be told when an approval is waiting. The server sends one
+`POST` with a JSON body of identifiers only: `{"event":"approval.opened","approvalId":…,"workspaceId":…,"kind":…}`.
+It never contains an amount, a recipient or a memo.
+
+Know its limits before you build on it. The request is sent once, with a five-second timeout, and
+is not retried. It is not signed, so the receiver cannot tell it came from this server. It is lost
+if the server stops between recording the approval and sending it, and approvals that the
+recovery sweeper starts are not announced. Treat it as a hint and read the inbox for the truth.
+
 ## The setup token
 
 Until the first owner exists, every start of the server prints a one-time setup token and retires

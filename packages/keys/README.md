@@ -69,6 +69,8 @@ default); a shred is complete across the fleet only after that.
   `KeyProvider`.
 - **Never run upstream's `workflow web` with this keyring.** Its server hands the raw run key to
   the browser without authentication: with the keyring it is an open decryption oracle.
-- The keyring file is the root of all of this. Keep it out of the database, out of backups that
-  sit next to the database, and readable only by the service user. A keyring that is not valid
+- The keyring file is the root of all of this. Keep it out of the database and readable only by
+  the service user. A backup needs both the database and the keyring from the same moment
+  (see [`deploy/README.md`](../../deploy/README.md#backups-and-restoring)); store the two
+  archives encrypted, and apart if you can, because together they read everything. A keyring that is not valid
   JSON is reported without quoting its contents.
