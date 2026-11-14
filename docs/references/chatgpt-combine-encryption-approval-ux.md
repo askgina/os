@@ -13,7 +13,7 @@
 > - Converted from the rendered DOM to Markdown. Interactive widgets (approval cards, the "Create workspace" form, layered architecture boxes, checklists) are flattened to text; collapsed "Technical details" panels were not expanded.
 > - Inline citation chips are kept as `^[Source+N · domain]`. The share page does not expose their target URLs, and the per-turn "View sources" lists were not captured. Explicit links in the text are preserved (`utm_source` stripped).
 > - The inline SVG diagrams are saved next to this file.
-> - The claims below are ChatGPT's and were not verified against the upstream projects.
+> - The claims below are ChatGPT's. Several are wrong; read [the verification note](./chatgpt-combine-encryption-approval-ux-verification.md) before building on them.
 
 ## User
 
