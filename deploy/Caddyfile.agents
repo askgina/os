@@ -1,0 +1,19 @@
+# Agent gateway. Agent containers live on an internal network whose only reachable host is this
+# proxy, and it forwards nothing but the MCP endpoint. The server checks the Host header against
+# the public origin, so the gateway presents that host.
+{
+	admin off
+	auto_https off
+}
+
+:80 {
+	@mcp path /mcp
+	handle @mcp {
+		reverse_proxy server:3000 {
+			header_up Host {$PUBLIC_HOST}
+		}
+	}
+	handle {
+		respond 404
+	}
+}

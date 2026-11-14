@@ -1,0 +1,23 @@
+# Public edge. The server's public listener never mounts the Workflow delivery routes; this
+# proxy refuses them as well, so a mistake in one place is not enough to expose them.
+{
+	admin off
+}
+
+# Plain HTTP on :8080 by default. compose.tls.yaml sets a host name here instead, and Caddy then
+# obtains and renews certificates for it.
+{$SITE_ADDRESS:http://:8080} {
+	@workflow path /.well-known/workflow /.well-known/workflow/*
+	respond @workflow 404
+
+	# The server sets its own Content-Security-Policy; these headers do not overlap with it.
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		X-Frame-Options DENY
+		Cross-Origin-Opener-Policy same-origin
+		-Server
+	}
+
+	reverse_proxy server:3000
+}

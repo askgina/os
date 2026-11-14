@@ -1,0 +1,16 @@
+{
+  "name": "@askgina/os-example-scripted-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "The smallest possible agent: proposes one transfer over MCP and waits for a person to approve it.",
+  "scripts": {
+    "start": "node src/agent.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
+    "zod": "4.6.7"
+  }
+}
