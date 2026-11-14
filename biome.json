@@ -10,7 +10,8 @@
       "**",
       "!.agents",
       "!docs/references",
-      "!**/drizzle/meta",
+      "!**/.well-known",
+      "!**/migrations/meta",
       "!**/*.gen.ts",
       "!bun.lock"
     ]

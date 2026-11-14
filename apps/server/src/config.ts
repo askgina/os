@@ -40,6 +40,11 @@ const Environment = z.object({
   INTERNAL_PORT: integer(3001, 1, 65_535),
 
   DATABASE_URL: z.string().min(1),
+  /**
+   * File holding the database password, for setups that keep it out of the environment. When
+   * set, it replaces the password part of `DATABASE_URL`.
+   */
+  DATABASE_PASSWORD_FILE: z.string().min(1).optional(),
   /** Keyring JSON with the key-encryption keys. Kept outside the database. */
   KEYRING_FILE: z.string().min(1),
   SIGNER_URL: z.url(),
@@ -83,6 +88,10 @@ export interface Config {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const parsed = Environment.parse(env);
   const origin = new URL(parsed.PUBLIC_ORIGIN).origin;
+  const databaseUrl = new URL(parsed.DATABASE_URL);
+  if (parsed.DATABASE_PASSWORD_FILE !== undefined) {
+    databaseUrl.password = readFileSync(parsed.DATABASE_PASSWORD_FILE, "utf8").trim();
+  }
   return {
     publicOrigin: origin,
     relyingParty: {
@@ -93,7 +102,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     host: parsed.HOST,
     port: parsed.PORT,
     internalPort: parsed.INTERNAL_PORT,
-    databaseUrl: parsed.DATABASE_URL,
+    databaseUrl: databaseUrl.toString(),
     keyringFile: parsed.KEYRING_FILE,
     signerUrl: parsed.SIGNER_URL,
     signerSecret: new Uint8Array(
