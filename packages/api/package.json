@@ -1,0 +1,19 @@
+{
+  "name": "@askgina/os-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "The control plane's HTTP contract: routes, request and response shapes, and a typed client.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@askgina/os-protocol": "workspace:*",
+    "zod": "4.6.7"
+  }
+}
