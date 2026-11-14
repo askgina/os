@@ -404,7 +404,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
       );
     });
     // `/join/<token>` is the web app's route for accepting an invite.
-    return { url: `${ctx.config.publicOrigin}/join/${token}`, expiresAt };
+    return { id: inviteId, url: `${ctx.config.publicOrigin}/join/${token}`, expiresAt };
   });
 
   handle(app, ctx, "listInvites", async ({ session, params }) => {

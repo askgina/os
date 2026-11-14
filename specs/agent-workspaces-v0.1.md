@@ -66,8 +66,9 @@ Success means:
 - [x] (2026-11-14 15:05Z) Milestone 1: tests and hardening for `protocol` (171 tests), `api` (87), `keys` (49), `world` (ciphertext-at-rest proof as a test: 0 of 8 markers on the encrypting World, 8 of 8 on the stock one). Re-run by the maintainer.
 - [x] (2026-11-14 15:12Z) Milestone 2: signer service (46 tests, including the real OWS vault). Re-run by the maintainer after his own hardening changes.
 - [x] (2026-11-14 15:15Z) Milestones 3 and 4: the control plane, both halves (74 tests against real Postgres, a local chain and the real signer in process). Re-run by the maintainer. The process entry point has not been started.
-- [ ] (2026-11-14 15:18Z) Local builds and whole-suite runs stopped: they need the owner's word (see Surprises). From here, build-level proof comes from CI.
-- [ ] Milestone 5: web UI.
+- [x] (2026-11-14 15:18Z) Local builds and whole-suite runs stopped: they need the owner's word (see Surprises). From here, build-level proof comes from CI.
+- [x] (2026-11-14 15:50Z) Four read-only reviews (signer and protocol, identity and directory, execution and MCP, integration and docs) found no way to forge an approval or move funds, and 30-odd defects. All fixed. The largest: recovery codes are gone, because a code relayed by the control plane let it choose the new key; when no approver is left, the operator of the signer's host enrolls one from its command line.
+- [x] (2026-11-14 16:25Z) Milestone 5: web UI. The first-day journey passes in Chromium with a virtual authenticator on phone and desktop, light and dark, against the fixture API under the production Content-Security-Policy.
 - [ ] Milestone 6: Compose stack, images, example agents, end-to-end release gates, CI.
 - [ ] Milestone 7: docs, threat model, open-source preflight.
 

@@ -110,7 +110,7 @@ test("setup, an agent with limits, and one payment approved with a passkey in th
     await expect(page.locator("blockquote b")).toHaveCount(0);
     await expect(page.getByText("15000000000000000 base units")).toBeVisible();
     await page.getByRole("button", { name: "Approve with passkey" }).click();
-    await expect(page.getByText("Confirmed")).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByText("Confirmed", { exact: true })).toBeVisible({ timeout: 120_000 });
   });
 
   expect(formatEther((await chain.getBalance({ address: RECIPIENT })) - before)).toBe("0.015");

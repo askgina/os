@@ -99,8 +99,11 @@ export interface WorkflowRuntime {
     workspaceId: WorkspaceId;
     expiresAt: number;
   }): Promise<string>;
-  /** Tell the run to look at the database again. False when its hook is not there yet. */
-  wake(approvalId: ApprovalId): Promise<boolean>;
+  /**
+   * Tell the run that owns the request to look at the database again. False when its hook is
+   * not there yet.
+   */
+  wake(approvalId: ApprovalId, runId: string): Promise<boolean>;
 }
 
 const runtimes = new WeakMap<AppContext, WorkflowRuntime>();
@@ -132,9 +135,9 @@ export function workflowRuntime(ctx: AppContext): WorkflowRuntime {
       );
       return run.runId;
     },
-    async wake(approvalId) {
+    async wake(approvalId, runId) {
       try {
-        await resumeHook(`apr:${approvalId}`, { approvalId });
+        await resumeHook(`apr:${approvalId}:${runId}`, { approvalId });
         return true;
       } catch {
         // The run has not created its hook yet, or it already finished. Either way the run reads

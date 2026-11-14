@@ -48,7 +48,7 @@ const examples: { [N in RouteName]: { body?: unknown; query?: unknown; response:
   requestAdminThreshold: { body: { adminThreshold: 2 }, response: f.approvalSummary },
   createInvite: {
     body: { role: "approver" },
-    response: { url: "https://os.example.com/join/tok", expiresAt: 1_700_000_600 },
+    response: { id: "inv_1", url: "https://os.example.com/join/tok", expiresAt: 1_700_000_600 },
   },
   listInvites: {
     response: {

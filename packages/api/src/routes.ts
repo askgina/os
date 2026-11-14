@@ -167,7 +167,12 @@ export const routes = {
   createInvite: post(
     "/api/v1/workspaces/:workspaceId/invites",
     z.strictObject({ role: Role }),
-    z.strictObject({ url: z.string(), expiresAt: z.number().int() }),
+    z.strictObject({
+      /** The same id `listInvites` reports, so a client can tell when this link was revoked. */
+      id: z.string().min(1).max(64),
+      url: z.string(),
+      expiresAt: z.number().int(),
+    }),
   ),
   /** Owners only: invites still waiting to be used, without their tokens. */
   listInvites: get("/api/v1/workspaces/:workspaceId/invites", items(InviteSummary)),

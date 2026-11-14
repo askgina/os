@@ -273,6 +273,8 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(openInvites.getByRole("listitem")).toHaveCount(1);
     await openInvites.getByRole("button", { name: /Revoke/ }).click();
     await expect(page.getByText("No open invites.")).toBeVisible();
+    // A revoked link is dead, so the page stops offering it.
+    await expect(page.getByLabel(/Invite link/)).toHaveCount(0);
     const revokedCheck = await request.get(
       `${baseURL}/api/v1/invites/${new URL(revokedUrl).pathname.split("/").pop()}`,
     );

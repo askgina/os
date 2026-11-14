@@ -27,6 +27,13 @@ export const VOLUMES = [
   "db-secrets",
 ];
 
+/**
+ * The image for throwaway helper containers: the same pinned one `compose.yaml` uses for `init`,
+ * so it is already present and nothing is pulled in the middle of a gate.
+ */
+const HELPER_IMAGE =
+  "node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc";
+
 /** Run `docker ...` and return its stdout. */
 export async function docker(...args: string[]): Promise<string> {
   const { stdout } = await run("docker", args, { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 });
@@ -78,23 +85,25 @@ export async function databaseUrl(): Promise<string> {
 
 /**
  * Run a throwaway container on the internal `agents` network, the position a compromised agent
- * is in, and report how its command ended.
+ * is in, and report what its script printed. Docker's own messages go to stderr and are kept
+ * apart, so they can never be mistaken for the script's answer.
  */
 export async function fromAgentsNetwork(
   script: string,
-): Promise<{ exitCode: number; output: string }> {
+): Promise<{ exitCode: number; output: string; diagnostics: string }> {
   try {
     const { stdout, stderr } = await run(
       "docker",
-      ["run", "--rm", "--network", `${stack.project}_agents`, "node:26-slim", "node", "-e", script],
+      ["run", "--rm", "--network", `${stack.project}_agents`, HELPER_IMAGE, "node", "-e", script],
       { maxBuffer: 16 * 1024 * 1024 },
     );
-    return { exitCode: 0, output: stdout + stderr };
+    return { exitCode: 0, output: stdout, diagnostics: stderr };
   } catch (error) {
     const failure = error as { code?: number; stdout?: string; stderr?: string };
     return {
       exitCode: typeof failure.code === "number" ? failure.code : 1,
-      output: `${failure.stdout ?? ""}${failure.stderr ?? ""}`,
+      output: failure.stdout ?? "",
+      diagnostics: failure.stderr ?? "",
     };
   }
 }
@@ -129,7 +138,7 @@ export async function restoreInto(project: string): Promise<void> {
       `${source}_${volume}:/from:ro`,
       "-v",
       `${project}_${volume}:/to`,
-      "node:26-slim",
+      HELPER_IMAGE,
       "cp",
       "-a",
       "/from/.",

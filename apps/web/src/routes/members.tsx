@@ -41,6 +41,8 @@ export function MembersPage() {
   const workspace = useWorkspace(workspaceId);
   const session = useSession();
   const [opened, setOpened] = useState<ApprovalSummary[]>([]);
+  // Invites revoked on this page: the link card must stop showing a link that no longer works.
+  const [revoked, setRevoked] = useState<string[]>([]);
   if (!workspace.data) return null;
   const data = workspace.data;
   const isOwner = data.role === "owner";
@@ -95,8 +97,13 @@ export function MembersPage() {
         </CardContent>
       </Card>
 
-      {isOwner ? <InviteCard workspaceId={workspaceId} /> : null}
-      {isOwner ? <OpenInvites workspaceId={workspaceId} /> : null}
+      {isOwner ? <InviteCard workspaceId={workspaceId} revoked={revoked} /> : null}
+      {isOwner ? (
+        <OpenInvites
+          workspaceId={workspaceId}
+          onRevoked={(inviteId) => setRevoked((ids) => [...ids, inviteId])}
+        />
+      ) : null}
       {isOwner ? <ThresholdCard workspace={data} /> : null}
     </div>
   );
@@ -281,12 +288,21 @@ function PendingPasskeyHelp({
 }
 
 /** Invites still waiting to be used. Revoking one makes its link stop working at once. */
-function OpenInvites({ workspaceId }: { workspaceId: string }) {
+function OpenInvites({
+  workspaceId,
+  onRevoked,
+}: {
+  workspaceId: string;
+  onRevoked: (inviteId: string) => void;
+}) {
   const invites = useInvites(workspaceId);
   const revoke = useMutation({
     mutationFn: (inviteId: string) =>
       api.call("revokeInvite", { params: { workspaceId, inviteId } }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.invites(workspaceId) }),
+    onSuccess: (_result, inviteId) => {
+      onRevoked(inviteId);
+      return queryClient.invalidateQueries({ queryKey: keys.invites(workspaceId) });
+    },
   });
   const items: InviteSummary[] = invites.data?.items ?? [];
   return (
@@ -331,7 +347,7 @@ function OpenInvites({ workspaceId }: { workspaceId: string }) {
   );
 }
 
-function InviteCard({ workspaceId }: { workspaceId: string }) {
+function InviteCard({ workspaceId, revoked }: { workspaceId: string; revoked: string[] }) {
   const [role, setRole] = useState<Role>("approver");
   const now = useNow();
   const invite = useMutation({
@@ -376,7 +392,7 @@ function InviteCard({ workspaceId }: { workspaceId: string }) {
           </Button>
         </form>
         <FormError error={invite.error} />
-        {invite.data ? (
+        {invite.data && !revoked.includes(invite.data.id) ? (
           <div className="grid gap-2 rounded-md border bg-muted p-3">
             <Label htmlFor="invite-url">
               Invite link, valid for {formatCountdown(invite.data.expiresAt - now)}

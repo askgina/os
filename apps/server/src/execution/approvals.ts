@@ -195,11 +195,11 @@ export class Engine implements ApprovalEngine {
   /**
    * Start the waiting workflow. A failure is left to the sweeper, which starts it later.
    *
-   * At most one run may exist per request: every run creates the hook `apr:<id>`, and the
-   * Workflow runtime gives a second run's hook a `HookConflictError`. If that second run settled
-   * first it would record itself as the owner while every wake-up went to the other run, and the
-   * request would never move. So starts for one request are serialized under an advisory lock,
-   * and a start happens only while no run is recorded.
+   * Starts for one request are serialized under an advisory lock, and a start happens only
+   * while no run is recorded, so there is normally one run per request. A crash between
+   * starting a run and recording it can still leave two. That is safe: the first run recorded
+   * owns the request, each run waits on a hook of its own, and the other run ends as
+   * `superseded` the first time it looks.
    */
   async startRun(id: ApprovalId, workspaceId: WorkspaceId, expiresAt: number): Promise<void> {
     const ctx = this.#ctx;
@@ -231,7 +231,14 @@ export class Engine implements ApprovalEngine {
   async wake(id: ApprovalId): Promise<boolean> {
     const ctx = this.#ctx;
     if (this.#runtime === null) return false;
-    const woken = await this.#runtime.wake(id);
+    // Wake the run that owns the request. With none recorded yet there is nothing to wake: a
+    // run reads the decision when it first looks, and the sweeper tries again meanwhile.
+    const [owner] = await ctx.db
+      .select({ runId: approvals.runId })
+      .from(approvals)
+      .where(eq(approvals.id, id));
+    if (!owner || owner.runId === null) return false;
+    const woken = await this.#runtime.wake(id, owner.runId);
     if (woken) {
       await ctx.db
         .update(approvals)

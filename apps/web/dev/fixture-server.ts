@@ -922,15 +922,16 @@ const handlers: Record<RouteName, Handler> = {
     requireOwner(workspace, id);
     const token = randomToken();
     const expiresAt = now() + 7 * 86_400;
+    const inviteId = `inv_${randomToken(12)}`;
     state.invites.set(token, {
-      id: `inv_${randomToken(12)}`,
+      id: inviteId,
       workspaceId: workspace.id,
       role: body.role as Role,
       invitedBy: id,
       createdAt: now(),
       expiresAt,
     });
-    return { url: `${origin}/join/${token}`, expiresAt };
+    return { id: inviteId, url: `${origin}/join/${token}`, expiresAt };
   },
   listInvites: ({ params, userId }) => {
     const id = signedIn(userId);

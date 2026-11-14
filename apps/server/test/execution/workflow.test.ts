@@ -131,7 +131,7 @@ describe("the approval workflow", () => {
     f.t.clock.advance(3_601);
     await until(
       async () => {
-        await workflowRuntime(f.t.ctx).wake(approvalId);
+        await engineOf(f.t.ctx).wake(approvalId);
         return (await f.t.ctx.db.select().from(intents).where(eq(intents.id, intentId)))[0]?.status;
       },
       (status) => status === "expired",

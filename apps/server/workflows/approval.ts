@@ -30,7 +30,14 @@ export interface ApprovalRunInput {
 export async function approval(input: ApprovalRunInput): Promise<SettledStatus> {
   "use workflow";
   const { approvalId } = input;
-  const hook = createHook<{ approvalId: string }>({ token: `apr:${approvalId}` });
+  // The token names this run, not just the request. A start can be repeated (a crash between
+  // starting a run and recording it), and two runs asking for one token would leave the second
+  // with a HookConflictError: if that one had recorded itself as the owner first, every wake-up
+  // would go to the other run and the request would never move. With its own token, a run that
+  // is not the owner simply reads `superseded` below and ends.
+  const hook = createHook<{ approvalId: string }>({
+    token: `apr:${approvalId}:${getWorkflowMetadata().workflowRunId}`,
+  });
   const wakeUps = hook[Symbol.asyncIterator]();
   const deadline = new Date(input.expiresAt * 1000);
 
