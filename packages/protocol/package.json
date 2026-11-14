@@ -1,0 +1,25 @@
+{
+  "name": "@askgina/os-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Intents, wallet policies and the passkey-signed authorizations a signer verifies.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./signer": "./src/signer/index.ts",
+    "./webauthn": "./src/webauthn/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.4.0",
+    "@simplewebauthn/server": "14.1.0",
+    "canonicalize": "5.1.0",
+    "ulid": "3.0.2",
+    "zod": "4.6.7"
+  }
+}
