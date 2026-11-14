@@ -1,9 +1,11 @@
 // The claim this package exists for: with the encrypting World, nothing a person or an agent
-// typed into a workflow can be read from Postgres. Eight unique markers go through every kind
+// typed into a workflow can be read from Postgres. Ten unique markers go through every kind
 // of payload the SDK stores (M1 workflow input, M2 step input, M3 step return, M4 hook
-// metadata, M5 hook payload, M6 stream chunk, M7 workflow return, M8 step error text). The
-// whole database is then scanned for them. The same scenario on the stock Postgres World must
-// expose all eight, or the scanner is blind and a clean result means nothing.
+// metadata, M5 hook payload, M6 stream chunk, M7 workflow return, M8 step error text) and
+// through run attributes, which the SDK never encrypts and this World withholds (M9 given at
+// start, M10 set while the run is in progress). The whole database is then scanned for them.
+// The same scenario on the stock Postgres World must expose all ten, or the scanner is blind
+// and a clean result means nothing.
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,9 +43,9 @@ const dir = mkdtempSync(join(tmpdir(), "os-world-proof-"));
 const keyringFile = join(dir, "keyring.json");
 writeFileSync(keyringFile, JSON.stringify(LocalKeyring.generate("k1")), { mode: 0o600 });
 
-const markers = (nonce: string) => Array.from({ length: 8 }, (_, i) => `OSMARK${i + 1}_${nonce}`);
+const markers = (nonce: string) => Array.from({ length: 10 }, (_, i) => `OSMARK${i + 1}_${nonce}`);
 
-/** Which of the eight markers a scan found, e.g. ["OSMARK1", "OSMARK4"]. */
+/** Which of the ten markers a scan found, e.g. ["OSMARK1", "OSMARK4"]. */
 function markersFound(scan: MarkerScan): string[] {
   return [...new Set(scan.hits.map((hit) => hit.marker.split("_")[0] ?? ""))].sort();
 }
@@ -155,6 +157,14 @@ describe("encrypting World", () => {
     });
     expect(enc.suspendedScan.hits).toEqual([]);
     expect(enc.finalScan.hits).toEqual([]);
+    // Attributes cannot be encrypted: their values are replaced, except under a key the World
+    // was told may stay readable.
+    const [run] = await sql<{ attributes: Record<string, string> }>(
+      encDb.url,
+      "SELECT attributes FROM workflow.workflow_runs WHERE id = $1",
+      [enc.runId],
+    );
+    expect(run?.attributes).toEqual({ note: "[withheld]", progress: "[withheld]", kind: "proof" });
     // The scan covered the workflow tables and the key table, not an empty database.
     expect(enc.finalScan.tables).toEqual(
       expect.arrayContaining([
@@ -283,7 +293,7 @@ describe("encrypting World", () => {
 });
 
 describe("stock Postgres World (control)", () => {
-  test("the identical scenario exposes all eight markers, so the scanner can see plaintext", async () => {
+  test("the identical scenario exposes all ten markers, so the scanner can see plaintext", async () => {
     const stock = await runScenario(stockDb.url, [PORTS.stockA, PORTS.stockB], {
       HARNESS_WORLD: "stock",
     });
@@ -297,6 +307,10 @@ describe("stock Postgres World (control)", () => {
       tables: stock.finalScan.tables.length,
       columns: stock.finalScan.columns,
     });
-    expect(found).toEqual(markers("").map((marker) => marker.slice(0, -1)));
+    expect(found).toEqual(
+      markers("")
+        .map((marker) => marker.slice(0, -1))
+        .sort(),
+    );
   });
 });

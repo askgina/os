@@ -5,6 +5,8 @@
  *
  * - `WORKFLOW_POSTGRES_URL` (or `DATABASE_URL`): the database.
  * - `WORLD_KEYRING_FILE`: path to the keyring JSON, kept outside the database.
+ * - `WORLD_READABLE_ATTRIBUTE_KEYS`: optional, comma-separated run attribute keys whose values
+ *   may be stored readable. Every other attribute's value is stored as `[withheld]`.
  * - The upstream Postgres World's own tuning variables keep their meaning.
  */
 import { DataKeyStore, LocalKeyring } from "@askgina/os-keys";
@@ -33,6 +35,10 @@ export function createWorld(): EncryptedWorld {
   // An idle client that loses its connection must not take the process down.
   pool.on("error", () => {});
 
+  const readableAttributeKeys = (process.env.WORLD_READABLE_ATTRIBUTE_KEYS ?? "")
+    .split(",")
+    .map((key) => key.trim())
+    .filter((key) => key !== "");
   const jobPrefix = process.env.WORKFLOW_POSTGRES_JOB_PREFIX;
   const pollInterval = optionalNumber("WORKFLOW_POSTGRES_POLL_INTERVAL_MS");
   const jobLockStaleSeconds = optionalNumber("WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS");
@@ -45,6 +51,7 @@ export function createWorld(): EncryptedWorld {
       ...(jobLockStaleSeconds === undefined ? {} : { jobLockStaleSeconds }),
     },
     dataKeys: new DataKeyStore({ pool, provider: LocalKeyring.fromFile(keyringFile) }),
+    readableAttributeKeys,
   });
 }
 

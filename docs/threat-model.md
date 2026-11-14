@@ -70,7 +70,8 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
 
 - **Can:** read identifiers, names of workspaces, agents and wallets, roles, statuses,
   timestamps, hashes, chain addresses, wallet policies, WebAuthn public keys and assertions, and
-  the Workflow runtime's metadata (names, ids, hook tokens, timestamps, run attributes) (finding 2
+  the Workflow runtime's metadata (names, ids, hook tokens, timestamps, the keys of run
+  attributes; their values are stored as `[withheld]` unless a key is listed as readable) (finding 2
   of [`specs/research/encrypting-postgres-world.md`](../specs/research/encrypting-postgres-world.md)).
 - **Stopped by:** content is sealed (see the table below). Data keys in the database are wrapped
   under keys in the keyring file, with associated data binding each wrapped key to its scope, id,
@@ -178,7 +179,7 @@ Back up each trust domain separately and protect the signer's backups as you wou
 | Wallet addresses and policies                                                                   | `wallets`                                                    | No                                                                                         | Public on chain, and needed to show limits                                                                           |
 | WebAuthn public keys and assertions                                                             | `credentials`, `approver_credentials`, `approval_assertions` | No                                                                                         | Public keys and signatures over digests; not secret                                                                  |
 | Session, invite, agent and setup tokens                                                         | various                                                      | Stored as SHA-256 hashes                                                                   | Only needed for comparison                                                                                           |
-| Workflow names, ids, hook tokens, run attributes                                                | `workflow` schema                                            | No                                                                                         | The Workflow SDK does not encrypt them (finding 2 of the World research)                                             |
+| Workflow names, ids, hook tokens, run attribute keys                                            | `workflow` schema                                            | No                                                                                         | The Workflow SDK does not encrypt them (finding 2 of the World research). Attribute values are replaced, not stored  |
 | Server log lines                                                                                | stdout                                                       | No                                                                                         | They carry identifiers, codes and counts only, never content ([`apps/server/src/log.ts`](../apps/server/src/log.ts)) |
 
 The plaintext scanner used to check this decompresses and decodes workflow payloads before

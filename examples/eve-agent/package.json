@@ -1,0 +1,31 @@
+{
+  "name": "@askgina/os-example-eve-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "An eve agent on the encrypting Postgres World that can only propose wallet operations over MCP.",
+  "scripts": {
+    "build": "eve build",
+    "start": "eve start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "3.0.92",
+    "@askgina/os-world": "workspace:*",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@workflow/world-postgres": "5.2.0",
+    "ai": "7.0.173",
+    "eve": "1.0.0-rc.17",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@askgina/os-keys": "workspace:*",
+    "@askgina/os-testkit": "workspace:*",
+    "@hono/node-server": "2.1.8",
+    "@modelcontextprotocol/server": "2.4.0",
+    "@types/pg": "8.23.1",
+    "pg": "8.23.1"
+  }
+}

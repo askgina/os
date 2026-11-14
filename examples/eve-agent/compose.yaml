@@ -1,0 +1,108 @@
+# The eve agent with its own Postgres. The agent joins the stack's `agents` network, where it can
+# reach only the MCP gateway; that network cannot reach the stack's database, so the agent keeps
+# its conversation in this separate one.
+#
+#   AGENT_TOKEN=osa_… EVE_CHAT_PASSWORD=… docker compose -f examples/eve-agent/compose.yaml up
+name: os-eve-agent
+
+services:
+  postgres:
+    image: postgres:18-alpine@sha256:1018733457011bf88d81db98cf43aac6d5150afc18787dbe204771fedf80ff95
+    environment:
+      POSTGRES_USER: agent
+      POSTGRES_DB: agent
+      POSTGRES_PASSWORD_FILE: /run/secrets/db-password
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - secrets:/run/secrets:ro
+    networks: [internal]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "agent"]
+      interval: 2s
+      retries: 30
+
+  # One-shot: creates the database password and the World's keyring once, then the schema.
+  init:
+    image: os-eve-agent:local
+    user: "0"
+    entrypoint: ["node", "-e"]
+    command:
+      - |
+        const { existsSync, writeFileSync, chownSync } = require("node:fs");
+        const { randomBytes } = require("node:crypto");
+        const write = (path, text, mode) => { if (!existsSync(path)) { writeFileSync(path, text, { mode }); } chownSync(path, 1000, 1000); };
+        // Postgres reads the password as its own user, so that file is world-readable inside this
+        // private volume; the keyring is readable only by the agent's user.
+        write("/run/secrets/db-password", randomBytes(24).toString("base64url"), 0o644);
+        write("/run/secrets/keyring.json", JSON.stringify({ active: "k1", keys: { k1: randomBytes(32).toString("base64") } }), 0o600);
+    volumes:
+      - secrets:/run/secrets
+    networks: []
+
+  # Creates the upstream World schema; the key table is created by the agent on start.
+  schema:
+    image: os-eve-agent:local
+    build:
+      context: ../..
+      dockerfile: examples/eve-agent/Dockerfile
+    entrypoint:
+      [
+        "sh",
+        "-c",
+        'WORKFLOW_POSTGRES_URL="postgres://agent:$$(cat /run/secrets/db-password)@postgres:5432/agent" exec ./node_modules/.bin/bootstrap',
+      ]
+    volumes:
+      - secrets:/run/secrets:ro
+    networks: [internal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  agent:
+    image: os-eve-agent:local
+    entrypoint:
+      [
+        "sh",
+        "-c",
+        'export WORKFLOW_POSTGRES_URL="postgres://agent:$$(cat /run/secrets/db-password)@postgres:5432/agent"; exec ./node_modules/.bin/eve start --host 0.0.0.0 --port 3000',
+      ]
+    environment:
+      WORLD_KEYRING_FILE: /run/secrets/keyring.json
+      # Run attributes cannot be encrypted, so the World stores "[withheld]" for every attribute
+      # except these: ids, kinds and the version eve reads back to run a session. The session
+      # title is not among them. ("$$" is a literal "$" in Compose.)
+      WORLD_READABLE_ATTRIBUTE_KEYS: "$$eve.type,$$eve.version,$$eve.session,$$eve.parent,$$eve.root,$$eve.parent_call,$$eve.parent_turn,$$eve.subagent,$$eve.trigger,$$eve.prewarm"
+      WORKFLOW_POSTGRES_MAX_POOL_SIZE: "52"
+      MCP_URL: ${MCP_URL:-http://agent-gateway:8080/mcp}
+      AGENT_TOKEN: ${AGENT_TOKEN:?create an agent in the UI and set AGENT_TOKEN}
+      EVE_CHAT_PASSWORD: ${EVE_CHAT_PASSWORD:?set a chat password of at least 16 characters}
+      OFFLINE_MODEL: ${OFFLINE_MODEL:-}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      MODEL_ID: ${MODEL_ID:-}
+    volumes:
+      - secrets:/run/secrets:ro
+    ports:
+      - "127.0.0.1:${EVE_AGENT_PORT:-55810}:3000"
+    networks: [internal, agents]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      schema:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+  secrets:
+
+networks:
+  internal:
+    internal: true
+  agents:
+    external: true
+    name: ${AGENTS_NETWORK:-askgina-os_agents}

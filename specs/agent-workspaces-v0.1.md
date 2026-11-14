@@ -70,6 +70,7 @@ Success means:
 - [x] (2026-11-14 15:50Z) Four read-only reviews (signer and protocol, identity and directory, execution and MCP, integration and docs) found no way to forge an approval or move funds, and 32 defects. All fixed. The largest: recovery codes are gone, because a code relayed by the control plane let it choose the new key; when no approver is left, the operator of the signer's host enrolls one from its command line.
 - [x] (2026-11-14 16:25Z) Milestone 5: web UI. The first-day journey passes in Chromium with a virtual authenticator on phone and desktop, light and dark, against the fixture API under the production Content-Security-Policy.
 - [x] (2026-11-14 17:05Z) Milestone 6: Compose stack, images, the scripted example agent, end-to-end release gates, CI. Green on the fourth CI run, [43618477006](https://github.com/askgina/os/actions/runs/43618477006) at `b634bfa`: lint and types; 516 tests; the UI journey four times and its build; the three images built; 15 release gates and the browser gate against the running stack. The three runs before it found nine defects, five in the product and four in its tests (see Surprises and the commits `837523e`, `da2d6c5`, `b634bfa`), each fixed at its cause.
+- [x] (2026-11-14 21:00Z) Run attributes withheld by the World; the eve example ships with a fixed session title (ticket 17's two open decisions, both taken by the owner).
 - [x] (2026-11-14 17:10Z) Milestone 7: README, architecture, approval protocol, threat model, security policy, contributing guide, deployment guide; open-source preflight recorded on the [public-readiness ticket](https://github.com/askgina/os/issues/16). The repository stays private: making it public is the owner's action.
 
 ## Surprises & Discoveries
@@ -138,8 +139,10 @@ Each line is also a ticket on the map, where the reasoning is longer and can be 
 - Decision: the control plane is a Hono server on Node with the Workflow SDK's standalone build, not a Next.js app. The UI is a Vite and React single-page app served by that server.
   Rationale: (1) the Workflow delivery routes are unauthenticated upstream; with our own server they are mounted on a loopback-only listener and never on the public one, instead of relying on a proxy rule alone; (2) a plain Node process loads the World with `setWorld()` and shares one Postgres pool, with none of the five standalone-tracing workarounds Next.js needs; (3) a smaller image and no `next build`; (4) a REST contract shared by the UI, scripts and tests.
   Date/Author: 2026-11-14 / delegated agent
-- Decision: the agent plane is "bring your own agent over MCP". No bundled runtime or sandbox supervisor. One example ships, the scripted agent. Busy is not used. An eve example was written and is parked until its data is proven encrypted (ticket 17).
+- Decision: the agent plane is "bring your own agent over MCP". No bundled runtime or sandbox supervisor. Two examples ship: the scripted agent and an eve agent. Busy is not used. The eve example was parked until its data was proven encrypted (ticket 17), and ships now.
   Rationale: the reference's own conclusion ("not another agent framework") and the eve research.
+- Decision (owner, 2026-11-14): the encrypting World replaces the value of every run attribute with `[withheld]` unless its key is listed as readable, and the eve example gives every session a fixed title.
+  Rationale: run attributes cannot be encrypted (the World and runtimes read some back), and refusing them would stop a runtime such as eve from starting a session at all. Replacing keeps "nothing an agent typed is readable" true for any runtime, not only for ones that happen to keep content out of attributes. `$retention`, `$rootRunId` and `$parentRunId` always stay readable.
   Date/Author: 2026-11-14 / delegated agent
 - Decision: a wallet's approval threshold may not exceed the workspace's admin threshold, and the admin threshold may not drop below any wallet's.
   Rationale: found in review. With an admin threshold of 1, one stolen passkey could add an approver and then meet any transaction threshold alone.
@@ -159,7 +162,7 @@ Each line is also a ticket on the map, where the reasoning is longer and can be 
 
 ## Outcomes & Retrospective
 
-- Outcome: the prototype question is answered yes. A World derived from the Postgres World stores all eight kinds of payload as ciphertext, survives kill -9 between suspension and resume, and the identical run on the stock World exposes every marker.
+- Outcome: the prototype question is answered yes. A World derived from the Postgres World stores all eight kinds of payload as ciphertext, survives kill -9 between suspension and resume, and the identical run on the stock World exposes every marker. Since ticket 17 the same test also plants two markers in run attributes, which the World withholds.
   Evidence: [research/encrypting-postgres-world.md](./research/encrypting-postgres-world.md); maintainer's re-run exit 0.
   Remaining: nothing; the proof is a test in `packages/world`.
 - Outcome: v0.1 exists and its release gates pass in CI against the real stack: a fresh installation is claimed with a passkey; an agent's proposal becomes exactly one transaction after a passkey approval, and none after a rejection, a limit breach or a replay; nothing an agent typed is readable in any database column; an agent's container reaches the MCP endpoint and nothing else; a server killed between approval and broadcast still ends in exactly one transaction; a restored backup keeps wallets, the audit chain and a waiting approval, and refuses a spent one; and the whole first day works in a browser.
@@ -170,7 +173,10 @@ Each line is also a ticket on the map, where the reasoning is longer and can be 
   Remaining: the HTTPS run uses the host name `localhost`, so Caddy signs the certificate with its own local authority; obtaining one from a public authority for a real host name was not exercised. The quickstart run found one unclear step (where the wallet's address is shown), now reworded.
 - Outcome: the bundled eve example did not ship. An eve agent on the encrypting World left its markers readable, and the cause is now known: eve copies the first user message into the run attribute `$eve.title`, and the Workflow SDK stores run attributes as plain metadata on every World. Everything else eve stored (run input, steps, hooks, streams) was ciphertext.
   Evidence: [ticket 17](https://github.com/askgina/os/issues/17). CI run [43627330706](https://github.com/askgina/os/actions/runs/43627330706) on branch `probe/eve-17` attributes all 6 hits to `$eve.title` (`workflow_runs.attributes` and the `run_created` event); run [43627489906](https://github.com/askgina/os/actions/runs/43627489906), the same example with a fixed title, has 0 hits.
-  Remaining: our World wrapper passes attributes through untouched, so any runtime that puts content in an attribute leaks it the same way. Whether to ship the eve example with a fixed title, and whether the wrapper should refuse or redact unknown attributes, are open decisions. Until then the product stays "bring your own agent over MCP".
+  Remaining: nothing from that ticket. Both decisions it left open were taken: see the next outcome.
+- Outcome: the World withholds run attributes, and the eve example is in the repository (`examples/eve-agent`) with a fixed session title. Its smoke test, which builds and runs eve on both Worlds and scans the database, is part of `bun run test`.
+  Evidence: `packages/world/src/attributes.ts`; `packages/world/test/ciphertext-at-rest.test.ts` (ten markers); `examples/eve-agent/test/smoke.test.ts`. The CI run is named in the revision note below.
+  Remaining: only eve's HTTP channel and a single session are tested. The readable list for eve (ids, kinds, version) comes from reading eve 1.0.0-rc.17; a feature that reads back an attribute outside that list (schedules, external invocations) would not work until the key is added. The queued start job's attributes are replaced by the same code but no test looks at a job while it is queued.
 - Retrospective: the stack-level gates paid for themselves on the first day. Every suite below them was green while the server could not start in Compose, and while a crash in the middle of a step would have left an approved payment waiting five minutes or more. Neither was visible below the level of the running stack. The third product defect, a repeated workflow start stranding a request, was caught by a test that needs the built workflow bundle, which is why it too surfaced only in CI.
 
 ## Context and Orientation
@@ -287,7 +293,7 @@ Files and interfaces:
 
 Acceptance:
 
-- `bun run services:up && bun run test` passes, and the world test prints zero marker hits on the encrypting World and all eight on the stock World.
+- `bun run services:up && bun run test` passes, and the world test prints zero marker hits on the encrypting World and all ten on the stock World.
 
 ### Milestone 2: the signer
 

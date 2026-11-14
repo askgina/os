@@ -35,7 +35,12 @@ const app = new Hono()
     const { nonce, tenant } = await c.req.json<{ nonce: string; tenant?: string }>();
     // The SDK passes its whole start options bag to the World at run creation; the extra
     // option is how the encrypting World learns the tenant. Its type does not declare it.
-    const options: Record<string, unknown> = tenant ? { osTenantId: tenant } : {};
+    // M9 is a run attribute given at start. `kind` is the one key the harness World lists as
+    // readable.
+    const options: Record<string, unknown> = {
+      attributes: { note: `OSMARK9_${nonce}`, kind: "proof" },
+      ...(tenant ? { osTenantId: tenant } : {}),
+    };
     try {
       const run = await start(
         markersWorkflow as never,

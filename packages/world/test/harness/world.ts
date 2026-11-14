@@ -34,6 +34,7 @@ export function createWorld() {
   return createEncryptedWorld({
     postgres: { connectionString },
     dataKeys: new DataKeyStore({ pool, provider: LocalKeyring.fromFile(keyringFile) }),
+    readableAttributeKeys: ["kind"],
     onKeyRequest: (runId, context) => {
       if (process.env.HARNESS_KEY_FAIL === "1") throw new Error("harness: injected key failure");
       keyRequests().push({ runId, context: context ?? null });

@@ -97,7 +97,9 @@ Any MCP client that supports Streamable HTTP with a bearer token works:
 
 The tools are `whoami`, `get_balances`, `propose_transfer`, `propose_contract_call`,
 `get_intent`, `list_intents` and `cancel_intent`. [`examples/scripted-agent`](examples/scripted-agent)
-is the smallest complete agent.
+is the smallest complete agent. [`examples/eve-agent`](examples/eve-agent) is a real agent
+runtime (vercel/eve, no Vercel service) that keeps its conversations encrypted in its own
+database.
 
 ## What this protects, and what it does not
 

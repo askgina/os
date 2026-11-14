@@ -4,6 +4,9 @@ import {
   createWorld as createPostgresWorld,
   type PostgresWorldConfig,
 } from "@workflow/world-postgres";
+import { withholdRunAttributes } from "./attributes.ts";
+
+export { ALWAYS_READABLE_ATTRIBUTE_KEYS, WITHHELD_ATTRIBUTE_VALUE } from "./attributes.ts";
 
 /**
  * The option of the Workflow SDK's `start()` that names the tenant a run belongs to, for
@@ -23,6 +26,12 @@ export interface EncryptedWorldConfig {
   postgres: PostgresWorldConfig;
   /** Where each run's data key is kept. Run keys use the `run` scope. */
   dataKeys: DataKeyStore;
+  /**
+   * Run attribute keys whose values may be stored readable, besides the three the Workflow SDK
+   * needs. Attributes cannot be encrypted, so every other attribute's value is replaced with
+   * `[withheld]` before it is stored. List a key only if its value never carries content.
+   */
+  readableAttributeKeys?: readonly string[];
   /** Called on every key request, for measurement and tests. */
   onKeyRequest?: (runId: string, context: Record<string, unknown> | undefined) => void;
 }
@@ -35,9 +44,13 @@ export interface EncryptedWorldConfig {
  *
  * It never answers "no key". Upstream reads `undefined` as "store plaintext", so every failure
  * here throws: a run that cannot get its key stalls and retries; it does not leak.
+ *
+ * Run attributes are the one thing the SDK stores that it never encrypts. This World replaces
+ * their values unless the key is listed as readable; see `withholdRunAttributes`.
  */
 export function createEncryptedWorld(config: EncryptedWorldConfig): EncryptedWorld {
   const base = createPostgresWorld(config.postgres);
+  withholdRunAttributes(base, config.readableAttributeKeys ?? []);
 
   async function getEncryptionKeyForRun(
     run: WorkflowRun | string,

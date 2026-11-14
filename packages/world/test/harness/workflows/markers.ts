@@ -1,4 +1,4 @@
-import { createHook, FatalError, getWritable } from "workflow";
+import { createHook, FatalError, getWritable, setAttributes } from "workflow";
 
 const mark = (n: number, nonce: string) => `OSMARK${n}_${nonce}`;
 
@@ -6,6 +6,8 @@ export async function markers(input: { nonce: string; m1: string }) {
   "use workflow";
   const { nonce } = input;
   const m3 = await echoStep(mark(2, nonce), nonce);
+  // M10 reaches storage as a run attribute set while the run is in progress.
+  await setAttributes({ progress: mark(10, nonce) });
   // M6 and M8 are built inside the steps so they reach storage only as a
   // stream chunk and as error text, never as a step argument.
   await streamStep(getWritable<string>(), nonce);
