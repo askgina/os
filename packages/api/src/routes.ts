@@ -29,6 +29,9 @@ import {
 
 export type HttpMethod = "GET" | "POST" | "DELETE";
 
+/** `public` endpoints work without a session; `session` endpoints need a signed-in person. */
+export type RouteAuth = "public" | "session";
+
 /**
  * One endpoint of the control plane. The server registers a handler per definition and the
  * client derives its types from the same object, so the two cannot drift apart.
@@ -38,11 +41,11 @@ export interface RouteDefinition<
   Body extends z.ZodType | null = z.ZodType | null,
   Query extends z.ZodType | null = z.ZodType | null,
   Response extends z.ZodType = z.ZodType,
+  Auth extends RouteAuth = RouteAuth,
 > {
   method: HttpMethod;
   path: Path;
-  /** `public` endpoints work without a session; `session` endpoints need a signed-in person. */
-  auth: "public" | "session";
+  auth: Auth;
   body: Body;
   query: Query;
   response: Response;
@@ -54,19 +57,28 @@ const items = <T extends z.ZodType>(item: T) => z.strictObject({ items: z.array(
 const approvals = z.strictObject({ approvals: z.array(ApprovalSummary) });
 const cursorQuery = z.strictObject({ cursor: Cursor.optional() });
 
+// One helper per method and kind of access, each with a fixed `auth` literal in its return type.
+// A single helper with an optional `auth` argument would lose the literal: the `satisfies` below
+// gives every call a contextual type whose `auth` is the whole union, and inference picks that up.
 function get<Path extends string, Response extends z.ZodType>(
   path: Path,
   response: Response,
-  auth: "public" | "session" = "session",
-): RouteDefinition<Path, null, null, Response> {
-  return { method: "GET", path, auth, body: null, query: null, response };
+): RouteDefinition<Path, null, null, Response, "session"> {
+  return { method: "GET", path, auth: "session", body: null, query: null, response };
+}
+
+function publicGet<Path extends string, Response extends z.ZodType>(
+  path: Path,
+  response: Response,
+): RouteDefinition<Path, null, null, Response, "public"> {
+  return { method: "GET", path, auth: "public", body: null, query: null, response };
 }
 
 function list<Path extends string, Query extends z.ZodType, Response extends z.ZodType>(
   path: Path,
   query: Query,
   response: Response,
-): RouteDefinition<Path, null, Query, Response> {
+): RouteDefinition<Path, null, Query, Response, "session"> {
   return { method: "GET", path, auth: "session", body: null, query, response };
 }
 
@@ -74,40 +86,44 @@ function post<Path extends string, Body extends z.ZodType, Response extends z.Zo
   path: Path,
   body: Body,
   response: Response,
-  auth: "public" | "session" = "session",
-): RouteDefinition<Path, Body, null, Response> {
-  return { method: "POST", path, auth, body, query: null, response };
+): RouteDefinition<Path, Body, null, Response, "session"> {
+  return { method: "POST", path, auth: "session", body, query: null, response };
+}
+
+function publicPost<Path extends string, Body extends z.ZodType, Response extends z.ZodType>(
+  path: Path,
+  body: Body,
+  response: Response,
+): RouteDefinition<Path, Body, null, Response, "public"> {
+  return { method: "POST", path, auth: "public", body, query: null, response };
 }
 
 function del<Path extends string, Response extends z.ZodType>(
   path: Path,
   response: Response,
-): RouteDefinition<Path, null, null, Response> {
+): RouteDefinition<Path, null, null, Response, "session"> {
   return { method: "DELETE", path, auth: "session", body: null, query: null, response };
 }
 
 export const routes = {
   // --- session and passkeys -------------------------------------------------------------------
-  getSession: get("/api/v1/session", SessionInfo, "public"),
+  getSession: publicGet("/api/v1/session", SessionInfo),
   /** First run only: the setup token printed by the server creates the first owner. */
-  startSetup: post(
+  startSetup: publicPost(
     "/api/v1/setup/options",
     z.strictObject({ setupToken: z.string().min(16).max(128), displayName: DisplayName }),
     CeremonyStart,
-    "public",
   ),
-  finishSetup: post(
+  finishSetup: publicPost(
     "/api/v1/setup/verify",
     z.strictObject({ ceremonyId: CeremonyId, response: RegistrationResponse }),
     SessionInfo,
-    "public",
   ),
-  startLogin: post("/api/v1/auth/login/options", NoBody, CeremonyStart, "public"),
-  finishLogin: post(
+  startLogin: publicPost("/api/v1/auth/login/options", NoBody, CeremonyStart),
+  finishLogin: publicPost(
     "/api/v1/auth/login/verify",
     z.strictObject({ ceremonyId: CeremonyId, response: AssertionResponse }),
     SessionInfo,
-    "public",
   ),
   logout: post("/api/v1/auth/logout", NoBody, Empty),
 
@@ -152,23 +168,20 @@ export const routes = {
     z.strictObject({ role: Role }),
     z.strictObject({ url: z.string(), expiresAt: z.number().int() }),
   ),
-  getInvite: get(
+  getInvite: publicGet(
     "/api/v1/invites/:token",
     z.strictObject({ workspaceName: z.string(), role: Role, invitedBy: z.string() }),
-    "public",
   ),
   /** For someone with no account yet: register a passkey and join in one step. */
-  startInviteRegistration: post(
+  startInviteRegistration: publicPost(
     "/api/v1/invites/:token/options",
     z.strictObject({ displayName: DisplayName }),
     CeremonyStart,
-    "public",
   ),
-  finishInviteRegistration: post(
+  finishInviteRegistration: publicPost(
     "/api/v1/invites/:token/verify",
     z.strictObject({ ceremonyId: CeremonyId, response: RegistrationResponse }),
     SessionInfo,
-    "public",
   ),
   /** For someone already signed in. */
   acceptInvite: post(
