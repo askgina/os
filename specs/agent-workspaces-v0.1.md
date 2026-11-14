@@ -67,7 +67,7 @@ Success means:
 - [x] (2026-11-14 15:12Z) Milestone 2: signer service (46 tests, including the real OWS vault). Re-run by the maintainer after his own hardening changes.
 - [x] (2026-11-14 15:15Z) Milestones 3 and 4: the control plane, both halves (74 tests against real Postgres, a local chain and the real signer in process). Re-run by the maintainer. The process entry point has not been started.
 - [x] (2026-11-14 15:18Z) Local builds and whole-suite runs stopped: they need the owner's word (see Surprises). From here, build-level proof comes from CI.
-- [x] (2026-11-14 15:50Z) Four read-only reviews (signer and protocol, identity and directory, execution and MCP, integration and docs) found no way to forge an approval or move funds, and 30-odd defects. All fixed. The largest: recovery codes are gone, because a code relayed by the control plane let it choose the new key; when no approver is left, the operator of the signer's host enrolls one from its command line.
+- [x] (2026-11-14 15:50Z) Four read-only reviews (signer and protocol, identity and directory, execution and MCP, integration and docs) found no way to forge an approval or move funds, and 32 defects. All fixed. The largest: recovery codes are gone, because a code relayed by the control plane let it choose the new key; when no approver is left, the operator of the signer's host enrolls one from its command line.
 - [x] (2026-11-14 16:25Z) Milestone 5: web UI. The first-day journey passes in Chromium with a virtual authenticator on phone and desktop, light and dark, against the fixture API under the production Content-Security-Policy.
 - [ ] Milestone 6: Compose stack, images, example agents, end-to-end release gates, CI.
 - [ ] Milestone 7: docs, threat model, open-source preflight.
@@ -98,6 +98,12 @@ Success means:
   Evidence: [research/eve-without-vercel-services.md](./research/eve-without-vercel-services.md).
 - Observation: an eve agent on the encrypting World still left its test markers readable in its database (6 hits in the one run made). The cause is unknown. Our own control plane's flows pass the same scanner.
   Evidence: the parked example's smoke test; ticket [Why does eve's data stay readable on the encrypting World?](https://github.com/askgina/os/issues/17). Consequence: the eve example is not in this repository, and nothing here claims that an agent runtime's own data is encrypted.
+- Observation: Workflow 5.5.0 refuses a second run that asks for a hook token another run holds (`HookConflictError`), and the refusal arrives after that run's first step has already run. With one token per request, a repeated start could record the losing run as the request's owner, and the request then never moved.
+  Evidence: CI run 43616229560, server workflow test "runs the effect once when the workflow was started twice". Consequence: each run waits on a hook named after itself (`apr:<approval>:<run>`), and a wake-up goes to the run the request records.
+- Observation: the stack's first two starts in CI failed on things no test below the stack could see: Compose passes an unset variable as an empty string, and the sample chains file used a bare chain number.
+  Evidence: CI run 43615606292. Consequence: an empty optional setting means unset; a rejected setting is named in the boot error (path and kind, never the value); `e2e/run.sh` prints the services' logs when the stack does not come up.
+- Observation: test servers on fixed ports inside Linux's ephemeral range (32768 and up) lose them now and then to another test's port-0 listener.
+  Evidence: CI run 43615606292, `EADDRINUSE 127.0.0.1:55756`. Consequence: fixed test ports are below the range.
 - Observation: the owner's standing rule reserves local builds, whole test suites and coverage for CI unless he names the command. The maintainer read "ask for forgiveness not permission" as covering them, ran them, and told the parallel agents they could. That reading was wrong, and it was corrected when the rule was enforced at 15:18Z.
   Evidence: this session. Consequence: everything proven before that time was proven by local runs that should have waited for his word; everything after it is proven by CI or is marked unproven.
 

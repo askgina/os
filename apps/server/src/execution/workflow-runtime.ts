@@ -120,6 +120,12 @@ export function workflowRuntime(ctx: AppContext): WorkflowRuntime {
       pool: ctx.pool,
       queueConcurrency: ctx.config.workflowWorkerConcurrency,
       applicationManagedShutdown: true,
+      // A process that dies in the middle of a step leaves that step's job locked. Without
+      // this, upstream releases it after 5 minutes at best and 4 hours at worst, and an
+      // approved payment waits that long. A running step renews its lock every few seconds,
+      // so 30 seconds unrenewed means its process is gone. Should a stalled process be taken
+      // for a dead one, the step runs twice, which every step here is built for.
+      jobLockStaleSeconds: 30,
     },
     dataKeys: ctx.keys,
   });

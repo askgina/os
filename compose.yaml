@@ -108,7 +108,8 @@ services:
       timeout: 3s
       retries: 30
     # The Workflow queue gives in-flight deliveries 5 seconds after SIGTERM; a little more lets
-    # the process exit on its own instead of being killed. Interrupted steps are re-run on start.
+    # the process exit on its own instead of being killed. A step that was interrupted anyway is
+    # run again about half a minute after the server is back.
     stop_grace_period: 10s
     restart: unless-stopped
 
