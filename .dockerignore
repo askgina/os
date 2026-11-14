@@ -4,6 +4,8 @@
 **/node_modules
 **/.well-known
 **/.swc
+**/.eve
+**/.output
 **/dist
 **/coverage
 **/test-results
