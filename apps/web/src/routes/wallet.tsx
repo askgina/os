@@ -34,7 +34,15 @@ import { Label } from "@/components/ui/label.tsx";
 import { Progress } from "@/components/ui/progress.tsx";
 import { api, keys, queryClient, useWallet, useWorkspace } from "@/lib/api.ts";
 import { assetInfo, chainName, formatAsset, NATIVE_DECIMALS } from "@/lib/assets.ts";
-import { checksumAddress, formatUnits, parseUnits, percentOf, UnitsError } from "@/lib/format.ts";
+import {
+  checksumAddress,
+  formatUnits,
+  parseUnits,
+  percentOf,
+  shortAddress,
+  UnitsError,
+} from "@/lib/format.ts";
+import { sweepDestinations } from "@/lib/sweep.ts";
 
 export function WalletPage() {
   const { workspaceId, walletId } = useParams({ from: "/w/$workspaceId/wallets/$walletId" });
@@ -175,8 +183,115 @@ function WalletView({ wallet, workspace }: { wallet: WalletDetail; workspace: Wo
         </Alert>
       ) : null}
 
+      {canAdmin ? <SweepCard wallet={wallet} workspace={workspace} /> : null}
       {canAdmin ? <PolicyEditor wallet={wallet} workspace={workspace} /> : null}
     </div>
+  );
+}
+
+/**
+ * Empty one asset of the wallet without an agent: the way out for a wallet whose agent was
+ * disabled, and for a paused workspace. Only destinations the signer accepts are offered.
+ */
+function SweepCard({ wallet, workspace }: { wallet: WalletDetail; workspace: WorkspaceDetail }) {
+  const navigate = useNavigate();
+  const id = useId();
+  const destinations = sweepDestinations(wallet, workspace);
+  const held = wallet.balances.filter((balance) => balance.amount !== "0");
+  const [assetKey, setAssetKey] = useState(() =>
+    held[0] ? `${held[0].chainId}|${held[0].asset}` : "",
+  );
+  const [to, setTo] = useState(() => destinations[0]?.address ?? "");
+  const submit = useMutation({
+    mutationFn: () => {
+      const balance = held.find((item) => `${item.chainId}|${item.asset}` === assetKey);
+      const destination = destinations.find((item) => item.address === to);
+      if (!balance || !destination) throw new Error("Choose an asset and a destination.");
+      return api.call("requestSweep", {
+        params: { workspaceId: workspace.id, walletId: wallet.id },
+        body: { chainId: balance.chainId, asset: balance.asset, to: destination.address },
+      });
+    },
+    onSuccess: async (approval) => {
+      await queryClient.invalidateQueries({ queryKey: keys.workspace(workspace.id) });
+      await navigate({
+        to: "/w/$workspaceId/approvals/$approvalId",
+        params: { workspaceId: workspace.id, approvalId: approval.id },
+      });
+    },
+  });
+  const approvals =
+    workspace.adminThreshold === 1 ? "1 approval" : `${workspace.adminThreshold} approvals`;
+
+  return (
+    <Card id="sweep">
+      <CardHeader>
+        <div>
+          <CardTitle>Empty this wallet</CardTitle>
+          <CardDescription>
+            Move all of one asset to the treasury or to an address its limits already allow. No
+            agent is involved and the limits above do not apply, so it needs {approvals}, as an
+            admin change does. Works while the workspace is paused.
+          </CardDescription>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {destinations.length === 0 ? (
+          <EmptyState title="Nowhere to send it yet">
+            Create a treasury, or set limits that allow only listed recipients, first. The signer
+            sends a sweep nowhere else.
+          </EmptyState>
+        ) : held.length === 0 ? (
+          <p className="text-sm text-muted-foreground">This wallet holds nothing to move.</p>
+        ) : (
+          <form
+            className="grid gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submit.mutate();
+            }}
+          >
+            <Labelled id={`${id}-asset`} label="Asset">
+              <Select
+                id={`${id}-asset`}
+                value={assetKey}
+                onChange={(event) => setAssetKey(event.target.value)}
+              >
+                {held.map((balance) => (
+                  <option
+                    key={`${balance.chainId}|${balance.asset}`}
+                    value={`${balance.chainId}|${balance.asset}`}
+                  >
+                    {formatUnits(balance.amount, balance.decimals)} {balance.symbol} on{" "}
+                    {chainName(balance.chainId, workspace.chains)}
+                  </option>
+                ))}
+              </Select>
+            </Labelled>
+            <Labelled id={`${id}-to`} label="Send it to">
+              <Select id={`${id}-to`} value={to} onChange={(event) => setTo(event.target.value)}>
+                {destinations.map((destination) => (
+                  <option key={destination.address} value={destination.address}>
+                    {destination.label} · {shortAddress(destination.address)}
+                  </option>
+                ))}
+              </Select>
+            </Labelled>
+            <p className="text-xs text-muted-foreground">
+              The server reads the balance now and fixes the amount in the request: all of a token,
+              or the network coin less the most the network fee can be. Whatever arrives later
+              stays.
+            </p>
+            <FormError error={submit.error} />
+            <div>
+              <Button type="submit" disabled={submit.isPending}>
+                {submit.isPending ? "Submitting…" : "Ask for approval"}
+              </Button>
+            </div>
+          </form>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

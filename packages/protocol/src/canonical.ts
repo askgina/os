@@ -12,6 +12,7 @@ export const DomainTag = {
   policy: "askgina.os/v1/policy",
   authorize: "askgina.os/v1/authorize",
   audit: "askgina.os/v1/audit",
+  sweep: "askgina.os/v1/sweep",
 } as const;
 export type DomainTag = (typeof DomainTag)[keyof typeof DomainTag];
 

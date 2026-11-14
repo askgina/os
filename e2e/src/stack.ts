@@ -123,19 +123,19 @@ export async function waitUntilHealthy(timeoutMs = 180_000): Promise<void> {
 }
 
 /**
- * Copy every state volume of the running project into the volumes of a new project name, the
- * way an operator restores a backup onto a fresh machine: stop everything, copy the volumes,
- * start the copy. The chain is not part of a backup; the restored stack gets a fresh local one.
+ * Back up every state volume of the running project into the volumes of another project name,
+ * as the deploy guide says: with every service that holds state stopped. The chain is not part
+ * of a backup and keeps running, so the stack goes on with the same chain afterwards.
  */
-export async function restoreInto(project: string): Promise<void> {
-  const source = stack.project;
-  await compose("stop");
+export async function backUpInto(project: string): Promise<void> {
+  const stateful = SERVICES.filter((service) => service !== "anvil");
+  await compose("stop", ...stateful);
   for (const volume of VOLUMES) {
     await docker(
       "run",
       "--rm",
       "-v",
-      `${source}_${volume}:/from:ro`,
+      `${stack.project}_${volume}:/from:ro`,
       "-v",
       `${project}_${volume}:/to`,
       HELPER_IMAGE,
@@ -145,9 +145,27 @@ export async function restoreInto(project: string): Promise<void> {
       "/to/",
     );
   }
+  await compose("up", "-d", "--wait", "--wait-timeout", "300", ...stateful);
+  await waitUntilHealthy();
+}
+
+/**
+ * Restore a backup made by {@link backUpInto} the way an operator restores onto a fresh machine:
+ * remove the running stack, fence the restored signer before it serves (`admin.ts fence`, as the
+ * deploy guide says), then start the copy. The restored stack gets a fresh local chain. Returns
+ * the fence the signer set, in seconds since the Unix epoch.
+ */
+export async function restoreFrom(project: string): Promise<number> {
   // The original must release its published ports before the copy can take them.
   await compose("down", "--remove-orphans");
   stack.project = project;
+  const output = await compose("run", "--rm", "signer", "node", "src/admin.ts", "fence");
+  const line = JSON.parse(output.trim().split("\n").at(-1) ?? "") as {
+    ok: boolean;
+    fenceAt: number;
+  };
+  if (!line.ok) throw new Error("the restored signer could not be fenced");
   await compose("up", "-d", "--wait", "--wait-timeout", "300", ...SERVICES);
   await waitUntilHealthy();
+  return line.fenceAt;
 }

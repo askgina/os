@@ -1,0 +1,1 @@
+ALTER TABLE "os"."transactions" ALTER COLUMN "intent_id" DROP NOT NULL;

@@ -1,13 +1,28 @@
+import type { WorkspaceId } from "@askgina/os-protocol";
 import type { Hono } from "hono";
 import { requireMember } from "../access.ts";
 import type { AppContext } from "../context.ts";
 import { handle } from "../http/route.ts";
 import { engineOf } from "./approvals.ts";
 import { getIntentRow, intentDetail, intentSummary, listIntentRows } from "./intents.ts";
+import { requestSweep } from "./sweeps.ts";
 
-/** The approval and intent endpoints of the contract in `@askgina/os-api`. */
+/** The approval, intent and sweep endpoints of the contract in `@askgina/os-api`. */
 export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): void {
   const engine = engineOf(ctx);
+
+  handle(app, ctx, "requestSweep", async ({ params, body, session }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    // Moving funds without an agent or a cap is an owner's call; approving it takes the
+    // workspace's admin threshold.
+    await requireMember(ctx, session, workspaceId, "owner");
+    return requestSweep(ctx, {
+      workspaceId,
+      walletId: params.walletId,
+      ...body,
+      requestedBy: session.user.id,
+    });
+  });
 
   handle(app, ctx, "listApprovals", async ({ params, query, session }) => {
     await requireMember(ctx, session, params.workspaceId as never);

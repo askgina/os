@@ -3,7 +3,7 @@ import { parseArgs } from "node:util";
 import { ApproverCredential, WorkspaceId } from "@askgina/os-protocol";
 import { ConfigError, loadConfig, type SignerConfig } from "./config.ts";
 import { SignerFailure } from "./errors.ts";
-import { createSigner, OwsVault } from "./index.ts";
+import { createSigner, OwsVault, SchemaTooNewError, type Signer } from "./index.ts";
 
 /**
  * Operator commands that run on the signer host against the same SQLite file as the server:
@@ -13,13 +13,16 @@ import { createSigner, OwsVault } from "./index.ts";
  *     add an approver without passkey assertions, after every passkey was lost
  *   node src/admin.ts verify-log --workspace ws_…
  *     check the decision log's hash chain and its recorded head
+ *   node src/admin.ts fence
+ *     after restoring a backup, before the signer serves: refuse every envelope issued until now
  *
  * Whoever can run these on the signer host is the root of trust: `enroll-approver` adds a key
  * that can approve anything the workspace's thresholds allow. Each command prints one JSON line.
  */
 const USAGE =
   "usage: admin.ts enroll-approver --workspace <ws_id> --user <usr_id> --credential-id <b64url> --public-key <b64url>\n" +
-  "       admin.ts verify-log --workspace <ws_id>\n";
+  "       admin.ts verify-log --workspace <ws_id>\n" +
+  "       admin.ts fence\n";
 
 function print(line: object): void {
   process.stdout.write(`${JSON.stringify(line)}\n`);
@@ -50,7 +53,10 @@ function readArgs() {
 const { positionals, values } = readArgs();
 const command = positionals[0];
 const workspace = WorkspaceId.safeParse(values.workspace);
-if ((command !== "enroll-approver" && command !== "verify-log") || !workspace.success) {
+const usable =
+  command === "fence" ||
+  ((command === "enroll-approver" || command === "verify-log") && workspace.success);
+if (!usable) {
   process.stderr.write(USAGE);
   fail("usage");
 }
@@ -77,17 +83,24 @@ try {
   fail("config");
 }
 mkdirSync(config.vaultPath, { recursive: true, mode: 0o700 });
-const signer = createSigner({
-  sqlitePath: config.sqlitePath,
-  vault: new OwsVault({ vaultPath: config.vaultPath, passphraseFile: config.passphraseFile }),
-  relyingParty: config.relyingParty,
-  requestSecret: config.requestSecret,
-  tokenKey: config.tokenKey,
-  maxIntentTtlSeconds: config.maxIntentTtlSeconds,
-  maxAdminTtlSeconds: config.maxAdminTtlSeconds,
-});
+let signer: Signer;
 try {
-  if (approver?.success) {
+  signer = createSigner({
+    sqlitePath: config.sqlitePath,
+    vault: new OwsVault({ vaultPath: config.vaultPath, passphraseFile: config.passphraseFile }),
+    relyingParty: config.relyingParty,
+    requestSecret: config.requestSecret,
+    tokenKey: config.tokenKey,
+    maxIntentTtlSeconds: config.maxIntentTtlSeconds,
+    maxAdminTtlSeconds: config.maxAdminTtlSeconds,
+  });
+} catch (error) {
+  fail(error instanceof SchemaTooNewError ? "schema_too_new" : "database");
+}
+try {
+  if (command === "fence") {
+    print({ ok: true, action: "fence-set-by-operator", fenceAt: signer.fence() });
+  } else if (approver?.success && workspace.success) {
     signer.enrollApproverByOperator(workspace.data, approver.data);
     print({
       ok: true,
@@ -96,7 +109,7 @@ try {
       userId: approver.data.userId,
       credentialId: approver.data.credentialId,
     });
-  } else {
+  } else if (workspace.success) {
     const result = signer.verifyDecisionLog(workspace.data);
     print({ ok: result.ok, workspaceId: workspace.data, brokenAt: result.brokenAt });
     process.exitCode = result.ok ? 0 : 1;

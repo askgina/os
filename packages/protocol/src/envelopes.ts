@@ -87,6 +87,19 @@ export const ResumeWorkspaceEnvelope = z.strictObject({
 });
 export type ResumeWorkspaceEnvelope = z.infer<typeof ResumeWorkspaceEnvelope>;
 
+/**
+ * Sign exactly one transaction that empties a wallet: the `Sweep` whose hash is `sweepHash`.
+ * Approved at the admin threshold; no agent and no wallet cap is involved.
+ */
+export const SweepWalletEnvelope = z.strictObject({
+  ...envelopeHeader,
+  type: z.literal("sweep-wallet"),
+  walletId: WalletId,
+  chainId: ChainId,
+  sweepHash: Digest,
+});
+export type SweepWalletEnvelope = z.infer<typeof SweepWalletEnvelope>;
+
 export const Envelope = z
   .discriminatedUnion("type", [
     ApproveIntentEnvelope,
@@ -95,6 +108,7 @@ export const Envelope = z
     RemoveApproverEnvelope,
     SetAdminThresholdEnvelope,
     ResumeWorkspaceEnvelope,
+    SweepWalletEnvelope,
   ])
   .refine((envelope) => envelope.expiresAt > envelope.issuedAt, {
     path: ["expiresAt"],

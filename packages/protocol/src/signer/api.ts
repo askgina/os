@@ -18,6 +18,7 @@ import {
   WalletId,
   WorkspaceId,
 } from "../primitives.ts";
+import { Sweep } from "../sweep.ts";
 
 /**
  * The signer's HTTP API. Only the control plane can reach it, and every request except the
@@ -39,6 +40,7 @@ export const signerRoutes = {
   getWallet: { method: "GET", path: "/v1/wallets/:walletId" },
   setPolicy: { method: "PUT", path: "/v1/wallets/:walletId/policy" },
   sign: { method: "POST", path: "/v1/sign" },
+  sweep: { method: "POST", path: "/v1/wallets/:walletId/sweep" },
   revokeApproval: { method: "POST", path: "/v1/approvals/:approvalId/revoke" },
   getApproval: { method: "GET", path: "/v1/approvals/:approvalId" },
 } as const;
@@ -178,10 +180,23 @@ export const SignResponse = z.strictObject({
 export type SignResponse = z.infer<typeof SignResponse>;
 
 /**
+ * Sign the one transaction of an approved sweep. Carries a `sweep-wallet` envelope whose
+ * `sweepHash` is the hash of `sweep`. The signer builds the transfer from `sweep`, refuses a
+ * destination that is neither on the wallet's recipient allowlist nor a treasury wallet of the
+ * same workspace, and returns the same transaction for a repeated request.
+ */
+export const SweepRequest = z.strictObject({
+  sweep: Sweep,
+  authorization: Authorization,
+  transaction: TransactionParams,
+});
+export type SweepRequest = z.infer<typeof SweepRequest>;
+
+/**
  * What the signer knows about an approval id.
  * - `unknown`: never seen.
  * - `revoked`: refused for good; no signature exists or will exist.
- * - `signed`: an intent was signed; `transactionHash` is set.
+ * - `signed`: an intent or a sweep was signed; `transactionHash` is set.
  * - `applied`: a non-signing envelope (policy, approver, threshold, resume) took effect.
  */
 export const ApprovalState = z.strictObject({
@@ -209,6 +224,8 @@ export const SignerErrorCode = z.enum([
   "envelope_expired",
   "envelope_not_yet_valid",
   "envelope_ttl_too_long",
+  /** Issued before the signer's restore fence: propose it again. */
+  "envelope_fenced",
   "nonce_reused",
   "intent_mismatch",
   "policy_missing",
@@ -220,6 +237,8 @@ export const SignerErrorCode = z.enum([
   "assertion_invalid",
   "approver_unknown",
   "threshold_unreachable",
+  /** A sweep to an address that is neither allowlisted for the wallet nor its workspace's treasury. */
+  "sweep_destination_not_allowed",
   // 500
   "vault_error",
   "internal",
@@ -237,6 +256,7 @@ export const signerErrorStatus: Record<SignerErrorCode, 400 | 401 | 403 | 404 | 
   envelope_expired: 403,
   envelope_not_yet_valid: 403,
   envelope_ttl_too_long: 403,
+  envelope_fenced: 403,
   nonce_reused: 403,
   intent_mismatch: 403,
   policy_missing: 403,
@@ -248,6 +268,7 @@ export const signerErrorStatus: Record<SignerErrorCode, 400 | 401 | 403 | 404 | 
   assertion_invalid: 403,
   approver_unknown: 403,
   threshold_unreachable: 403,
+  sweep_destination_not_allowed: 403,
   vault_error: 500,
   internal: 500,
 };

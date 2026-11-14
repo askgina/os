@@ -9,6 +9,8 @@ const meanings: Record<string, string> = {
   envelope_expired: "The approval ran out of time before the signer acted on it.",
   envelope_not_yet_valid: "The approval was dated in the future; the clocks may disagree.",
   envelope_ttl_too_long: "The approval was valid for longer than the wallet allows.",
+  envelope_fenced:
+    "The signer was restored from a backup after this was requested, so it refuses every older request. Ask for it again.",
   nonce_reused: "This approval was already used once. An approval signs only once.",
   intent_mismatch: "The transaction did not match the approved request, so the signer refused.",
   policy_missing: "The wallet has no limits set yet, so it can sign nothing.",
@@ -21,6 +23,8 @@ const meanings: Record<string, string> = {
   assertion_invalid: "A passkey approval could not be verified.",
   approver_unknown: "A passkey that approved is not one the signer knows for this workspace.",
   threshold_unreachable: "There would be fewer approvers than approvals required.",
+  sweep_destination_not_allowed:
+    "A sweep may only go to the workspace's treasury or to a recipient the wallet's limits allow.",
   vault_error: "The signer could not use the wallet's key.",
   wallet_mismatch: "The request names a different wallet.",
   requester_not_allowed: "This agent is not allowed to use this wallet.",

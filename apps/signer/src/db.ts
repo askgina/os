@@ -5,8 +5,11 @@ import { DatabaseSync } from "node:sqlite";
  * plane's database: approvers, policies, used nonces, what was signed, and the decision log.
  * Integers are seconds since the Unix epoch; amounts are decimal strings because they can exceed
  * 64 bits.
+ *
+ * Version 1 is the v0.1 schema. Every statement in it is `IF NOT EXISTS`, so it also runs as a
+ * no-op on a v0.1 file, which has these tables and `user_version` 0.
  */
-const SCHEMA = `
+const VERSION_1 = `
 CREATE TABLE IF NOT EXISTS workspaces (
   workspace_id TEXT PRIMARY KEY,
   admin_threshold INTEGER NOT NULL,
@@ -100,14 +103,64 @@ CREATE TABLE IF NOT EXISTS decisions (
 ) STRICT;
 `;
 
-export function openDatabase(path: string): DatabaseSync {
+/**
+ * Version 2: facts about this database rather than about a workspace. `fence_at` is the restore
+ * fence (see `fence.ts`); `database_file` identifies the file the database was last opened from.
+ */
+const VERSION_2 = `
+CREATE TABLE IF NOT EXISTS signer_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+) STRICT;
+`;
+
+/** Migration `n` (from 1) takes a database from version `n - 1` to version `n`. */
+const MIGRATIONS: readonly string[] = [VERSION_1, VERSION_2];
+export const SCHEMA_VERSION = MIGRATIONS.length;
+
+/** A database written by a newer signer. Opening it with older code could lose what it records. */
+export class SchemaTooNewError extends Error {
+  override readonly name = "SchemaTooNewError";
+}
+
+export interface OpenedDatabase {
+  db: DatabaseSync;
+  /** True when this open created the schema in an empty file: the database has no history. */
+  created: boolean;
+}
+
+export function openDatabase(path: string): OpenedDatabase {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA synchronous = FULL");
   db.exec("PRAGMA busy_timeout = 5000");
-  db.exec(SCHEMA);
-  return db;
+  try {
+    // One write transaction, so the signer and the admin CLI opening the file together migrate
+    // it once.
+    return { db, created: transaction(db, () => migrate(db)) };
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
+function migrate(db: DatabaseSync): boolean {
+  const { user_version: version } = db.prepare("PRAGMA user_version").get() as {
+    user_version: number;
+  };
+  if (version > SCHEMA_VERSION) {
+    throw new SchemaTooNewError(
+      `the database is at schema version ${version}; this signer knows ${SCHEMA_VERSION}`,
+    );
+  }
+  const created =
+    version === 0 &&
+    db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'workspaces'").get() ===
+      undefined;
+  for (const sql of MIGRATIONS.slice(version)) db.exec(sql);
+  if (version < SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  return created;
 }
 
 /**

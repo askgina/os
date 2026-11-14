@@ -15,6 +15,13 @@
       "when": 1794670004722,
       "tag": "0001_directory_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794694182545,
+      "tag": "0002_sweep_transactions",
+      "breakpoints": true
     }
   ]
 }

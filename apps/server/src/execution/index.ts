@@ -3,9 +3,11 @@ import type { Hono } from "hono";
 import type { AppContext } from "../context.ts";
 import { approvals } from "../db/schema.ts";
 import { engineOf } from "./approvals.ts";
-import { type ExecutionOptions, registerIntentKind } from "./intents.ts";
+import { registerIntentKind } from "./intents.ts";
 import { registerApprovalAndIntentRoutes } from "./routes.ts";
 import { registerSteps, unregisterSteps } from "./steps.ts";
+import { registerSweepKind } from "./sweeps.ts";
+import type { ExecutionOptions } from "./transactions.ts";
 import { loadGenerated, migrateWorld, workflowRuntime } from "./workflow-runtime.ts";
 
 export { mountMcp } from "../mcp/gateway.ts";
@@ -19,13 +21,14 @@ const START_GRACE_SECONDS = 10;
 const SWEEP_INTERVAL_MS = 3_000;
 const DEFAULT_OPTIONS: ExecutionOptions = { pollSeconds: 5 };
 
-/** The approval and intent routes, and the `approve-intent` kind. */
+/** The approval, intent and sweep routes, and the kinds that sign: `approve-intent` and `sweep-wallet`. */
 export function registerExecution(
   app: Hono,
   ctx: AppContext,
   options: ExecutionOptions = DEFAULT_OPTIONS,
 ): void {
   registerIntentKind(ctx, options);
+  registerSweepKind(ctx, options);
   registerApprovalAndIntentRoutes(app, ctx);
 }
 

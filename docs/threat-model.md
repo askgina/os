@@ -98,10 +98,15 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
 - **Can:** ask the signer anything the request signature allows; read sealed content (the
   server holds the keyring); show a person a misleading approval card; pause workspaces and
   revoke approvals. Pausing stops new signatures; a repeat of an approval the signer already
-  signed still returns that stored transaction, because it already exists.
+  signed still returns that stored transaction, because it already exists. Ask for a sweep of
+  any wallet, which has no cap, and choose its amount when it asks.
 - **Stopped by:** it cannot produce a passkey assertion. It cannot exceed the signer's policy
   caps, reuse an approval, or change policy or approvers without passkey approval of the exact
-  new value. The signer builds every transaction from the approved intent.
+  new value. The signer builds every transaction from the approved intent or sweep. A sweep needs
+  the workspace's admin threshold, and the signer sends it only to an address already on the
+  wallet's recipient allowlist or to a treasury wallet of the same workspace, read from its own
+  records ([`signer.ts`](../apps/signer/src/signer.ts), `assertSweepAllowed`). It cannot set or
+  move the restore fence: that happens only on the signer host.
 - **Not stopped:** the trusted-display gap, stated in full under "Limits".
 
 ### A network position between the services
@@ -134,7 +139,9 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
 - **Owner:** can propose policy and approver changes. These take effect only with the
   workspace's `adminThreshold` of approvals. With an admin threshold of 1, one owner who is an
   approver can raise caps. The signer keeps every wallet's threshold at or below the admin
-  threshold, so the admin threshold is the real bar for a wallet's rules.
+  threshold, so the admin threshold is the real bar for a wallet's rules. An owner can also ask
+  for a sweep, which takes the same admin threshold and reaches only the treasury or an address
+  already on the wallet's allowlist.
 
 ### The signer host
 
@@ -151,6 +158,11 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
   [`specs/research/ows-node-sdk-in-an-isolated-signer.md`](../specs/research/ows-node-sdk-in-an-isolated-signer.md)).
   The signer seals those tokens under its own key (`token-key`); a backup that contains that key
   as well contains the wallets.
+- **Restoring an older signer volume:** it forgets every approval used after the backup, so an
+  approval paid after it would look unused. Every restore is fenced: the operator runs
+  `admin.ts fence` before the signer serves, and the signer fences a database file it did not
+  open last by itself. Then it refuses every envelope issued before the fence
+  ([`fence.ts`](../apps/signer/src/fence.ts); `approval-protocol.md`, section 8).
 
 Back up each trust domain separately and protect the signer's backups as you would the funds.
 
@@ -170,7 +182,7 @@ Back up each trust domain separately and protect the signer's backups as you wou
 | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
 | The canonical intent (operation, recipient, amount, calldata, memo)                             | `intents.payload`                                            | Sealed, workspace key                                                                      | What people and agents typed about an operation                                                                      |
 | What the approval card shows, and the simulation result                                         | `intents.presentation`                                       | Sealed, workspace key                                                                      | Same                                                                                                                 |
-| What an approval kind needs to apply its effect, for example a proposed policy                  | `approvals.detail`                                           | Sealed, workspace key                                                                      | Same                                                                                                                 |
+| What an approval kind needs to apply its effect: a proposed policy, a sweep's amount and target | `approvals.detail`                                           | Sealed, workspace key                                                                      | Same                                                                                                                 |
 | The signed raw transaction                                                                      | `transactions.raw`                                           | Sealed, workspace key                                                                      | Kept only to rebroadcast; it contains the operation                                                                  |
 | Audit details                                                                                   | `audit_events.detail`                                        | Sealed, workspace key                                                                      | Free-form content; its digest stays readable so the chain verifies without the key                                   |
 | Workflow inputs, outputs, hook payloads, stream chunks, step errors                             | `workflow` schema                                            | AES-256-GCM, per-run key ([`packages/world/src/index.ts`](../packages/world/src/index.ts)) | The upstream Postgres World stores these in plaintext                                                                |
@@ -255,6 +267,21 @@ under an existing approval is not designed.
 **The request signature can be replayed for 60 seconds.** It is not a source of single use; the
 envelope nonce is.
 
+**"At most once" lasts only as long as the signer's database.** A restored signer database has
+forgotten what it signed after the backup. The restore fence closes that, at a cost: every
+approval issued before the fence is refused, so approvals waiting at the restore, and proposals
+made in the 30 seconds after it, must be made again. The signer notices on its own only a
+database file that is not the one it last opened (a copy, an extracted archive, a move to another
+host). A restore that rolls the same file back in place, such as a disk snapshot, is fenced only
+by the operator's `fence` step, which the deploy guide makes part of every restore. The fence
+relies on the signer host's clock: a clock set back across a restore weakens it. A v0.1 signer
+image does not know the fence, so going back to one after an upgrade drops it.
+
+**A sweep has no cap.** It moves a whole balance in one transaction, approved at the admin
+threshold. What bounds a misled sweep is the destination rule: the money can only reach an
+address the approvers allowed earlier, or the workspace's own treasury. A paused workspace can
+still be swept, on purpose: it is how a paused workspace is emptied.
+
 **Removing the passkeys of every approver does not lock the funds forever, by design.** It also
 means the signer host's operator can always add an approver.
 
@@ -269,7 +296,8 @@ From the map's "Not yet specified" list ([askgina/os#1](https://github.com/askgi
 - Operating beyond one machine: KMS or OpenBao key providers, HA Postgres, Kubernetes.
 - Notifications outside the inbox: web push and chat. The optional webhook (`NOTIFY_WEBHOOK_URL`)
   exists: it sends identifiers only, unsigned, once, to an address the operator chose.
-- Workspace lifecycle: clone, export, and delete with assets still in the wallets.
+- Workspace lifecycle beyond emptying a wallet: clone, export, retiring a wallet, and delete with
+  assets still in the wallets. A person can sweep a wallet whose agent is gone.
 - Repricing stuck transactions.
 
 Also out of scope: hosted or multi-tenant operation by Ask Gina.

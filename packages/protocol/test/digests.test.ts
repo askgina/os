@@ -7,6 +7,8 @@ import {
   type Intent,
   intentHash,
   policyHash,
+  type Sweep,
+  sweepHash,
 } from "../src/index.ts";
 import {
   AGENT,
@@ -21,6 +23,8 @@ import {
   MAINNET,
   OTHER_AGENT,
   policy,
+  sweep,
+  sweepWallet,
   T0,
   TOKEN,
   WALLET,
@@ -43,6 +47,12 @@ const ENVELOPE_CHALLENGE = "SoAiEpNpEeP2ex9Y_3B7aWINGGXHZFbp3OvzZU6dC80";
 // The policy JSON hashed under the intent tag, to show tags separate otherwise equal inputs.
 const POLICY_UNDER_INTENT_TAG = "e690d76b4c9e3a0bb2a01f86834fb4923cbb7b8645ae192d4611455bb756b3c4";
 
+// Added with the `sweep-wallet` envelope. The vectors above did not change.
+const SWEEP_JSON = `{"amount":"250000000000000000","asset":"native","chainId":"eip155:8453","maxFeeWei":"1000000000000000","to":"${ALICE}","v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+const SWEEP_HASH = "aa3f2f4c50ee481b88aaf98c610125b769c5508ab8d6bac13f731c50bccad674";
+const SWEEP_ENVELOPE_JSON = `{"approvalId":"${APPROVAL}","chainId":"eip155:8453","expiresAt":1700000600,"issuedAt":1700000000,"nonce":"AAAAAAAAAAAAAAAAAAAAAA","sweepHash":"${SWEEP_HASH}","type":"sweep-wallet","v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+const SWEEP_ENVELOPE_CHALLENGE = "lgZRKMxucwdO2AFLyWBfmAc4oANInAkJObl_azLac0Q";
+
 describe("pinned digest vectors", () => {
   it("intentHash", () => {
     expect(canonicalJson(intent())).toBe(INTENT_JSON);
@@ -60,14 +70,47 @@ describe("pinned digest vectors", () => {
     expect(Buffer.from(envelopeChallenge(envelope)).toString("base64url")).toBe(ENVELOPE_CHALLENGE);
   });
 
+  it("sweepHash and the sweep-wallet envelope's challenge", () => {
+    expect(canonicalJson(sweep())).toBe(SWEEP_JSON);
+    expect(sweepHash(sweep())).toBe(SWEEP_HASH);
+    const envelope = sweepWallet({ sweepHash: SWEEP_HASH });
+    expect(canonicalJson(envelope)).toBe(SWEEP_ENVELOPE_JSON);
+    expect(Buffer.from(envelopeChallenge(envelope)).toString("base64url")).toBe(
+      SWEEP_ENVELOPE_CHALLENGE,
+    );
+  });
+
   it("domain tags", () => {
     expect(DomainTag).toEqual({
       intent: "askgina.os/v1/intent",
       policy: "askgina.os/v1/policy",
       authorize: "askgina.os/v1/authorize",
       audit: "askgina.os/v1/audit",
+      sweep: "askgina.os/v1/sweep",
     });
     expect(digestHex(DomainTag.intent, policy())).toBe(POLICY_UNDER_INTENT_TAG);
+  });
+});
+
+describe("every sweep field is bound", () => {
+  const changes: { [K in keyof Sweep]?: Sweep[K] } = {
+    workspaceId: `ws_01jd000000000000000000000b`,
+    walletId: `wal_01jd000000000000000000000c`,
+    chainId: MAINNET,
+    asset: TOKEN,
+    amount: "250000000000000001",
+    to: BOB,
+    maxFeeWei: "1000000000000001",
+  };
+  it.each(Object.entries(changes))("%s", (field, value) => {
+    expect(sweepHash({ ...sweep(), [field]: value })).not.toBe(sweepHash(sweep()));
+  });
+  it("covers every field except the version", () => {
+    expect(Object.keys(changes).sort()).toEqual(
+      Object.keys(sweep())
+        .filter((key) => key !== "v")
+        .sort(),
+    );
   });
 });
 

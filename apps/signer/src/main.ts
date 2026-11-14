@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { serve } from "@hono/node-server";
 import { ConfigError, loadConfig, type SignerConfig } from "./config.ts";
-import { createSigner, OwsVault } from "./index.ts";
+import { createSigner, OwsVault, SchemaTooNewError, type Signer } from "./index.ts";
 import { createLogger } from "./log.ts";
 
 // Everything the signer writes (SQLite, the vault) is readable by its own user only.
@@ -20,16 +20,25 @@ try {
 }
 
 mkdirSync(config.vaultPath, { recursive: true, mode: 0o700 });
-const signer = createSigner({
-  sqlitePath: config.sqlitePath,
-  vault: new OwsVault({ vaultPath: config.vaultPath, passphraseFile: config.passphraseFile }),
-  relyingParty: config.relyingParty,
-  requestSecret: config.requestSecret,
-  tokenKey: config.tokenKey,
-  maxIntentTtlSeconds: config.maxIntentTtlSeconds,
-  maxAdminTtlSeconds: config.maxAdminTtlSeconds,
-  log,
-});
+let signer: Signer;
+try {
+  signer = createSigner({
+    sqlitePath: config.sqlitePath,
+    vault: new OwsVault({ vaultPath: config.vaultPath, passphraseFile: config.passphraseFile }),
+    relyingParty: config.relyingParty,
+    requestSecret: config.requestSecret,
+    tokenKey: config.tokenKey,
+    maxIntentTtlSeconds: config.maxIntentTtlSeconds,
+    maxAdminTtlSeconds: config.maxAdminTtlSeconds,
+    log,
+  });
+} catch (error) {
+  // A database written by a newer signer: running older code on it could drop what it records
+  // (the restore fence among it), so this image does not serve it.
+  if (!(error instanceof SchemaTooNewError)) throw error;
+  log.error("refusing to start", { code: "schema_too_new" });
+  process.exit(1);
+}
 
 const server = serve({ fetch: signer.app.fetch, port: config.port, hostname: "0.0.0.0" }, () =>
   log.info("listening", { port: config.port }),

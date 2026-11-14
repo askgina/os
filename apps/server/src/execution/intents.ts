@@ -24,32 +24,28 @@ import {
   type WalletPolicy,
   type WorkspaceId,
 } from "@askgina/os-protocol";
-import { SignerError, type SignResponse } from "@askgina/os-protocol/signer";
+import { SignerError } from "@askgina/os-protocol/signer";
 import { and, count, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
-import {
-  encodeFunctionData,
-  erc20Abi,
-  formatUnits,
-  parseTransaction,
-  type Hex as ViemHex,
-} from "viem";
+import { encodeFunctionData, erc20Abi, formatUnits, type Hex as ViemHex } from "viem";
 import { ApprovalFailure, type ApprovalKindHandler, type ApprovalRow } from "../approvals/kinds.ts";
 import { appendAudit } from "../audit.ts";
 import type { AppContext, Executor } from "../context.ts";
-import {
-  agents,
-  intents,
-  nonceReservations,
-  transactions,
-  wallets,
-  workspaces,
-} from "../db/schema.ts";
+import { agents, intents, wallets, workspaces } from "../db/schema.ts";
 import { HttpError } from "../http/errors.ts";
 import { approvalLink, engineOf } from "./approvals.ts";
-import { ChainError, chainAccess, type ReceiptState } from "./chains.ts";
+import { ChainError, chainAccess } from "./chains.ts";
+import {
+  type ExecutionOptions,
+  FALLBACK_GAS,
+  followUpTransaction,
+  GAS_MARGIN_PERCENT,
+  releaseNonce,
+  signOnce,
+  transactionInfo,
+  transactionOf,
+} from "./transactions.ts";
 
 type IntentRow = typeof intents.$inferSelect;
-type TransactionRow = typeof transactions.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
 type WalletRow = typeof wallets.$inferSelect;
 
@@ -64,27 +60,12 @@ interface IntentApprovalDetail {
 }
 
 const PAGE_SIZE = 50;
-const REBROADCAST_SECONDS = 60;
-/** Longest wait between broadcast attempts while the chain will not take a transaction. */
-const MAX_BROADCAST_BACKOFF_SECONDS = 60;
-/** How often a `stuck` transaction is looked at again: it is still valid and may be mined. */
-const STUCK_POLL_SECONDS = 600;
 /** Proposals one agent may have waiting for people at once; more is a loop, not a request. */
 export const MAX_PENDING_PER_AGENT = 20;
-/** Gas the estimate is multiplied by, in percent, to absorb state changes before signing. */
-const GAS_MARGIN_PERCENT = 125n;
-/** Used when a simulation failed and gave no estimate; the fee ceiling still bounds the cost. */
-const FALLBACK_GAS = 200_000n;
 
 const payloadLocation = (id: string) => `intents.payload:${id}`;
 const presentationLocation = (id: string) => `intents.presentation:${id}`;
-const rawLocation = (approvalId: string) => `transactions.raw:${approvalId}`;
 const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
-
-export interface ExecutionOptions {
-  /** How long the follow-up waits between receipt checks. */
-  pollSeconds: number;
-}
 
 // --- reading intents --------------------------------------------------------------------------
 
@@ -106,15 +87,6 @@ async function intentRow(ctx: AppContext, id: string, executor: Executor = ctx.d
     .where(eq(intents.id, id as IntentId));
   if (!row) throw new HttpError("not_found", "no such intent");
   return row;
-}
-
-async function transactionOf(ctx: AppContext, approvalId: ApprovalId | null) {
-  if (approvalId === null) return null;
-  const [row] = await ctx.db
-    .select()
-    .from(transactions)
-    .where(eq(transactions.approvalId, approvalId));
-  return row ?? null;
 }
 
 export async function intentSummary(ctx: AppContext, row: IntentRow): Promise<IntentSummary> {
@@ -149,14 +121,7 @@ export async function intentDetail(ctx: AppContext, row: IntentRow): Promise<Int
     intent,
     intentHash: row.intentHash,
     simulation: presentation.simulation,
-    transaction: transaction
-      ? {
-          hash: transaction.hash as `0x${string}`,
-          status: transaction.status,
-          blockNumber: transaction.blockNumber,
-          explorerUrl: chainAccess(ctx).explorerLink(intent.chainId, transaction.hash),
-        }
-      : null,
+    transaction: transaction ? transactionInfo(ctx, transaction) : null,
   };
 }
 
@@ -602,106 +567,6 @@ async function walletSummary(ctx: AppContext, walletId: WalletId): Promise<Walle
   };
 }
 
-interface FeeChoice {
-  gas: bigint;
-  maxFeePerGas: bigint;
-  maxPriorityFeePerGas: bigint;
-}
-
-/** Pick gas and fees for signing, inside the intent's approved fee ceiling. */
-function chooseFees(
-  maxFeeWei: bigint,
-  gasEstimate: bigint,
-  fees: { baseFeePerGas: bigint; maxPriorityFeePerGas: bigint },
-): FeeChoice {
-  const gas = (gasEstimate * GAS_MARGIN_PERCENT) / 100n;
-  const needed = fees.baseFeePerGas + fees.maxPriorityFeePerGas;
-  const affordable = maxFeeWei / gas;
-  if (affordable < needed) {
-    throw new ApprovalFailure(
-      "fee_cap_exceeded",
-      "current fees are above the approved fee ceiling",
-    );
-  }
-  const preferred = 2n * fees.baseFeePerGas + fees.maxPriorityFeePerGas;
-  return {
-    gas,
-    // biome-ignore lint/complexity/useMathMinMax: Math.min does not take bigints
-    maxFeePerGas: preferred < affordable ? preferred : affordable,
-    maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
-  };
-}
-
-/**
- * Signer refusals that a retry can cure: its own failures, and `unauthenticated`, which comes
- * from clock skew or a secret being rotated on one side first. Every other code is permanent.
- */
-const RETRYABLE_SIGNER_CODES: readonly string[] = ["internal", "vault_error", "unauthenticated"];
-
-/**
- * The account nonce for this approval's transaction, reserved and committed before the signer
- * is asked. The signer accepts a repeated account nonce (a reset chain counts from zero again;
- * a replacement needs the old one), so if this process died after the signer signed and before
- * the transaction row was stored, another approval of the same wallet must still not be given
- * the same nonce. A retry of this approval reuses its reservation.
- */
-async function reserveNonce(
-  ctx: AppContext,
-  approvalId: ApprovalId,
-  wallet: WalletRow,
-  chainId: ChainId,
-): Promise<number> {
-  const chains = chainAccess(ctx);
-  return ctx.db.transaction(async (tx) => {
-    // One nonce allocator per wallet and chain.
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`nonce:${wallet.id}:${chainId}`}, 0))`,
-    );
-    const [existing] = await tx
-      .select({ nonce: nonceReservations.nonce })
-      .from(nonceReservations)
-      .where(eq(nonceReservations.approvalId, approvalId));
-    if (existing) return existing.nonce;
-    const [highest] = await tx
-      .select({ nonce: sql<number | null>`max(${transactions.nonce})` })
-      .from(transactions)
-      .where(
-        and(
-          eq(transactions.walletId, wallet.id),
-          eq(transactions.chainId, chainId),
-          // A stuck transaction is still valid and still offered to the chain, so it keeps its
-          // nonce: handing it to another approval would leave one of the two unmined for ever.
-          inArray(transactions.status, ["signed", "broadcast", "stuck"]),
-        ),
-      );
-    const [reserved] = await tx
-      .select({ nonce: sql<number | null>`max(${nonceReservations.nonce})` })
-      .from(nonceReservations)
-      .where(
-        and(eq(nonceReservations.walletId, wallet.id), eq(nonceReservations.chainId, chainId)),
-      );
-    const next = (value: number | null | undefined) =>
-      value === null || value === undefined ? 0 : Number(value) + 1;
-    const nonce = Math.max(
-      await chains.pendingNonce(chainId, wallet.address),
-      next(highest?.nonce),
-      next(reserved?.nonce),
-    );
-    await tx.insert(nonceReservations).values({
-      approvalId,
-      walletId: wallet.id,
-      chainId,
-      nonce,
-      createdAt: new Date(ctx.now() * 1000),
-    });
-    return nonce;
-  });
-}
-
-async function releaseNonce(ctx: AppContext, approvalId: ApprovalId): Promise<void> {
-  await ctx.db.delete(nonceReservations).where(eq(nonceReservations.approvalId, approvalId));
-}
-
 /**
  * Sign the intent's transaction once. Runs in a workflow step, which may run again after a
  * crash: an existing transaction row ends it, and the signer returns the transaction it already
@@ -717,174 +582,46 @@ async function executeIntent(
   if (await transactionOf(ctx, approval.id)) return;
   await moveIntent(ctx, row, ["pending_approval"], "approved");
   const { intent, presentation } = await readIntent(ctx, row);
-  const chains = chainAccess(ctx);
   const [wallet] = await ctx.db.select().from(wallets).where(eq(wallets.id, row.walletId));
   if (!wallet) throw new ApprovalFailure("wallet_missing", "the wallet no longer exists");
-
-  const nonce = await reserveNonce(ctx, approval.id, wallet, intent.chainId);
-  const quote = await chains.fees(intent.chainId);
-  const estimate = BigInt(presentation.simulation?.gasEstimate ?? FALLBACK_GAS.toString());
-  let chosen: FeeChoice;
-  try {
-    chosen = chooseFees(BigInt(intent.maxFeeWei), estimate, quote);
-  } catch (error) {
-    if (error instanceof ApprovalFailure) await releaseNonce(ctx, approval.id);
-    throw error;
-  }
-
-  let signed: SignResponse;
-  try {
-    signed = await ctx.signer.sign({
-      intent,
-      authorization,
-      transaction: {
-        nonce,
-        gas: chosen.gas.toString(),
-        maxFeePerGas: chosen.maxFeePerGas.toString(),
-        maxPriorityFeePerGas: chosen.maxPriorityFeePerGas.toString(),
-      },
-    });
-  } catch (error) {
-    if (error instanceof SignerError && !RETRYABLE_SIGNER_CODES.includes(error.code)) {
-      // A permanent refusal: nothing was signed, so the nonce is free for the next approval.
-      await releaseNonce(ctx, approval.id);
-      throw new ApprovalFailure(
-        error.code === "policy_denied" && error.detail ? error.detail : error.code,
-        "the signer refused to sign",
-      );
-    }
-    throw error;
-  }
-  // A repeated request returns the transaction signed the first time, with its own nonce.
-  const parsed = parseTransaction(signed.signedTransaction as ViemHex);
-  await ctx.db.transaction(async (tx) => {
-    await tx
-      .insert(transactions)
-      .values({
-        approvalId: approval.id,
-        intentId: row.id,
-        walletId: wallet.id,
-        chainId: intent.chainId,
-        nonce: parsed.nonce ?? nonce,
-        hash: signed.transactionHash,
-        raw: await ctx.sealer.seal(
-          row.workspaceId,
-          rawLocation(approval.id),
-          signed.signedTransaction,
-        ),
-        createdAt: new Date(ctx.now() * 1000),
-        updatedAt: new Date(ctx.now() * 1000),
-      })
-      .onConflictDoNothing();
-    await tx.delete(nonceReservations).where(eq(nonceReservations.approvalId, approval.id));
-    await moveIntent(ctx, row, ["approved", "pending_approval"], "signed", { executor: tx });
+  await signOnce(ctx, {
+    approval,
+    wallet,
+    chainId: intent.chainId,
+    maxFeeWei: BigInt(intent.maxFeeWei),
+    gasEstimate: BigInt(presentation.simulation?.gasEstimate ?? FALLBACK_GAS.toString()),
+    intentId: row.id,
+    sign: (transaction) => ctx.signer.sign({ intent, authorization, transaction }),
+    stored: (tx) =>
+      moveIntent(ctx, row, ["approved", "pending_approval"], "signed", { executor: tx }),
   });
 }
 
-/** After signing: broadcast, then watch until the transaction is final or overdue. */
+/** After signing: broadcast and watch the transaction, moving the intent along with it. */
 async function followUpIntent(
   ctx: AppContext,
   approval: ApprovalRow,
   options: ExecutionOptions,
 ): Promise<{ done: boolean; waitSeconds: number }> {
   const transaction = await transactionOf(ctx, approval.id);
-  if (!transaction) return { done: true, waitSeconds: 0 };
+  if (!transaction?.intentId) return { done: true, waitSeconds: 0 };
   const intent = await intentRow(ctx, transaction.intentId);
-  const chains = chainAccess(ctx);
-  const chainId = transaction.chainId as ChainId;
-  const raw = (await ctx.sealer.open(
-    intent.workspaceId,
-    rawLocation(approval.id),
-    transaction.raw,
-  )) as ViemHex;
-  const now = ctx.now();
-  const touch = async (status: TransactionRow["status"], blockNumber?: number) => {
-    await ctx.db
-      .update(transactions)
-      .set({
-        status,
-        updatedAt: new Date(now * 1000),
-        ...(blockNumber === undefined ? {} : { blockNumber }),
-      })
-      .where(eq(transactions.approvalId, approval.id));
-  };
-
-  const age = now - seconds(transaction.createdAt);
-  const overdue = age >= ctx.config.reconcileTimeoutSeconds;
-  const retryLater = (code: string, waitSeconds: number) => {
-    ctx.log.warn("chain access failed", { approvalId: approval.id, code });
-    return { done: false, waitSeconds };
-  };
-
-  if (transaction.status === "signed") {
-    try {
-      await chains.broadcast(chainId, raw, transaction.hash as ViemHex);
-    } catch (error) {
-      if (!(error instanceof ChainError)) throw error;
-      if (!overdue) {
-        // Back off as the attempts age, up to a minute, until the reconcile timeout.
-        const backoff = Math.min(
-          MAX_BROADCAST_BACKOFF_SECONDS,
-          Math.max(options.pollSeconds, Math.floor(age / 4)),
-        );
-        return retryLater(error.code, backoff);
-      }
-      // Out of time. Only a chain that answers "unknown" ends it; an RPC error is no answer.
-      let known: boolean;
-      try {
-        known = await chains.known(chainId, transaction.hash as ViemHex);
-      } catch (lookup) {
-        if (lookup instanceof ChainError) return retryLater(lookup.code, options.pollSeconds);
-        throw lookup;
-      }
-      if (!known) {
+  return followUpTransaction(ctx, approval, transaction, options, async (status) => {
+    switch (status) {
+      case "rejected":
         // Never accepted and no longer offered: its nonce is free again for this wallet.
-        await touch("rejected");
-        await moveIntent(ctx, intent, ["signed"], "failed", { failureCode: "broadcast_rejected" });
-        return { done: true, waitSeconds: 0 };
-      }
+        return moveIntent(ctx, intent, ["signed"], "failed", { failureCode: "broadcast_rejected" });
+      case "broadcast":
+        return moveIntent(ctx, intent, ["signed"], "broadcast");
+      case "stuck":
+        return moveIntent(ctx, intent, ["broadcast"], "stuck");
+      case "confirmed":
+      case "reverted":
+        return moveIntent(ctx, intent, ["broadcast", "stuck", "signed"], status);
+      case "signed":
+        return false;
     }
-    await touch("broadcast");
-    await moveIntent(ctx, intent, ["signed"], "broadcast");
-    return { done: false, waitSeconds: options.pollSeconds };
-  }
-  if (
-    transaction.status === "confirmed" ||
-    transaction.status === "reverted" ||
-    transaction.status === "rejected"
-  ) {
-    return { done: true, waitSeconds: 0 };
-  }
-
-  // `broadcast` or `stuck`. A stuck transaction is still valid and may be mined any time, so it
-  // is looked at again, slowly, for as long as the run lives.
-  const wait = transaction.status === "stuck" ? STUCK_POLL_SECONDS : options.pollSeconds;
-  let receipt: ReceiptState;
-  try {
-    receipt = await chains.receipt(chainId, transaction.hash as ViemHex);
-  } catch (error) {
-    if (error instanceof ChainError) return retryLater(error.code, wait);
-    throw error;
-  }
-  if (receipt.state === "confirmed" || receipt.state === "reverted") {
-    await touch(receipt.state, receipt.blockNumber);
-    await moveIntent(ctx, intent, ["broadcast", "stuck", "signed"], receipt.state);
-    return { done: true, waitSeconds: 0 };
-  }
-  if (receipt.state === "missing") {
-    if (transaction.status === "broadcast" && overdue) {
-      await touch("stuck");
-      await moveIntent(ctx, intent, ["broadcast"], "stuck");
-      return { done: false, waitSeconds: STUCK_POLL_SECONDS };
-    }
-    // A node may drop a transaction it has held for long. It is offered again, also while
-    // stuck: later transactions of the wallet wait behind this nonce and need it mined.
-    if (now - seconds(transaction.updatedAt) >= REBROADCAST_SECONDS) {
-      await chains.broadcast(chainId, raw, transaction.hash as ViemHex).catch(() => {});
-      await touch(transaction.status);
-    }
-  }
-  return { done: false, waitSeconds: wait };
+  });
 }
 
 export function approveIntentKind(): ApprovalKindHandler<"approve-intent"> {

@@ -228,6 +228,50 @@ export const approvalDetail: ApprovalDetail = {
   },
 };
 
+export const sweep = {
+  v: 1 as const,
+  workspaceId: WS,
+  walletId: WALLET,
+  chainId: "eip155:8453" as const,
+  asset: "native" as const,
+  amount: "990000000000000000",
+  to: "0x1111111111111111111111111111111111111111" as const,
+  maxFeeWei: "10000000000000000",
+};
+
+export const sweepApprovalDetail: ApprovalDetail = {
+  ...approvalSummary,
+  kind: "sweep-wallet",
+  title: "Empty 0.99 ETH from the wallet to 0x1111…1111",
+  requestedBy: { type: "user", id: USER, name: "Ada" },
+  envelope: {
+    v: 1,
+    type: "sweep-wallet",
+    approvalId: APPROVAL,
+    workspaceId: WS,
+    nonce: "AAAAAAAAAAAAAAAAAAAAAA",
+    issuedAt: T0,
+    expiresAt: T0 + 600,
+    walletId: WALLET,
+    chainId: "eip155:8453",
+    sweepHash: HASH,
+  },
+  challenge: "AAAA",
+  approvedBy: [],
+  rejectedBy: null,
+  canDecide: true,
+  subject: {
+    kind: "sweep-wallet",
+    wallet,
+    sweep,
+    sweepHash: HASH,
+    assetSymbol: "ETH",
+    assetDecimals: 18,
+    destination: "treasury",
+    transaction: null,
+  },
+};
+
 export const auditEvent: AuditEvent = {
   seq: 1,
   at: T0,

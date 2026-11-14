@@ -13,6 +13,7 @@ import {
   type SignerErrorCode,
   type SignRequest,
   SignResponse,
+  type SweepRequest,
   signerRoutes,
   WalletState,
   WorkspaceState,
@@ -78,6 +79,7 @@ export interface SignerClient {
   setPolicy(walletId: WalletId, request: SetPolicyRequest): Promise<WalletState>;
 
   sign(request: SignRequest): Promise<SignResponse>;
+  sweep(walletId: WalletId, request: SweepRequest): Promise<SignResponse>;
   revokeApproval(approvalId: ApprovalId, workspaceId: WorkspaceId): Promise<ApprovalState>;
   getApproval(approvalId: ApprovalId): Promise<ApprovalState>;
 }
@@ -179,6 +181,8 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
       call(signerRoutes.setPolicy, WalletState, { params: { walletId }, body: request }),
 
     sign: (request: SignRequest) => call(signerRoutes.sign, SignResponse, { body: request }),
+    sweep: (walletId: WalletId, request: SweepRequest) =>
+      call(signerRoutes.sweep, SignResponse, { params: { walletId }, body: request }),
     revokeApproval: (approvalId: ApprovalId, workspaceId: WorkspaceId) =>
       call(signerRoutes.revokeApproval, ApprovalState, {
         params: { approvalId },

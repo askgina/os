@@ -80,18 +80,23 @@ export interface TestSigner {
   clock: Clock;
   secret: Uint8Array;
   vault: Vault;
+  tokenKey: Uint8Array;
 }
 
-export function startSigner(input: { sqlitePath?: string; vault?: Vault; clock?: Clock } = {}) {
+/** Pass `vault` and `tokenKey` from an earlier start to open the same wallets after a restart. */
+export function startSigner(
+  input: { sqlitePath?: string; vault?: Vault; clock?: Clock; tokenKey?: Uint8Array } = {},
+) {
   const clock = input.clock ?? new Clock();
   const secret = new Uint8Array(randomBytes(32));
   const vault = input.vault ?? createTestVault();
+  const tokenKey = input.tokenKey ?? new Uint8Array(randomBytes(32));
   const signer = createSigner({
     sqlitePath: input.sqlitePath ?? ":memory:",
     vault,
     relyingParty: RP,
     requestSecret: secret,
-    tokenKey: new Uint8Array(randomBytes(32)),
+    tokenKey,
     maxIntentTtlSeconds: 3600,
     maxAdminTtlSeconds: 86_400,
     now: clock.now,
@@ -102,7 +107,7 @@ export function startSigner(input: { sqlitePath?: string; vault?: Vault; clock?:
     now: clock.now,
     fetch: (url, init) => Promise.resolve(signer.app.request(String(url), init)),
   });
-  return { signer, client, clock, secret, vault } satisfies TestSigner;
+  return { signer, client, clock, secret, vault, tokenKey } satisfies TestSigner;
 }
 
 export function header(

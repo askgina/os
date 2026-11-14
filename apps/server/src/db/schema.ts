@@ -403,9 +403,9 @@ export const transactions = os.table(
       .$type<ApprovalId>()
       .primaryKey()
       .references(() => approvals.id),
+    /** The agent's intent this transaction carries out; null for a person's `sweep-wallet`. */
     intentId: text("intent_id")
       .$type<IntentId>()
-      .notNull()
       .references(() => intents.id),
     walletId: text("wallet_id")
       .$type<WalletId>()

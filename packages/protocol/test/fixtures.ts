@@ -7,6 +7,8 @@ import type {
   ResumeWorkspaceEnvelope,
   SetAdminThresholdEnvelope,
   SetPolicyEnvelope,
+  Sweep,
+  SweepWalletEnvelope,
   WalletPolicy,
 } from "../src/index.ts";
 
@@ -136,6 +138,27 @@ export const resumeWorkspace = (
   o: Partial<ResumeWorkspaceEnvelope> = {},
 ): ResumeWorkspaceEnvelope => ({ ...header, type: "resume-workspace", ...o });
 
+export const sweep = (o: Partial<Sweep> = {}): Sweep => ({
+  v: 1,
+  workspaceId: WS,
+  walletId: WALLET,
+  chainId: BASE,
+  asset: "native",
+  amount: "250000000000000000",
+  to: ALICE,
+  maxFeeWei: "1000000000000000",
+  ...o,
+});
+
+export const sweepWallet = (o: Partial<SweepWalletEnvelope> = {}): SweepWalletEnvelope => ({
+  ...header,
+  type: "sweep-wallet",
+  walletId: WALLET,
+  chainId: BASE,
+  sweepHash: DIGEST_A,
+  ...o,
+});
+
 /**
  * For every field of every envelope type, a replacement value that is still valid. Each entry is
  * one way a compromised control plane could try to reuse an approval for something else.
@@ -197,6 +220,16 @@ export const envelopeVariants: {
     changes: { ...headerChanges, adminThreshold: 3 },
   },
   { name: "resume-workspace", base: resumeWorkspace(), changes: { ...headerChanges } },
+  {
+    name: "sweep-wallet",
+    base: sweepWallet(),
+    changes: {
+      ...headerChanges,
+      walletId: `wal_${ULID}c`,
+      chainId: MAINNET,
+      sweepHash: DIGEST_B,
+    },
+  },
 ];
 
 /** Every envelope field except `v` (only one protocol version exists) gets a variant. */

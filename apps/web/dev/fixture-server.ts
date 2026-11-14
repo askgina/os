@@ -43,6 +43,8 @@ import {
   normalizePolicy,
   policyHash,
   type SignerDecision,
+  type Sweep,
+  sweepHash,
   type WalletPolicy,
 } from "@askgina/os-protocol";
 
@@ -1178,6 +1180,81 @@ const handlers: Record<RouteName, Handler> = {
         decide(workspace, null, "set_policy", null);
       },
     }).summary;
+  },
+  requestSweep: ({ params, body, userId }) => {
+    const id = signedIn(userId);
+    const workspace = workspaceOf(params.workspaceId ?? "");
+    requireOwner(workspace, id);
+    const wallet = workspace.wallets.find((item) => item.id === params.walletId);
+    if (!wallet) throw new Refusal("not_found", "This wallet does not exist.");
+    const asset = body.asset as Sweep["asset"];
+    const to = body.to as Sweep["to"];
+    // Mirrors the server, with the balances `getWallet` reports: all of a token, or the native
+    // coin less the fee ceiling.
+    const maxFeeWei = 1_000_000_000_000_000n;
+    const native = asset === "native";
+    const amount = native ? 1_250_000_000_000_000_000n - maxFeeWei : 420_000_000n;
+    const sweep: Sweep = {
+      v: 1,
+      workspaceId: workspace.id as Sweep["workspaceId"],
+      walletId: wallet.id,
+      chainId: body.chainId as Sweep["chainId"],
+      asset,
+      amount: amount.toString(),
+      to,
+      maxFeeWei: maxFeeWei.toString(),
+    };
+    const hash = sweepHash(sweep);
+    const recipients = wallet.policy?.recipients;
+    const destination =
+      recipients?.mode === "allowlist" && recipients.addresses.includes(to)
+        ? ("allowlist" as const)
+        : workspace.wallets.some(
+              (item) => item.kind === "treasury" && item.id !== wallet.id && item.address === to,
+            )
+          ? ("treasury" as const)
+          : null;
+    const subject: Extract<ApprovalSubject, { kind: "sweep-wallet" }> = {
+      kind: "sweep-wallet",
+      wallet: { ...wallet },
+      sweep,
+      sweepHash: hash,
+      assetSymbol: native ? "ETH" : "USDC",
+      assetDecimals: native ? 18 : 6,
+      destination,
+      transaction: null,
+    };
+    const approval = openApproval({
+      workspace,
+      kind: "sweep-wallet",
+      title: `Empty ${formatAmount(sweep.amount, subject.assetDecimals)} ${subject.assetSymbol} from the wallet to ${short(to)}`,
+      requestedBy: {
+        type: "user",
+        id: id as Member["user"]["id"],
+        name: state.users.get(id) ?? "",
+      },
+      threshold: workspace.adminThreshold,
+      ttl: 3600,
+      envelope: { walletId: wallet.id, chainId: sweep.chainId, sweepHash: hash },
+      subject,
+      apply: () => {
+        // Mirrors the signer: it sends a sweep only to the treasury or an allowed recipient.
+        if (destination === null) {
+          approval.summary.status = "failed";
+          approval.summary.failureCode = "sweep_destination_not_allowed";
+          decide(workspace, approval.summary.id, "sweep", "sweep_destination_not_allowed");
+          return;
+        }
+        subject.transaction = {
+          hash: `0x${randomBytes(32).toString("hex")}`,
+          status: "confirmed",
+          blockNumber: 1043,
+          explorerUrl: null,
+        };
+        decide(workspace, approval.summary.id, "sweep", null);
+      },
+    });
+    return approval.summary;
   },
   listApprovals: ({ params, query, userId }) => {
     const id = signedIn(userId);

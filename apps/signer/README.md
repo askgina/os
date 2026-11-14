@@ -8,12 +8,12 @@ The contract is [`packages/protocol/src/signer/api.ts`](../../packages/protocol/
 
 ## What it trusts
 
-- **Its own SQLite file** (`$SIGNER_DATA_DIR/signer.sqlite`): workspaces, approvers, wallet policies with their hash chain, used nonces, signed transactions, the spend ledger and the decision log.
+- **Its own SQLite file** (`$SIGNER_DATA_DIR/signer.sqlite`): workspaces, approvers, wallet policies with their hash chain, used nonces, signed transactions, the spend ledger, the decision log and the restore fence. Its schema version is `PRAGMA user_version`; the signer migrates it in one transaction when it opens the file, and refuses to open a file written by a newer signer (`SchemaTooNewError`, logged as `schema_too_new`).
 - **Its vault** (`$SIGNER_DATA_DIR/vault`): an [Open Wallet Standard](https://github.com/open-wallet-standard/core) key store, one wallet with its own mnemonic per wallet id. OWS is used only to keep keys encrypted and sign; it enforces nothing. The signer builds every transaction itself from the approved intent (`to`, `value`, `data`, the chain; ERC-20 calldata is encoded here), so it never signs bytes a caller handed it.
 - **The request-signing secret**, shared with the control plane. It proves a request came from the control plane within the last minute. Pausing a workspace and revoking an approval need only that, because they only remove authority.
 - **The relying party** (`WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS`). Assertions from any other origin or RP ID are refused.
 
-It does **not** trust the control plane's database, its idea of who is an approver, or anything it says about a challenge. A compromised control plane can withhold requests and can show a person one operation while asking them to approve another; the per-wallet caps the signer enforces bound what that can cost.
+It does **not** trust the control plane's database, its idea of who is an approver, or anything it says about a challenge. A compromised control plane can withhold requests and can show a person one operation while asking them to approve another. For a payment, the per-wallet caps the signer enforces bound what that can cost; a sweep is bounded by where it may go; a misled change of policy or approvers is not bounded (see "Limits" in [`docs/threat-model.md`](../../docs/threat-model.md)).
 
 ## Signing
 
@@ -21,42 +21,47 @@ It does **not** trust the control plane's database, its idea of who is an approv
 
 1. Request signature and schema.
 2. Idempotency: the same approval id with the same envelope returns the stored transaction; a different envelope is `conflict`.
-3. The envelope is `approve-intent` and matches the intent's workspace, wallet, agent and chain; `intentHash(intent)` equals the envelope's.
-4. The workspace is not paused; the approval is not revoked. Step 2 comes first on purpose: a repeat of an approval that was already signed returns the stored transaction even while the workspace is paused. Pausing stops new signatures; it does not recall one that exists.
-5. The wallet has a policy and its hash equals the envelope's.
-6. Passkey assertions from the signer's own approvers, at the policy's threshold, within the policy's lifetime (and `SIGNER_MAX_INTENT_TTL_SECONDS`).
-7. `gas × maxFeePerGas ≤ maxFeeWei` and `maxPriorityFeePerGas ≤ maxFeePerGas`.
-8. One SQLite transaction with no `await` inside: the envelope nonce is unused, the policy allows the intent against the last 24 hours of signed spends, the vault's signature recovers to the wallet's address over exactly the transaction the signer built, then the nonce, the spend, the signed transaction and the decision are stored together.
+3. The restore fence (see "Restoring"): an envelope issued before the fence plus 30 seconds is `envelope_fenced`.
+4. The envelope is `approve-intent` and matches the intent's workspace, wallet, agent and chain; `intentHash(intent)` equals the envelope's.
+5. The workspace is not paused; the approval is not revoked. Step 2 comes first on purpose: a repeat of an approval that was already signed returns the stored transaction even while the workspace is paused. Pausing stops new signatures; it does not recall one that exists.
+6. The wallet has a policy and its hash equals the envelope's.
+7. Passkey assertions from the signer's own approvers, at the policy's threshold, within the policy's lifetime (and `SIGNER_MAX_INTENT_TTL_SECONDS`).
+8. `gas × maxFeePerGas ≤ maxFeeWei` and `maxPriorityFeePerGas ≤ maxFeePerGas`.
+9. One SQLite transaction with no `await` inside: the fence again, the envelope nonce is unused, the policy allows the intent against the last 24 hours of signed spends, the vault's signature recovers to the wallet's address over exactly the transaction the signer built, then the nonce, the spend, the signed transaction and the decision are stored together.
+
+`POST /v1/wallets/:walletId/sweep` signs a person's `sweep-wallet` approval the same way, with no agent and no wallet cap: the envelope binds `sweepHash(sweep)`; assertions are checked at the workspace's admin threshold; a paused workspace can be swept; and the destination must be on the wallet's current recipient allowlist or be a treasury wallet of the same workspace (`sweep_destination_not_allowed` otherwise). The signer builds the native transfer or the ERC-20 `transfer(to, amount)` itself and signs once per approval.
 
 There is no route for messages, typed data, raw hashes or EIP-7702 authorizations. Any path or method the contract does not name answers 404.
 
 ## Refusal codes
 
-| Code                     | HTTP | Meaning                                                                                                                                            |
-| ------------------------ | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `invalid_request`        | 400  | The body or a path parameter does not match the contract.                                                                                          |
-| `unauthenticated`        | 401  | The request signature is missing, wrong, or more than 60 seconds from the signer's clock.                                                          |
-| `not_found`              | 404  | Unknown route, workspace, wallet or approver.                                                                                                      |
-| `conflict`               | 409  | An id already exists with different content, or an approval already acted on cannot change.                                                        |
-| `workspace_paused`       | 403  | The workspace is paused; nothing signs until a passkey-approved resume.                                                                            |
-| `approval_revoked`       | 403  | The approval id was revoked; it will never sign or apply.                                                                                          |
-| `envelope_mismatch`      | 403  | The envelope is the wrong kind, or names another workspace, wallet, agent, chain or policy.                                                        |
-| `envelope_expired`       | 403  | The envelope's `expiresAt` has passed.                                                                                                             |
-| `envelope_not_yet_valid` | 403  | The envelope is dated more than 30 seconds in the future.                                                                                          |
-| `envelope_ttl_too_long`  | 403  | The envelope lives longer than the policy or the signer's ceiling allows.                                                                          |
-| `nonce_reused`           | 403  | The envelope's nonce was already used by another approval.                                                                                         |
-| `intent_mismatch`        | 403  | The intent is not the one that was approved (any field changed).                                                                                   |
-| `policy_missing`         | 403  | The wallet has no policy yet, so it signs nothing.                                                                                                 |
-| `policy_changed`         | 403  | The wallet's policy is no longer the revision the approval or change was made against.                                                             |
-| `policy_denied`          | 403  | The policy refuses the intent; `detail` carries the reason (for example `over_daily_cap`).                                                         |
-| `policy_invalid`         | 403  | A new policy is not the next revision of the hash chain.                                                                                           |
-| `fee_cap_exceeded`       | 403  | The fee would exceed the approved ceiling, or the priority fee exceeds the max fee.                                                                |
-| `insufficient_approvals` | 403  | Fewer different approvers signed than the threshold requires.                                                                                      |
-| `assertion_invalid`      | 403  | An assertion does not verify for this envelope, origin, RP ID or user verification.                                                                |
-| `approver_unknown`       | 403  | An assertion comes from a passkey that is not (or no longer) an approver of the workspace.                                                         |
-| `threshold_unreachable`  | 403  | The change would leave a threshold that the remaining approvers cannot meet, or would lower the admin threshold below a wallet's policy threshold. |
-| `vault_error`            | 500  | The key store failed, or a wallet was requested while the owner passphrase file is absent.                                                         |
-| `internal`               | 500  | Anything else. Nothing about it is returned; the log has the failing route.                                                                        |
+| Code                            | HTTP | Meaning                                                                                                                                            |
+| ------------------------------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invalid_request`               | 400  | The body or a path parameter does not match the contract.                                                                                          |
+| `unauthenticated`               | 401  | The request signature is missing, wrong, or more than 60 seconds from the signer's clock.                                                          |
+| `not_found`                     | 404  | Unknown route, workspace, wallet or approver.                                                                                                      |
+| `conflict`                      | 409  | An id already exists with different content, or an approval already acted on cannot change.                                                        |
+| `workspace_paused`              | 403  | The workspace is paused; nothing signs until a passkey-approved resume.                                                                            |
+| `approval_revoked`              | 403  | The approval id was revoked; it will never sign or apply.                                                                                          |
+| `envelope_mismatch`             | 403  | The envelope is the wrong kind, or names another workspace, wallet, agent, chain or policy.                                                        |
+| `envelope_expired`              | 403  | The envelope's `expiresAt` has passed.                                                                                                             |
+| `envelope_not_yet_valid`        | 403  | The envelope is dated more than 30 seconds in the future.                                                                                          |
+| `envelope_ttl_too_long`         | 403  | The envelope lives longer than the policy or the signer's ceiling allows.                                                                          |
+| `envelope_fenced`               | 403  | The envelope was issued before the restore fence (plus 30 seconds); propose it again.                                                              |
+| `nonce_reused`                  | 403  | The envelope's nonce was already used by another approval.                                                                                         |
+| `intent_mismatch`               | 403  | The intent is not the one that was approved (any field changed).                                                                                   |
+| `policy_missing`                | 403  | The wallet has no policy yet, so it signs nothing.                                                                                                 |
+| `policy_changed`                | 403  | The wallet's policy is no longer the revision the approval or change was made against.                                                             |
+| `policy_denied`                 | 403  | The policy refuses the intent; `detail` carries the reason (for example `over_daily_cap`).                                                         |
+| `policy_invalid`                | 403  | A new policy is not the next revision of the hash chain.                                                                                           |
+| `fee_cap_exceeded`              | 403  | The fee would exceed the approved ceiling, or the priority fee exceeds the max fee.                                                                |
+| `insufficient_approvals`        | 403  | Fewer different approvers signed than the threshold requires.                                                                                      |
+| `assertion_invalid`             | 403  | An assertion does not verify for this envelope, origin, RP ID or user verification.                                                                |
+| `approver_unknown`              | 403  | An assertion comes from a passkey that is not (or no longer) an approver of the workspace.                                                         |
+| `threshold_unreachable`         | 403  | The change would leave a threshold that the remaining approvers cannot meet, or would lower the admin threshold below a wallet's policy threshold. |
+| `sweep_destination_not_allowed` | 403  | A sweep's destination is neither on the wallet's recipient allowlist nor a treasury wallet of the same workspace.                                  |
+| `vault_error`                   | 500  | The key store failed, or a wallet was requested while the owner passphrase file is absent.                                                         |
+| `internal`                      | 500  | Anything else. Nothing about it is returned; the log has the failing route.                                                                        |
 
 ## Configuration
 
@@ -86,21 +91,30 @@ Runs on the signer host, with the same environment, against the same SQLite file
 node src/admin.ts enroll-approver --workspace ws_… --user usr_… \
   --credential-id <base64url> --public-key <base64url COSE key>
 node src/admin.ts verify-log --workspace ws_…
+node src/admin.ts fence
 ```
 
 Each command prints one JSON line. `enroll-approver` adds exactly the passkey typed on the command line as an approver of the workspace, in one transaction with an `enroll-approver-by-operator` entry in the decision log; it refuses an unknown workspace (`not_found`) or a credential already enrolled (`conflict`). It is how a workspace whose people lost every passkey regains control; its wallets are untouched. There is no HTTP route for this: anything relayed over HTTP passes through the control plane, which could swap in its own key. **Host access is the root of trust:** whoever can run this command on the signer host can add an approver, so treat shell access to that host as signing authority.
+
+`fence` sets the restore fence to the host's clock (it never moves it back) and records `fence-set-by-operator` in every workspace's decision log. It prints `{"ok":true,"action":"fence-set-by-operator","fenceAt":…}`. Run it after every restore, before the signer serves.
 
 `verify-log` recomputes the workspace's decision-log hash chain and compares its end with the head stored on the workspace row, which every append updates in the same transaction. It detects damaged, edited or deleted rows, including the newest ones. The chain is not keyed, so someone who can write the SQLite file can rewrite every row and the head consistently; it does not detect that.
 
 ## Decision log
 
-Recorded, per workspace: every allowed change (workspace creation, wallets, policies, approvers, thresholds, pause, resume, signatures, revocations, operator enrollment) and every refusal of a request that passed the request signature and the body's schema and names a workspace the signer knows. Not recorded: requests with a missing or bad request signature, malformed bodies or paths, requests for workspaces, wallets or approvals the signer does not know (`not_found`), and refusals before a workspace is resolved. Those appear only as one JSON line on the signer's stdout with the route and code.
+Recorded, per workspace: every allowed change (workspace creation, wallets, policies, approvers, thresholds, pause, resume, signatures, sweeps, revocations, operator enrollment, restore fences) and every refusal of a request that passed the request signature and the body's schema and names a workspace the signer knows. Not recorded: requests with a missing or bad request signature, malformed bodies or paths, requests for workspaces, wallets or approvals the signer does not know (`not_found`), and refusals before a workspace is resolved. Those appear only as one JSON line on the signer's stdout with the route and code.
 
 ## Back up
 
 Back up `SIGNER_DATA_DIR` (the SQLite file and the vault together), `SIGNER_KEY_FILE` and the owner passphrase.
 
 - The vault alone holds every wallet's mnemonic, encrypted under the owner passphrase.
-- The SQLite file holds the sealed OWS tokens, the policies, the approvers and the used nonces. Restoring an older copy would forget nonces that were used since; restore the latest.
+- The SQLite file holds the sealed OWS tokens, the policies, the approvers and the used nonces. Restoring an older copy forgets nonces that were used since.
 - Without `SIGNER_KEY_FILE` the stored tokens cannot be opened; the passphrase can still recover the wallets from the vault.
 - Read access to the vault plus a token is the wallet's key. Keep the volume readable by the signer's user only.
+
+## Restoring
+
+Every restore is fenced, because nothing in a backup says whether a payment happened after it. Run `node src/admin.ts fence` before the signer serves. From then on the signer refuses every envelope issued before the fence plus 30 seconds (`envelope_fenced`), so an approval used after the backup cannot be signed again; approvals waiting at the restore must be proposed again. An approval this database already signed still returns its stored transaction.
+
+The signer also records which file its database is (inode and creation time) and fences by itself when it opens another one: a copy, an extracted archive, a move to another host. It logs `restore fence set` with `reason: new_database_file` and records `fence-set-on-new-database-file`. It cannot tell a restore that rolls the same file back in place (a disk snapshot), so the operator's step stays. The first start on a v0.1 file fences once, because no file was recorded.

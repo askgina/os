@@ -41,9 +41,10 @@ Success means:
 ## Progress
 
 - [x] (2026-11-14 21:38Z) Research current behavior and relevant code paths: [`specs/research/beyond-one-machine.md`](./research/beyond-one-machine.md).
-- [ ] Owner decisions D1 to D6 (see `Decision Log`).
+- [ ] Owner decisions D1 to D6 (see `Decision Log`). D5 is taken (2026-11-14): (a).
 - [ ] Milestone 1: the signer on its own host.
-- [ ] Milestone 2: the restore fence.
+- [x] (2026-11-14) Milestone 2: the restore fence, built ahead of Milestone 1 as a fix to v0.1: `apps/signer/src/fence.ts`, the `fence` admin command, `envelope_fenced` for every envelope kind, a `PRAGMA user_version` migration step for the signer's SQLite (version 2 adds `signer_meta`), detection of a replaced database file, the rewritten restore gate and restore procedure. Proven locally: `apps/signer/test/fence.test.ts` (10 tests) and `apps/signer/test/admin.test.ts` (3 tests) pass, one file at a time.
+- [ ] Milestone 2 in CI: the restore gate in `e2e/test/release-gates.spec.ts` on a real stack (`stack (amd64)`, `stack (arm64)`), including `docker compose run --rm signer node src/admin.ts fence` on restored volumes. Written and type-checked, not run.
 - [ ] Milestone 3: key providers and OpenBao Transit.
 - [ ] Milestone 4: a replica-safe control plane.
 - [ ] Milestone 5: Kubernetes manifests proven on kind.
@@ -67,6 +68,10 @@ Success means:
   Evidence: [Network Policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/); `e2e/test/release-gates.spec.ts:269-301`.
 - Observation: with asynchronous replication, a lost commit removes an audit entry and the workspace's audit head together, so `verifyAudit` still passes and the loss is invisible; a lost shred commit brings a destroyed key back.
   Evidence: `apps/server/src/audit.ts:55-108`; `packages/keys/src/data-key-store.ts:264-275`; research finding 8.
+- Observation: a backup of a stopped signer and the stopped signer are the same bytes, so nothing inside the data can tell a restart from a restore. What differs is the file: SQLite never replaces its main file, while a copy, an extracted archive or a move gets a new creation time even where the filesystem reuses the inode number. A disk snapshot rolled back in place keeps both, and `cp -a` onto an existing file writes in place and keeps both too.
+  Evidence: a local probe with Node 26 on ext4 (rewriting in place kept `ino` and `birthtimeNs`; deleting and recreating reused the `ino` with a new `birthtimeNs`); `apps/signer/test/fence.test.ts`, "without a fence, a restore that keeps the file signs an approval a second time".
+- Observation: the signer's SQLite had no schema version; every table was `CREATE TABLE IF NOT EXISTS`, so a column or a table added later had no migration step.
+  Evidence: `apps/signer/src/db.ts` before this change.
 
 ## Decision Log
 
@@ -80,8 +85,8 @@ Owner decisions. Each is open; the plan is written for the recommended option an
   Recommended: (a). Rationale: plain YAML that `kubectl` applies and `kubeconform` checks, with no release Secrets holding rendered values.
 - Decision D4 (owner, open): where the signer may run when the control plane is on Kubernetes. Options: (a) outside the cluster only, on its own host; (b) in a separate cluster; (c) in the same cluster, documented as "cluster administrators are the signer host".
   Recommended: (a) for production; the in-cluster component exists for CI and evaluation only. Rationale: Secrets are unencrypted in etcd by default and cluster administration reaches every node.
-- Decision D5 (owner, open): what a restore promises. Options: (a) every restore is fenced, so approvals waiting at backup time must be proposed again; (b) keep the v0.1 promise that waiting approvals survive a restore, and fence only when the operator knows the backup is older than the last signature.
-  Recommended: (a). Rationale: the operator cannot know from the backup whether a payment happened after it; (b) can pay twice.
+- Decision D5 (owner, taken 2026-11-14): what a restore promises. Options: (a) every restore is fenced, so approvals waiting at backup time must be proposed again; (b) keep the v0.1 promise that waiting approvals survive a restore, and fence only when the operator knows the backup is older than the last signature.
+  Chosen: (a). Rationale: the operator cannot know from the backup whether a payment happened after it; (b) can pay twice.
 - Decision D6 (owner, open): Postgres durability on Kubernetes. Options: (a) CloudNativePG, 3 instances, `dataDurability: required`; (b) `preferred`; (c) asynchronous.
   Recommended: (a). Rationale: no acknowledged audit entry or shred is ever lost; writes pause when no standby is available, which stalls approvals but loses nothing.
 
@@ -96,6 +101,18 @@ Plan decisions (taken here, reopen in review if wrong):
 - Decision: the restore fence is a time, set by the operator on the signer host, compared with the envelope's passkey-covered `issuedAt` plus `CLOCK_SKEW_SECONDS`. The replay check (an approval already signed in this database) still comes first.
   Rationale: research finding 6; `packages/protocol/src/webauthn/verify-authorization.ts:44,62-69`.
   Date/Author: 2026-11-14 / research agent
+- Decision: the signer also fences by itself. It records its database file's identity (inode and creation time) in `signer_meta` and, on opening any other file that is not a newly created database, sets the fence to its clock and records `fence-set-on-new-database-file`. A v0.1 file has no recorded identity and is fenced once on its first open.
+  Rationale: the owner asked that the fence cannot be skipped silently, and that the signer learns of a restore without the control plane. The documented restore (archives extracted into empty volumes) and every move between hosts create new files, so a forgotten `fence` step is caught; a snapshot rolled back in place is not, which is why the step stays (see `Surprises & Discoveries`).
+  Date/Author: 2026-11-14 / FixSignerDefects
+- Decision: `fence` takes no `--at`, prints `{ ok, action: "fence-set-by-operator", fenceAt }` like the other admin commands, and moves the fence only forward; a move appends one decision per workspace, a repeat in the same second appends nothing.
+  Rationale: "now" is the only safe value after a restore; an earlier one could let a used approval through, a later one only refuses more. One output shape for every admin command.
+  Date/Author: 2026-11-14 / FixSignerDefects
+- Decision: the control plane needs no special case. `envelope_fenced` is a permanent signer refusal like any other: the approval ends `failed` with that code, the intent ends `failed` with `failureCode: "envelope_fenced"` (not a new `approval_fenced`), and the nonce reservation is released by the existing path.
+  Rationale: one code from the signer to the agent; nothing to translate.
+  Date/Author: 2026-11-14 / FixSignerDefects
+- Decision: the signer's SQLite gets `PRAGMA user_version` migrations: version 1 is the v0.1 schema (idempotent, so a v0.1 file at `user_version` 0 is taken as version 1), version 2 adds `signer_meta`. Migrations run in one `BEGIN IMMEDIATE` transaction; a file at a newer version is refused (`schema_too_new`).
+  Rationale: the fence needs a table, and later milestones and plans (workspace lifecycle) need columns.
+  Date/Author: 2026-11-14 / FixSignerDefects
 - Decision: a Transit KEK id is `bao:<mount>/<key>@<version>`, and `wrap` passes that `key_version`.
   Rationale: rotation must change `kek_id`, or `DataKeyStore.rewrap` (`kek_id <> active`) never moves a row.
   Date/Author: 2026-11-14 / research agent
@@ -123,7 +140,8 @@ Plan decisions (taken here, reopen in review if wrong):
 
 ## Outcomes & Retrospective
 
-- Outcome: none yet. Nothing in this plan has been built or run.
+- Outcome (2026-11-14): Milestone 2, the restore fence, is built and passes its unit tests locally (`apps/signer/test/fence.test.ts`, `apps/signer/test/admin.test.ts`). The rest of this plan is not built.
+  Remaining: the restore gate on the real stack in CI; every other milestone.
 
 ## Context and Orientation
 
@@ -505,3 +523,7 @@ The invariant holds in every row: whether a human approved is decided by the sig
 ## Revision Notes
 
 - 2026-11-14: First draft, written from the research report for ticket #25. Nothing built.
+- 2026-11-14: D5 taken (a). Milestone 2 built as a v0.1 fix, with two additions to the draft: the
+  signer fences by itself when its database file was replaced, and its SQLite got `user_version`
+  migrations. `fence` has no `--at`, and a fenced intent fails with `envelope_fenced`, not a new
+  `approval_fenced`.

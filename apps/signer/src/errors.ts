@@ -12,6 +12,7 @@ const MESSAGES: Record<SignerErrorCode, string> = {
   envelope_expired: "the envelope has expired",
   envelope_not_yet_valid: "the envelope is dated in the future",
   envelope_ttl_too_long: "the envelope is valid for longer than allowed",
+  envelope_fenced: "the envelope was issued before the signer was restored; propose it again",
   nonce_reused: "the nonce was already used",
   intent_mismatch: "the intent does not match the approved intent hash",
   policy_missing: "the wallet has no policy",
@@ -23,6 +24,8 @@ const MESSAGES: Record<SignerErrorCode, string> = {
   assertion_invalid: "a passkey assertion is invalid",
   approver_unknown: "an assertion comes from a passkey that may not approve here",
   threshold_unreachable: "the change would leave a threshold that cannot be met",
+  sweep_destination_not_allowed:
+    "a sweep may only go to an address on the wallet's allowlist or to the workspace's treasury",
   vault_error: "the key store failed",
   internal: "internal error",
 };

@@ -16,6 +16,7 @@ import {
   SetPolicyRequest,
   SIGNATURE_HEADER,
   SignRequest,
+  SweepRequest,
   signerRoutes,
   TIMESTAMP_HEADER,
   verifyRequestSignature,
@@ -23,12 +24,14 @@ import {
 import type { RelyingParty } from "@askgina/os-protocol/webauthn";
 import { Hono } from "hono";
 import type { z } from "zod";
-import { openDatabase } from "./db.ts";
+import { openDatabase, transaction } from "./db.ts";
 import { SignerFailure } from "./errors.ts";
+import { FENCE_BY_OPERATOR, fenceReplacedDatabase, raiseFence } from "./fence.ts";
 import { type Logger, silentLogger } from "./log.ts";
 import { createSignerCore } from "./signer.ts";
 import type { Vault } from "./vault.ts";
 
+export { SCHEMA_VERSION, SchemaTooNewError } from "./db.ts";
 export type { Logger } from "./log.ts";
 export { createLogger } from "./log.ts";
 export {
@@ -69,6 +72,12 @@ export interface Signer {
    */
   enrollApproverByOperator(workspaceId: WorkspaceId, approver: ApproverCredential): void;
   verifyDecisionLog(workspaceId: WorkspaceId): { ok: boolean; brokenAt: number | null };
+  /**
+   * Set the restore fence to now: every envelope issued before it is refused from here on. Not
+   * reachable over HTTP: only the admin CLI on the signer host calls it, as part of a restore.
+   * Returns the fence in force, in seconds since the Unix epoch.
+   */
+  fence(): number;
   close(): void;
 }
 
@@ -159,7 +168,15 @@ export function createSigner(options: SignerOptions): Signer {
   if (options.tokenKey.byteLength !== 32) throw new RangeError("tokenKey must be 32 bytes");
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const log = options.log ?? silentLogger;
-  const db = openDatabase(options.sqlitePath);
+  const { db, created } = openDatabase(options.sqlitePath);
+  // Before anything is served: a database file that is not the one last recorded may be a
+  // restored copy that forgot what it signed after the copy was made.
+  const fencedAt = transaction(db, () =>
+    fenceReplacedDatabase(db, options.sqlitePath, created, now()),
+  );
+  if (fencedAt !== null) {
+    log.warn("restore fence set", { reason: "new_database_file", fenceAt: fencedAt });
+  }
   const core = createSignerCore({
     db,
     vault: options.vault,
@@ -223,6 +240,8 @@ export function createSigner(options: SignerOptions): Signer {
         );
       case "sign":
         return core.sign(parse(SignRequest, parseBody(body)));
+      case "sweep":
+        return core.sweep(parse(WalletId, params.walletId), parse(SweepRequest, parseBody(body)));
       case "revokeApproval":
         return core.revokeApproval(
           parse(ApprovalId, params.approvalId),
@@ -282,6 +301,11 @@ export function createSigner(options: SignerOptions): Signer {
     app,
     enrollApproverByOperator: core.enrollApproverByOperator,
     verifyDecisionLog: core.verifyDecisionLog,
+    fence: () => {
+      const fenceAt = transaction(db, () => raiseFence(db, now(), FENCE_BY_OPERATOR));
+      log.warn("restore fence set", { reason: "operator", fenceAt });
+      return fenceAt;
+    },
     close: () => db.close(),
   };
 }

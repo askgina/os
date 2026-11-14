@@ -1,4 +1,10 @@
-import { AssertionResponse, SignerDecision } from "@askgina/os-protocol";
+import {
+  Address,
+  AssertionResponse,
+  AssetRef,
+  ChainId,
+  SignerDecision,
+} from "@askgina/os-protocol";
 import { z } from "zod";
 import {
   AgentSummary,
@@ -238,6 +244,18 @@ export const routes = {
   requestPolicy: post(
     "/api/v1/workspaces/:workspaceId/wallets/:walletId/policy",
     z.strictObject({ draft: PolicyDraft }),
+    ApprovalSummary,
+  ),
+  /**
+   * Owners only. Opens a `sweep-wallet` request that empties one asset of the wallet to `to`, at
+   * the workspace's admin threshold, with no agent and no cap. The server reads the balance and
+   * fixes the amount in the request: all of a token, or the native coin less the fee ceiling.
+   * Also while the workspace is paused. The signer sends only to an address on the wallet's
+   * allowlist or to the workspace's treasury, and refuses anything else after approval.
+   */
+  requestSweep: post(
+    "/api/v1/workspaces/:workspaceId/wallets/:walletId/sweep",
+    z.strictObject({ chainId: ChainId, asset: AssetRef, to: Address }),
     ApprovalSummary,
   ),
 

@@ -60,9 +60,10 @@ kind can never stand in for another kind:
 | `askgina.os/v1/policy`    | `policyHash(policy)`                                  |
 | `askgina.os/v1/authorize` | `envelopeChallenge(envelope)`, the WebAuthn challenge |
 | `askgina.os/v1/audit`     | audit log entries                                     |
+| `askgina.os/v1/sweep`     | `sweepHash(sweep)`                                    |
 
-`intentHash` and `policyHash` are the digest as a lowercase hex `Digest`. `envelopeChallenge` is
-the raw 32 bytes.
+`intentHash`, `policyHash` and `sweepHash` are the digest as a lowercase hex `Digest`.
+`envelopeChallenge` is the raw 32 bytes.
 
 A value MUST pass its schema before it is hashed. Hashing an unvalidated value can produce a
 digest that no verifier will ever reproduce.
@@ -154,6 +155,25 @@ The kinds and their extra fields:
 | `remove-approver`     | `userId`, `credentialId: Base64Url`                                               | Stop one passkey from approving for this workspace.                                                                                                      |
 | `set-admin-threshold` | `adminThreshold`: integer 1–16                                                    | Change how many people must approve changes to approvers and policies. Never below any wallet's current `approvals.threshold` (`threshold_unreachable`). |
 | `resume-workspace`    | none                                                                              | Let a paused workspace sign again. Pausing needs no envelope, because it only removes authority.                                                         |
+| `sweep-wallet`        | `walletId`, `chainId`, `sweepHash: Digest`                                        | Sign exactly one transaction that moves the sweep below out of the wallet, with no agent and no cap. Approved at the workspace's `adminThreshold`.       |
+
+A **sweep** (source: [`sweep.ts`](../packages/protocol/src/sweep.ts)) is the structure a
+`sweep-wallet` envelope binds by its hash. Like an intent it is immutable.
+
+| Field         | Type             | Meaning                                                              |
+| ------------- | ---------------- | -------------------------------------------------------------------- |
+| `v`           | `1`              | Protocol version.                                                    |
+| `workspaceId` | `ws_…`           | The workspace.                                                       |
+| `walletId`    | `wal_…`          | The wallet to empty.                                                 |
+| `chainId`     | `ChainId`        | The chain the transaction is for.                                    |
+| `asset`       | `AssetRef`       | The native coin, or the ERC-20 contract whose `transfer` is called.  |
+| `amount`      | `PositiveAmount` | Base units to move.                                                  |
+| `to`          | `Address`        | The destination. Not the zero address, and not the `asset` contract. |
+| `maxFeeWei`   | `PositiveAmount` | Ceiling on `gas × maxFeePerGas` of the signed transaction.           |
+
+The amount, the destination and the fee ceiling are therefore covered by the passkey, but none of
+them appears in the envelope itself: the control plane stores the envelope unencrypted, and keeps
+the sweep sealed.
 
 ```text
 challenge = digest("askgina.os/v1/authorize", envelope)    (32 bytes)
@@ -247,42 +267,75 @@ workspace or wallet (`not_found`), are only logged to the signer's stdout.
 1. The request signature (section 10) and the body's schema.
 2. Idempotency. If this approval id was already signed with an identical envelope, return the
    stored signed transaction. If the envelope differs → `conflict`.
-3. The envelope is `approve-intent`. Its workspace, wallet, agent and chain equal the intent's
+3. The restore fence. If the signer holds a fence and `envelope.issuedAt < fence + 30` →
+   `envelope_fenced` (see below).
+4. The envelope is `approve-intent`. Its workspace, wallet, agent and chain equal the intent's
    and the wallet's. `intentHash(intent)` equals `envelope.intentHash`. Otherwise
    `intent_mismatch` or `envelope_mismatch`.
-4. The workspace is not paused (`workspace_paused`). The approval is not revoked
+5. The workspace is not paused (`workspace_paused`). The approval is not revoked
    (`approval_revoked`). Because step 2 comes first, a repeat of an approval already signed
    returns the stored transaction even while paused: pausing stops new signatures, it does not
    recall one that exists.
-5. The wallet has a policy (`policy_missing`), and its hash equals `envelope.policyHash`
+6. The wallet has a policy (`policy_missing`), and its hash equals `envelope.policyHash`
    (`policy_changed`).
-6. Section 6 passes, with the approvers from the signer's own table, the policy's
+7. Section 6 passes, with the approvers from the signer's own table, the policy's
    `approvals.threshold`, and a lifetime no longer than the policy's `approvals.ttlSeconds`.
-7. `gas × maxFeePerGas ≤ intent.maxFeeWei`, and `maxPriorityFeePerGas ≤ maxFeePerGas`
+8. `gas × maxFeePerGas ≤ intent.maxFeeWei`, and `maxPriorityFeePerGas ≤ maxFeePerGas`
    (`fee_cap_exceeded`).
-8. In one database transaction with nothing awaited inside it: the nonce is unused
-   (`nonce_reused`); `evaluateIntent` against the ledger of the last 24 hours passes
-   (`policy_denied`, with the rule's code as `detail`); record the nonce and the spend; build the
-   EIP-1559 transaction from the intent; sign it; check that the signature recovers to the
-   wallet's address over exactly that transaction and has a low `s` (EIP-2), so an approval is
-   never spent on a transaction nodes would reject; store the signed transaction.
+9. In one database transaction with nothing awaited inside it: the fence is checked again; the
+   nonce is unused (`nonce_reused`); `evaluateIntent` against the ledger of the last 24 hours
+   passes (`policy_denied`, with the rule's code as `detail`); record the nonce and the spend;
+   build the EIP-1559 transaction from the intent; sign it; check that the signature recovers to
+   the wallet's address over exactly that transaction and has a low `s` (EIP-2), so an approval
+   is never spent on a transaction nodes would reject; store the signed transaction.
 
 The signer builds `to`, `value`, `data` and the chain id of the transaction from the intent
 itself. It never signs bytes it was handed.
 
 **At most once.** For one approval id the signer produces at most one signature. A repeated
 request returns the same signed transaction (step 2). A different envelope reusing a nonce is
-refused (step 8). Because the nonce is recorded in the same transaction as the signature, two
+refused (step 9). Because the nonce is recorded in the same transaction as the signature, two
 concurrent requests cannot both pass. "At most once" is about signatures, not about the chain:
 the signed transaction may still never be mined.
 
+**The restore fence.** "At most once" holds only while the signer keeps its record of used
+nonces and signatures. A signer database restored from a backup has forgotten everything after
+the backup, so an approval used after the backup would pass step 2 and step 9 again. The fence
+is a time the signer keeps in its own database. The operator sets it on the signer host as part
+of every restore (`node src/admin.ts fence`, which sets it to the host's clock and never moves it
+back), and the signer sets it itself when it opens a database file other than the one it last
+recorded. From then on the signer refuses every envelope whose `issuedAt` is earlier than the
+fence plus 30 seconds, for every kind, with `envelope_fenced`. Every envelope used before the
+restore was verified before it, and section 6 refuses an `issuedAt` more than 30 seconds ahead of
+the signer's clock, so no envelope of the lost timeline passes. Approvals that were waiting at
+the restore must be proposed again. Each move of the fence is recorded in every workspace's
+decision log (`fence-set-by-operator` or `fence-set-on-new-database-file`). The control plane
+cannot set or move it.
+
+**Sweeps.** `POST /v1/wallets/:walletId/sweep` carries `{ sweep, authorization, transaction }`
+with a `sweep-wallet` envelope. It follows the steps above with these differences: in step 4 the
+envelope's workspace, wallet and chain equal the sweep's and the path's, and
+`sweepHash(sweep)` equals `envelope.sweepHash` (`envelope_mismatch`); step 5 does not apply, so a
+paused workspace can still be emptied (resuming it first would let its agents sign again); steps
+6 and 7 are replaced by the destination rule and section 6 at the workspace's `adminThreshold`
+with the signer's longest admin lifetime; step 8 uses `sweep.maxFeeWei`. The destination rule,
+from the signer's own records only: `to` is on the wallet's current recipient allowlist (mode
+`allowlist`), or `to` is the address of a `treasury` wallet of the same workspace other than the
+swept wallet; anything else, including the wallet's own address, → `sweep_destination_not_allowed`.
+A policy whose recipients are `any` allows no destination by itself. When the wallet has a policy,
+`sweep.chainId` must be in its `chains` and `sweep.maxFeeWei` must not exceed `fees.maxPerTxWei`
+(`policy_denied` with `chain_not_allowed` or `over_fee_cap`); its caps do not apply. Inside the
+transaction the admin threshold, the approvers and the destination rule are checked again. The
+signer builds the transaction itself: native `value = amount` to `to`, or `transfer(to, amount)`
+sent to the token contract. The sweep is recorded as a spend of the wallet.
+
 The other envelope kinds (`set-policy`, `add-approver`, `remove-approver`,
-`set-admin-threshold`, `resume-workspace`) follow the same shape, verified with the workspace's
-`adminThreshold` instead of the policy's threshold. Pausing a workspace and revoking an approval
-need only the request signature, because they only remove authority. A revocation
-(`POST /v1/approvals/:id/revoke` with `{ workspaceId }`) is recorded in that workspace's decision
-log. `GET /v1/approvals/:id` reports `unknown`, `revoked`, `signed` (with the transaction hash)
-or `applied`.
+`set-admin-threshold`, `resume-workspace`) follow the same shape, including the fence, verified
+with the workspace's `adminThreshold` instead of the policy's threshold. Pausing a workspace and
+revoking an approval need only the request signature, because they only remove authority. A
+revocation (`POST /v1/approvals/:id/revoke` with `{ workspaceId }`) is recorded in that
+workspace's decision log. `GET /v1/approvals/:id` reports `unknown`, `revoked`, `signed` (with
+the transaction hash, for an intent or a sweep) or `applied`.
 
 There is no HTTP route that adds an approver without assertions from existing approvers. When
 every passkey of a workspace is lost, the operator enrolls a new one with the signer's admin
@@ -302,7 +355,8 @@ Only these four fields of the signed transaction are chosen after approval
 | `maxPriorityFeePerGas` | `Amount`         | `≤ maxFeePerGas`                            |
 
 Everything else is fixed by the intent, and the intent is fixed by its hash inside the approved
-envelope. The fee ceiling `maxFeeWei` is part of the intent, so the approver saw it.
+envelope. The fee ceiling `maxFeeWei` is part of the intent, so the approver saw it. For a sweep,
+read `sweep` for `intent`: the bound is `gas × maxFeePerGas ≤ sweep.maxFeeWei`.
 
 ## 10. Request signatures between control plane and signer
 
@@ -416,6 +470,42 @@ separates otherwise equal inputs.
 
 Challenge (base64url) = `SoAiEpNpEeP2ex9Y_3B7aWINGGXHZFbp3OvzZU6dC80`
 
+Sweep JSON (canonical), under the tag `askgina.os/v1/sweep`:
+
+```json
+{
+  "amount": "250000000000000000",
+  "asset": "native",
+  "chainId": "eip155:8453",
+  "maxFeeWei": "1000000000000000",
+  "to": "0x1111111111111111111111111111111111111111",
+  "v": 1,
+  "walletId": "wal_01jd0000000000000000000003",
+  "workspaceId": "ws_01jd0000000000000000000001"
+}
+```
+
+`sweepHash` = `aa3f2f4c50ee481b88aaf98c610125b769c5508ab8d6bac13f731c50bccad674`
+
+`sweep-wallet` envelope JSON (canonical):
+
+```json
+{
+  "approvalId": "apr_01jd0000000000000000000005",
+  "chainId": "eip155:8453",
+  "expiresAt": 1700000600,
+  "issuedAt": 1700000000,
+  "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+  "sweepHash": "aa3f2f4c50ee481b88aaf98c610125b769c5508ab8d6bac13f731c50bccad674",
+  "type": "sweep-wallet",
+  "v": 1,
+  "walletId": "wal_01jd0000000000000000000003",
+  "workspaceId": "ws_01jd0000000000000000000001"
+}
+```
+
+Challenge (base64url) = `lgZRKMxucwdO2AFLyWBfmAc4oANInAkJObl_azLac0Q`
+
 ## 12. Versioning
 
 `v` is `1` in every hashed structure, and the domain tags carry `v1`. Any change to the shape or
@@ -424,4 +514,6 @@ version, never an edit in place (the rule stated on `PROTOCOL_VERSION` in
 [`primitives.ts`](../packages/protocol/src/primitives.ts)). Existing digests then keep their
 meaning. A version 1 verifier never accepts a structure of another version, because every schema
 requires `v` to be exactly `1`. Changes that hash nothing, such as a new signer error code, are
-not version changes.
+not version changes. Neither is a new kind of envelope with its own structure under its own tag,
+as `sweep-wallet` was: every existing digest and test vector keeps its value, and a verifier that
+does not know the kind refuses it as an invalid envelope.

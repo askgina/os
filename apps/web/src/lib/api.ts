@@ -109,6 +109,10 @@ export const useApproval = (approvalId: string) =>
         const status = data.subject.intent.status;
         if (status === "signed" || status === "broadcast" || status === "approved") return 3_000;
       }
+      if (data.subject.kind === "sweep-wallet") {
+        const status = data.subject.transaction?.status;
+        if (status === "signed" || status === "broadcast") return 3_000;
+      }
       return false;
     },
   });

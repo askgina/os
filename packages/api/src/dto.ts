@@ -14,6 +14,7 @@ import {
   Intent,
   IntentId,
   Memo,
+  Sweep,
   UserId,
   WalletId,
   WalletPolicy,
@@ -319,20 +320,22 @@ export const Simulation = z.strictObject({
 });
 export type Simulation = z.infer<typeof Simulation>;
 
+/** The one transaction an approval signed, as the chain last showed it. */
+export const TransactionInfo = z.strictObject({
+  hash: Hex32,
+  /** `rejected`: signed, never accepted by the chain, and no longer retried. */
+  status: z.enum(["signed", "broadcast", "confirmed", "reverted", "stuck", "rejected"]),
+  blockNumber: z.number().int().nullable(),
+  explorerUrl: z.string().nullable(),
+});
+export type TransactionInfo = z.infer<typeof TransactionInfo>;
+
 export const IntentDetail = IntentSummary.extend({
   /** The exact structure whose hash people approve. */
   intent: Intent,
   intentHash: Digest,
   simulation: Simulation.nullable(),
-  transaction: z
-    .strictObject({
-      hash: Hex32,
-      /** `rejected`: signed, never accepted by the chain, and no longer retried. */
-      status: z.enum(["signed", "broadcast", "confirmed", "reverted", "stuck", "rejected"]),
-      blockNumber: z.number().int().nullable(),
-      explorerUrl: z.string().nullable(),
-    })
-    .nullable(),
+  transaction: TransactionInfo.nullable(),
 });
 export type IntentDetail = z.infer<typeof IntentDetail>;
 
@@ -363,6 +366,7 @@ export const ApprovalKind = z.enum([
   "remove-approver",
   "set-admin-threshold",
   "resume-workspace",
+  "sweep-wallet",
 ]);
 export type ApprovalKind = z.infer<typeof ApprovalKind>;
 
@@ -421,6 +425,23 @@ export const ApprovalSubject = z.discriminatedUnion("kind", [
     proposed: z.number().int(),
   }),
   z.strictObject({ kind: z.literal("resume-workspace") }),
+  z.strictObject({
+    kind: z.literal("sweep-wallet"),
+    wallet: WalletSummary,
+    /** The exact structure whose hash people approve. */
+    sweep: Sweep,
+    sweepHash: Digest,
+    /** How the asset is shown, read from the chain by the server. */
+    assetSymbol: z.string(),
+    assetDecimals: z.number().int().min(0).max(36),
+    /**
+     * Why the server expects the signer to accept the destination: it is on the wallet's
+     * allowlist, or it is the workspace's treasury. Null when neither holds: the signer will
+     * refuse the sweep. The signer decides from its own records either way.
+     */
+    destination: z.enum(["allowlist", "treasury"]).nullable(),
+    transaction: TransactionInfo.nullable(),
+  }),
 ]);
 export type ApprovalSubject = z.infer<typeof ApprovalSubject>;
 

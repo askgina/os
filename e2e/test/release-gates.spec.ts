@@ -16,11 +16,12 @@ import { foundry } from "viem/chains";
 import { type AgentConnection, connectAgent, ToolRefused } from "../src/agent.ts";
 import { Person } from "../src/person.ts";
 import {
+  backUpInto,
   compose,
   composeArgs,
   databaseUrl,
   fromAgentsNetwork,
-  restoreInto,
+  restoreFrom,
   setupToken,
   stack,
   waitUntilHealthy,
@@ -394,12 +395,88 @@ test("the audit log is complete and its chain verifies", async () => {
   expect(decisions.items.some((decision) => decision.outcome === "allowed")).toBe(true);
 });
 
-test("a restored backup keeps wallets and waiting approvals, and refuses a spent one", async () => {
-  // Something still waiting when the backup is taken: its workflow is suspended, encrypted.
-  const waiting = await propose("0.005", "approved only after the restore");
-  await agent.close();
+test("a person empties a disabled agent's wallet to the treasury while paused, and the signer refuses any other destination", async () => {
+  const treasury = await ada.api.call("createTreasury", {
+    params: { workspaceId: workspace.id },
+    body: { label: "Reserve" },
+  });
+  const retired = await ada.api.call("createAgent", {
+    params: { workspaceId: workspace.id },
+    body: { name: "Retired" },
+  });
+  await chainAdmin.setBalance({ address: retired.wallet.address, value: parseEther("0.5") });
+  await ada.api.call("disableAgent", {
+    params: { workspaceId: workspace.id, agentId: retired.agent.id },
+    body: {},
+  });
+  await ada.api.call("pauseWorkspace", { params: { workspaceId: workspace.id }, body: {} });
+  const sweep = (to: string) =>
+    ada.api.call("requestSweep", {
+      params: { workspaceId: workspace.id, walletId: retired.wallet.id },
+      body: { chainId: CHAIN, asset: "native", to: to as `0x${string}` },
+    });
 
-  await restoreInto(`${stack.project}-restore`);
+  // A destination the approvers never allowed: approved with a passkey, refused by the signer.
+  const nonceBefore = await chain.getTransactionCount({ address: retired.wallet.address });
+  const elsewhere = await sweep(RECIPIENT);
+  await ada.approve(elsewhere.id);
+  expect(await ada.settled(elsewhere.id)).toMatchObject({
+    status: "failed",
+    failureCode: "sweep_destination_not_allowed",
+  });
+  expect(await chain.getTransactionCount({ address: retired.wallet.address })).toBe(nonceBefore);
+
+  // The treasury: one transaction, the approved amount, also while the workspace is paused.
+  const treasuryBefore = await chain.getBalance({ address: treasury.address });
+  const toTreasury = await sweep(treasury.address);
+  await ada.approve(toTreasury.id);
+  expect((await ada.settled(toTreasury.id)).status).toBe("executed");
+  let approved = await ada.api.call("getApproval", { params: { approvalId: toTreasury.id } });
+  for (let i = 0; i < 240; i += 1) {
+    if (
+      approved.subject.kind === "sweep-wallet" &&
+      approved.subject.transaction?.status === "confirmed"
+    )
+      break;
+    await delay(500);
+    approved = await ada.api.call("getApproval", { params: { approvalId: toTreasury.id } });
+  }
+  if (approved.subject.kind !== "sweep-wallet") throw new Error("not a sweep");
+  expect(approved.subject.transaction?.status).toBe("confirmed");
+  expect((await chain.getBalance({ address: treasury.address })) - treasuryBefore).toBe(
+    BigInt(approved.subject.sweep.amount),
+  );
+  expect(await chain.getTransactionCount({ address: retired.wallet.address })).toBe(
+    nonceBefore + 1,
+  );
+  expect(await chain.getBalance({ address: retired.wallet.address })).toBeLessThan(
+    BigInt(approved.subject.sweep.maxFeeWei),
+  );
+
+  // Resume for the gates that follow; resuming needs the passkey, as always.
+  const resume = await ada.api.call("requestResume", {
+    params: { workspaceId: workspace.id },
+    body: {},
+  });
+  await ada.approve(resume.id);
+  expect((await ada.settled(resume.id)).status).toBe("executed");
+});
+
+test("a restored and fenced backup keeps wallets, refuses an approval used after the backup and every approval issued before the restore, and signs a new proposal", async () => {
+  // Two proposals waiting when the backup is taken. One is paid after the backup, so the
+  // backup is older than the last payment: the case where a restore could pay twice.
+  const waiting = await propose("0.005", "still waiting at the restore");
+  const paidAfterBackup = await propose("0.006", "paid after the backup");
+  await agent.close();
+  const restoreProject = `${stack.project}-restore`;
+  await backUpInto(restoreProject);
+
+  const paidBefore = await chain.getBalance({ address: RECIPIENT });
+  await ada.approve(paidAfterBackup.approvalId);
+  expect(await intentSettles(paidAfterBackup.intentId)).toBe("confirmed");
+  expect(formatEther((await chain.getBalance({ address: RECIPIENT })) - paidBefore)).toBe("0.006");
+
+  const fenceAt = await restoreFrom(restoreProject);
 
   // The same person, the same passkey, the same wallet.
   await ada.signIn();
@@ -415,16 +492,52 @@ test("a restored backup keeps wallets and waiting approvals, and refuses a spent
   // An approval that was used before the backup is still used.
   await expect(ada.approve(spentApprovalId)).rejects.toThrow();
 
-  // The chain is not part of a backup: the restored stack has a fresh local one.
+  // The chain is not part of a backup: the restored stack has a fresh local one. Whatever the
+  // signer signed now would land on it.
   await chainAdmin.setBalance({ address: wallet.address, value: parseEther("1") });
   const before = await chain.getBalance({ address: RECIPIENT });
-  await ada.approve(waiting.approvalId);
-  expect(await intentSettles(waiting.intentId, 200_000)).toBe("confirmed");
-  expect(formatEther((await chain.getBalance({ address: RECIPIENT })) - before)).toBe("0.005");
+  const nonceBefore = await chain.getTransactionCount({ address: wallet.address });
 
-  // And the restored stack keeps working for new proposals.
+  // The restored control plane shows the payment made after the backup as waiting again. A
+  // person who approves it is refused by the signer, whatever the control plane asks.
+  const shown = await ada.api.call("getApproval", {
+    params: { approvalId: paidAfterBackup.approvalId },
+  });
+  expect(shown.status).toBe("pending");
+  for (const proposal of [paidAfterBackup, waiting]) {
+    await ada.approve(proposal.approvalId);
+    expect(await intentSettles(proposal.intentId, 200_000)).toBe("failed");
+    const intent = await ada.api.call("getIntent", { params: { intentId: proposal.intentId } });
+    expect(intent.failureCode).toBe("envelope_fenced");
+  }
+  expect(await chain.getTransactionCount({ address: wallet.address })).toBe(nonceBefore);
+  expect(await chain.getBalance({ address: RECIPIENT })).toBe(before);
+  // The restored file is a new file, so the signer may already have fenced it when the operator's
+  // command opened it; within the same second the operator's fence then changes nothing. The log
+  // is read to its end: a page holds the oldest 100 entries.
+  const actions: string[] = [];
+  for (let after = 0; ; ) {
+    const page = await ada.api.call("listSignerDecisions", {
+      params: { workspaceId: workspace.id },
+      query: { after: String(after) },
+    });
+    actions.push(...page.items.map((decision) => decision.action));
+    const last = page.items.at(-1);
+    if (!last || page.items.length < 100) break;
+    after = last.seq;
+  }
+  expect(
+    actions.some((action) =>
+      ["fence-set-by-operator", "fence-set-on-new-database-file"].includes(action),
+    ),
+  ).toBe(true);
+
+  // A proposal made after the fence and the clock skew it allows is signed as usual.
+  const skewEnds = (fenceAt + 31) * 1000;
+  if (Date.now() < skewEnds) await delay(skewEnds - Date.now());
   agent = await connectAgent(`${stack.origin}/mcp`, agentToken);
   const fresh = await propose("0.001", "after the restore");
   await ada.approve(fresh.approvalId);
   expect(await intentSettles(fresh.intentId)).toBe("confirmed");
+  expect(formatEther((await chain.getBalance({ address: RECIPIENT })) - before)).toBe("0.001");
 });

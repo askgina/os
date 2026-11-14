@@ -191,7 +191,75 @@ function Subject({
           </p>
         </Summary>
       );
+    case "sweep-wallet":
+      return <SweepSubject subject={subject} workspace={workspace} />;
   }
+}
+
+/** Where a sweep goes, in words: the signer refuses any destination other than these two. */
+const sweepDestinationText = {
+  treasury: "The workspace's treasury.",
+  allowlist: "On this wallet's list of allowed recipients.",
+} as const;
+
+function SweepSubject({
+  subject,
+  workspace,
+}: {
+  subject: Extract<ApprovalSubject, { kind: "sweep-wallet" }>;
+  workspace: WorkspaceDetail;
+}) {
+  const { sweep, wallet } = subject;
+  const chain = workspace.chains.find((item) => item.chainId === sweep.chainId);
+  const amount = formatUnits(sweep.amount, subject.assetDecimals);
+  return (
+    <Summary title={`Empty ${amount} ${subject.assetSymbol} to ${shortAddress(sweep.to)}`}>
+      <Alert tone="warning" className="py-2.5">
+        <TriangleAlert aria-hidden />
+        <p>
+          <strong>No limits apply.</strong> A sweep moves this whole amount in one transaction,
+          without an agent and above the wallet's caps. It needs the approvals of an admin change.
+        </p>
+      </Alert>
+
+      <div>
+        <p className="text-3xl font-semibold tracking-tight tabular-nums">
+          {amount} <span className="text-xl">{subject.assetSymbol}</span>
+        </p>
+        <p className="font-mono text-xs text-muted-foreground">
+          {sweep.amount} base units ({subject.assetDecimals} decimals)
+          {sweep.asset === "native" ? "" : ` · token ${shortAddress(sweep.asset)}`}
+        </p>
+      </div>
+
+      <div>
+        <p className="text-xs text-muted-foreground">Destination (check every group)</p>
+        <FullAddress address={sweep.to} className="text-base" />
+        {subject.destination ? (
+          <p className="mt-1 text-sm">{sweepDestinationText[subject.destination]}</p>
+        ) : (
+          <Alert tone="danger" className="mt-2 py-2.5">
+            <OctagonAlert aria-hidden />
+            <p>
+              This address is neither the treasury nor an allowed recipient of this wallet. The
+              signer will refuse this sweep after it is approved.
+            </p>
+          </Alert>
+        )}
+      </div>
+
+      <Facts>
+        <Fact label="From wallet">
+          {wallet.label} <span className="font-mono text-xs">{shortAddress(wallet.address)}</span>
+        </Fact>
+        <Fact label="Network">{chainName(sweep.chainId, workspace.chains)}</Fact>
+        <Fact label="Network fee, at most">
+          {formatUnits(sweep.maxFeeWei, 18)} {chain?.nativeSymbol ?? ""}
+        </Fact>
+        <Fact label="Agent">None: a person asked for this</Fact>
+      </Facts>
+    </Summary>
+  );
 }
 
 function Summary({ title, children }: { title: string; children: ReactNode }) {
@@ -441,7 +509,7 @@ function Decide({ approval, expired }: { approval: ApprovalDetail; expired: bool
     <section className="grid gap-2" aria-label="Decision">
       <p className="text-xs text-muted-foreground">
         Approving lets the signer{" "}
-        {approval.kind === "approve-intent"
+        {approval.kind === "approve-intent" || approval.kind === "sweep-wallet"
           ? "sign exactly this operation"
           : "apply exactly this change"}{" "}
         once. Your passkey signs this request's fingerprint, nothing else.
@@ -488,7 +556,9 @@ function Decide({ approval, expired }: { approval: ApprovalDetail; expired: bool
 function Outcome({ approval }: { approval: ApprovalDetail }) {
   const subject = approval.subject;
   const intent = subject.kind === "approve-intent" ? subject.intent : null;
-  const transaction = intent?.transaction ?? null;
+  const transaction =
+    intent?.transaction ?? (subject.kind === "sweep-wallet" ? subject.transaction : null);
+  const signs = subject.kind === "approve-intent" || subject.kind === "sweep-wallet";
   switch (approval.status) {
     case "approved":
       return (
@@ -501,7 +571,7 @@ function Outcome({ approval }: { approval: ApprovalDetail }) {
         <Alert tone="success" className="items-start">
           <CheckCircle2 aria-hidden />
           <div className="grid min-w-0 gap-1">
-            <p className="font-medium">{intent ? "Approved." : "Done. The change is in effect."}</p>
+            <p className="font-medium">{signs ? "Approved." : "Done. The change is in effect."}</p>
             {intent ? (
               <div className="flex flex-wrap items-center gap-2">
                 <IntentStatusBadge status={intent.status} />
@@ -585,6 +655,7 @@ function Outcome({ approval }: { approval: ApprovalDetail }) {
 
 function TechnicalDetails({ approval }: { approval: ApprovalDetail }) {
   const intent = approval.subject.kind === "approve-intent" ? approval.subject.intent : null;
+  const sweep = approval.subject.kind === "sweep-wallet" ? approval.subject : null;
   return (
     <details className="group rounded-lg border bg-card">
       <summary className="cursor-pointer px-4 py-3 text-sm font-medium select-none">
@@ -597,6 +668,16 @@ function TechnicalDetails({ approval }: { approval: ApprovalDetail }) {
             <TechBlock
               label="Canonical intent (exactly what is hashed)"
               value={canonicalJson(intent.intent)}
+              pre
+            />
+          </>
+        ) : null}
+        {sweep ? (
+          <>
+            <TechBlock label="Sweep hash (SHA-256)" value={sweep.sweepHash} />
+            <TechBlock
+              label="Canonical sweep (exactly what is hashed)"
+              value={canonicalJson(sweep.sweep)}
               pre
             />
           </>

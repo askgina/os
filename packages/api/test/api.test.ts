@@ -90,6 +90,10 @@ const examples: { [N in RouteName]: { body?: unknown; query?: unknown; response:
   },
   getWallet: { response: f.walletDetail },
   requestPolicy: { body: { draft: f.policyDraft }, response: f.approvalSummary },
+  requestSweep: {
+    body: { chainId: "eip155:8453", asset: "native", to: f.sweep.to },
+    response: { ...f.approvalSummary, kind: "sweep-wallet" },
+  },
   listApprovals: {
     query: { status: "pending" },
     response: { items: [f.approvalSummary], nextCursor: "c1" },
@@ -172,6 +176,20 @@ describe("route contract", () => {
       false,
     );
     expect(ApprovalDetail.safeParse({ ...f.approvalDetail, extra: 1 }).success).toBe(false);
+  });
+
+  it("a sweep's subject carries the exact sweep, and a sweep the protocol refuses does not parse", () => {
+    expect(ApprovalDetail.parse(f.sweepApprovalDetail)).toEqual(f.sweepApprovalDetail);
+    const subject = f.sweepApprovalDetail.subject;
+    const zero = "0x0000000000000000000000000000000000000000";
+    expect(ApprovalSubject.safeParse({ ...subject, sweep: { ...f.sweep, to: zero } }).success).toBe(
+      false,
+    );
+    expect(ApprovalSubject.safeParse({ ...subject, destination: "anywhere" }).success).toBe(false);
+    // A sweep goes to an address, never to "whatever the server picks".
+    expect(
+      routes.requestSweep.body.safeParse({ chainId: "eip155:8453", asset: "native" }).success,
+    ).toBe(false);
   });
 });
 

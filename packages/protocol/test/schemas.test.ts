@@ -14,6 +14,8 @@ import {
   newId,
   normalizePolicy,
   PositiveAmount,
+  Sweep,
+  SweepWalletEnvelope,
   sortedUnique,
   WalletId,
   WalletPolicy,
@@ -31,6 +33,8 @@ import {
   OTHER_AGENT,
   policy,
   ROUTER,
+  sweep,
+  sweepWallet,
   T0,
   TOKEN,
 } from "./fixtures.ts";
@@ -354,6 +358,33 @@ describe("envelopes", () => {
   it("refuses unknown keys and fields belonging to another type", () => {
     expect(ok(ApproveIntentEnvelope, { ...approveIntent(), memo: "x" })).toBe(false);
     expect(ok(Envelope, { ...approveIntent(), type: "set-policy" })).toBe(false);
+  });
+});
+
+describe("sweeps", () => {
+  const zero = "0x0000000000000000000000000000000000000000" as const;
+
+  it("accept the native coin or a token, and their envelope is an envelope", () => {
+    expect(ok(Sweep, sweep())).toBe(true);
+    expect(ok(Sweep, sweep({ asset: TOKEN }))).toBe(true);
+    expect(ok(Envelope, sweepWallet())).toBe(true);
+    expect(ok(SweepWalletEnvelope, sweepWallet({ expiresAt: T0 }))).toBe(true);
+    expect(ok(Envelope, sweepWallet({ expiresAt: T0 }))).toBe(false);
+  });
+
+  it("refuse the zero address as destination or token, and a token sent to its own contract", () => {
+    expect(ok(Sweep, sweep({ to: zero }))).toBe(false);
+    expect(ok(Sweep, sweep({ asset: zero }))).toBe(false);
+    expect(ok(Sweep, sweep({ asset: TOKEN, to: TOKEN }))).toBe(false);
+  });
+
+  it("refuse a zero amount or fee ceiling, unknown keys and other versions", () => {
+    expect(ok(Sweep, sweep({ amount: "0" }))).toBe(false);
+    expect(ok(Sweep, sweep({ maxFeeWei: "0" }))).toBe(false);
+    expect(ok(Sweep, { ...sweep(), memo: "x" })).toBe(false);
+    expect(ok(Sweep, { ...sweep(), v: 2 })).toBe(false);
+    expect(ok(Envelope, { ...sweepWallet(), amount: "1" })).toBe(false);
+    expect(ok(Envelope, { ...sweepWallet(), type: "approve-intent" })).toBe(false);
   });
 });
 

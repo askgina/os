@@ -52,7 +52,7 @@ The proxy must pass the `Host` header through unchanged. With Tailscale:
 | Volume           | Holds                                                                                         | Read by  |
 | ---------------- | --------------------------------------------------------------------------------------------- | -------- |
 | `postgres-data`  | The database.                                                                                 | postgres |
-| `signer-data`    | The wallet vault and the signer's SQLite (used approvals, policies, audit).                   | signer   |
+| `signer-data`    | The wallet vault and the signer's SQLite (used approvals, policies, audit, restore fence).    | signer   |
 | `server-secrets` | `keyring.json` (key-encryption keys), `signer-request-secret`, a copy of `postgres-password`. | server   |
 | `signer-secrets` | `signer-request-secret`, `token-key`, `vault-passphrase`.                                     | signer   |
 | `db-secrets`     | `postgres-password`.                                                                          | postgres |
@@ -63,8 +63,8 @@ Back up `postgres-data`, `server-secrets`, `signer-data`, `signer-secrets` and `
 together, from the same moment, with the stack stopped (`docker compose stop`):
 
 - The database without the keyring is unreadable, and the keyring without the database is useless.
-- `signer-data` is the wallets. Restoring an older copy would forget which approvals were used, so
-  never restore it on its own.
+- `signer-data` is the wallets. Restoring an older copy forgets which approvals were used after
+  it was made, so never restore it on its own, and always fence it (below).
 - Without `vault-passphrase` new wallets cannot be created; without `token-key` existing wallets
   cannot sign.
 
@@ -74,19 +74,35 @@ One archive per volume, for example:
 
 Keep the archives encrypted; together they contain every key.
 
-To restore onto a machine with no stack yet: create each volume from its archive
-(`docker run --rm -v os_signer-data:/v -v "$PWD":/b alpine tar xzf /b/signer-data.tgz -C /v`),
-then start the stack as usual. `init` leaves existing secrets alone. Keep the same
-`PUBLIC_ORIGIN`: passkeys are bound to its host name.
+To restore, every time, in this order:
 
-A chain is not part of a backup. Approvals that were waiting when the backup was taken can still
-be approved after the restore; approvals that were already used stay used.
+1. Restore into empty volumes: on a machine with no stack yet, or after removing the old
+   stack's volumes. Create each volume from its archive
+   (`docker run --rm -v os_signer-data:/v -v "$PWD":/b alpine tar xzf /b/signer-data.tgz -C /v`).
+2.  Fence the signer before it serves anything:
 
-That is only safe when nothing was signed after the backup was taken. A restore puts the signer's
-record of used approvals back to that moment too. An approval that was paid after the backup
-shows as waiting again, and approving it would pay a second time, for as long as the approval
-has not expired (24 hours at most by default). After restoring a backup that may be older than
-the last payment, reject every waiting approval and have the agents propose again.
+        docker compose run --rm signer node src/admin.ts fence
+
+    It prints one line, `{"ok":true,"action":"fence-set-by-operator","fenceAt":…}`.
+3. Start the stack as usual. `init` leaves existing secrets alone. Keep the same `PUBLIC_ORIGIN`:
+   passkeys are bound to its host name.
+
+Why every restore is fenced: a backup may be older than the last payment, and nothing in it says
+so. A restore puts the signer's record of used approvals back to the moment of the backup, so an
+approval paid after the backup would look unused, and approving it again would pay a second
+time. After the fence, the signer refuses every approval issued before the fence with
+`envelope_fenced`, whatever the control plane asks. The control plane still shows approvals
+that were waiting when the backup was taken; approving one ends it as failed with
+`envelope_fenced`, and the agent must propose it again. The same happens to a proposal made in
+the first 30 seconds after the fence (the clock skew the signer allows). Approvals that were
+already used stay used. A chain is not part of a backup.
+
+The signer also fences itself when it opens a database file that is not the file it last opened:
+one extracted from an archive, copied, or moved to another host. It logs `restore fence set`
+with `reason: new_database_file`. It cannot notice a restore that rolls the same file back in
+place, for example a disk or filesystem snapshot, so the `fence` step stays part of every
+restore. The fence is kept in `signer-data` and survives restarts; each fence is recorded in
+every workspace's signer decision log.
 
 ## Rotating the keyring
 
@@ -126,6 +142,12 @@ passkey on another device while you can.
 
 Database migrations run when the server starts. Take a backup first. The Workflow SDK and its
 Postgres backend must stay on the same release line; this repository pins both.
+
+The signer migrates its own SQLite when it starts (`PRAGMA user_version`). The first start of a
+signer with the restore fence on a v0.1 database fences it once, because nothing tells it the
+file was not restored: approvals waiting at that moment must be proposed again. A signer refuses
+to start on a database written by a newer signer (`schema_too_new`). Do not go back to a v0.1
+signer image after upgrading: it does not know the fence and would ignore it.
 
 ## The approval webhook
 

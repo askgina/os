@@ -10,7 +10,7 @@ import {
   TIMESTAMP_HEADER,
   verifyRequestSignature,
 } from "../src/signer/index.ts";
-import { APPROVAL, approveIntent, T0, WALLET, WS } from "./fixtures.ts";
+import { APPROVAL, approveIntent, sweep, sweepWallet, T0, WALLET, WS } from "./fixtures.ts";
 
 const SECRET = new Uint8Array(32).fill(7);
 const encode = (text: string) => new TextEncoder().encode(text);
@@ -177,6 +177,29 @@ describe("signer client", () => {
     // The workspace travels in the body so the signer can record the revocation in its log.
     const body = calls[1]?.init.body as Uint8Array;
     expect(JSON.parse(new TextDecoder().decode(body))).toEqual({ workspaceId: WS });
+  });
+
+  it("sends a sweep to its wallet's path, with the sweep and its authorization in the body", async () => {
+    const signed = {
+      approvalId: APPROVAL,
+      walletId: WALLET,
+      from: "0x1111111111111111111111111111111111111111",
+      signedTransaction: "0x02",
+      transactionHash: `0x${"ab".repeat(32)}`,
+    };
+    const { signer, calls } = client(() => ({ status: 200, body: signed }));
+    const request = {
+      sweep: sweep(),
+      authorization: { envelope: sweepWallet(), assertions: [] },
+      transaction: { nonce: 0, gas: "21000", maxFeePerGas: "1", maxPriorityFeePerGas: "1" },
+    };
+    expect(await signer.sweep(WALLET, request)).toEqual(signed);
+    const [call] = calls;
+    expect(`${call?.init.method} ${new URL(call?.url ?? "").pathname}`).toBe(
+      `POST /v1/wallets/${WALLET}/sweep`,
+    );
+    expect(JSON.parse(new TextDecoder().decode(call?.init.body as Uint8Array))).toEqual(request);
+    expect(verifyRecorded(call as Recorded)).toBe(true);
   });
 
   it("gives up on a signer that never answers", async () => {

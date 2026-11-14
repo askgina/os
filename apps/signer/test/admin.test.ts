@@ -12,6 +12,7 @@ import {
   newPerson,
   type Person,
   RP,
+  refused,
   setUpWorld,
   startSigner,
   txParams,
@@ -116,5 +117,39 @@ describe("the admin CLI on the signer host", () => {
       "x",
     ]);
     expect(result).toEqual({ code: 2, line: { ok: false, code: "usage" } });
+  });
+
+  it("sets the restore fence for every workspace, and the running signer refuses what came before", async () => {
+    const t = startSigner({ sqlitePath: join(dir, "signer.sqlite") });
+    const world = await setUpWorld(t);
+    const before = Math.floor(Date.now() / 1000);
+    const result = await admin(["fence"]);
+    expect(result).toMatchObject({ code: 0, line: { ok: true, action: "fence-set-by-operator" } });
+    const fenceAt = Number(result.line.fenceAt);
+    expect(fenceAt).toBeGreaterThanOrEqual(before);
+
+    const { decisions } = await t.client.listDecisions(world.workspaceId);
+    expect(decisions.at(-1)).toMatchObject({ action: "fence-set-by-operator", at: fenceAt });
+
+    // The CLI runs on the host's clock; move the test clock to either side of its fence.
+    t.clock.value = fenceAt - 60;
+    const stale = intentFor(world);
+    await refused(
+      t.client.sign({
+        intent: stale,
+        authorization: approveIntent(world, stale),
+        transaction: txParams(),
+      }),
+      "envelope_fenced",
+    );
+    t.clock.value = fenceAt + 60;
+    const fresh = intentFor(world);
+    const signed = await t.client.sign({
+      intent: fresh,
+      authorization: approveIntent(world, fresh),
+      transaction: txParams(),
+    });
+    expect(signed.from).toBe(world.address);
+    t.signer.close();
   });
 });

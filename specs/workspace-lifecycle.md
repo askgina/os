@@ -60,7 +60,9 @@ Success means:
 
 - [x] (2026-11-14 21:30Z) Research: what a workspace owns, what v0.1 can do, what the signer can and cannot see. See the report.
 - [x] (2026-11-14 21:30Z) Draft this plan with recommended options; owner decisions listed under Risks and Open Questions.
-- [ ] Owner decisions D1-D7 taken and recorded in the Decision Log.
+- [ ] Owner decisions D1-D7 taken and recorded in the Decision Log. D3 is taken (2026-11-14): allowlist or own treasury.
+- [x] (2026-11-14) The sweep, built ahead of the milestones as a fix to v0.1 (a wallet whose agent was removed or disabled could not be emptied): the `Sweep` structure and `sweep-wallet` envelope (protocol), `POST /v1/wallets/:walletId/sweep` (signer), the `sweep-wallet` approval kind and `requestSweep` route on the shared signing path (server, `apps/server/src/execution/sweeps.ts`, `transactions.ts`), "Empty this wallet" and the sweep approval card (web), and a release gate. Proven locally, one file at a time: `packages/protocol/test/digests.test.ts`, `schemas.test.ts`, `signer-client.test.ts`; `apps/signer/test/sweep.test.ts`; `packages/api/test/api.test.ts`; `apps/server/test/execution/sweep.test.ts` on Anvil; `apps/web/test/sweep.test.ts`. Retire, delete, export and clone are not built.
+- [ ] The sweep in CI: the release gate "a person empties a disabled agent's wallet to the treasury while paused, and the signer refuses any other destination" in `e2e/test/release-gates.spec.ts` (`stack (amd64)`, `stack (arm64)`), and the `ui` job with the new card. Written and type-checked, not run. No browser journey covers the card yet.
 - [ ] Milestone 1: protocol.
 - [ ] Milestone 2: signer.
 - [ ] Milestone 3: key store.
@@ -90,6 +92,16 @@ Success means:
 - Observation: the signer's SQLite schema has no migration step; every table is
   `CREATE TABLE IF NOT EXISTS`. Adding columns needs one.
   Evidence: `apps/signer/src/db.ts:9-115`.
+  Update (2026-11-14): the restore fence added `PRAGMA user_version` migrations (version 1 is
+  the v0.1 schema, version 2 adds `signer_meta`). Milestone 2's lifecycle columns become
+  version 3.
+- Observation: an envelope is stored unencrypted in `approvals.envelope`, and the release gates
+  scan the database for recipient addresses in the clear. A `sweep-wallet` envelope that carried
+  `to` and `amount` as fields, as Milestone 1 first drafted it, would put a destination and an
+  amount at rest in plaintext.
+  Evidence: `apps/server/src/db/schema.ts`, `approvals.envelope` ("Identifiers, hashes and times
+  only"); `e2e/test/release-gates.spec.ts`, "what an agent typed is in no column of the database
+  in the clear".
 
 ## Decision Log
 
@@ -106,11 +118,41 @@ Open Questions.
   Rationale: long enough for a person to notice a request they did not mean; short enough to end
   a workspace within a week.
   Date/Author: 2026-11-14 / delegated agent
-- Decision (pending D3): a new `sweep-wallet` envelope; its destination must be in the wallet's
-  current recipient allowlist, or be the address of the same workspace's treasury.
+- Decision (D3, taken by the owner 2026-11-14): a new `sweep-wallet` envelope; its destination
+  must be in the wallet's current recipient allowlist, or be the address of a treasury wallet of
+  the same workspace other than the swept one.
   Rationale: emptying a wallet must not need an agent or a raised cap, and a sweep has no cap, so
   its destination must have been approved earlier.
   Date/Author: 2026-11-14 / delegated agent
+- Decision: the envelope binds a hashed `Sweep` (`v`, `workspaceId`, `walletId`, `chainId`,
+  `asset`, `amount`, `to`, `maxFeeWei`; tag `askgina.os/v1/sweep`) by `sweepHash`, with
+  `walletId` and `chainId` beside it, as `approve-intent` binds an intent. The amount is in the
+  approved structure, not chosen by the control plane after approval: the server reads the
+  balance when the request opens (all of a token, or the native coin less the fee ceiling) and the
+  person approves that exact amount. `SweepRequest` is `{ sweep, authorization, transaction }`.
+  Rationale: the amount and destination are covered by the passkey but stay out of the plaintext
+  envelope column (see `Surprises & Discoveries`); a changed amount or destination is refused
+  with `envelope_mismatch`. Every existing digest and vector is unchanged.
+  Date/Author: 2026-11-14 / FixSignerDefects
+- Decision: a paused workspace can be swept (confirmed by the owner's lead, 2026-11-14). The
+  sweep is approved at the admin threshold with the admin lifetime; when the wallet has a policy,
+  its chains and fee ceiling still apply and its caps do not. The sweep is recorded as a spend.
+  Rationale: resuming a paused workspace to empty it would let its agents sign again.
+  Date/Author: 2026-11-14 / FixSignerDefects
+- Decision: the sweep reuses the intent's signing path. `apps/server/src/execution/transactions.ts`
+  holds nonce reservation, fee choice, the single signer call, storing the transaction, broadcast
+  and follow-up; `approve-intent` and `sweep-wallet` each supply how to ask the signer.
+  `transactions.intent_id` became nullable (`0002_sweep_transactions.sql`) instead of adding a
+  `kind` column: the approval row already says which kind signed it.
+  Rationale: one implementation of "one approval, one transaction"; no duplicated broadcast or
+  reconciliation.
+  Date/Author: 2026-11-14 / FixSignerDefects
+- Decision: the control plane does not pre-filter a sweep's destination; the request opens, and
+  the signer's refusal ends it as `failed` with `sweep_destination_not_allowed`. The approval card
+  says beforehand when the destination is neither allowed nor the treasury, and the wallet page
+  offers only allowed destinations.
+  Rationale: the release gate can then show the signer enforces the rule.
+  Date/Author: 2026-11-14 / FixSignerDefects
 - Decision (pending D4): wallet keys are exported only by `admin.ts export-wallet` on the signer
   host. No HTTP route.
   Rationale: over HTTP the control plane relays the recipient key; a passkey proves only a digest.
@@ -136,9 +178,9 @@ Open Questions.
 
 ## Outcomes & Retrospective
 
-- Outcome: none yet. Nothing is built.
-  Evidence: none.
-  Remaining: everything below.
+- Outcome (2026-11-14): the sweep is built and passes its unit and Anvil tests locally (see
+  `Progress`). Its release gate and the UI job need CI.
+  Remaining: retire, delete, remove agent, export, clone, and Milestones 3, 5 to 8.
 
 ## Context and Orientation
 
@@ -667,7 +709,7 @@ A compromised control plane (its process, or write access to its database):
 | Ask for a deletion, retirement or sweep, and show approvers a misleading card for it (the trusted-display gap, [#20](https://github.com/askgina/os/issues/20)) | Destroy a key without assertions at the admin threshold over an envelope naming that exact wallet set                                                            |
 | Report false balances on the delete card, so approvers acknowledge a loss they would not have                                                                  | Destroy a key before `destroyAfter`, or set a delay below the signer's minimum                                                                                   |
 | Cancel any deletion or retirement (only delays it; keys survive)                                                                                               | Make a cancelled deletion sign again: the workspace stays paused until `resume-workspace` is approved                                                            |
-| Choose the amount of an approved sweep                                                                                                                         | Sweep to a destination outside the wallet's allowlist other than the workspace's own treasury; sweep twice under one approval; exceed the envelope's fee ceiling |
+| Choose the amount when it asks for a sweep (the person approves that exact amount)                                                                             | Sweep to a destination outside the wallet's allowlist other than the workspace's own treasury; sweep twice under one approval; exceed the envelope's fee ceiling |
 | Withhold or alter an export it produces; read every sealed value it could already read                                                                         | Export a wallet key: no route exists; only the signer host's admin CLI can                                                                                       |
 | Put a fabricated policy in a clone's proposals                                                                                                                 | Make any clone policy effective without the clone's approvers' passkeys; give a clone an existing key                                                            |
 | Leave runs unfinished or skip the sweeper, so deletion never completes                                                                                         | Revive a deleted workspace at the signer, reuse its approval ids or envelope nonces                                                                              |
@@ -799,3 +841,8 @@ Evidence is in the report. Key lines:
 ## Revision Notes
 
 - 2026-11-14: First draft, from the research report for ticket #23. Nothing built.
+- 2026-11-14: The sweep built as a v0.1 fix, with D3 taken. It differs from Milestones 1, 2 and 4
+  as drafted: the envelope binds a hashed `Sweep` that includes the amount (no caller-chosen
+  amount, no `to` in the plaintext envelope); `transactions.intent_id` is nullable instead of a
+  `kind` column; the signer's migrations start at version 2 for the restore fence. The milestone
+  text above still describes retire, delete, export and clone as drafted.

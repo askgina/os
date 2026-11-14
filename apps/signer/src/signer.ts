@@ -17,6 +17,8 @@ import {
   intentHash,
   intentSpend,
   policyHash,
+  type Sweep,
+  sweepHash,
   type UserId,
   type WalletId,
   WalletPolicy,
@@ -31,10 +33,16 @@ import type {
   SignerDecision,
   SignRequest,
   SignResponse,
+  SweepRequest,
+  TransactionParams,
   WalletState,
   WorkspaceState,
 } from "@askgina/os-protocol/signer";
-import { type RelyingParty, verifyAuthorization } from "@askgina/os-protocol/webauthn";
+import {
+  CLOCK_SKEW_SECONDS,
+  type RelyingParty,
+  verifyAuthorization,
+} from "@askgina/os-protocol/webauthn";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import {
   encodeFunctionData,
@@ -47,6 +55,7 @@ import {
 import { transaction } from "./db.ts";
 import { appendDecision, listDecisions, verifyDecisions } from "./decisions.ts";
 import { SignerFailure } from "./errors.ts";
+import { readFence } from "./fence.ts";
 import type { Logger } from "./log.ts";
 import { type EvmTransaction, type Vault, VaultError } from "./vault.ts";
 
@@ -312,6 +321,20 @@ export function createSignerCore(options: SignerCoreOptions) {
     if (!verdict.ok) throw new SignerFailure(verdict.code);
   }
 
+  /**
+   * The restore fence (`fence.ts`). Every envelope this database acted on before it was restored
+   * was verified before the fence, so its `issuedAt` is earlier than the fence plus the skew the
+   * verifier allows. Checked after the replay check, so an approval already acted on in this
+   * database still returns what it got, and checked again inside the transaction, because the
+   * operator may set the fence while the signer runs.
+   */
+  function assertNotFenced(envelope: Envelope): void {
+    const fence = readFence(db);
+    if (fence !== null && envelope.issuedAt < fence + CLOCK_SKEW_SECONDS) {
+      throw new SignerFailure("envelope_fenced");
+    }
+  }
+
   /** Re-checked inside the transaction: an approver removed during verification no longer counts. */
   function assertApproversStillPresent(authorization: Authorization, workspaceId: string): void {
     const present = new Set(approverRows(workspaceId).map((row) => row.credential_id));
@@ -370,6 +393,7 @@ export function createSignerCore(options: SignerCoreOptions) {
         throw new SignerFailure("envelope_mismatch");
       }
       if (priorOutcome(envelope, "applied") === "replay") return input.state();
+      assertNotFenced(envelope);
       input.check?.(envelope);
       const workspace = requireWorkspace(input.workspaceId);
       await verify(
@@ -380,6 +404,7 @@ export function createSignerCore(options: SignerCoreOptions) {
       );
       return transaction(db, () => {
         if (priorOutcome(envelope, "applied") === "replay") return input.state();
+        assertNotFenced(envelope);
         assertApproversStillPresent(input.authorization, input.workspaceId);
         const current = requireWorkspace(input.workspaceId);
         if (input.authorization.assertions.length < current.admin_threshold) {
@@ -674,28 +699,47 @@ export function createSignerCore(options: SignerCoreOptions) {
     });
   }
 
-  function buildTransaction(intent: Intent, params: SignRequest["transaction"]): EvmTransaction {
-    const { operation } = intent;
-    const base = {
-      chainId: evmChainNumber(intent.chainId),
+  /** The parts of a transaction the caller chooses after approval; the rest is what was approved. */
+  function transactionBase(chainId: ChainId, params: TransactionParams) {
+    return {
+      chainId: evmChainNumber(chainId),
       nonce: params.nonce,
       gas: BigInt(params.gas),
       maxFeePerGas: BigInt(params.maxFeePerGas),
       maxPriorityFeePerGas: BigInt(params.maxPriorityFeePerGas),
     };
+  }
+
+  /** `transfer(to, amount)` sent to the token contract, encoded here rather than taken from a caller. */
+  function erc20Transfer(token: Address, to: Address, amount: bigint) {
+    return {
+      to: token,
+      value: 0n,
+      data: encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [to, amount] }),
+    };
+  }
+
+  /** The fee the caller chose must fit the approved ceiling, and the tip the fee. */
+  function assertFeeWithin(params: TransactionParams, maxFeeWei: string): void {
+    const maxFee = BigInt(params.maxFeePerGas);
+    if (
+      BigInt(params.gas) * maxFee > BigInt(maxFeeWei) ||
+      BigInt(params.maxPriorityFeePerGas) > maxFee
+    ) {
+      throw new SignerFailure("fee_cap_exceeded");
+    }
+  }
+
+  function buildTransaction(intent: Intent, params: TransactionParams): EvmTransaction {
+    const { operation } = intent;
+    const base = transactionBase(intent.chainId, params);
     switch (operation.type) {
       case "evm.transfer":
         return { ...base, to: operation.to, value: BigInt(operation.valueWei) };
       case "evm.erc20.transfer":
         return {
           ...base,
-          to: operation.token,
-          value: 0n,
-          data: encodeFunctionData({
-            abi: erc20Abi,
-            functionName: "transfer",
-            args: [operation.to, BigInt(operation.amount)],
-          }),
+          ...erc20Transfer(operation.token, operation.to, BigInt(operation.amount)),
         };
       case "evm.call":
         return {
@@ -707,6 +751,73 @@ export function createSignerCore(options: SignerCoreOptions) {
     }
   }
 
+  /**
+   * Sign `unsigned` with the wallet's key and record it as this approval's one signature, with
+   * what it moves. Runs inside the signing transaction, after every check.
+   */
+  function signAndRecord(input: {
+    envelope: Envelope;
+    wallet: WalletRow;
+    chainId: ChainId;
+    params: TransactionParams;
+    unsigned: EvmTransaction;
+    spend: { asset: AssetRef; amount: bigint };
+  }): SignResponse {
+    const { envelope, wallet, unsigned } = input;
+    const credential = open(
+      options.tokenKey,
+      wallet.sealed_credential,
+      credentialContext(wallet.wallet_id),
+    ).toString("utf8");
+    let signed: Hex;
+    try {
+      signed = vault.signEvmTransaction(wallet.wallet_id as WalletId, credential, unsigned);
+    } catch (error) {
+      log.error("vault sign failed", {
+        walletId: wallet.wallet_id,
+        reason: error instanceof VaultError ? error.reason : "unknown",
+      });
+      throw new SignerFailure("vault_error");
+    }
+    if (!isSignedBy(signed, unsigned, wallet.address)) {
+      log.error("vault returned a signature that does not match", {
+        walletId: wallet.wallet_id,
+      });
+      throw new SignerFailure("vault_error");
+    }
+    const transactionHash = keccak256(signed);
+    const at = options.now();
+    recordApproval(envelope, "signed");
+    db.prepare(
+      "INSERT INTO signatures (approval_id, wallet_id, chain_id, tx_nonce, signed_transaction, transaction_hash, signed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      envelope.approvalId,
+      wallet.wallet_id,
+      input.chainId,
+      input.params.nonce,
+      signed,
+      transactionHash,
+      at,
+    );
+    db.prepare(
+      "INSERT INTO spends (approval_id, wallet_id, chain_id, asset, amount, at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(
+      envelope.approvalId,
+      wallet.wallet_id,
+      input.chainId,
+      input.spend.asset,
+      input.spend.amount.toString(),
+      at,
+    );
+    return {
+      approvalId: envelope.approvalId,
+      walletId: wallet.wallet_id as WalletId,
+      from: wallet.address as Address,
+      signedTransaction: signed,
+      transactionHash,
+    };
+  }
+
   async function sign(request: SignRequest): Promise<SignResponse> {
     const { intent, authorization, transaction: params } = request;
     const { envelope } = authorization;
@@ -715,6 +826,7 @@ export function createSignerCore(options: SignerCoreOptions) {
       // Idempotency first: a retry of an approval already signed gets the same transaction.
       if (priorOutcome(envelope, "signed") === "replay")
         return storedSignature(envelope.approvalId);
+      assertNotFenced(envelope);
 
       if (envelope.type !== "approve-intent") throw new SignerFailure("envelope_mismatch");
       const wallet = findWallet(envelope.walletId);
@@ -744,11 +856,7 @@ export function createSignerCore(options: SignerCoreOptions) {
         Math.min(policy.policy.approvals.ttlSeconds, options.maxIntentTtlSeconds),
       );
 
-      const gas = BigInt(params.gas);
-      const maxFee = BigInt(params.maxFeePerGas);
-      if (gas * maxFee > BigInt(intent.maxFeeWei) || BigInt(params.maxPriorityFeePerGas) > maxFee) {
-        throw new SignerFailure("fee_cap_exceeded");
-      }
+      assertFeeWithin(params, intent.maxFeeWei);
 
       // The critical section. Synchronous from here to COMMIT: no other request can see the
       // ledger between the check and the record.
@@ -756,6 +864,7 @@ export function createSignerCore(options: SignerCoreOptions) {
         if (priorOutcome(envelope, "signed") === "replay") {
           return storedSignature(envelope.approvalId);
         }
+        assertNotFenced(envelope);
         const workspace = requireWorkspace(envelope.workspaceId);
         if (workspace.paused === 1) throw new SignerFailure("workspace_paused");
         const live = currentPolicy(wallet.wallet_id);
@@ -775,54 +884,119 @@ export function createSignerCore(options: SignerCoreOptions) {
         );
         if (!decision.allowed) throw new SignerFailure("policy_denied", decision.code);
 
-        const credential = open(
-          options.tokenKey,
-          wallet.sealed_credential,
-          credentialContext(wallet.wallet_id),
-        ).toString("utf8");
-        const unsigned = buildTransaction(intent, params);
-        let signed: Hex;
-        try {
-          signed = vault.signEvmTransaction(wallet.wallet_id as WalletId, credential, unsigned);
-        } catch (error) {
-          log.error("vault sign failed", {
-            walletId: wallet.wallet_id,
-            reason: error instanceof VaultError ? error.reason : "unknown",
-          });
-          throw new SignerFailure("vault_error");
-        }
-        if (!isSignedBy(signed, unsigned, wallet.address)) {
-          log.error("vault returned a signature that does not match", {
-            walletId: wallet.wallet_id,
-          });
-          throw new SignerFailure("vault_error");
-        }
-        const transactionHash = keccak256(signed);
-        const at = options.now();
-        recordApproval(envelope, "signed");
-        db.prepare(
-          "INSERT INTO signatures (approval_id, wallet_id, chain_id, tx_nonce, signed_transaction, transaction_hash, signed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ).run(
-          envelope.approvalId,
-          wallet.wallet_id,
-          intent.chainId,
-          params.nonce,
-          signed,
-          transactionHash,
-          at,
-        );
-        const { asset, amount } = intentSpend(intent);
-        db.prepare(
-          "INSERT INTO spends (approval_id, wallet_id, chain_id, asset, amount, at) VALUES (?, ?, ?, ?, ?, ?)",
-        ).run(envelope.approvalId, wallet.wallet_id, intent.chainId, asset, amount.toString(), at);
+        const response = signAndRecord({
+          envelope,
+          wallet,
+          chainId: intent.chainId,
+          params,
+          unsigned: buildTransaction(intent, params),
+          spend: intentSpend(intent),
+        });
         allow();
-        return {
-          approvalId: envelope.approvalId,
-          walletId: wallet.wallet_id as WalletId,
-          from: wallet.address as Address,
-          signedTransaction: signed,
-          transactionHash,
-        };
+        return response;
+      });
+    });
+  }
+
+  /**
+   * Where a sweep may go, from this signer's own records only: an address on the wallet's
+   * current recipient allowlist, or a treasury wallet of the same workspace other than the swept
+   * one. A wallet with a policy also keeps its chains and its fee ceiling; its caps do not
+   * apply. Checked before verification and again in the signing transaction.
+   */
+  function assertSweepAllowed(wallet: WalletRow, sweep: Sweep): void {
+    const policy = currentPolicy(wallet.wallet_id)?.policy ?? null;
+    if (policy && !policy.chains.includes(sweep.chainId)) {
+      throw new SignerFailure("policy_denied", "chain_not_allowed");
+    }
+    if (policy && BigInt(sweep.maxFeeWei) > BigInt(policy.fees.maxPerTxWei)) {
+      throw new SignerFailure("policy_denied", "over_fee_cap");
+    }
+    if (sweep.to === wallet.address) throw new SignerFailure("sweep_destination_not_allowed");
+    const allowlisted =
+      policy?.recipients.mode === "allowlist" && policy.recipients.addresses.includes(sweep.to);
+    const treasury = db
+      .prepare(
+        "SELECT 1 FROM wallets WHERE workspace_id = ? AND kind = 'treasury' AND address = ? AND wallet_id <> ?",
+      )
+      .get(wallet.workspace_id, sweep.to, wallet.wallet_id);
+    if (!allowlisted && treasury === undefined) {
+      throw new SignerFailure("sweep_destination_not_allowed");
+    }
+  }
+
+  /**
+   * Sign the one transaction of an approved sweep. Unlike `sign`, a paused workspace may be
+   * swept: emptying a wallet to where the approvers already allowed is how a paused workspace is
+   * wound down, and resuming first would let its agents sign again.
+   */
+  async function sweep(walletId: string, request: SweepRequest): Promise<SignResponse> {
+    const { sweep: sweepRequest, authorization, transaction: params } = request;
+    const { envelope } = authorization;
+    requireWorkspace(envelope.workspaceId);
+    return decide(envelope.workspaceId, envelope.approvalId, "sweep", async (allow) => {
+      if (priorOutcome(envelope, "signed") === "replay") {
+        return storedSignature(envelope.approvalId);
+      }
+      assertNotFenced(envelope);
+
+      if (
+        envelope.type !== "sweep-wallet" ||
+        envelope.walletId !== walletId ||
+        sweepRequest.walletId !== walletId ||
+        sweepRequest.workspaceId !== envelope.workspaceId ||
+        sweepRequest.chainId !== envelope.chainId ||
+        sweepHash(sweepRequest) !== envelope.sweepHash
+      ) {
+        throw new SignerFailure("envelope_mismatch");
+      }
+      const wallet = findWallet(walletId);
+      if (!wallet) throw new SignerFailure("not_found");
+      if (wallet.workspace_id !== envelope.workspaceId) {
+        throw new SignerFailure("envelope_mismatch");
+      }
+      assertSweepAllowed(wallet, sweepRequest);
+
+      const workspace = requireWorkspace(envelope.workspaceId);
+      await verify(
+        authorization,
+        envelope.workspaceId,
+        workspace.admin_threshold,
+        options.maxAdminTtlSeconds,
+      );
+      assertFeeWithin(params, sweepRequest.maxFeeWei);
+
+      return transaction(db, () => {
+        if (priorOutcome(envelope, "signed") === "replay") {
+          return storedSignature(envelope.approvalId);
+        }
+        assertNotFenced(envelope);
+        if (
+          authorization.assertions.length < requireWorkspace(envelope.workspaceId).admin_threshold
+        ) {
+          // The admin threshold was raised while this request was being verified.
+          throw new SignerFailure("insufficient_approvals");
+        }
+        assertApproversStillPresent(authorization, envelope.workspaceId);
+        // The allowlist or the treasury may have changed while this request was being verified.
+        assertSweepAllowed(wallet, sweepRequest);
+        consumeNonce(envelope);
+
+        const amount = BigInt(sweepRequest.amount);
+        const base = transactionBase(sweepRequest.chainId, params);
+        const response = signAndRecord({
+          envelope,
+          wallet,
+          chainId: sweepRequest.chainId,
+          params,
+          unsigned:
+            sweepRequest.asset === "native"
+              ? { ...base, to: sweepRequest.to, value: amount }
+              : { ...base, ...erc20Transfer(sweepRequest.asset, sweepRequest.to, amount) },
+          spend: { asset: sweepRequest.asset, amount },
+        });
+        allow();
+        return response;
       });
     });
   }
@@ -885,6 +1059,7 @@ export function createSignerCore(options: SignerCoreOptions) {
     getWallet: walletState,
     setPolicy,
     sign,
+    sweep,
     revokeApproval,
     getApproval,
     enrollApproverByOperator,
