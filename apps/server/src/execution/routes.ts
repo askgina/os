@@ -29,10 +29,20 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
     return engine.list(params.workspaceId as never, query);
   });
 
+  // Reading a waiting request also counts the approvals made on the signer's confirmation page,
+  // so the page the person returns to, and polls, moves on by itself.
   handle(app, ctx, "getApproval", async ({ params, session }) => {
     const row = await engine.row(params.approvalId);
     await requireMember(ctx, session, row.workspaceId);
-    return engine.detail(row, session);
+    await engine.collect(row);
+    return engine.detail(await engine.row(row.id), session);
+  });
+
+  handle(app, ctx, "collectApproval", async ({ params, session }) => {
+    const row = await engine.row(params.approvalId);
+    await requireMember(ctx, session, row.workspaceId);
+    await engine.collect(row);
+    return engine.detail(await engine.row(row.id), session);
   });
 
   handle(app, ctx, "startApproval", async ({ params, session }) => {

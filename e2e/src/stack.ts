@@ -11,14 +11,27 @@ export const stack = {
   /** The Compose project the helpers act on. The backup gate switches it to the restored copy. */
   project: process.env.E2E_PROJECT ?? "os-e2e",
   origin: process.env.E2E_ORIGIN ?? "http://localhost:55902",
+  /** The signer's confirmation page, on its own origin. */
+  approveOrigin: process.env.APPROVE_ORIGIN ?? "http://localhost:55903",
   postgresPort: Number(process.env.E2E_POSTGRES_PORT ?? 55900),
   anvilUrl: process.env.E2E_ANVIL_URL ?? "http://127.0.0.1:55901",
 };
 
 /** The services `up` starts. `init` runs once and exits; the others depend on it. */
-export const SERVICES = ["postgres", "signer", "server", "caddy", "agent-gateway", "anvil"];
+export const SERVICES = [
+  "postgres",
+  "signer",
+  "approve",
+  "server",
+  "caddy",
+  "agent-gateway",
+  "anvil",
+];
 
-/** Every volume that holds state, by its name in `compose.yaml`. */
+/**
+ * Every volume that holds state, by its name in `compose.yaml`. `approve-secrets` is not one: it
+ * holds a copy of a signer secret, which `init` writes again from `signer-secrets`.
+ */
 export const VOLUMES = [
   "postgres-data",
   "signer-data",

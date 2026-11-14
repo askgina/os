@@ -55,6 +55,10 @@ const PAGE_SIZE = 50;
 const ENDED: readonly SettledStatus[] = ["rejected", "expired", "cancelled", "failed"];
 
 const detailLocation = (id: string) => `approvals.detail:${id}`;
+const confirmationLocation = (id: string) => `approvals.confirmation:${id}`;
+
+/** Why an assertion does not count, with the code the signer would give for it. */
+type Verdict = { ok: true; credentialId: string } | { ok: false; code: string };
 
 /** Where a person approves a request in the web app. Every link handed out points here. */
 export const approvalLink = (origin: string, workspaceId: string, approvalId: string) =>
@@ -156,7 +160,17 @@ export class Engine implements ApprovalEngine {
     });
     await this.startRun(id, input.workspaceId, expiresAt);
     this.#notify(id, input.workspaceId, input.kind);
-    return this.summary(await this.row(id));
+    const row = await this.row(id);
+    // The confirmation page is ready before anyone looks. The request is already recorded, so a
+    // failure here does not fail it: the first view of the request tries again.
+    await this.ensureConfirmation(row).catch((error: unknown) => {
+      ctx.log.warn("opening a confirmation failed", {
+        approvalId: id,
+        code: "internal",
+        error: error instanceof Error ? error.name : "unknown",
+      });
+    });
+    return this.summary(row);
   }
 
   /**
@@ -326,7 +340,110 @@ export class Engine implements ApprovalEngine {
       rejectedBy: rejectedBy ?? null,
       canDecide,
       subject: await this.handler(row.kind).describe(ctx, row, detail),
+      confirmUrl: await this.ensureConfirmation(row),
     };
+  }
+
+  /**
+   * The link to the signer's confirmation page for a pending request, opening the confirmation
+   * at the signer the first time. The path the signer returned is kept sealed and handed out on
+   * every later view: each opening issues a new token and ends the link a person may already
+   * have open, so a request is opened once. Null when the request no longer waits, and while
+   * the signer refuses to open it or cannot be reached; a later view tries again.
+   */
+  async ensureConfirmation(row: ApprovalRow): Promise<string | null> {
+    const ctx = this.#ctx;
+    if (this.shownStatus(row) !== "pending") return null;
+    const link = async (sealed: Uint8Array) => {
+      const path = await ctx.sealer.open(row.workspaceId, confirmationLocation(row.id), sealed);
+      if (typeof path !== "string") throw new Error("a stored confirmation link is not a path");
+      return `${ctx.config.approveOrigin}${path}`;
+    };
+    if (row.confirmation !== null) return link(row.confirmation);
+    // Read before the lock: a view waiting for the lock holds a connection, so the holder must
+    // not need another one from the pool.
+    const subject = await this.handler(row.kind).confirmationSubject(
+      ctx,
+      row,
+      await this.openDetail(row),
+    );
+    return ctx.db.transaction(async (tx) => {
+      // Views of one request that arrive together open it once.
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${`confirm:${row.id}`}, 0))`,
+      );
+      const [current] = await tx
+        .select({ confirmation: approvals.confirmation })
+        .from(approvals)
+        .where(eq(approvals.id, row.id));
+      if (current?.confirmation) return link(current.confirmation);
+      let path: string;
+      try {
+        ({ path } = await ctx.signer.openConfirmation(row.id, { envelope: row.envelope, subject }));
+      } catch (error) {
+        // A refusal (the request was superseded, fenced or revoked) shows no link at all.
+        ctx.log.warn("opening a confirmation failed", {
+          approvalId: row.id,
+          code: error instanceof SignerError ? error.code : "unreachable",
+        });
+        return null;
+      }
+      const sealed = await ctx.sealer.seal(row.workspaceId, confirmationLocation(row.id), path);
+      await tx.update(approvals).set({ confirmation: sealed }).where(eq(approvals.id, row.id));
+      return `${ctx.config.approveOrigin}${path}`;
+    });
+  }
+
+  /**
+   * Count the approvals people made on the signer's confirmation page. The signer lists the
+   * assertions it accepted; each is checked here again, as one made at the confirmation page's
+   * origin by a passkey our records list as that person's approver, and recorded exactly as
+   * {@link approve} records one. Safe to repeat. An unreachable signer is logged and asked
+   * again on the next call.
+   */
+  async collect(row: ApprovalRow): Promise<void> {
+    const ctx = this.#ctx;
+    if (this.shownStatus(row) !== "pending" || row.confirmation === null) return;
+    let listed: Assertion[];
+    try {
+      ({ assertions: listed } = await ctx.signer.listConfirmationAssertions(row.id));
+    } catch (error) {
+      ctx.log.warn("collecting approvals failed", {
+        approvalId: row.id,
+        code: error instanceof SignerError ? error.code : "unreachable",
+      });
+      return;
+    }
+    if (listed.length === 0) return;
+    const recorded = await ctx.db
+      .select({ userId: approvalAssertions.userId })
+      .from(approvalAssertions)
+      .where(eq(approvalAssertions.approvalId, row.id));
+    const counted = new Set<string>(recorded.map((entry) => entry.userId));
+    let decided = false;
+    for (const assertion of listed) {
+      if (counted.has(assertion.userId)) continue;
+      const verdict = await this.#verify(row, assertion.userId, assertion.response, [
+        ctx.config.approveOrigin,
+      ]);
+      if (!verdict.ok) {
+        ctx.log.warn("a collected approval was not counted", {
+          approvalId: row.id,
+          code: verdict.code,
+        });
+        continue;
+      }
+      const outcome = await this.#record(
+        row,
+        assertion.userId,
+        verdict.credentialId,
+        assertion.response,
+      );
+      if (outcome === "closed") break;
+      counted.add(assertion.userId);
+      if (outcome === "decided") decided = true;
+    }
+    if (decided) await this.wake(row.id);
   }
 
   async list(
@@ -355,8 +472,18 @@ export class Engine implements ApprovalEngine {
       .limit(PAGE_SIZE + 1);
     const page = rows.slice(0, PAGE_SIZE);
     const last = page.at(-1);
+    // Approvals made on the confirmation page count as soon as someone looks at the inbox.
+    const current: ApprovalRow[] = [];
+    for (const row of page) {
+      if (row.confirmation === null || this.shownStatus(row) !== "pending") {
+        current.push(row);
+        continue;
+      }
+      await this.collect(row);
+      current.push(await this.row(row.id));
+    }
     return {
-      items: await Promise.all(page.map((row) => this.summary(row))),
+      items: await Promise.all(current.map((row) => this.summary(row))),
       nextCursor: rows.length > PAGE_SIZE && last ? encodeCursor(last) : null,
     };
   }
@@ -417,62 +544,105 @@ export class Engine implements ApprovalEngine {
   }
 
   async approve(row: ApprovalRow, session: Session, response: AssertionResponse): Promise<void> {
-    const ctx = this.#ctx;
     if (this.shownStatus(row) !== "pending") {
       throw new HttpError("conflict", "this request is no longer waiting for approval");
     }
-    const mine = await this.activeApproverCredentials(row.workspaceId, session.user.id);
-    const credential = mine.find((candidate) => candidate.credentialId === response.id);
-    if (!credential) {
-      throw new HttpError("forbidden", "this passkey does not approve for this workspace");
-    }
-    const assertion: Assertion = {
-      userId: session.user.id,
-      credentialId: credential.credentialId,
+    const verdict = await this.#verify(
+      row,
+      session.user.id,
       response,
-    };
-    // The signer checks again with its own registry; this refuses garbage before it is stored.
+      this.#ctx.config.relyingParty.origins,
+    );
+    if (!verdict.ok) {
+      if (verdict.code === "approver_unknown") {
+        throw new HttpError("forbidden", "this passkey does not approve for this workspace");
+      }
+      throw new HttpError("forbidden", "the passkey assertion is not valid", verdict.code);
+    }
+    const outcome = await this.#record(row, session.user.id, verdict.credentialId, response);
+    if (outcome === "closed") {
+      throw new HttpError("conflict", "this request is no longer waiting for approval");
+    }
+    if (outcome === "duplicate") throw new HttpError("conflict", "you already approved this");
+    if (outcome === "decided") await this.wake(row.id);
+  }
+
+  /**
+   * Whether `response` is `userId`'s approval of this request: made by a passkey our records
+   * list as that person's approver here, while they hold the approver or owner role, over the
+   * envelope's digest, at one of `origins`. The signer checks again with its own registry when
+   * it acts; this refuses garbage before it is stored or counted.
+   */
+  async #verify(
+    row: ApprovalRow,
+    userId: UserId,
+    response: AssertionResponse,
+    origins: readonly string[],
+  ): Promise<Verdict> {
+    const ctx = this.#ctx;
+    const [membership] = await ctx.db
+      .select({ role: memberships.role })
+      .from(memberships)
+      .where(and(eq(memberships.workspaceId, row.workspaceId), eq(memberships.userId, userId)));
+    if (membership?.role !== "approver" && membership?.role !== "owner") {
+      return { ok: false, code: "approver_unknown" };
+    }
+    const mine = await this.activeApproverCredentials(row.workspaceId, userId);
+    const credential = mine.find((candidate) => candidate.credentialId === response.id);
+    if (!credential) return { ok: false, code: "approver_unknown" };
+    const assertion: Assertion = { userId, credentialId: credential.credentialId, response };
     const verdict = await verifyAuthorization({
       authorization: { envelope: row.envelope, assertions: [assertion] },
       approvers: mine,
-      relyingParty: ctx.config.relyingParty,
+      relyingParty: { id: ctx.config.relyingParty.id, origins },
       threshold: 1,
       maxTtlSeconds: row.envelope.expiresAt - row.envelope.issuedAt,
       now: ctx.now(),
     });
-    if (!verdict.ok)
-      throw new HttpError("forbidden", "the passkey assertion is not valid", verdict.code);
+    return verdict.ok
+      ? { ok: true, credentialId: credential.credentialId }
+      : { ok: false, code: verdict.code };
+  }
 
-    const decided = await ctx.db.transaction(async (tx) => {
-      // Lock the request so the threshold is counted once, against concurrent approvals.
+  /**
+   * Store one person's verified approval and decide the request once enough people approved.
+   * The request is locked, so the threshold is counted once against concurrent approvals.
+   * `closed`: the request no longer waits; `duplicate`: this person's approval is already in.
+   */
+  async #record(
+    row: ApprovalRow,
+    userId: UserId,
+    credentialId: string,
+    response: AssertionResponse,
+  ): Promise<"recorded" | "decided" | "duplicate" | "closed"> {
+    const ctx = this.#ctx;
+    return ctx.db.transaction(async (tx) => {
       const [locked] = await tx
         .select()
         .from(approvals)
         .where(eq(approvals.id, row.id))
         .for("update");
-      if (locked?.status !== "pending" || seconds(locked.expiresAt) <= ctx.now()) {
-        throw new HttpError("conflict", "this request is no longer waiting for approval");
-      }
+      if (locked?.status !== "pending" || seconds(locked.expiresAt) <= ctx.now()) return "closed";
       const inserted = await tx
         .insert(approvalAssertions)
         .values({
           approvalId: row.id,
-          userId: session.user.id,
-          credentialId: credential.credentialId,
+          userId,
+          credentialId,
           response,
           createdAt: new Date(ctx.now() * 1000),
         })
         .onConflictDoNothing()
         .returning({ userId: approvalAssertions.userId });
-      if (inserted.length === 0) throw new HttpError("conflict", "you already approved this");
+      if (inserted.length === 0) return "duplicate";
       await appendAudit(
         ctx,
         {
           workspaceId: row.workspaceId,
-          actor: { type: "user", id: session.user.id },
+          actor: { type: "user", id: userId },
           action: "approval.assertion_added",
           subject: { type: "approval", id: row.id },
-          detail: { credentialId: credential.credentialId },
+          detail: { credentialId },
         },
         tx,
       );
@@ -480,7 +650,7 @@ export class Engine implements ApprovalEngine {
         .select({ n: sql<number>`count(*)::int` })
         .from(approvalAssertions)
         .where(eq(approvalAssertions.approvalId, row.id));
-      if ((count?.n ?? 0) < locked.threshold) return false;
+      if ((count?.n ?? 0) < locked.threshold) return "recorded";
       await tx
         .update(approvals)
         .set({ status: "approved", decidedAt: new Date(ctx.now() * 1000), resumeState: "needed" })
@@ -489,15 +659,14 @@ export class Engine implements ApprovalEngine {
         ctx,
         {
           workspaceId: row.workspaceId,
-          actor: { type: "user", id: session.user.id },
+          actor: { type: "user", id: userId },
           action: "approval.approved",
           subject: { type: "approval", id: row.id },
         },
         tx,
       );
-      return true;
+      return "decided";
     });
-    if (decided) await this.wake(row.id);
   }
 
   async reject(row: ApprovalRow, session: Session): Promise<void> {

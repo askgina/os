@@ -10,7 +10,11 @@ import {
   envelopeChallenge,
   type UserId,
 } from "@askgina/os-protocol";
-import { createSignerClient } from "@askgina/os-protocol/signer";
+import {
+  type ConfirmClient,
+  createConfirmClient,
+  createSignerClient,
+} from "@askgina/os-protocol/signer";
 import { SoftAuthenticator } from "@askgina/os-protocol/testing";
 import { createSigner, createTestVault, type Signer } from "@askgina/os-signer";
 import { createTestDatabase, type TestDatabase } from "@askgina/os-testkit";
@@ -84,6 +88,8 @@ export interface TestContext {
   clock: TestClock;
   log: RecordingLogger;
   signer: Signer;
+  /** The `approve` service's view of the in-process signer: its two confirm routes. */
+  confirm: ConfirmClient;
   authenticator: SoftAuthenticator;
   /** The first owner, created through the real setup flow and signed in. */
   owner: TestPerson;
@@ -129,6 +135,7 @@ function testConfig(databaseUrl: string, overrides: Partial<Config>): Config {
   return {
     ...loadConfig({
       PUBLIC_ORIGIN: TEST_ORIGIN,
+      APPROVE_ORIGIN: TEST_APPROVAL_ORIGIN,
       DATABASE_URL: databaseUrl,
       KEYRING_FILE: keyringFile,
       SIGNER_URL: "http://signer.test",
@@ -159,13 +166,14 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
   await migrateDatabase(pool);
   const keys = new DataKeyStore({ pool, provider: LocalKeyring.fromFile(config.keyringFile) });
   await keys.ensureMigrated();
+  const confirmSecret = new Uint8Array(randomBytes(32));
   const signer = createSigner({
     sqlitePath: ":memory:",
     vault: createTestVault(),
     relyingParty: { id: config.relyingParty.id, origins: config.relyingParty.origins },
     requestSecret: config.signerSecret,
-    confirmSecret: randomBytes(32),
-    approvalOrigin: TEST_APPROVAL_ORIGIN,
+    confirmSecret,
+    approvalOrigin: config.approveOrigin,
     returnOrigin: TEST_ORIGIN,
     // The signer reads the control plane's chains file and keeps only these fields.
     chains: config.chains.map(({ chainId, name, nativeSymbol }) => ({
@@ -294,6 +302,12 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
     clock,
     log,
     signer,
+    confirm: createConfirmClient({
+      baseUrl: config.signerUrl,
+      secret: confirmSecret,
+      fetch: async (input, init) => signer.app.fetch(new Request(input, init)),
+      now: clock.now,
+    }),
     authenticator,
     owner,
     browser,

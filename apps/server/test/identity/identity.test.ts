@@ -232,7 +232,13 @@ describe("passkeys", () => {
 
 describe("origin check", () => {
   // Approvals, intents and sweeps are the execution module's and are not on this test app.
-  const elsewhere = new Set(["startApproval", "approve", "reject", "requestSweep"]);
+  const elsewhere = new Set([
+    "startApproval",
+    "approve",
+    "collectApproval",
+    "reject",
+    "requestSweep",
+  ]);
   const writes = Object.entries(routes).filter(
     ([name, route]) => route.method !== "GET" && !elsewhere.has(name),
   );

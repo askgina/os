@@ -14,12 +14,13 @@ import { expect, test } from "@playwright/test";
 import { createPublicClient, createTestClient, formatEther, http, parseEther } from "viem";
 import { foundry } from "viem/chains";
 import { type AgentConnection, connectAgent, ToolRefused } from "../src/agent.ts";
-import { Person } from "../src/person.ts";
+import { ConfirmationRefused, Person } from "../src/person.ts";
 import {
   backUpInto,
   compose,
   composeArgs,
   databaseUrl,
+  exec,
   fromAgentsNetwork,
   restoreFrom,
   setupToken,
@@ -80,13 +81,17 @@ function policy(extra: Partial<PolicyDraft> = {}): PolicyDraft {
   };
 }
 
-async function setPolicy(draft: PolicyDraft): Promise<void> {
+/** Ask for a new policy and approve it, by default on the control plane's own page. */
+async function setPolicy(
+  draft: PolicyDraft,
+  approve: (approvalId: string) => Promise<unknown> = (approvalId) => ada.approve(approvalId),
+): Promise<void> {
   const request = await ada.api.call("requestPolicy", {
     params: { workspaceId: workspace.id, walletId: wallet.id },
     body: { draft },
   });
   expect(request.kind).toBe("set-policy");
-  await ada.approve(request.id);
+  await approve(request.id);
   expect((await ada.settled(request.id)).status).toBe("executed");
 }
 
@@ -102,6 +107,18 @@ async function propose(amount: string, memo: string) {
     memo,
   });
   return { intentId: String(result.intentId), approvalId: approvalIdOf(result) };
+}
+
+/** The code the confirmation page refused `attempt` with; fails when it was not refused. */
+async function refusalCode(attempt: Promise<unknown>): Promise<string> {
+  const outcome = await attempt.then(
+    () => null,
+    (error: unknown) => error,
+  );
+  if (!(outcome instanceof ConfirmationRefused)) {
+    throw new Error(`expected the confirmation page to refuse, got ${String(outcome)}`);
+  }
+  return outcome.code;
 }
 
 async function intentStatus(intentId: string): Promise<string> {
@@ -200,6 +217,86 @@ test("a proposal becomes one transaction after a passkey approval", async () => 
   spentApprovalId = approvalId;
 });
 
+test("a payment approved on the confirmation page becomes one transaction", async () => {
+  const before = await chain.getBalance({ address: RECIPIENT });
+  const nonceBefore = await chain.getTransactionCount({ address: wallet.address });
+  const { intentId, approvalId } = await propose("0.002", "approved on the signer's page");
+
+  // The approval page links to the signer's page on its own origin; the token is only in the
+  // fragment, so no server or proxy log sees it.
+  const link = await ada.confirmationLink(approvalId);
+  expect(link.origin).toBe(stack.approveOrigin);
+  expect(link.origin).not.toBe(stack.origin);
+  const page = await fetch(`${link.origin}/a/${approvalId}`);
+  expect(page.status).toBe(200);
+  expect(page.headers.get("content-security-policy")).toContain("trusted-types 'none'");
+  expect(page.headers.get("server")).toBeNull();
+  expect(page.headers.get("set-cookie")).toBeNull();
+
+  // The page shows the payment as the signer holds it, not as the control plane describes it.
+  const view = await ada.readConfirmation(link);
+  const detail = await ada.api.call("getApproval", { params: { approvalId } });
+  expect(view).toMatchObject({ approvalId, kind: "approve-intent", state: "open" });
+  expect(view.envelope).toEqual(detail.envelope);
+  expect(view.title).toBe("Send 0.002 ETH");
+  const shown = view.lines.map((line) => line.value).join("\n");
+  expect(shown).toContain(RECIPIENT);
+  expect(shown).toContain(CHAIN);
+  expect(view.lines).toContainEqual(
+    expect.objectContaining({ value: "approved on the signer's page", kind: "unchecked" }),
+  );
+
+  // A wrong token reaches nothing.
+  expect(await refusalCode(ada.readConfirmation({ ...link, token: "A".repeat(22) }))).toBe(
+    "not_found",
+  );
+
+  // Approved there, counted by the control plane when it collects, signed once.
+  const recorded = await ada.approveOnConfirmationPage(link, view);
+  expect(recorded).toMatchObject({ collected: 1, required: 1 });
+  expect(recorded.returnUrl).toBe(`${stack.origin}/w/${workspace.id}/approvals/${approvalId}`);
+  const collected = await ada.api.call("collectApproval", { params: { approvalId }, body: {} });
+  expect(collected.approvedBy.map((person) => person.displayName)).toEqual(["Ada"]);
+  expect(await intentSettles(intentId)).toBe("confirmed");
+  expect(formatEther((await chain.getBalance({ address: RECIPIENT })) - before)).toBe("0.002");
+  expect(await chain.getTransactionCount({ address: wallet.address })).toBe(nonceBefore + 1);
+
+  // The page now says so, and takes no further approval.
+  expect((await ada.readConfirmation(link)).state).toBe("used");
+  expect(await refusalCode(ada.approveOnConfirmationPage(link, view))).toBe("confirmation_closed");
+  expect((await ada.api.call("getApproval", { params: { approvalId } })).confirmUrl).toBeNull();
+  expect(await chain.getTransactionCount({ address: wallet.address })).toBe(nonceBefore + 1);
+});
+
+test("the confirmation service reaches the signer and nothing else", async () => {
+  const script = `
+    const dns = require("node:dns/promises");
+    (async () => {
+      const resolved = {};
+      for (const host of ["signer", "caddy", "server", "postgres", "anvil", "agent-gateway"]) {
+        resolved[host] = await dns.lookup(host).then(() => true, () => false);
+      }
+      const internet = await fetch("https://example.com/", { signal: AbortSignal.timeout(4000) })
+        .then((r) => r.status, () => "unreachable");
+      process.stdout.write(JSON.stringify({ resolved, internet }) + "\\n");
+    })();`;
+  const seen = JSON.parse(
+    (await exec("approve", "node", "-e", script)).trim().split("\n").at(-1) ?? "{}",
+  );
+  // Caddy is the only way in, the signer the only way on.
+  expect(seen).toEqual({
+    resolved: {
+      signer: true,
+      caddy: true,
+      server: false,
+      postgres: false,
+      anvil: false,
+      "agent-gateway": false,
+    },
+    internet: "unreachable",
+  });
+});
+
 test("a proposal over the wallet's limit is refused before anyone is asked", async () => {
   const refusal = await propose("1", "far too much").then(
     () => null,
@@ -240,7 +337,11 @@ test("limits change only with a passkey, and a raw contract call stays a proposa
     }),
   ).rejects.toThrow(/contract_call_not_allowed/);
 
-  await setPolicy(policy({ contractCalls: { mode: "allowlist", targets: [CALL_TARGET] } }));
+  // This change is approved on the signer's confirmation page.
+  await setPolicy(
+    policy({ contractCalls: { mode: "allowlist", targets: [CALL_TARGET] } }),
+    (approvalId) => ada.confirm(approvalId),
+  );
   const detail = await ada.api.call("getWallet", {
     params: { workspaceId: workspace.id, walletId: wallet.id },
   });
@@ -273,7 +374,7 @@ test("a container on the agents network reaches the MCP gateway and nothing else
     const tryFetch = (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(4000) }).then((r) => r.status, () => "unreachable");
     (async () => {
       const resolved = {};
-      for (const host of ["server", "postgres", "signer", "anvil", "caddy"]) {
+      for (const host of ["server", "postgres", "signer", "approve", "anvil", "caddy"]) {
         resolved[host] = await dns.lookup(host).then(() => true, () => false);
       }
       console.log(JSON.stringify({
@@ -291,6 +392,7 @@ test("a container on the agents network reaches the MCP gateway and nothing else
     server: false,
     postgres: false,
     signer: false,
+    approve: false,
     anvil: false,
     caddy: false,
   });

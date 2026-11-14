@@ -1,5 +1,11 @@
 import type { ApprovalKind, ApprovalSubject, ApprovalSummary } from "@askgina/os-api";
-import type { ApprovalId, Authorization, Envelope, WorkspaceId } from "@askgina/os-protocol";
+import type {
+  ApprovalId,
+  Authorization,
+  ConfirmationSubject,
+  Envelope,
+  WorkspaceId,
+} from "@askgina/os-protocol";
 import type { AppContext, Transaction } from "../context.ts";
 import type { approvals } from "../db/schema.ts";
 
@@ -59,6 +65,16 @@ export interface ApprovalKindHandler<K extends ApprovalKind = ApprovalKind> {
     approval: ApprovalRow,
     detail: unknown,
   ): Promise<Extract<ApprovalSubject, { kind: K }>>;
+  /**
+   * What the envelope names by its hash, for the signer's confirmation page: the intent, the
+   * new policy or the sweep, or `envelope-only` for kinds whose envelope carries everything.
+   * The signer refuses one that does not hash to what the envelope names.
+   */
+  confirmationSubject(
+    ctx: AppContext,
+    approval: ApprovalRow,
+    detail: unknown,
+  ): Promise<ConfirmationSubject>;
   /**
    * Apply the effect at the signer and in our tables. Runs inside a workflow step, which the
    * runtime re-runs after a crash, so it must be safe to run twice. Throw {@link ApprovalFailure}

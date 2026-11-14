@@ -57,14 +57,19 @@ flowchart LR
     G[signer]
     V[(OWS vault and SQLite)]
   end
+  subgraph approveEdgeNet [approve-edge network, internal]
+    AP[approve: confirmation page]
+  end
   subgraph chainNet [chain network]
     R[(EVM JSON-RPC)]
   end
-  B[Browser with passkey] -->|HTTPS| C
+  B[Browser with passkey] -->|HTTPS, PUBLIC_ORIGIN and APPROVE_ORIGIN| C
   A -->|MCP with bearer token| C
   C -->|public listener only| S
+  C -->|confirmation site| AP
   S --> P
-  S -->|HMAC-signed requests carrying passkey assertions| G
+  S -->|control secret: sign, apply, open and list confirmations| G
+  AP -->|confirm secret, approve-signer network: view, submit assertion| G
   G --> V
   S -->|JSON-RPC| R
 ```
@@ -73,7 +78,15 @@ The diagram is the network layout the plan fixes. The rules it encodes:
 
 - **Agent.** It reaches only Caddy. It cannot resolve the server, Postgres or the signer by name.
   On MCP it has seven tools, and none of them signs, approves or administers (plan, "MCP tools").
-- **Caddy.** The only entry point. It forwards to the server's public listener.
+- **Caddy.** The only entry point, with two sites. `PUBLIC_ORIGIN` goes to the server's public
+  listener; `APPROVE_ORIGIN` goes to the `approve` service. It drops the `Cookie` header on the
+  way to `approve`.
+- **`approve` service.** The signer's confirmation page on its own origin
+  ([`apps/approve`](../apps/approve)). It holds no key. It serves one hand-written page and
+  relays two kinds of request to the signer: the view of one approval and one passkey
+  assertion, each with the token from the link. Its secret reaches those two signer routes and
+  no other. Only Caddy reaches it, on the internal `approve-edge` network, and it reaches only
+  the signer, on the internal `approve-signer` network.
 - **Server (control plane).** A Hono server on Node. It serves the UI, the REST API under
   `/api/v1` ([`packages/api/src/routes.ts`](../packages/api/src/routes.ts)), the MCP gateway at
   `/mcp`, and runs the Workflow SDK runtime. The Workflow SDK's delivery routes have no
@@ -81,7 +94,8 @@ The diagram is the network layout the plan fixes. The rules it encodes:
   inside the server's container, never on the public one.
 - **Postgres.** Holds the control plane's tables (schema `os`), the Workflow runtime's tables
   (schemas `workflow` and `graphile_worker`) and the wrapped data keys (schema `os_keys`).
-- **Signer.** Reachable only from the server, on an internal network with no outbound route.
+- **Signer.** Reachable only from the server and the `approve` service, each on its own internal
+  network with no outbound route, and each with its own request secret.
   It holds the wallet keys in an OWS (Open Wallet Standard) vault and its own records in SQLite.
   Its HTTP contract is [`packages/protocol/src/signer/api.ts`](../packages/protocol/src/signer/api.ts).
   It has no route that signs messages, typed data or raw hashes.
@@ -120,6 +134,39 @@ sequenceDiagram
 The signer's checks, in order, are in
 [the approval protocol](./approval-protocol.md#the-signing-rule).
 
+### Approving on the confirmation page
+
+The approval page also links to the signer's confirmation page. There the person reads the
+request as the signer holds it and approves on an origin the control plane does not serve
+([`specs/trusted-display.md`](../specs/trusted-display.md), milestone 2). Until milestone 3
+both ways work; after it, only this one.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant S as Server (control plane)
+  participant P as Person (browser + passkey)
+  participant A as approve service
+  participant G as Signer
+  S->>G: open the confirmation (envelope and the intent, policy or sweep it names)
+  G-->>S: path /a/:approvalId with a fresh token as its fragment, kept sealed in Postgres
+  P->>S: open the approval page
+  S-->>P: request, with the link to APPROVE_ORIGIN and that path
+  P->>A: open the link, whose token stays in the fragment
+  P->>A: GET /api/approvals/:approvalId, token in the x-confirm-token header
+  A->>G: GET /v1/confirm/:approvalId, confirm secret
+  G-->>P: the view the signer rendered from its own records (through approve)
+  P->>P: passkey signs the envelope digest, and the browser stamps APPROVE_ORIGIN
+  P->>A: POST the assertion
+  A->>G: POST /v1/confirm/:approvalId/assertions
+  G->>G: verify: approver of this workspace, origin APPROVE_ORIGIN, not framed
+  G-->>P: approvals collected and required, link back (through approve)
+  P->>S: back on the approval page, which asks for the request
+  S->>G: list the assertions the signer accepted
+  S->>S: verify each again against APPROVE_ORIGIN, record it, decide
+  S->>G: sign, as above, and the signer verifies the whole authorization again
+```
+
 ## Where state lives
 
 | State                                                                                                                                                                | Where                                                                                                        | Who can change it                                                                                              |
@@ -132,6 +179,8 @@ The signer's checks, in order, are in
 | Wrapped data keys and shred tombstones                                                                                                                               | Postgres, schema `os_keys` ([`packages/keys/src/data-key-store.ts`](../packages/keys/src/data-key-store.ts)) | The server                                                                                                     |
 | Key-encryption keys                                                                                                                                                  | Keyring JSON file outside Postgres ([`packages/keys/src/keyring.ts`](../packages/keys/src/keyring.ts))       | The operator                                                                                                   |
 | Shared request-signing secret                                                                                                                                        | A file read by both server and signer                                                                        | The operator                                                                                                   |
+| Confirmation records, the hash of each link's token, assertions made on the confirmation page                                                                        | Signer's SQLite                                                                                              | Only the signer                                                                                                |
+| Confirmation request secret                                                                                                                                          | A file read by the signer and, as a copy, by the `approve` service                                           | The operator                                                                                                   |
 
 Some rows in Postgres mirror the signer's state for display (the policy on `wallets`, the paused
 flag on `workspaces`, the `approver_credentials` table). The schema's comments say so. The
@@ -146,7 +195,8 @@ Two mechanisms, both rooted in the keyring file:
    Workflow SDK asks for, `getEncryptionKeyForRun()`. The SDK then encrypts inputs, outputs, hook
    payloads, stream chunks and step errors with AES-256-GCM under a key that exists once per run.
 2. **Application columns.** The server seals the intent, its presentation, approval details,
-   signed transactions and audit details into `bytea` columns under a per-workspace data key
+   the confirmation page's link with its token, signed transactions and audit details into
+   `bytea` columns under a per-workspace data key
    ([`packages/keys/src/seal.ts`](../packages/keys/src/seal.ts),
    [`apps/server/src/db/sealed.ts`](../apps/server/src/db/sealed.ts)).
 
@@ -158,6 +208,11 @@ table is in [the threat model](./threat-model.md#what-is-encrypted-at-rest).
 - **The signer is a separate service.** The server talks to the internet, to browsers and to
   agents. If it could sign, a bug in any of that would be a bug in custody. The signer has one
   small API and no outbound network.
+- **The confirmation page has its own origin and its own service.** A passkey signs a digest,
+  not what the page showed, and the browser writes the page's origin into the assertion. A page
+  the control plane serves can show one thing and get a signature for another. On an origin it
+  does not serve, with a view the signer renders from its own records, it cannot. The `approve`
+  service holds no key, so its compromise brings back the display gap and nothing more.
 - **The signer checks passkeys itself.** If the signer trusted an "approved" flag from the
   server, anyone who controlled the server or wrote to its database could approve. The signer
   recomputes the WebAuthn challenge from the envelope and checks the assertion against its own

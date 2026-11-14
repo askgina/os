@@ -29,6 +29,7 @@ bun run services:down   # stop the test services and delete their data
 
 | Path                | What it holds                                                                                                                                                   |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/approve`      | The signer's confirmation page on its own origin: one hand-written page and a keyless relay to the signer's two confirmation routes.                            |
 | `apps/server`       | The control plane: REST API, MCP gateway, Workflow runtime; serves the built UI.                                                                                |
 | `apps/signer`       | The isolated signer: wallet vault, policy, approver registry, signatures.                                                                                       |
 | `apps/web`          | The web UI (Vite and React), built to static files.                                                                                                             |

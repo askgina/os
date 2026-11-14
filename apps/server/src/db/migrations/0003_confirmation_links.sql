@@ -1,0 +1,1 @@
+ALTER TABLE "os"."approvals" ADD COLUMN "confirmation" "bytea";

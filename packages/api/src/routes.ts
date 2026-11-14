@@ -273,6 +273,11 @@ export const routes = {
     z.strictObject({ options: WebAuthnOptions }),
   ),
   approve: post("/api/v1/approvals/:approvalId/approve", ApproveRequest, ApprovalDetail),
+  /**
+   * Fetch the approvals people made on the signer's confirmation page and count them, as
+   * reading the request does while it waits. Each is checked here before it counts.
+   */
+  collectApproval: post("/api/v1/approvals/:approvalId/collect", NoBody, ApprovalDetail),
   reject: post("/api/v1/approvals/:approvalId/reject", NoBody, ApprovalDetail),
 
   // --- intents --------------------------------------------------------------------------------

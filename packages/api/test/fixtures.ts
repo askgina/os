@@ -226,6 +226,7 @@ export const approvalDetail: ApprovalDetail = {
     wallet,
     limits: { maxPerTx: "10", maxPerDay: "20", spentToday: "1" },
   },
+  confirmUrl: `https://approve.os.example.com/a/${APPROVAL}#AAAAAAAAAAAAAAAAAAAAAA`,
 };
 
 export const sweep = {
@@ -270,6 +271,7 @@ export const sweepApprovalDetail: ApprovalDetail = {
     destination: "treasury",
     transaction: null,
   },
+  confirmUrl: null,
 };
 
 export const auditEvent: AuditEvent = {

@@ -37,6 +37,14 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
    ([`verify-authorization.ts`](../packages/protocol/src/webauthn/verify-authorization.ts)).
 4. **Data at rest → keyring.** Content is encrypted under data keys that are wrapped by keys in a
    file outside Postgres ([`packages/keys/src/`](../packages/keys/src/)).
+5. **Browser → confirmation page.** The `approve` service serves the signer's confirmation page
+   on its own origin, `APPROVE_ORIGIN` ([`apps/approve`](../apps/approve)). It holds no key,
+   sets no cookie, and Caddy drops any cookie on the way to it. A link's token is in its
+   fragment, so it reaches the service only in a request header
+   ([`specs/trusted-display.md`](../specs/trusted-display.md), milestone 2).
+6. **`approve` service → signer.** Requests carry an HMAC request signature under a second
+   secret, which the signer accepts on its two confirmation routes and nowhere else
+   ([`signer/api.ts`](../packages/protocol/src/signer/api.ts), `scope`).
 
 ## Attacker positions
 
@@ -107,7 +115,36 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
   wallet's recipient allowlist or to a treasury wallet of the same workspace, read from its own
   records ([`signer.ts`](../apps/signer/src/signer.ts), `assertSweepAllowed`). It cannot set or
   move the restore fence: that happens only on the signer host.
-- **Not stopped:** the trusted-display gap, stated in full under "Limits".
+- **Not stopped:** the trusted-display gap, stated in full under "Limits". The confirmation page
+  narrows it for a person who approves there: the page shows what the signer holds, and an
+  assertion made there names an origin the control plane does not serve. Until milestone 3 of
+  [`specs/trusted-display.md`](../specs/trusted-display.md) the control plane's own approval
+  prompt still works, and the gap stays open through it.
+
+### A compromised `approve` service, or Caddy, DNS or the certificate for `APPROVE_ORIGIN`
+
+- **Can:** show a false view on the confirmation page and relay assertions over other digests,
+  which is the display gap again; read the details of any request whose link it sees; send up
+  to 64 submissions per confirmation.
+- **Stopped by:** it holds no key. Its secret reaches only the signer's two confirmation routes,
+  which read a view and store an assertion; it cannot sign, apply, open a confirmation or list
+  assertions ([`apps/signer/src/index.ts`](../apps/signer/src/index.ts)). Every assertion it
+  relays is verified by the signer as one approver's, at `APPROVE_ORIGIN`, over the envelope's
+  digest, and again when the signer acts. It reaches only the signer, on its own internal
+  network.
+- **Not stopped:** a person misled on a page it controls. On the same host, root controls it as
+  it controls everything else.
+
+### A stolen confirmation link
+
+- **Can:** read the request's details (amount, recipient, the agent's note) on the confirmation
+  page, also after the request closed: the page keeps showing why it is closed. The control
+  plane opens each confirmation once and hands out the same link on every view, so a link is
+  not rotated while the request waits.
+- **Stopped by:** a link grants no approval: only an approver's passkey at `APPROVE_ORIGIN` adds
+  one. The signer stores only the token's SHA-256; the control plane keeps the link sealed
+  (`approvals.confirmation`). The token is in the link's fragment, so no proxy or server log
+  records it.
 
 ### A network position between the services
 
@@ -115,7 +152,9 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
   intents and assertions. The plan's layout puts no TLS on the internal networks.
 - **Stopped by:** the HMAC request signature detects altered requests and refuses timestamps more
   than 60 seconds off. Altering an intent or envelope breaks its hash or its passkey signature.
-  The signing network is internal, with no route from the agents network.
+  The signing network is internal, with no route from the agents network. The same holds for the
+  `approve-signer` network between the `approve` service and the signer, under its own secret; a
+  replayed submission adds no authority, because one person's assertion counts once.
 - **Not stopped:** replay of a captured request within 60 seconds (the nonce and approval id then
   make it a no-op or a refusal, not a second signature); reading what passes.
 
@@ -183,6 +222,7 @@ Back up each trust domain separately and protect the signer's backups as you wou
 | The canonical intent (operation, recipient, amount, calldata, memo)                             | `intents.payload`                                            | Sealed, workspace key                                                                      | What people and agents typed about an operation                                                                      |
 | What the approval card shows, and the simulation result                                         | `intents.presentation`                                       | Sealed, workspace key                                                                      | Same                                                                                                                 |
 | What an approval kind needs to apply its effect: a proposed policy, a sweep's amount and target | `approvals.detail`                                           | Sealed, workspace key                                                                      | Same                                                                                                                 |
+| The confirmation page's link for a waiting request, with its token                              | `approvals.confirmation`                                     | Sealed, workspace key                                                                      | The token shows the request to whoever holds it; the signer stores only its SHA-256                                  |
 | The signed raw transaction                                                                      | `transactions.raw`                                           | Sealed, workspace key                                                                      | Kept only to rebroadcast; it contains the operation                                                                  |
 | Audit details                                                                                   | `audit_events.detail`                                        | Sealed, workspace key                                                                      | Free-form content; its digest stays readable so the chain verifies without the key                                   |
 | Workflow inputs, outputs, hook payloads, stream chunks, step errors                             | `workflow` schema                                            | AES-256-GCM, per-run key ([`packages/world/src/index.ts`](../packages/world/src/index.ts)) | The upstream Postgres World stores these in plaintext                                                                |
@@ -228,8 +268,16 @@ control plane chooses the challenge on every passkey prompt it serves, the sign-
 included, so one misled tap by an approver can approve a new policy or enroll an attacker's
 passkey as an approver. A workspace starts with an admin threshold of 1, where one such tap is
 enough for lasting control of its wallets. Until a trusted display exists, raise the admin
-threshold to 2 as soon as a second approver is enrolled. The design is drafted in
-[`specs/trusted-display.md`](../specs/trusted-display.md) and not built.
+threshold to 2 as soon as a second approver is enrolled. The fix is
+[`specs/trusted-display.md`](../specs/trusted-display.md): the signer's confirmation page, on its
+own origin, which milestones 1 and 2 built. Until milestone 3 removes the control plane's own
+approval prompt, the gap is open: an approval made on the control plane's page still counts.
+
+**On the port layout the browser sends the control plane's cookies to the confirmation page.**
+Cookies do not separate ports, so with `APPROVE_ORIGIN` on another port of the same host the
+session cookie goes with every request to it. Caddy drops it before the `approve` service; a
+compromised Caddy sees it in any layout. The subdomain layout keeps the session cookie, which is
+host-only, away from the confirmation page altogether.
 
 **One machine running everything gives no protection against that machine.** The network
 separation between server and signer protects only when they run on different hosts with

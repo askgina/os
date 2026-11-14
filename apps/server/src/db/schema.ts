@@ -291,6 +291,11 @@ export const approvals = os.table(
     threshold: integer("threshold").notNull(),
     /** Sealed. What the kind's handler needs to apply the effect, for example a proposed policy. */
     detail: bytea("detail"),
+    /**
+     * Sealed. The path of the signer's confirmation page for this request, with its token, as
+     * the signer returned it when it opened the confirmation. Null until it did.
+     */
+    confirmation: bytea("confirmation"),
     requestedByType: text("requested_by_type").$type<"agent" | "user">().notNull(),
     requestedById: text("requested_by_id").notNull(),
     createdAt: createdAt(),

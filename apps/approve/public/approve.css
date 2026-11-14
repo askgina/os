@@ -1,0 +1,254 @@
+/* The confirmation page. One stylesheet, no inline styles: the Content-Security-Policy refuses
+   both. Values can be long (calldata, an agent's note), so every value wraps anywhere and the
+   longest ones scroll inside their own box instead of widening the page. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #0f172a;
+  --muted: #475569;
+  --card: #f8fafc;
+  --border: #cbd5e1;
+  --accent: #1d4ed8;
+  --accent-fg: #ffffff;
+  --warn-bg: #fef3c7;
+  --warn-fg: #78350f;
+  --danger: #b91c1c;
+  --success: #15803d;
+  --unchecked-bg: #fff7ed;
+  --unchecked-border: #c2410c;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b1120;
+    --fg: #e2e8f0;
+    --muted: #94a3b8;
+    --card: #111827;
+    --border: #334155;
+    --accent: #60a5fa;
+    --accent-fg: #0b1120;
+    --warn-bg: #422006;
+    --warn-fg: #fde68a;
+    --danger: #f87171;
+    --success: #4ade80;
+    --unchecked-bg: #2a1608;
+    --unchecked-border: #fb923c;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+p {
+  margin: 0;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  overflow-x: hidden;
+}
+
+.origin {
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+}
+
+.origin p {
+  margin: 0 auto;
+  max-width: 40rem;
+  overflow-wrap: anywhere;
+}
+
+.origin strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+main {
+  margin: 0 auto;
+  max-width: 40rem;
+  padding: 1rem;
+  display: grid;
+  gap: 1rem;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.state {
+  font-weight: 600;
+}
+
+.state-expired,
+.state-revoked,
+.state-used,
+.state-superseded {
+  color: var(--danger);
+}
+
+.state-complete {
+  color: var(--success);
+}
+
+.warnings {
+  margin: 0;
+  padding: 0.75rem 0.75rem 0.75rem 2rem;
+  border-radius: 0.5rem;
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  display: grid;
+  gap: 0.25rem;
+}
+
+.lines {
+  margin: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.line {
+  min-width: 0;
+}
+
+.line dt {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.line dd {
+  margin: 0;
+}
+
+.value {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.value-amount {
+  font-size: 1.25rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.value-address,
+.value-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.875rem;
+}
+
+.value-code,
+.value-unchecked {
+  max-height: 8rem;
+  overflow: auto;
+}
+
+/* Text nobody checked, such as an agent's note: never mistaken for what the signer states. */
+.line-unchecked {
+  border: 2px dashed var(--unchecked-border);
+  border-radius: 0.5rem;
+  background: var(--unchecked-bg);
+  padding: 0.5rem 0.75rem;
+}
+
+.value-unchecked {
+  font-style: italic;
+}
+
+.tag {
+  display: inline-block;
+  margin-left: 0.25rem;
+  border: 1px solid var(--unchecked-border);
+  border-radius: 999px;
+  padding: 0 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--unchecked-border);
+}
+
+.decide {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.note {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.approve {
+  width: 100%;
+  min-height: 3rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.approve:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.result:empty {
+  display: none;
+}
+
+.refusal {
+  color: var(--danger);
+}
+
+.success {
+  color: var(--success);
+}
+
+a {
+  color: var(--accent);
+}
+
+.technical {
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  display: grid;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+}
+
+.technical summary {
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.detail-label {
+  margin-top: 0.5rem;
+  color: var(--muted);
+}
+
+.technical pre,
+.technical code {
+  display: block;
+  margin: 0.25rem 0 0;
+  max-height: 16rem;
+  overflow: auto;
+  border-radius: 0.375rem;
+  background: var(--card);
+  padding: 0.5rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

@@ -11,6 +11,19 @@
         "vitest": "5.1.0",
       },
     },
+    "apps/approve": {
+      "name": "@askgina/os-approve",
+      "version": "0.1.0",
+      "dependencies": {
+        "@askgina/os-protocol": "workspace:*",
+        "@hono/node-server": "2.1.8",
+        "hono": "4.13.18",
+        "zod": "4.6.7",
+      },
+      "devDependencies": {
+        "@types/node": "26.6.6",
+      },
+    },
     "apps/server": {
       "name": "@askgina/os-server",
       "version": "0.1.0",
@@ -202,6 +215,8 @@
     "@ai-sdk/provider-utils": ["@ai-sdk/provider-utils@5.0.81", "", { "dependencies": { "@ai-sdk/provider": "4.0.38", "@standard-schema/spec": "^1.1.0", "@workflow/serde": "4.1.0", "eventsource-parser": "^3.0.8" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-pfvvdQ3d1WxdBuug/mnGEP6E48cPokwD8dMBnsFeeAUp0/rb/H2aj0f3mwOiY62gu/Cu5GO44e+SE5nDHyBWMA=="],
 
     "@askgina/os-api": ["@askgina/os-api@workspace:packages/api"],
+
+    "@askgina/os-approve": ["@askgina/os-approve@workspace:apps/approve"],
 
     "@askgina/os-e2e": ["@askgina/os-e2e@workspace:e2e"],
 

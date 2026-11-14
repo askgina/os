@@ -51,6 +51,11 @@ import {
 const PORT = Number(process.env.OS_WEB_FIXTURE_PORT ?? 55731);
 const SETUP_TOKEN = process.env.OS_WEB_FIXTURE_SETUP_TOKEN ?? "fixture-setup-token-0123456789";
 const RP_NAME = "Agent Workspaces";
+/**
+ * Where the signer's confirmation page would be. Nothing serves it here: the journey checks the
+ * link the approval page shows, and approves with the control plane's own passkey prompt.
+ */
+const CONFIRM_ORIGIN = process.env.OS_WEB_FIXTURE_CONFIRM_ORIGIN ?? "http://localhost:55732";
 
 const CHAINS: ChainInfo[] = [
   { chainId: "eip155:31337", name: "Local test chain", nativeSymbol: "ETH", explorerUrl: null },
@@ -116,6 +121,8 @@ interface Approval {
   approvedBy: { id: string; displayName: string }[];
   rejectedBy: { id: string; displayName: string } | null;
   subject: ApprovalSubject;
+  /** The token of the request's confirmation link, as the signer would issue it. */
+  confirmToken: string;
   /** The effect applied when enough people approve. */
   apply: () => void;
 }
@@ -307,6 +314,7 @@ function openApproval(input: {
     approvedBy: [],
     rejectedBy: null,
     subject: input.subject,
+    confirmToken: randomToken(16),
     apply: input.apply,
   };
   state.approvals.set(id, approval);
@@ -383,6 +391,10 @@ function approvalDetail(approval: Approval, userId: string): ApprovalDetail {
       member.approver === "active" &&
       !approval.approvedBy.some((user) => user.id === userId),
     subject: liveSubject,
+    confirmUrl:
+      approval.summary.status === "pending"
+        ? `${CONFIRM_ORIGIN}/a/${approval.summary.id}#${approval.confirmToken}`
+        : null,
   };
 }
 
@@ -1268,6 +1280,14 @@ const handlers: Record<RouteName, Handler> = {
     return { items, nextCursor: null };
   },
   getApproval: ({ params, userId }) => {
+    const id = signedIn(userId);
+    const approval = state.approvals.get(params.approvalId ?? "");
+    if (!approval) throw new Refusal("not_found", "This request does not exist.");
+    memberOf(workspaceOf(approval.summary.workspaceId), id);
+    return approvalDetail(approval, id);
+  },
+  // No confirmation page runs here, so there is never anything to collect.
+  collectApproval: ({ params, userId }) => {
     const id = signedIn(userId);
     const approval = state.approvals.get(params.approvalId ?? "");
     if (!approval) throw new Refusal("not_found", "This request does not exist.");

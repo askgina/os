@@ -176,6 +176,17 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(page.getByText("0 of 1 approvals")).toBeVisible();
     // The full recipient, checksummed and grouped: 5290 8400 0985 …
     await expect(page.getByText("5290").first()).toBeVisible();
+    // The signer's own page for this request: another origin, the token after `#`, its host
+    // named in words, and a link to copy for another device.
+    const confirm = page.getByRole("link", { name: "Review and approve on the signer's page" });
+    const confirmUrl = new URL((await confirm.getAttribute("href")) ?? "");
+    expect(confirmUrl.origin).not.toBe(new URL(page.url()).origin);
+    expect(`${confirmUrl.pathname}${confirmUrl.hash}`).toMatch(
+      new RegExp(`^/a/${intent.approvalId}#[A-Za-z0-9_-]{22}$`),
+    );
+    await expect(confirm).toHaveAttribute("rel", "noopener noreferrer");
+    await expect(page.getByText(confirmUrl.host, { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Copy link" })).toBeVisible();
     const viewport = page.viewportSize();
     const button = await page.getByRole("button", { name: "Approve with passkey" }).boundingBox();
     if (testInfo.project.name.startsWith("phone") && viewport && button) {
@@ -251,6 +262,39 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
   });
 
   const workspacePath = () => new URL(page.url()).pathname.replace(/\/approvals\/.*$/, "");
+
+  await test.step("a wallet is emptied to the treasury with an admin approval", async () => {
+    await page.goto(workspacePath());
+    await expect(page.getByRole("heading", { name: "Treasury" })).toBeVisible();
+    await page.getByRole("button", { name: "Create treasury" }).click();
+    await expect(page.getByRole("button", { name: "Create treasury" })).toHaveCount(0);
+    await page.getByRole("link", { name: /Invoice payer/ }).click();
+    await page.getByRole("link", { name: "Open wallet" }).click();
+    const card = page.locator("#sweep");
+    await expect(card.getByText("Empty this wallet")).toBeVisible();
+    // Only destinations the signer accepts are offered: here, the treasury.
+    await expect(card.getByLabel("Send it to")).toContainText("Treasury ·");
+    await expect(card.getByLabel("Asset")).toContainText("ETH on");
+    await card.screenshot({
+      path: `${SCREENSHOTS}${testInfo.project.name}-25-wallet-sweep.png`,
+    });
+    await card.getByRole("button", { name: "Ask for approval" }).click();
+
+    await expect(page.getByRole("heading", { name: /^Empty [0-9.]+ ETH to 0x/ })).toBeVisible();
+    await expect(page.getByText("No limits apply.")).toBeVisible();
+    await expect(page.getByText("The workspace's treasury.")).toBeVisible();
+    await expect(page.getByText("None: a person asked for this")).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "Review and approve on the signer's page" }),
+    ).toBeVisible();
+    await shot("26-approval-sweep");
+    await page.getByRole("button", { name: "Approve with passkey" }).click();
+    await expect(page.getByText("Approved.", { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "Review and approve on the signer's page" }),
+    ).toHaveCount(0);
+    await shot("27-approval-sweep-done");
+  });
 
   await test.step("the other pages render", async () => {
     const base = workspacePath();

@@ -217,6 +217,9 @@ const sweepWallet: ApprovalKindHandler<"sweep-wallet"> = {
       transaction: transaction ? transactionInfo(ctx, transaction) : null,
     };
   },
+  async confirmationSubject(_ctx, _approval, detail) {
+    return { kind: "sweep-wallet", sweep: (detail as SweepDetail).sweep };
+  },
   async execute(ctx, approval, authorization, detail) {
     const { sweep, gasEstimate } = detail as SweepDetail;
     if (await transactionOf(ctx, approval.id)) return;

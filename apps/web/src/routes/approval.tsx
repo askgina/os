@@ -9,6 +9,7 @@ import {
   ExternalLink,
   KeyRound,
   OctagonAlert,
+  ShieldCheck,
   TriangleAlert,
   XCircle,
 } from "lucide-react";
@@ -16,6 +17,7 @@ import { type ReactNode, useState } from "react";
 import {
   ApprovalStatusBadge,
   backLinkClass,
+  CopyButton,
   ErrorState,
   FormError,
   FullAddress,
@@ -25,7 +27,7 @@ import {
 } from "@/components/common.tsx";
 import { PolicyDiff } from "@/components/policy.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
-import { Button } from "@/components/ui/button.tsx";
+import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import { Dialog } from "@/components/ui/dialog.tsx";
 import { Progress } from "@/components/ui/progress.tsx";
 import { api, keys, queryClient, useApproval, useWallet, useWorkspace } from "@/lib/api.ts";
@@ -530,6 +532,7 @@ function Decide({ approval, expired }: { approval: ApprovalDetail; expired: bool
         </Button>
       </div>
       <FormError error={approve.error} />
+      {approval.confirmUrl ? <ConfirmationLink url={approval.confirmUrl} /> : null}
       <Dialog
         open={confirmReject}
         onClose={() => setConfirmReject(false)}
@@ -549,6 +552,34 @@ function Decide({ approval, expired }: { approval: ApprovalDetail; expired: bool
         </div>
       </Dialog>
     </section>
+  );
+}
+
+/**
+ * The signer's own page for this request, on another origin. It shows the request as the signer
+ * holds it, and an approval made there names that origin, which this page cannot fake. It opens
+ * in this tab and comes back here when done; the copied link works on another device too.
+ */
+function ConfirmationLink({ url }: { url: string }) {
+  return (
+    <div className="grid gap-2 rounded-lg border p-3">
+      <a
+        href={url}
+        rel="noopener noreferrer"
+        className={cn(buttonVariants({ variant: "outline", size: "lg" }), "w-full")}
+      >
+        <ShieldCheck aria-hidden />
+        Review and approve on the signer's page
+      </a>
+      <div className="flex items-center justify-between gap-2">
+        <p className="min-w-0 text-xs text-muted-foreground">
+          It opens <span className="font-mono break-all text-foreground">{new URL(url).host}</span>.
+          Check that your address bar shows it before you approve. To approve on another device,
+          copy the link.
+        </p>
+        <CopyButton value={url} label="Copy link" />
+      </div>
+    </div>
   );
 }
 

@@ -101,7 +101,11 @@ const examples: { [N in RouteName]: { body?: unknown; query?: unknown; response:
   getApproval: { response: f.approvalDetail },
   startApproval: { body: {}, response: { options: { challenge: f.approvalDetail.challenge } } },
   approve: { body: { response: f.assertionResponse }, response: f.approvalDetail },
-  reject: { body: {}, response: { ...f.approvalDetail, status: "rejected", rejectedBy: f.user } },
+  collectApproval: { body: {}, response: f.approvalDetail },
+  reject: {
+    body: {},
+    response: { ...f.approvalDetail, status: "rejected", rejectedBy: f.user, confirmUrl: null },
+  },
   listIntents: {
     query: { cursor: "c1" },
     response: { items: [f.intentSummary], nextCursor: null },
@@ -176,6 +180,14 @@ describe("route contract", () => {
       false,
     );
     expect(ApprovalDetail.safeParse({ ...f.approvalDetail, extra: 1 }).success).toBe(false);
+  });
+
+  it("the confirmation link the UI turns into a link is only ever an http or https address", () => {
+    for (const hostile of ["javascript:alert(1)", "data:text/html,<b>x</b>", "/a/relative"]) {
+      expect(ApprovalDetail.safeParse({ ...f.approvalDetail, confirmUrl: hostile }).success).toBe(
+        false,
+      );
+    }
   });
 
   it("a sweep's subject carries the exact sweep, and a sweep the protocol refuses does not parse", () => {

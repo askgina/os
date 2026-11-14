@@ -6,8 +6,34 @@ import {
   RegistrationResponse,
   type SessionInfo,
 } from "@askgina/os-api";
-import { AssertionResponse } from "@askgina/os-protocol";
+import { AssertionResponse, ConfirmationView } from "@askgina/os-protocol";
+import {
+  CONFIRM_TOKEN_HEADER,
+  SignerErrorBody,
+  SubmitConfirmationResponse,
+} from "@askgina/os-protocol/signer";
 import { b64url, SoftAuthenticator } from "@askgina/os-protocol/testing";
+
+/** The confirmation page refused a request, with the signer's (or the `approve` service's) code. */
+export class ConfirmationRefused extends Error {
+  override readonly name = "ConfirmationRefused";
+  readonly code: string;
+  readonly status: number;
+  constructor(code: string, status: number) {
+    super(`the confirmation page refused with ${status} ${code}`);
+    this.code = code;
+    this.status = status;
+  }
+}
+
+/** A link to the signer's confirmation page, split the way the page itself reads it. */
+export interface ConfirmationLink {
+  /** The page's origin, which the browser writes into every assertion made there. */
+  origin: string;
+  approvalId: string;
+  /** From the fragment: it never reaches a server in a path or a query. */
+  token: string;
+}
 
 /**
  * A person using the product, without a browser. They hold a passkey in a software
@@ -73,14 +99,17 @@ export class Person {
     return RegistrationResponse.parse(response);
   }
 
-  /** Answer a sign-in or approval ceremony with this person's passkey. */
-  #assert(options: Record<string, unknown>) {
+  /**
+   * Answer a sign-in or approval ceremony with this person's passkey, as a page at `origin`
+   * would: the browser writes the page's origin into the assertion.
+   */
+  #assert(options: Record<string, unknown>, origin = this.origin) {
     if (this.credentialId === undefined) throw new Error(`${this.name} has no passkey yet`);
     return AssertionResponse.parse(
       this.authenticator.authenticate({
         credentialId: this.credentialId,
         challenge: options.challenge as string,
-        origin: this.origin,
+        origin,
       }),
     );
   }
@@ -131,6 +160,59 @@ export class Person {
     });
   }
 
+  /** The confirmation page's link the approval page shows for a request that waits. */
+  async confirmationLink(approvalId: string): Promise<ConfirmationLink> {
+    const { confirmUrl } = await this.api.call("getApproval", { params: { approvalId } });
+    if (confirmUrl === null) throw new Error(`${approvalId} shows no confirmation page`);
+    const url = new URL(confirmUrl);
+    const id = /^\/a\/([^/]+)$/.exec(url.pathname)?.[1];
+    if (id !== approvalId || url.search !== "" || url.hash.length < 2) {
+      throw new Error(`${approvalId} links to an unexpected confirmation page`);
+    }
+    return { origin: url.origin, approvalId: id, token: url.hash.slice(1) };
+  }
+
+  /** What the confirmation page shows for `link`, fetched as the page fetches it. */
+  async readConfirmation(link: ConfirmationLink): Promise<ConfirmationView> {
+    const response = await fetch(`${link.origin}/api/approvals/${link.approvalId}`, {
+      headers: { [CONFIRM_TOKEN_HEADER]: link.token },
+      redirect: "manual",
+    });
+    return ConfirmationView.parse(await answerOf(response));
+  }
+
+  /**
+   * Approve on the confirmation page at `link`: sign the view's challenge with this person's
+   * passkey at that page's origin and send it, as the page does. The signer stores it; the
+   * control plane counts it when it collects.
+   */
+  async approveOnConfirmationPage(
+    link: ConfirmationLink,
+    view: ConfirmationView,
+  ): Promise<SubmitConfirmationResponse> {
+    const response = await fetch(`${link.origin}/api/approvals/${link.approvalId}/assertions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: link.origin,
+        [CONFIRM_TOKEN_HEADER]: link.token,
+      },
+      body: JSON.stringify({ response: this.#assert(view.webauthn, link.origin) }),
+      redirect: "manual",
+    });
+    return SubmitConfirmationResponse.parse(await answerOf(response));
+  }
+
+  /**
+   * Approve a request on the signer's confirmation page, the way a person follows the link the
+   * approval page shows: read it there, approve there, then let the control plane collect.
+   */
+  async confirm(approvalId: string): Promise<ApprovalDetail> {
+    const link = await this.confirmationLink(approvalId);
+    await this.approveOnConfirmationPage(link, await this.readConfirmation(link));
+    return this.api.call("collectApproval", { params: { approvalId }, body: {} });
+  }
+
   async reject(approvalId: string): Promise<ApprovalDetail> {
     return this.api.call("reject", { params: { approvalId }, body: {} });
   }
@@ -147,4 +229,15 @@ export class Person {
       await delay(250);
     }
   }
+}
+
+/** The JSON of a successful answer from the confirmation page, or its refusal as an error. */
+async function answerOf(response: Response): Promise<unknown> {
+  const body: unknown = await response.json().catch(() => null);
+  if (response.ok) return body;
+  const refusal = SignerErrorBody.safeParse(body);
+  throw new ConfirmationRefused(
+    refusal.success ? refusal.data.error.code : "unreadable",
+    response.status,
+  );
 }

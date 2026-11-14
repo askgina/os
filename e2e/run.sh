@@ -13,6 +13,9 @@ export PUBLIC_ORIGIN="http://localhost:${HTTP_PORT}"
 export PUBLIC_HOST="localhost:${HTTP_PORT}"
 export OS_HOSTNAME="localhost"
 export E2E_ORIGIN="${PUBLIC_ORIGIN}"
+# The confirmation page: another port on the same host, as on any host without a subdomain.
+export APPROVE_HTTP_PORT="${APPROVE_HTTP_PORT:-55903}"
+export APPROVE_ORIGIN="http://localhost:${APPROVE_HTTP_PORT}"
 export E2E_POSTGRES_PORT="${E2E_POSTGRES_PORT:-55900}"
 export E2E_ANVIL_PORT="${E2E_ANVIL_PORT:-55901}"
 export E2E_ANVIL_URL="http://127.0.0.1:${E2E_ANVIL_PORT}"
@@ -26,13 +29,14 @@ if [ "$tls" = "1" ]; then
   export PUBLIC_HOST="localhost"
   export E2E_ORIGIN="${PUBLIC_ORIGIN}"
   # The TLS overlay requires the confirmation page's origin: another port on the same host.
-  export APPROVE_ORIGIN="https://localhost:8443"
+  export APPROVE_TLS_PORT="8443"
+  export APPROVE_ORIGIN="https://localhost:${APPROVE_TLS_PORT}"
   overlay=(-f compose.yaml -f compose.tls.yaml -f e2e/compose.e2e.yaml --profile dev --profile agent)
 fi
 compose=(docker compose -p "$E2E_PROJECT" "${overlay[@]}")
 ui=(docker compose -p "${E2E_PROJECT}-ui" "${overlay[@]}")
 # `init` is not listed: it runs once and exits, and the others depend on it.
-services=(postgres signer server caddy agent-gateway anvil)
+services=(postgres signer approve server caddy agent-gateway anvil)
 
 remove() {
   for project in "$E2E_PROJECT" "${E2E_PROJECT}-restore" "${E2E_PROJECT}-ui"; do
@@ -43,7 +47,7 @@ remove() {
 logs() {
   for project in "$E2E_PROJECT" "${E2E_PROJECT}-restore" "${E2E_PROJECT}-ui"; do
     docker compose -p "$project" "${overlay[@]}" \
-      logs --no-color --tail 300 server signer caddy agent-gateway 2>/dev/null || true
+      logs --no-color --tail 300 server signer approve caddy agent-gateway 2>/dev/null || true
   done
 }
 

@@ -654,6 +654,11 @@ export function approveIntentKind(): ApprovalKindHandler<"approve-intent"> {
       }
       return { kind: "approve-intent", intent, wallet, limits };
     },
+    async confirmationSubject(ctx, _approval, detail) {
+      const row = await intentRow(ctx, (detail as IntentApprovalDetail).intentId);
+      const { intent } = await readIntent(ctx, row);
+      return { kind: "approve-intent", intent };
+    },
     async execute(ctx, approval, authorization, detail) {
       await executeIntent(ctx, approval, authorization, detail as IntentApprovalDetail);
     },

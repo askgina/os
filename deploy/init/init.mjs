@@ -1,12 +1,22 @@
 // Creates the stack's secrets on first start and never changes them afterwards. Each trust
 // domain gets its own volume, so the server cannot read the signer's key and the signer cannot
-// read the keyring. Nothing is printed except file names and whether they were created.
+// read the keyring. The `approve` service's volume holds only a copy of one signer secret, which
+// follows the signer's. Nothing is printed except file names and whether they were written.
 import { randomBytes } from "node:crypto";
-import { chmodSync, chownSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  chownSync,
+  existsSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 const SERVER = "/secrets/server";
 const SIGNER = "/secrets/signer";
+const APPROVE = "/secrets/approve";
 const DB = "/secrets/db";
 // Users the services run as: `node` in node:26-slim and `postgres` in postgres:18-alpine.
 const NODE_UID = 1000;
@@ -47,6 +57,15 @@ ensure(SIGNER, "signer-request-secret", NODE_UID, () =>
 // The confirm secret lets the `approve` service reach the signer's two confirmation routes and
 // nothing else, so it is never the request secret.
 ensure(SIGNER, "confirm-request-secret", NODE_UID, () => b64());
+// The `approve` service gets the confirm secret and nothing else. Its copy is not a secret of
+// its own: whenever it is missing or differs, for example after a restore of the signer's
+// volume, it is written again from the signer's.
+const confirmSecret = readFileSync(join(SIGNER, "confirm-request-secret"));
+const approveCopy = join(APPROVE, "confirm-request-secret");
+if (existsSync(approveCopy) && !readFileSync(approveCopy).equals(confirmSecret)) {
+  rmSync(approveCopy);
+}
+ensure(APPROVE, "confirm-request-secret", NODE_UID, () => confirmSecret);
 ensure(SIGNER, "token-key", NODE_UID, () => b64());
 ensure(SIGNER, "vault-passphrase", NODE_UID, () => b64());
 ensure(DB, "postgres-password", POSTGRES_UID, () => {

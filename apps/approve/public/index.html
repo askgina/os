@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="referrer" content="no-referrer" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/approve.css" />
+    <title>Approve a request</title>
+    <script type="module" src="/approve.js"></script>
+  </head>
+  <body>
+    <header class="origin">
+      <p>
+        You are on <strong id="origin"></strong>, the signer's own page. Approve only when your
+        address bar shows exactly this address.
+      </p>
+    </header>
+    <main id="main">
+      <p class="state">Loading the request…</p>
+    </main>
+    <noscript><p class="refusal">This page needs JavaScript to ask your passkey.</p></noscript>
+  </body>
+</html>

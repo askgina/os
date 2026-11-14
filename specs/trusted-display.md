@@ -77,8 +77,40 @@ Success means:
       signer now starts only with the new settings and files (`compose.yaml`,
       `compose.tls.yaml` with `APPROVE_ORIGIN` from `e2e/run.sh`, `init` creating
       `confirm-request-secret`). No image was built locally.
-- [ ] Milestone 2: the `approve` service, its page, Compose and Caddy wiring, collection in the
-      control plane.
+- [x] (2026-11-14 23:45Z) Milestone 2: the `approve` service, its page, Compose and Caddy wiring,
+      collection in the control plane. Built: the workspace `apps/approve` (app, config, log,
+      main, Dockerfile, the page `public/index.html`, `approve.js`, `approve.css`,
+      `favicon.svg`); the networks `approve-edge` and `approve-signer`, the service `approve`,
+      the volume `approve-secrets`, Caddy's second site and `init`'s copy of the confirm secret;
+      the server's `APPROVE_ORIGIN`, `confirmationSubject` for all seven kinds,
+      `ensureConfirmation` and `collect` in the engine, the sealed column
+      `approvals.confirmation` (migration `0003_confirmation_links`), `ApprovalDetail.confirmUrl`
+      and the route `collectApproval`; the web approval page's link, host, "Copy link" and the
+      existing 3-second refetch; `Person.confirm` and its parts in `e2e/src/person.ts`; the
+      release gates "a payment approved on the confirmation page becomes one transaction" and
+      "the confirmation service reaches the signer and nothing else", and the second policy
+      change of the existing gate "limits change only with a passkey, ..." approved through
+      `Person.confirm`; the browser gate "the
+      confirmation page over HTTPS shows the payment and a passkey there approves it" (it runs
+      over plain HTTP too, without "over HTTPS" in its name); `e2e/run.sh` ports and origins;
+      README, `CONTRIBUTING.md`, `docs/architecture.md`, `docs/approval-protocol.md`,
+      `docs/threat-model.md`, `deploy/README.md`. Proven locally, one file at a time:
+      `apps/approve/test/app.test.ts` (7), `apps/server/test/execution/confirmation.test.ts`
+      (9), `engine.test.ts` (14), `hardening.test.ts` (19), `sweep.test.ts` (4),
+      `mcp.test.ts` (8), `apps/server/test/identity/identity.test.ts` (36),
+      `apps/server/test/directory/directory.test.ts` (32),
+      `apps/server/test/support/public-app.test.ts` (2), `packages/api/test/api.test.ts` (98),
+      the `apps/web` journey on `phone-light`; `tsc --noEmit` in `apps/approve`,
+      `apps/server`, `apps/web`, `packages/api`, `e2e`; `biome check .` without fixes;
+      `bun install --frozen-lockfile --dry-run`; `docker compose config -q` for
+      `compose.yaml`, with `e2e/compose.e2e.yaml`, and with `compose.tls.yaml` under the
+      variables `e2e/run.sh` exports for `E2E_TLS=1`; the Mermaid blocks parse. No image was
+      built and no stack was started locally. Still to prove in CI: `check` (every workspace's
+      typecheck in one run); the whole `test` job; `ui` on all four projects; `stack (amd64)`
+      and `stack (arm64)`, where the `approve` image is built for the first time and the two
+      new release gates run; `stack (tls)`, where the browser gate approves on
+      `https://localhost:8443` with the passkey enrolled on `https://localhost`, which also
+      tests whether Chromium's virtual authenticator follows the tab across the origin change.
 - [ ] Milestone 3: cutover; the signer accepts approvals only from the confirmation origin;
       documents corrected.
 - [ ] Milestone 4: proof of possession and fingerprints for new approver keys.
@@ -124,6 +156,32 @@ Success means:
   without them before milestone 2. Its environment, the two mounted files and the confirm
   secret had to land with milestone 1.
   Evidence: `apps/signer/src/config.ts` (`loadConfig`), `compose.yaml`.
+- Observation: the approval page refetches the request every 3 seconds while it waits. If every
+  view opened the confirmation again, as milestone 1's step 5 allows, each refetch would issue a
+  new token and end the link a person has open on the confirmation page or on another device.
+  Evidence: `useApproval` in `apps/web/src/lib/api.ts` (`refetchInterval`),
+  `openConfirmation` in `apps/signer/src/confirmations.ts`.
+- Observation: cookies do not separate ports. On the port layout the browser sends the control
+  plane's session cookie, even a host-only `__Host-` cookie, with every request to the
+  confirmation page.
+  Evidence: RFC 6265 section 8.5 ("cookies do not provide isolation by port"); the cookie is
+  set in `apps/server/src/identity/sessions.ts` without a `Domain`.
+- Observation: the signer serves a confirmation's view after the request closed, so the page can
+  say why (`used`, `expired`, ...). A leaked link therefore shows the request after it closed,
+  not "only while the envelope is valid" as this plan's risk list said.
+  Evidence: `getConfirmation` in `apps/signer/src/confirmations.ts`; the browser gate's last
+  step reads the closed page.
+- Observation: computing the subject inside the transaction that holds the per-request advisory
+  lock would take a second pool connection while other views of the same request wait on the
+  lock with theirs. Under a burst of views that can exhaust the pool.
+  Evidence: `ensureConfirmation` in `apps/server/src/execution/approvals.ts`; the server's pool
+  is `workflowWorkerConcurrency + 12` (`apps/server/src/main.ts`).
+- Observation: the Chromium virtual authenticator lives on the tab, and Playwright gives each
+  test a new tab by default. The browser gates therefore share one tab, in order, so the
+  passkey enrolled by the first is the one the confirmation page asks for.
+  Evidence: `e2e/test/browser.spec.ts` (`beforeAll`). Whether the authenticator follows the tab
+  across the origin change (and the browsing-context-group switch that COOP causes) is proven
+  only by the `stack` jobs.
 
 ## Decision Log
 
@@ -237,6 +295,60 @@ and the research agent's rationale.
   `e2e/run.sh` exporting `APPROVE_ORIGIN=https://localhost:8443` with `E2E_TLS=1`.
   Rationale: the settings are required, so the stack would not start without them.
   Date/Author: 2026-11-14 / milestone 1.
+- Decision: the control plane opens a request's confirmation once, when it opens the request,
+  and keeps the path the signer returned sealed in `approvals.confirmation` (migration
+  `0003_confirmation_links`). Every later view hands out the same link. When the signer cannot
+  be reached or refuses at that moment, the first view of the request tries again, under a
+  per-request advisory lock so that views arriving together open it once. A refusal
+  (`envelope_fenced`, `policy_changed`, ...) shows no link.
+  Rationale: the approval page refetches every 3 seconds, and a new token on each view would end
+  every link already open (see Surprises). The token stays unreadable to whoever reads the
+  table, like every other sealed column.
+  Date/Author: 2026-11-14 / milestone 2.
+- Decision: a failure to open the confirmation does not fail the request that was just
+  recorded; `open` logs it and the first view tries again.
+  Rationale: the request is committed before the signer is asked, and the agent must get its
+  approval link.
+  Date/Author: 2026-11-14 / milestone 2.
+- Decision: Caddy's confirmation site drops the `Cookie` header (`header_up -Cookie`), and
+  `deploy/README.md` recommends the subdomain layout where one is possible.
+  Rationale: on the port layout the browser sends the control plane's session cookie to the
+  confirmation page (see Surprises). The `approve` service ignores it anyway; dropping it at the
+  edge keeps it out of a compromised `approve` service.
+  Date/Author: 2026-11-14 / milestone 2.
+- Decision: the server refuses to start when `APPROVE_ORIGIN` is `PUBLIC_ORIGIN`, as the signer
+  does with `WEBAUTHN_ORIGINS`; the `approve` service refuses an `APPROVE_ORIGIN` that is not a
+  canonical http or https origin.
+  Rationale: the signer compares origins as exact strings, and a confirmation page on the
+  control plane's origin would protect nothing.
+  Date/Author: 2026-11-14 / milestone 2.
+- Decision: the `approve` service serves a fifth static file, `/favicon.svg`, linked from the
+  page.
+  Rationale: without it the browser asks for `/favicon.ico` and gets a 404. A failed load can
+  appear as a console error, which the browser gate counts as a failure.
+  Date/Author: 2026-11-14 / milestone 2.
+- Decision: the approval page shows the link only to a person who can decide, below its own
+  passkey button, which stays until milestone 3. `collectApproval` is a write and needs the
+  same-site `Origin` like every other.
+  Rationale: the link is useless to someone who cannot approve; milestone 2 must not change how
+  the old path works.
+  Date/Author: 2026-11-14 / milestone 2.
+- Decision: `.github/workflows/ci.yml` is unchanged. `e2e/run.sh` builds every image with
+  `docker compose build`, the `approve` image included; the `check` and `test` jobs find the new
+  workspace through `bun run --filter '*' typecheck` and the `apps/*/vitest.config.ts` glob.
+  Rationale: one way to build images, as for the other three.
+  Date/Author: 2026-11-14 / milestone 2.
+- Decision: two gates beyond the plan's: "the confirmation service reaches the signer and
+  nothing else" (DNS from inside the `approve` container), and `approve` in the list of names
+  the agents network must not resolve.
+  Rationale: the network separation is the reason the service exists apart from the signer and
+  the server, and nothing else proves it.
+  Date/Author: 2026-11-14 / milestone 2.
+- Decision: `init` rewrites `approve-secrets/confirm-request-secret` whenever it differs from
+  the signer's copy, and `approve-secrets` is not backed up.
+  Rationale: the copy is not a secret of its own; after a restore of `signer-secrets` it must
+  follow, and a backup of it would only be a second copy to protect.
+  Date/Author: 2026-11-14 / milestone 2.
 
 ## Outcomes & Retrospective
 
@@ -250,6 +362,15 @@ and the research agent's rationale.
   the approval origin are accepted too until milestone 3.
   Evidence: the single-file runs listed under Progress (2026-11-14 22:45Z).
   Remaining: CI (`test`, all `stack` jobs); milestones 2 to 4.
+- Outcome (milestone 2): a person can follow the approval page's link to the confirmation page
+  on `APPROVE_ORIGIN`, read the request as the signer holds it, and approve it there with the
+  passkey they already have. The control plane collects that approval when anyone reads the
+  request or the inbox, checks it again against `APPROVE_ORIGIN`, and signs or applies as
+  before. The `approve` service holds no key, is reachable only through Caddy and reaches only
+  the signer. The control plane's own approval prompt still works.
+  Evidence: the single-file runs listed under Progress (2026-11-14 23:45Z).
+  Remaining: CI (`check`, `test`, `ui`, all `stack` jobs, which build the `approve` image and
+  run the new gates for the first time); milestones 3 and 4.
 
 ## Context and Orientation
 
@@ -659,6 +780,18 @@ Files and interfaces:
   "Limits", "Out of scope"), `docs/architecture.md` (components, the sequence diagram,
   "Why each boundary exists"), `README.md` (trust table and limits), `SECURITY.md`,
   `deploy/README.md`, and a revision note in `specs/agent-workspaces-v0.1.md`.
+- Transitional text that milestone 2 wrote and the cutover replaces: the "Until milestone 3"
+  sentences in `docs/approval-protocol.md` section 6, `docs/threat-model.md` ("Code execution in
+  the control plane", "Limits"), `docs/architecture.md` ("Approving on the confirmation page"
+  and the first sequence diagram, which still approves on the control plane), `README.md` (step
+  7 of "Run it" and the first limit) and `deploy/README.md` ("Until the cutover"). The
+  confirmation routes and the two secrets are already described, in `docs/approval-protocol.md`
+  section 10.
+- Tests that still approve on the control plane's page and move to the confirmation page:
+  every `ada.approve` in `e2e/test/release-gates.spec.ts`, the first test of
+  `e2e/test/browser.spec.ts` (the policy and the first payment), `t.approve` in the server's
+  test support and the `apps/web` journey with its fixture server, whose `confirmUrl` points at
+  a page nothing serves.
 
 Work:
 
@@ -943,8 +1076,11 @@ Regression checks:
   Mitigation: the page sends the person back to the control plane, whose detail and inbox views
   collect; an agent waiting on `get_intent` sees the change on the next such view. A push from
   the signer was rejected to keep the signer free of outbound calls.
-- Risk: a leaked confirmation link shows the request's details.
-  Mitigation: token in the fragment, rotated on each open, valid only while the envelope is.
+- Risk: a leaked confirmation link shows the request's details, also after the request closed.
+  Mitigation: the token is in the fragment, so no log records it; the control plane keeps it
+  sealed and the signer keeps only its hash; it grants no approval. The control plane opens a
+  confirmation once, so a link is not rotated while the request waits (Decision Log,
+  milestone 2).
 - Risk: the second verifier described by `docs/approval-protocol.md` keeps accepting the
   control plane's origin.
   Mitigation: section 6 states the origin rule normatively; the test vectors gain a refused
@@ -977,3 +1113,9 @@ Regression checks:
   the schema-version note in "Idempotence and Recovery", each for a reason in "Surprises &
   Discoveries". `apps/signer/test/config.test.ts`, named in milestone 3, now exists already,
   because the checks it covers landed here.
+- 2026-11-14: Milestone 2 built and proven locally one file at a time; CI pending. Added the
+  decisions to open a confirmation once and keep its link sealed, to drop cookies at Caddy's
+  confirmation site, to refuse `APPROVE_ORIGIN` equal to `PUBLIC_ORIGIN` in the server, to
+  serve a favicon, and two network gates; corrected the leaked-link risk. Each has its reason
+  in "Surprises & Discoveries" or the Decision Log. The documents now describe the `approve`
+  service, its networks and its secret; milestone 3 still corrects them for the cutover.

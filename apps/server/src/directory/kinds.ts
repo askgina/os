@@ -2,6 +2,7 @@ import type { UserSummary } from "@askgina/os-api";
 import {
   type ApprovalId,
   type Authorization,
+  type ConfirmationSubject,
   policyHash,
   type WalletPolicy,
   type WorkspaceId,
@@ -64,6 +65,9 @@ async function personAndPasskey(ctx: AppContext, detail: AddApproverDetail) {
 
 const systemActor = { type: "system", id: null } as const;
 
+/** For kinds whose envelope carries everything the confirmation page shows. */
+const envelopeOnly = async (): Promise<ConfirmationSubject> => ({ kind: "envelope-only" });
+
 /**
  * End sign-in for a passkey its owner removed, once no workspace still lists it as an approver.
  * Runs in the transaction that deleted the last such row.
@@ -89,6 +93,7 @@ const addApprover: ApprovalKindHandler<"add-approver"> = {
     const { credentialId } = detail as AddApproverDetail;
     return { kind: "add-approver", user, credentialId, passkeyLabel: label };
   },
+  confirmationSubject: envelopeOnly,
   async execute(ctx, approval, authorization, detail) {
     const { credentialId, userId } = detail as AddApproverDetail;
     if (!(await alreadyApplied(ctx, approval.id))) {
@@ -146,6 +151,7 @@ const removeApprover: ApprovalKindHandler<"remove-approver"> = {
     const { credentialId } = detail as RemoveApproverDetail;
     return { kind: "remove-approver", user, credentialId, passkeyLabel: label };
   },
+  confirmationSubject: envelopeOnly,
   async execute(ctx, approval, authorization, detail) {
     const { credentialId, userId, afterwards, revokeSignIn } = detail as RemoveApproverDetail;
     if (!(await alreadyApplied(ctx, approval.id))) {
@@ -266,6 +272,9 @@ const setPolicy: ApprovalKindHandler<"set-policy"> = {
       proposed: policy,
     };
   },
+  async confirmationSubject(_ctx, _approval, detail) {
+    return { kind: "set-policy", policy: (detail as SetPolicyDetail).policy };
+  },
   async execute(ctx, approval, authorization, detail) {
     const { policy } = detail as SetPolicyDetail;
     if (!(await alreadyApplied(ctx, approval.id))) {
@@ -337,6 +346,7 @@ const setAdminThreshold: ApprovalKindHandler<"set-admin-threshold"> = {
       proposed: envelope.adminThreshold,
     };
   },
+  confirmationSubject: envelopeOnly,
   async execute(ctx, approval, authorization) {
     const envelope = approval.envelope as Extract<
       Authorization["envelope"],
@@ -383,6 +393,7 @@ const resumeWorkspace: ApprovalKindHandler<"resume-workspace"> = {
   async describe() {
     return { kind: "resume-workspace" };
   },
+  confirmationSubject: envelopeOnly,
   async execute(ctx, approval, authorization) {
     if (!(await alreadyApplied(ctx, approval.id))) {
       await atSigner(() => ctx.signer.resumeWorkspace(approval.workspaceId, authorization));

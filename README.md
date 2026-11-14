@@ -74,11 +74,15 @@ The `dev` profile adds a local test chain, so there is something to send transac
      scripted-agent
    ```
 
-7. The proposal appears in the approval inbox. Approve it with your passkey and watch the agent
-   report `confirmed`.
+7. The proposal appears in the approval inbox. Open it and follow "Review and approve on the
+   signer's page": the signer's confirmation page, on <http://localhost:8081>, shows the payment
+   as the signer holds it. Approve it there with your passkey and watch the agent report
+   `confirmed`. The approval page's own passkey button still works too, until the cutover in
+   [`specs/trusted-display.md`](specs/trusted-display.md).
 
 Passkeys work on `http://localhost` and on HTTPS. To serve a real host name with certificates,
-see [`deploy/README.md`](deploy/README.md).
+see [`deploy/README.md`](deploy/README.md); the confirmation page then needs its own origin,
+`APPROVE_ORIGIN`, on a subdomain or another port.
 
 ## Connect your own agent
 
@@ -108,6 +112,7 @@ database.
 | An agent or its token        | Propose operations                              | Approve, sign, change limits, reach the signer                             |
 | The control plane's database | Read names, ids, statuses, addresses, limits    | Read sealed content; forge an approval                                     |
 | The control plane itself     | Ask the signer; show a person a misleading card | Produce a passkey signature; exceed the signer's limits; reuse an approval |
+| The confirmation page        | Show a person a misleading page                 | Sign or read a key; reach a signer route but its two; approve unaided      |
 | The signer's machine         | Everything for the wallets on it                |                                                                            |
 
 Two limits are worth knowing before you rely on this:
@@ -116,7 +121,9 @@ Two limits are worth knowing before you rely on this:
   A compromised control plane could show one operation and submit another. For a payment the
   signer's limits bound the damage. For a change of limits or approvers they do not: with one
   approver, one misled tap can hand over a workspace's wallets. Add a second approver and raise
-  the admin threshold to 2.
+  the admin threshold to 2. The signer's confirmation page, on its own origin, shows what the
+  signer holds; until the control plane's own approval prompt is removed
+  ([`specs/trusted-display.md`](specs/trusted-display.md), milestone 3), approve there.
 - Running every service on one machine gives no protection against that machine.
 
 The full list is in [`docs/threat-model.md`](docs/threat-model.md).

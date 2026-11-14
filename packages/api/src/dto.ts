@@ -455,6 +455,13 @@ export const ApprovalDetail = ApprovalSummary.extend({
   /** Whether the signed-in person may approve or reject right now. */
   canDecide: z.boolean(),
   subject: ApprovalSubject,
+  /**
+   * The signer's confirmation page for this request, on its own origin: where a person reads
+   * the request as the signer holds it and approves it with a passkey. The link carries its
+   * token after `#`. Null once the request no longer waits for approval, and while the signer
+   * refuses to open one (for example, the wallet's policy changed since it was proposed).
+   */
+  confirmUrl: z.url({ protocol: /^https?$/ }).nullable(),
 });
 export type ApprovalDetail = z.infer<typeof ApprovalDetail>;
 

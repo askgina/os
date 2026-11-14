@@ -223,6 +223,13 @@ Checks, in this order. The first failure ends verification with its code.
 Every assertion must pass. One unknown approver or one bad signature fails the whole
 authorization, so removing a person invalidates the pending approvals they took part in.
 
+Which origins are allowed is the verifier's configuration. The signer allows two while
+[`specs/trusted-display.md`](../specs/trusted-display.md) is being built: the control plane's
+`PUBLIC_ORIGIN` and the confirmation page's `APPROVE_ORIGIN`. Milestone 3 of that plan leaves
+only `APPROVE_ORIGIN`. An assertion submitted on the confirmation page (section 10) is checked
+against `APPROVE_ORIGIN` alone already, and the control plane checks assertions it collects from
+there against `APPROVE_ORIGIN` alone too.
+
 The sign counter is not used (it is passed as 0). Synced passkeys report a counter of 0 forever,
 and with a counter of 0 an identical assertion verifies twice. **Verification does not prevent
 replay.** The acting party MUST record the envelope's `nonce` as used, atomically with acting on
@@ -383,6 +390,56 @@ not do:
   verifies itself.
 - It does not stop a replay within the 60-second window. Single use comes from the envelope's
   nonce and the approval id.
+
+### Two secrets, two scopes
+
+Each signer route belongs to one scope (`scope` in `signerRoutes`,
+[`signer/api.ts`](../packages/protocol/src/signer/api.ts)), and a request is authentic only
+under its own scope's secret:
+
+| Scope     | Secret                                      | Held by               | Routes                                                                   |
+| --------- | ------------------------------------------- | --------------------- | ------------------------------------------------------------------------ |
+| `control` | `signer-request-secret`                     | the server            | every route except the two below and `GET /healthz`                      |
+| `confirm` | `confirm-request-secret`, at least 32 bytes | the `approve` service | `GET /v1/confirm/:approvalId`, `POST /v1/confirm/:approvalId/assertions` |
+| unsigned  | none                                        | anyone on the network | `GET /healthz`                                                           |
+
+A request signed with the other scope's secret is `unauthenticated` (401). The two secrets must
+differ; the signer refuses to start when they do not.
+
+### The confirmation routes
+
+The confirmation page ([`apps/approve`](../apps/approve)) shows one approval as the signer holds
+it and collects passkey assertions over its envelope. Four signer routes serve it:
+
+| Route                                         | Scope   | Body and answer                                                                                    |
+| --------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------- |
+| `POST /v1/approvals/:approvalId/confirmation` | control | `{ envelope, subject }` → `{ path: "/a/<approvalId>#<token>" }`                                    |
+| `GET /v1/approvals/:approvalId/assertions`    | control | → `{ assertions: Assertion[] }`, each with the signer's own `userId`                               |
+| `GET /v1/confirm/:approvalId`                 | confirm | header `x-confirm-token` → `ConfirmationView`                                                      |
+| `POST /v1/confirm/:approvalId/assertions`     | confirm | header `x-confirm-token`, `{ response: AssertionResponse }` → `{ collected, required, returnUrl }` |
+
+Rules:
+
+- The subject is what the envelope names by its hash: `{ kind: "approve-intent", intent }`,
+  `{ kind: "set-policy", policy }`, `{ kind: "sweep-wallet", sweep }`, or
+  `{ kind: "envelope-only" }` for the kinds whose envelope carries everything. The signer
+  refuses one that does not hash to the envelope's value (`checkSubject` in
+  [`confirmation.ts`](../packages/protocol/src/confirmation.ts)).
+- The token is 16 random bytes in base64url. The signer stores only its SHA-256 and compares in
+  constant time; a wrong token is `not_found`. Opening the same approval again issues a new token
+  and ends the old one. The token travels in the link's fragment and in the `x-confirm-token`
+  header, never in a path or a query, so no server or proxy log records it.
+- The view is rendered by the signer from its own records: the stored subject, its current
+  policy, its 24-hour ledger, its approver registry, and the operator's chain and token labels.
+  Its `state` is `open`, `complete`, `expired`, `revoked`, `used` or `superseded`.
+- A submitted assertion must come from an approver of the workspace, at `APPROVE_ORIGIN`, not in
+  a cross-origin frame, over the envelope's digest. A second one by the same person is
+  `conflict`, unless their first was made with a passkey that no longer approves; any state but
+  `open` is `confirmation_closed`; more than 64 submissions with a valid token are
+  `rate_limited`.
+- An assertion stored here adds no authority by itself. The control plane collects it, checks it
+  again, and sends it in an authorization, which the signer verifies again when it acts
+  (section 6).
 
 ## 11. Test vectors
 

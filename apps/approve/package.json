@@ -1,0 +1,22 @@
+{
+  "name": "@askgina/os-approve",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "The keyless confirmation page: shows an approval as the signer holds it and relays one passkey assertion to the signer.",
+  "scripts": {
+    "start": "node src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@askgina/os-protocol": "workspace:*",
+    "@hono/node-server": "2.1.8",
+    "hono": "4.13.18",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6"
+  }
+}

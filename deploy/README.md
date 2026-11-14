@@ -13,12 +13,28 @@ For a public host name with HTTPS, set `OS_HOSTNAME` and `PUBLIC_HOST` in `.env`
 reachable so Caddy can obtain certificates. Changing the host name later invalidates every passkey.
 
 Every layout also names the origin of the signer's confirmation page, `APPROVE_ORIGIN`, where
-people will approve with their passkeys (`specs/trusted-display.md`). It is a host under
-`OS_HOSTNAME`, for example `https://approve.os.example.com` with its own DNS record, or another
-port on `OS_HOSTNAME`, for example `https://os.example.com:8443`. Machine names under `*.ts.net`
-have no subdomains, so they use a port. It must not be `PUBLIC_ORIGIN`. Without the TLS overlay
-it defaults to `http://localhost:8081`, which fits only `OS_HOSTNAME=localhost`; the TLS
-overlay requires it. The signer refuses to start when it is not under `OS_HOSTNAME`.
+people approve with their passkeys (`specs/trusted-display.md`). The `approve` service serves it,
+and Caddy publishes it as a second site. It must not be `PUBLIC_ORIGIN`; the server and the
+signer refuse to start when it is, and the signer also refuses when its host is not
+`OS_HOSTNAME` or a name under it. Pick one of two layouts:
+
+- A subdomain, for example `APPROVE_ORIGIN=https://approve.os.example.com`. Give the name its own
+  DNS record pointing at this machine; with the TLS overlay Caddy obtains its certificate and
+  serves it on port 443. Prefer this layout where you can: browsers keep cookies apart by host
+  but not by port.
+- Another port on `OS_HOSTNAME`, for example `APPROVE_ORIGIN=https://os.example.com:8443`, with
+  `APPROVE_TLS_PORT=8443` so the TLS overlay publishes that port. Use it where a subdomain is not
+  possible: machine names under `*.ts.net` have none, and neither has `localhost`.
+
+Either way passkeys keep working: the confirmation page asks for them under the same RP ID,
+`OS_HOSTNAME`. Without the TLS overlay `APPROVE_ORIGIN` defaults to `http://localhost:8081` and
+Caddy publishes it on `127.0.0.1:${APPROVE_HTTP_PORT:-8081}`, which fits only
+`OS_HOSTNAME=localhost`. The TLS overlay requires `APPROVE_ORIGIN`. Change it only while no
+request waits for approval: an approval made on the old origin is refused afterwards, and its
+request must be proposed again.
+
+Until the cutover in `specs/trusted-display.md` milestone 3, the control plane's own approval
+button keeps working next to the link to the confirmation page.
 
 If something else already terminates HTTPS in front of this machine (Tailscale Serve, a tunnel,
 a load balancer), keep the plain `compose.yaml` and tell the stack the address people will use.
@@ -29,9 +45,11 @@ For `https://box.example.ts.net:8444` forwarded to port 18080 on this machine, `
     PUBLIC_HOST=box.example.ts.net:8444
     HTTP_PORT=18080
     APPROVE_ORIGIN=https://box.example.ts.net:8445
+    APPROVE_HTTP_PORT=18081
 
 The proxy must pass the `Host` header through unchanged. With Tailscale:
-`tailscale serve --bg --https=8444 http://127.0.0.1:18080`.
+`tailscale serve --bg --https=8444 http://127.0.0.1:18080` and
+`tailscale serve --bg --https=8445 http://127.0.0.1:18081`.
 
 ## Services
 
@@ -40,36 +58,45 @@ The proxy must pass the `Host` header through unchanged. With Tailscale:
 | `init`           | Runs once at start; creates any missing secret in the secret volumes and never changes an existing one.                            |
 | `postgres`       | Control-plane data and the encrypted Workflow history.                                                                             |
 | `signer`         | Holds the wallets; verifies passkey approvals itself and signs at most once per approval. No outside access.                       |
+| `approve`        | The confirmation page at `APPROVE_ORIGIN`. Holds no key; relays a view and an assertion to the signer's two confirmation routes.   |
 | `server`         | UI, API, MCP gateway and the Workflow runtime.                                                                                     |
-| `caddy`          | The only public entry point. Refuses `/.well-known/workflow/*` itself as a second lock.                                            |
+| `caddy`          | The only public entry point, with two sites: the UI and the confirmation page. Refuses `/.well-known/workflow/*` as a second lock. |
 | `agent-gateway`  | The only thing agent containers can reach. Forwards `/mcp` and nothing else.                                                       |
 | `anvil`          | `dev` profile: a local chain (id 31337).                                                                                           |
 | `scripted-agent` | An example agent, not started by `up`. `docker compose --profile dev run --rm -e AGENT_TOKEN=… -e TRANSFER_TO=0x… scripted-agent`. |
 
 ## Networks
 
-| Network   | Members                                    | Why                                                                         |
-| --------- | ------------------------------------------ | --------------------------------------------------------------------------- |
-| `edge`    | caddy                                      | Where the published port lives.                                             |
-| `control` | caddy, agent-gateway, server, postgres     | Proxies to the server; the server to Postgres.                              |
-| `signing` | server, signer (internal)                  | The only path to the signer. No internet.                                   |
-| `chain`   | server, anvil                              | RPC access for reading chains and broadcasting.                             |
-| `agents`  | agent-gateway, agent containers (internal) | Agents reach `http://agent-gateway/mcp` and nothing else, not the internet. |
+| Network          | Members                                    | Why                                                                         |
+| ---------------- | ------------------------------------------ | --------------------------------------------------------------------------- |
+| `edge`           | caddy                                      | Where the published ports live.                                             |
+| `control`        | caddy, agent-gateway, server, postgres     | Proxies to the server; the server to Postgres.                              |
+| `signing`        | server, signer (internal)                  | The server's path to the signer. No internet.                               |
+| `approve-edge`   | caddy, approve (internal)                  | The only path to the `approve` service. No internet.                        |
+| `approve-signer` | approve, signer (internal)                 | The `approve` service's path to the signer, and its only one. No internet.  |
+| `chain`          | server, anvil                              | RPC access for reading chains and broadcasting.                             |
+| `agents`         | agent-gateway, agent containers (internal) | Agents reach `http://agent-gateway/mcp` and nothing else, not the internet. |
+
+Only the server and the `approve` service reach the signer, each on its own network, and each
+with its own request secret. The `approve` service's secret opens the signer's two confirmation
+routes and no other; the server's opens every route except those two.
 
 ## Volumes
 
-| Volume           | Holds                                                                                         | Read by  |
-| ---------------- | --------------------------------------------------------------------------------------------- | -------- |
-| `postgres-data`  | The database.                                                                                 | postgres |
-| `signer-data`    | The wallet vault and the signer's SQLite (used approvals, policies, audit, restore fence).    | signer   |
-| `server-secrets` | `keyring.json` (key-encryption keys), `signer-request-secret`, a copy of `postgres-password`. | server   |
-| `signer-secrets` | `signer-request-secret`, `confirm-request-secret`, `token-key`, `vault-passphrase`.           | signer   |
-| `db-secrets`     | `postgres-password`.                                                                          | postgres |
+| Volume            | Holds                                                                                         | Read by  |
+| ----------------- | --------------------------------------------------------------------------------------------- | -------- |
+| `postgres-data`   | The database.                                                                                 | postgres |
+| `signer-data`     | The wallet vault and the signer's SQLite (used approvals, policies, audit, restore fence).    | signer   |
+| `server-secrets`  | `keyring.json` (key-encryption keys), `signer-request-secret`, a copy of `postgres-password`. | server   |
+| `signer-secrets`  | `signer-request-secret`, `confirm-request-secret`, `token-key`, `vault-passphrase`.           | signer   |
+| `approve-secrets` | A copy of `confirm-request-secret`, which `init` writes again whenever it differs.            | approve  |
+| `db-secrets`      | `postgres-password`.                                                                          | postgres |
 
 ## Backups and restoring
 
 Back up `postgres-data`, `server-secrets`, `signer-data`, `signer-secrets` and `db-secrets`
-together, from the same moment, with the stack stopped (`docker compose stop`):
+together, from the same moment, with the stack stopped (`docker compose stop`). `approve-secrets`
+needs no backup: `init` copies it from `signer-secrets` on every start.
 
 - The database without the keyring is unreadable, and the keyring without the database is useless.
 - `signer-data` is the wallets. Restoring an older copy forgets which approvals were used after
