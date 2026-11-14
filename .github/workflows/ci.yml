@@ -1,0 +1,105 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run typecheck
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      - run: bun install --frozen-lockfile
+      - run: bun run services:up
+      - run: bun run build:workflows
+        working-directory: apps/server
+      - run: bun run test
+      - if: failure()
+        run: docker compose -f deploy/compose.test.yaml logs --no-color
+      - if: always()
+        run: bun run services:down
+
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright install --with-deps chromium
+        working-directory: apps/web
+      # The first-day journey on a phone and a desktop, light and dark, against the fixture API
+      # under the production Content-Security-Policy.
+      - run: bunx playwright test
+        working-directory: apps/web
+      - run: bun run build
+        working-directory: apps/web
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ui-traces
+          path: apps/web/test-results
+          retention-days: 7
+
+  stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      - run: bun install --frozen-lockfile
+      - name: Install the browser the release gates drive
+        run: bunx playwright install --with-deps chromium
+        working-directory: e2e
+      # Builds the images, starts the whole stack as a throwaway Compose project, runs the
+      # release gates against it, prints the server and signer logs on failure, and removes it.
+      - name: Release gates against the real stack
+        run: ./e2e/run.sh

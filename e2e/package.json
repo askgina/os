@@ -1,0 +1,25 @@
+{
+  "name": "@askgina/os-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "The release gates, run against the real Compose stack.",
+  "scripts": {
+    "test": "playwright test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@askgina/os-api": "workspace:*",
+    "@askgina/os-protocol": "workspace:*",
+    "@askgina/os-testkit": "workspace:*",
+    "@modelcontextprotocol/client": "2.4.0",
+    "pg": "8.23.1",
+    "viem": "2.57.19",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1",
+    "@types/pg": "8.23.1"
+  }
+}

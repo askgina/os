@@ -1,0 +1,9 @@
+# Overlay for the release gates only: lets the tests reach the database (to scan it for
+# plaintext) and the local chain (to check balances). Never use it for a real deployment.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${E2E_POSTGRES_PORT:-55900}:5432"
+  anvil:
+    ports:
+      - "127.0.0.1:${E2E_ANVIL_PORT:-55901}:8545"

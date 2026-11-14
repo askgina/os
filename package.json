@@ -10,7 +10,8 @@
   "workspaces": [
     "apps/*",
     "packages/*",
-    "examples/*"
+    "examples/*",
+    "e2e"
   ],
   "scripts": {
     "check": "biome check .",
@@ -18,7 +19,8 @@
     "typecheck": "bun run --filter '*' typecheck",
     "test": "vitest run",
     "services:up": "docker compose -f deploy/compose.test.yaml up -d --wait",
-    "services:down": "docker compose -f deploy/compose.test.yaml down -v"
+    "services:down": "docker compose -f deploy/compose.test.yaml down -v",
+    "test:e2e": "./e2e/run.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.7",

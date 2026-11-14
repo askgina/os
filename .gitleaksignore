@@ -1,0 +1,2 @@
+# False positive: compiled bytecode of the ERC-20 used by the execution tests, not a credential.
+2a506aac75c99fa2121a990d8ff2149876d663c2:apps/server/test/execution/token.ts:generic-api-key:19
