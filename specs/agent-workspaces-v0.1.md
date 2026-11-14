@@ -164,7 +164,10 @@ Each line is also a ticket on the map, where the reasoning is longer and can be 
   Remaining: nothing; the proof is a test in `packages/world`.
 - Outcome: v0.1 exists and its release gates pass in CI against the real stack: a fresh installation is claimed with a passkey; an agent's proposal becomes exactly one transaction after a passkey approval, and none after a rejection, a limit breach or a replay; nothing an agent typed is readable in any database column; an agent's container reaches the MCP endpoint and nothing else; a server killed between approval and broadcast still ends in exactly one transaction; a restored backup keeps wallets, the audit chain and a waiting approval, and refuses a spent one; and the whole first day works in a browser.
   Evidence: CI runs [43618477006](https://github.com/askgina/os/actions/runs/43618477006) and [43619052182](https://github.com/askgina/os/actions/runs/43619052182), green one after the other.
-  Remaining: two green runs are not many; the crash and restore gates depend on timing and deserve a few more before a release is cut. Not proven anywhere: a hardware or synced passkey (only Chromium's virtual authenticator and a software one), linux-arm64, TLS through `compose.tls.yaml`, the README's quickstart typed by hand, an upgrade of a signer database from before the review fixes (none exists outside tests).
+  Remaining: four green runs are not many; the crash and restore gates depend on timing and deserve a few more before a release is cut. Not proven anywhere: a hardware or synced passkey (only Chromium's virtual authenticator and a software one), a certificate from a public authority (see the next outcome), an upgrade of a signer database from before the review fixes (none exists outside tests).
+- Outcome: the same gates pass on linux-arm64, the browser gate passes over HTTPS through `compose.tls.yaml`, and the README's quickstart works from a fresh clone.
+  Evidence: CI run [43626094535](https://github.com/askgina/os/actions/runs/43626094535): `stack (amd64)`, `stack (arm64)` on an arm64 runner, and `stack (tls)`, which also checks the redirect from HTTP, the `Strict-Transport-Security` header and the `__Host-` session cookie. The quickstart was run once on the maintainer's machine from a fresh clone, with the owner's consent to build the images there: the README's own commands for the setup token, the test coins and the example agent, the UI steps in Chromium with a virtual passkey, ending in `confirmed`.
+  Remaining: the HTTPS run uses the host name `localhost`, so Caddy signs the certificate with its own local authority; obtaining one from a public authority for a real host name was not exercised. The quickstart run found one unclear step (where the wallet's address is shown), now reworded.
 - Outcome: the bundled eve example did not ship. An eve agent on the encrypting World left its markers readable and the cause is not known.
   Evidence: [ticket 17](https://github.com/askgina/os/issues/17).
   Remaining: the research ticket; until it is answered the product is "bring your own agent over MCP".
@@ -480,8 +483,8 @@ The release gates. Each line is a test; the name in brackets is where it lives.
   Mitigation: signer-side caps bound the loss; the threat model says so; a trusted display is on the map.
 - Risk: OWS error classification is by message text.
   Mitigation: exact version pin; a test per error class against the real SDK.
-- Risk: linux-arm64 (Apple Silicon Docker) for the OWS native module is published but unverified here.
-  Mitigation: stated in the self-hosting guide; CI builds amd64; an arm64 run is a release-checklist item.
+- Risk: linux-arm64 (Apple Silicon Docker) for the OWS native module.
+  Mitigation: CI runs every release gate on an arm64 runner (`stack (arm64)`).
 - Risk: a signed transaction that is never mined blocks later nonces of that wallet on that chain.
   Mitigation: reported as `stuck` with that explanation; repricing is on the map.
 - Risk: a key-provider outage stalls workflow runs (the queue retries up to 73 times).

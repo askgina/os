@@ -12,6 +12,18 @@ For a public host name with HTTPS, set `OS_HOSTNAME` and `PUBLIC_HOST` in `.env`
 `docker compose -f compose.yaml -f compose.tls.yaml up -d --build`. Ports 80 and 443 must be
 reachable so Caddy can obtain certificates. Changing the host name later invalidates every passkey.
 
+If something else already terminates HTTPS in front of this machine (Tailscale Serve, a tunnel,
+a load balancer), keep the plain `compose.yaml` and tell the stack the address people will use.
+For `https://box.example.ts.net:8444` forwarded to port 18080 on this machine, `.env` is:
+
+    PUBLIC_ORIGIN=https://box.example.ts.net:8444
+    OS_HOSTNAME=box.example.ts.net
+    PUBLIC_HOST=box.example.ts.net:8444
+    HTTP_PORT=18080
+
+The proxy must pass the `Host` header through unchanged. With Tailscale:
+`tailscale serve --bg --https=8444 http://127.0.0.1:18080`.
+
 ## Services
 
 | Service          | Purpose                                                                                                                            |
