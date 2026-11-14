@@ -69,8 +69,8 @@ Success means:
 - [x] (2026-11-14 15:18Z) Local builds and whole-suite runs stopped: they need the owner's word (see Surprises). From here, build-level proof comes from CI.
 - [x] (2026-11-14 15:50Z) Four read-only reviews (signer and protocol, identity and directory, execution and MCP, integration and docs) found no way to forge an approval or move funds, and 32 defects. All fixed. The largest: recovery codes are gone, because a code relayed by the control plane let it choose the new key; when no approver is left, the operator of the signer's host enrolls one from its command line.
 - [x] (2026-11-14 16:25Z) Milestone 5: web UI. The first-day journey passes in Chromium with a virtual authenticator on phone and desktop, light and dark, against the fixture API under the production Content-Security-Policy.
-- [ ] Milestone 6: Compose stack, images, example agents, end-to-end release gates, CI.
-- [ ] Milestone 7: docs, threat model, open-source preflight.
+- [x] (2026-11-14 17:05Z) Milestone 6: Compose stack, images, the scripted example agent, end-to-end release gates, CI. Green on the fourth CI run, [43618477006](https://github.com/askgina/os/actions/runs/43618477006) at `b634bfa`: lint and types; 516 tests; the UI journey four times and its build; the three images built; 15 release gates and the browser gate against the running stack. The three runs before it found nine defects, five in the product and four in its tests (see Surprises and the commits `837523e`, `da2d6c5`, `b634bfa`), each fixed at its cause.
+- [x] (2026-11-14 17:10Z) Milestone 7: README, architecture, approval protocol, threat model, security policy, contributing guide, deployment guide; open-source preflight recorded on the [public-readiness ticket](https://github.com/askgina/os/issues/16). The repository stays private: making it public is the owner's action.
 
 ## Surprises & Discoveries
 
@@ -161,7 +161,14 @@ Each line is also a ticket on the map, where the reasoning is longer and can be 
 
 - Outcome: the prototype question is answered yes. A World derived from the Postgres World stores all eight kinds of payload as ciphertext, survives kill -9 between suspension and resume, and the identical run on the stock World exposes every marker.
   Evidence: [research/encrypting-postgres-world.md](./research/encrypting-postgres-world.md); maintainer's re-run exit 0.
-  Remaining: the proof becomes a test in `packages/world` (Milestone 1).
+  Remaining: nothing; the proof is a test in `packages/world`.
+- Outcome: v0.1 exists and its release gates pass in CI against the real stack: a fresh installation is claimed with a passkey; an agent's proposal becomes exactly one transaction after a passkey approval, and none after a rejection, a limit breach or a replay; nothing an agent typed is readable in any database column; an agent's container reaches the MCP endpoint and nothing else; a server killed between approval and broadcast still ends in exactly one transaction; a restored backup keeps wallets, the audit chain and a waiting approval, and refuses a spent one; and the whole first day works in a browser.
+  Evidence: [CI run 43618477006](https://github.com/askgina/os/actions/runs/43618477006).
+  Remaining: one green run is one run; the crash and restore gates depend on timing and deserve a few more before a release is cut. Not proven anywhere: a hardware or synced passkey (only Chromium's virtual authenticator and a software one), linux-arm64, TLS through `compose.tls.yaml`, the README's quickstart typed by hand, an upgrade of a signer database from before the review fixes (none exists outside tests).
+- Outcome: the bundled eve example did not ship. An eve agent on the encrypting World left its markers readable and the cause is not known.
+  Evidence: [ticket 17](https://github.com/askgina/os/issues/17).
+  Remaining: the research ticket; until it is answered the product is "bring your own agent over MCP".
+- Retrospective: the stack-level gates paid for themselves on the first day. Every suite below them was green while the server could not start in Compose, and while a crash in the middle of a step would have left an approved payment waiting five minutes or more. Neither was visible below the level of the running stack. The third product defect, a repeated workflow start stranding a request, was caught by a test that needs the built workflow bundle, which is why it too surfaced only in CI.
 
 ## Context and Orientation
 
@@ -491,3 +498,4 @@ The release gates. Each line is a test; the name in brackets is where it lives.
 ## Revision Notes
 
 - 2026-11-14: First version, written after the five spikes and before the build.
+- 2026-11-14: Progress, discoveries and outcomes brought up to date after the first green CI run. Recovery codes replaced by operator enrollment; the eve example parked; one hook per workflow run; stale job locks released after 30 seconds.
