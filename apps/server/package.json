@@ -1,0 +1,37 @@
+{
+  "name": "@askgina/os-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "The control plane: people, workspaces, agents, approvals, the MCP gateway and the encrypted workflow runtime.",
+  "scripts": {
+    "build:workflows": "workflow build",
+    "db:generate": "drizzle-kit generate",
+    "start": "node src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@askgina/os-api": "workspace:*",
+    "@askgina/os-keys": "workspace:*",
+    "@askgina/os-protocol": "workspace:*",
+    "@askgina/os-world": "workspace:*",
+    "@hono/node-server": "2.1.8",
+    "@modelcontextprotocol/server": "2.4.0",
+    "@simplewebauthn/server": "14.1.0",
+    "@workflow/world-postgres": "5.2.0",
+    "drizzle-orm": "0.45.4",
+    "hono": "4.13.18",
+    "pg": "8.23.1",
+    "viem": "2.57.19",
+    "workflow": "5.5.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@askgina/os-testkit": "workspace:*",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@types/pg": "8.23.1",
+    "drizzle-kit": "0.31.11"
+  }
+}
