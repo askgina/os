@@ -57,10 +57,11 @@ export type Operation = z.infer<typeof Operation>;
 function hasUnsafeMemoCharacter(value: string): boolean {
   for (const character of value) {
     const code = character.codePointAt(0) ?? 0;
-    const isControl = code <= 0x1f || code === 0x7f;
-    const isBidiMark = code === 0x200e || code === 0x200f;
+    const isControl = code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+    const isLineBreak = code === 0x2028 || code === 0x2029;
+    const isBidiMark = code === 0x200e || code === 0x200f || code === 0x061c;
     const isBidiOverride = (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
-    if (isControl || isBidiMark || isBidiOverride) return true;
+    if (isControl || isLineBreak || isBidiMark || isBidiOverride) return true;
   }
   return false;
 }

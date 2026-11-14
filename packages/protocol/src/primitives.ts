@@ -89,7 +89,12 @@ const UINT256_MAX = (1n << 256n) - 1n;
 export const Amount = z
   .string()
   .regex(/^(?:0|[1-9][0-9]{0,77})$/, "expected a base-unit integer as a decimal string")
-  .refine((value) => BigInt(value) <= UINT256_MAX, "amount exceeds uint256");
+  // Zod runs this refinement even when the pattern above failed, and BigInt throws on text such
+  // as "1.0"; only compare values that are plain digits so bad input is refused, not thrown.
+  .refine(
+    (value) => !/^[0-9]+$/.test(value) || BigInt(value) <= UINT256_MAX,
+    "amount exceeds uint256",
+  );
 export type Amount = z.infer<typeof Amount>;
 
 export const PositiveAmount = Amount.refine(

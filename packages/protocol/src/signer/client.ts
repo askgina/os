@@ -111,7 +111,9 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
       },
       ...(route.method === "GET" ? {} : { body }),
     });
-    const payload: unknown = await response.json();
+    // A proxy in front of the signer may answer with a non-JSON error page; that is still a
+    // refusal the caller must see as a SignerError, not a parse failure.
+    const payload: unknown = await response.json().catch(() => null);
     if (!response.ok) {
       const parsed = SignerErrorBody.safeParse(payload);
       if (parsed.success) {

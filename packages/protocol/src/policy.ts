@@ -101,7 +101,12 @@ export const WalletPolicy = z
           message: "asset limit names a chain that is not in `chains`",
         });
       }
-      if (BigInt(limit.maxPerTx) > BigInt(limit.maxPerDay)) {
+      // This refinement also runs when an amount already failed its own pattern; BigInt would
+      // throw on such text, so compare only amounts that parsed.
+      const amountsParsed =
+        PositiveAmount.safeParse(limit.maxPerTx).success &&
+        PositiveAmount.safeParse(limit.maxPerDay).success;
+      if (amountsParsed && BigInt(limit.maxPerTx) > BigInt(limit.maxPerDay)) {
         context.addIssue({
           code: "custom",
           path: ["assets", index, "maxPerTx"],
