@@ -21,6 +21,7 @@ RUN bun install --frozen-lockfile --filter @askgina/os-example-eve-agent
 FROM node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc AS build
 WORKDIR /repo
 COPY --from=deps /repo ./
+COPY tsconfig.base.json ./
 COPY packages/keys/src ./packages/keys/src
 COPY packages/world/src ./packages/world/src
 COPY examples/eve-agent ./examples/eve-agent
