@@ -1,4 +1,4 @@
-import type { ApiErrorBody } from "@askgina/os-api";
+import { type ApiErrorBody, CONTENT_SECURITY_POLICY } from "@askgina/os-api";
 import { Hono } from "hono";
 import type { AppContext } from "../context.ts";
 import { registerDirectory } from "../directory/index.ts";
@@ -6,26 +6,6 @@ import { mountMcp, mountWorkflowDelivery, registerExecution } from "../execution
 import { registerIdentity } from "../identity/index.ts";
 import { installErrorHandler } from "./route.ts";
 import { serveWebApp } from "./static.ts";
-
-/**
- * The UI is a bundle of our own scripts and styles. Nothing inline, nothing from elsewhere, no
- * framing: an injected script or a hostile page around the approval card is what this denies.
- * Inline `style` attributes stay allowed because the UI's popover components position
- * themselves with them; they cannot run code.
- */
-const CONTENT_SECURITY_POLICY = [
-  "default-src 'none'",
-  "script-src 'self'",
-  "style-src 'self'",
-  "style-src-attr 'unsafe-inline'",
-  "img-src 'self' data:",
-  "font-src 'self'",
-  "connect-src 'self'",
-  "manifest-src 'self'",
-  "base-uri 'none'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-].join("; ");
 
 /** Everything people and agents reach: the API, the MCP gateway and the UI. */
 export function createPublicApp(ctx: AppContext): Hono {

@@ -1,0 +1,92 @@
+@import "tailwindcss";
+
+/*
+ * One neutral palette and one accent. Light and dark follow the operating system through
+ * prefers-color-scheme; no toggle, so the page never disagrees with the rest of the screen.
+ */
+:root {
+  --background: oklch(0.99 0 0);
+  --foreground: oklch(0.2 0.01 260);
+  --card: oklch(1 0 0);
+  --muted: oklch(0.965 0.003 260);
+  --muted-foreground: oklch(0.47 0.015 260);
+  --border: oklch(0.9 0.005 260);
+  --input: oklch(0.86 0.006 260);
+  --accent: oklch(0.49 0.2 262);
+  --accent-foreground: oklch(0.99 0 0);
+  --accent-soft: oklch(0.95 0.03 262);
+  --danger: oklch(0.53 0.2 27);
+  --danger-soft: oklch(0.96 0.03 27);
+  --warning: oklch(0.5 0.12 70);
+  --warning-soft: oklch(0.96 0.05 85);
+  --success: oklch(0.48 0.12 150);
+  --success-soft: oklch(0.96 0.04 150);
+  --ring: oklch(0.55 0.2 262);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: oklch(0.17 0.006 260);
+    --foreground: oklch(0.95 0.004 260);
+    --card: oklch(0.21 0.007 260);
+    --muted: oklch(0.25 0.008 260);
+    --muted-foreground: oklch(0.72 0.012 260);
+    --border: oklch(0.31 0.01 260);
+    --input: oklch(0.38 0.012 260);
+    --accent: oklch(0.68 0.16 262);
+    --accent-foreground: oklch(0.15 0.01 260);
+    --accent-soft: oklch(0.28 0.05 262);
+    --danger: oklch(0.72 0.16 27);
+    --danger-soft: oklch(0.28 0.06 27);
+    --warning: oklch(0.8 0.13 80);
+    --warning-soft: oklch(0.29 0.05 80);
+    --success: oklch(0.75 0.13 150);
+    --success-soft: oklch(0.27 0.05 150);
+    --ring: oklch(0.72 0.15 262);
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-ring: var(--ring);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}

@@ -26,5 +26,7 @@ next-env.d.ts
 playwright-report/
 test-results/
 .vitest/
+# the UI journey writes these on every run; the few the docs show live in docs/images
+apps/web/dev/screenshots/
 
 .DS_Store
