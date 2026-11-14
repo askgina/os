@@ -22,6 +22,7 @@
     "@simplewebauthn/server": "14.1.0",
     "@workflow/world-postgres": "5.2.0",
     "drizzle-orm": "0.45.4",
+    "graphile-worker": "0.16.6",
     "hono": "4.13.18",
     "pg": "8.23.1",
     "viem": "2.57.19",
@@ -29,6 +30,7 @@
     "zod": "4.6.7"
   },
   "devDependencies": {
+    "@askgina/os-signer": "workspace:*",
     "@askgina/os-testkit": "workspace:*",
     "@modelcontextprotocol/client": "2.4.0",
     "@types/pg": "8.23.1",

@@ -1,0 +1,134 @@
+import type {
+  AgentSummary,
+  ApproverState,
+  Member,
+  Role,
+  WalletSummary,
+  WorkspaceDetail,
+} from "@askgina/os-api";
+import type { WorkspaceId } from "@askgina/os-protocol";
+import { and, asc, count, eq } from "drizzle-orm";
+import type { AppContext } from "../context.ts";
+import {
+  agents,
+  approvals,
+  approverCredentials,
+  memberships,
+  users,
+  wallets,
+  workspaces,
+} from "../db/schema.ts";
+import { HttpError } from "../http/errors.ts";
+
+const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
+
+export function agentSummary(row: typeof agents.$inferSelect): AgentSummary {
+  return {
+    id: row.id,
+    name: row.name,
+    status: row.status,
+    walletId: row.walletId,
+    tokenPrefix: row.tokenPrefix,
+    createdAt: seconds(row.createdAt),
+    lastSeenAt: row.lastSeenAt === null ? null : seconds(row.lastSeenAt),
+  };
+}
+
+export function walletSummary(
+  row: typeof wallets.$inferSelect,
+  agentId: AgentSummary["id"] | null,
+): WalletSummary {
+  return {
+    id: row.id,
+    kind: row.kind,
+    label: row.label,
+    address: row.address,
+    agentId,
+    policy: row.policy,
+    policyHash: row.policyHash,
+  };
+}
+
+/** A wallet of the workspace with the agent it belongs to, or `not_found`. */
+export async function loadWallet(ctx: AppContext, workspaceId: WorkspaceId, walletId: string) {
+  const [row] = await ctx.db
+    .select({ wallet: wallets, agentId: agents.id })
+    .from(wallets)
+    .leftJoin(agents, eq(agents.walletId, wallets.id))
+    .where(and(eq(wallets.id, walletId as never), eq(wallets.workspaceId, workspaceId)));
+  if (!row) throw new HttpError("not_found", "no such wallet");
+  return row;
+}
+
+export async function pendingApprovalCount(
+  ctx: AppContext,
+  workspaceId: WorkspaceId,
+): Promise<number> {
+  const [row] = await ctx.db
+    .select({ n: count() })
+    .from(approvals)
+    .where(and(eq(approvals.workspaceId, workspaceId), eq(approvals.status, "pending")));
+  return row?.n ?? 0;
+}
+
+export async function listMembers(ctx: AppContext, workspaceId: WorkspaceId): Promise<Member[]> {
+  const rows = await ctx.db
+    .select({ membership: memberships, user: users })
+    .from(memberships)
+    .innerJoin(users, eq(users.id, memberships.userId))
+    .where(eq(memberships.workspaceId, workspaceId))
+    .orderBy(asc(memberships.createdAt));
+  const approverRows = await ctx.db
+    .select({ userId: approverCredentials.userId, state: approverCredentials.state })
+    .from(approverCredentials)
+    .where(eq(approverCredentials.workspaceId, workspaceId));
+  return rows.map(({ membership, user }) => {
+    const states = approverRows.filter((row) => row.userId === user.id).map((row) => row.state);
+    // A passkey being removed is still accepted by the signer until the removal is applied.
+    const approver: ApproverState =
+      states.includes("active") || states.includes("removing")
+        ? "active"
+        : states.includes("pending")
+          ? "pending"
+          : "none";
+    return {
+      user: { id: user.id, displayName: user.displayName },
+      role: membership.role,
+      approver,
+      joinedAt: seconds(membership.createdAt),
+    };
+  });
+}
+
+export async function workspaceDetail(
+  ctx: AppContext,
+  workspaceId: WorkspaceId,
+  role: Role,
+): Promise<WorkspaceDetail> {
+  const [workspace] = await ctx.db.select().from(workspaces).where(eq(workspaces.id, workspaceId));
+  if (!workspace) throw new HttpError("not_found", "no such workspace");
+  const agentRows = await ctx.db
+    .select()
+    .from(agents)
+    .where(eq(agents.workspaceId, workspaceId))
+    .orderBy(asc(agents.createdAt));
+  const walletRows = await ctx.db
+    .select()
+    .from(wallets)
+    .where(eq(wallets.workspaceId, workspaceId))
+    .orderBy(asc(wallets.createdAt));
+  return {
+    id: workspace.id,
+    name: workspace.name,
+    role,
+    paused: workspace.paused,
+    pendingApprovals: await pendingApprovalCount(ctx, workspaceId),
+    adminThreshold: workspace.adminThreshold,
+    members: await listMembers(ctx, workspaceId),
+    agents: agentRows.map(agentSummary),
+    wallets: walletRows.map((wallet) =>
+      walletSummary(wallet, agentRows.find((agent) => agent.walletId === wallet.id)?.id ?? null),
+    ),
+    chains: ctx.chains.list(),
+  };
+}

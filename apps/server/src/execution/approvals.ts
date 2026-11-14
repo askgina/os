@@ -1,0 +1,676 @@
+import { randomBytes } from "node:crypto";
+import type {
+  ApprovalDetail,
+  ApprovalKind,
+  ApprovalStatus,
+  ApprovalSummary,
+  Requester,
+} from "@askgina/os-api";
+import {
+  type ApprovalId,
+  type ApproverCredential,
+  type Assertion,
+  type AssertionResponse,
+  Envelope,
+  envelopeChallenge,
+  newId,
+  PROTOCOL_VERSION,
+  type UserId,
+  type WorkspaceId,
+} from "@askgina/os-protocol";
+import { verifyAuthorization } from "@askgina/os-protocol/webauthn";
+import { generateAuthenticationOptions } from "@simplewebauthn/server";
+import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import {
+  type ApprovalEngine,
+  ApprovalFailure,
+  type ApprovalKindHandler,
+  type ApprovalRow,
+  type OpenApproval,
+} from "../approvals/kinds.ts";
+import { appendAudit } from "../audit.ts";
+import type { AppContext, Executor, Session } from "../context.ts";
+import {
+  agents,
+  approvalAssertions,
+  approvalRejections,
+  approvals,
+  approverCredentials,
+  credentials,
+  users,
+} from "../db/schema.ts";
+import { HttpError } from "../http/errors.ts";
+import type { SettledStatus, StepImplementations } from "./steps.ts";
+import type { WorkflowRuntime } from "./workflow-runtime.ts";
+
+/** Work after an approval's effect (for intents: broadcast and confirm). */
+export type FollowUp = (
+  ctx: AppContext,
+  approval: ApprovalRow,
+) => Promise<{ done: boolean; waitSeconds: number }>;
+
+const PAGE_SIZE = 50;
+const ENDED: readonly SettledStatus[] = ["rejected", "expired", "cancelled", "failed"];
+
+const detailLocation = (id: string) => `approvals.detail:${id}`;
+
+/** A list position: the last row's creation time and id, so equal timestamps still page. */
+function encodeCursor(row: { createdAt: Date; id: string }): string {
+  return Buffer.from(`${row.createdAt.getTime()}|${row.id}`).toString("base64url");
+}
+
+function decodeCursor(cursor: string): { at: Date; id: string } {
+  const [at, id] = Buffer.from(cursor, "base64url").toString("utf8").split("|");
+  const time = Number(at);
+  if (!id || !Number.isSafeInteger(time)) throw new HttpError("invalid_request", "bad cursor");
+  return { at: new Date(time), id };
+}
+
+const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
+
+/**
+ * The one engine behind every approval request. Kinds plug in through handlers; the engine owns
+ * the request's lifecycle: the envelope and its nonce, the assertions, the decision, the
+ * workflow that applies the effect, and the audit trail.
+ */
+export class Engine implements ApprovalEngine {
+  readonly #ctx: AppContext;
+  readonly #handlers = new Map<ApprovalKind, ApprovalKindHandler>();
+  readonly #followUps = new Map<ApprovalKind, FollowUp>();
+  /**
+   * Set by `startBackground` once the World runs. Until then requests are recorded without a
+   * workflow, and the sweeper starts their workflows when the runtime is up.
+   */
+  #runtime: WorkflowRuntime | null = null;
+
+  constructor(ctx: AppContext) {
+    this.#ctx = ctx;
+  }
+
+  register<K extends ApprovalKind>(handler: ApprovalKindHandler<K>): void {
+    this.#handlers.set(handler.kind, handler as unknown as ApprovalKindHandler);
+  }
+
+  attachRuntime(runtime: WorkflowRuntime | null): void {
+    this.#runtime = runtime;
+  }
+
+  registerFollowUp(kind: ApprovalKind, followUp: FollowUp): void {
+    this.#followUps.set(kind, followUp);
+  }
+
+  handler(kind: ApprovalKind): ApprovalKindHandler {
+    const handler = this.#handlers.get(kind);
+    if (!handler) throw new Error(`no handler registered for approval kind ${kind}`);
+    return handler;
+  }
+
+  async open<K extends ApprovalKind>(input: OpenApproval<K>): Promise<ApprovalSummary> {
+    const ctx = this.#ctx;
+    this.handler(input.kind);
+    const id = newId("apr");
+    const issuedAt = ctx.now();
+    const expiresAt = issuedAt + input.ttlSeconds;
+    const envelope = Envelope.parse({
+      ...input.envelope,
+      v: PROTOCOL_VERSION,
+      type: input.kind,
+      approvalId: id,
+      workspaceId: input.workspaceId,
+      nonce: randomBytes(16).toString("base64url"),
+      issuedAt,
+      expiresAt,
+    });
+    await ctx.db.transaction(async (tx) => {
+      await tx.insert(approvals).values({
+        id,
+        workspaceId: input.workspaceId,
+        kind: input.kind,
+        subjectId: input.subjectId,
+        envelope,
+        threshold: input.threshold,
+        detail: await ctx.sealer.seal(input.workspaceId, detailLocation(id), input.detail ?? null),
+        requestedByType: input.requestedBy.type,
+        requestedById: input.requestedBy.id,
+        createdAt: new Date(issuedAt * 1000),
+        expiresAt: new Date(expiresAt * 1000),
+      });
+      await input.alongside?.(tx, id);
+      await appendAudit(
+        ctx,
+        {
+          workspaceId: input.workspaceId,
+          actor: { type: input.requestedBy.type, id: input.requestedBy.id },
+          action: "approval.opened",
+          subject: { type: "approval", id },
+          detail: { kind: input.kind, subjectId: input.subjectId, threshold: input.threshold },
+        },
+        tx,
+      );
+    });
+    await this.startRun(id, input.workspaceId, expiresAt);
+    this.#notify(id, input.workspaceId, input.kind);
+    return this.summary(await this.row(id));
+  }
+
+  async cancel(approvalId: ApprovalId): Promise<void> {
+    const ctx = this.#ctx;
+    const ended = await ctx.db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(approvals)
+        .set({ status: "cancelled", decidedAt: new Date(ctx.now() * 1000), resumeState: "needed" })
+        .where(and(eq(approvals.id, approvalId), eq(approvals.status, "pending")))
+        .returning();
+      if (!row) return false;
+      await appendAudit(
+        ctx,
+        {
+          workspaceId: row.workspaceId,
+          actor: { type: "system", id: null },
+          action: "approval.cancelled",
+          subject: { type: "approval", id: approvalId },
+        },
+        tx,
+      );
+      return true;
+    });
+    if (ended) await this.wake(approvalId);
+  }
+
+  /** Start the waiting workflow. A failure is left to the sweeper, which starts it later. */
+  async startRun(id: ApprovalId, workspaceId: WorkspaceId, expiresAt: number): Promise<void> {
+    const ctx = this.#ctx;
+    const runtime = this.#runtime;
+    if (runtime === null) return;
+    try {
+      const runId = await runtime.startRun({ approvalId: id, workspaceId, expiresAt });
+      await ctx.db
+        .update(approvals)
+        .set({ runId })
+        .where(and(eq(approvals.id, id), isNull(approvals.runId)));
+    } catch (error) {
+      ctx.log.warn("approval workflow start failed", {
+        approvalId: id,
+        error: error instanceof Error ? error.name : "unknown",
+      });
+    }
+  }
+
+  /** Resume the workflow so it reads the decision; marks the outbox done when it worked. */
+  async wake(id: ApprovalId): Promise<boolean> {
+    const ctx = this.#ctx;
+    if (this.#runtime === null) return false;
+    const woken = await this.#runtime.wake(id);
+    if (woken) {
+      await ctx.db
+        .update(approvals)
+        .set({ resumeState: "done" })
+        .where(and(eq(approvals.id, id), eq(approvals.resumeState, "needed")));
+    }
+    return woken;
+  }
+
+  async row(id: string, executor: Executor = this.#ctx.db): Promise<ApprovalRow> {
+    const [row] = await executor
+      .select()
+      .from(approvals)
+      .where(eq(approvals.id, id as ApprovalId));
+    if (!row) throw new HttpError("not_found", "no such approval");
+    return row;
+  }
+
+  async openDetail(row: ApprovalRow): Promise<unknown> {
+    if (row.detail === null) return null;
+    return this.#ctx.sealer.open(row.workspaceId, detailLocation(row.id), row.detail);
+  }
+
+  /** The status a person should see: a pending request past its expiry is already expired. */
+  shownStatus(row: ApprovalRow): ApprovalStatus {
+    if (row.status === "pending" && seconds(row.expiresAt) <= this.#ctx.now()) return "expired";
+    return row.status;
+  }
+
+  async summary(row: ApprovalRow): Promise<ApprovalSummary> {
+    const ctx = this.#ctx;
+    const detail = await this.openDetail(row);
+    const [count] = await ctx.db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(approvalAssertions)
+      .where(eq(approvalAssertions.approvalId, row.id));
+    return {
+      id: row.id,
+      workspaceId: row.workspaceId,
+      kind: row.kind,
+      status: this.shownStatus(row),
+      title: await this.handler(row.kind).title(ctx, row, detail),
+      requestedBy: await this.#requester(row),
+      createdAt: seconds(row.createdAt),
+      expiresAt: seconds(row.expiresAt),
+      threshold: row.threshold,
+      approvals: count?.n ?? 0,
+      failureCode: row.failureCode,
+    };
+  }
+
+  async detail(row: ApprovalRow, session: Session): Promise<ApprovalDetail> {
+    const ctx = this.#ctx;
+    const detail = await this.openDetail(row);
+    const approvedBy = await ctx.db
+      .select({ id: users.id, displayName: users.displayName })
+      .from(approvalAssertions)
+      .innerJoin(users, eq(users.id, approvalAssertions.userId))
+      .where(eq(approvalAssertions.approvalId, row.id))
+      .orderBy(asc(approvalAssertions.createdAt));
+    const [rejectedBy] = await ctx.db
+      .select({ id: users.id, displayName: users.displayName })
+      .from(approvalRejections)
+      .innerJoin(users, eq(users.id, approvalRejections.userId))
+      .where(eq(approvalRejections.approvalId, row.id));
+    const decided = approvedBy.some((user) => user.id === session.user.id);
+    const canDecide =
+      this.shownStatus(row) === "pending" &&
+      !decided &&
+      (await this.activeApproverCredentials(row.workspaceId, session.user.id)).length > 0;
+    return {
+      ...(await this.summary(row)),
+      envelope: row.envelope,
+      challenge: Buffer.from(envelopeChallenge(row.envelope)).toString("base64url"),
+      approvedBy,
+      rejectedBy: rejectedBy ?? null,
+      canDecide,
+      subject: await this.handler(row.kind).describe(ctx, row, detail),
+    };
+  }
+
+  async list(
+    workspaceId: WorkspaceId,
+    filter: { status?: "pending" | "all" | undefined; cursor?: string | undefined },
+  ): Promise<{ items: ApprovalSummary[]; nextCursor: string | null }> {
+    const ctx = this.#ctx;
+    const conditions = [eq(approvals.workspaceId, workspaceId)];
+    if (filter.status !== "all") {
+      conditions.push(eq(approvals.status, "pending"));
+      conditions.push(sql`${approvals.expiresAt} > ${new Date(ctx.now() * 1000)}`);
+    }
+    if (filter.cursor !== undefined) {
+      const { at, id } = decodeCursor(filter.cursor);
+      const before = or(
+        lt(approvals.createdAt, at),
+        and(eq(approvals.createdAt, at), lt(approvals.id, id as ApprovalId)),
+      );
+      if (before) conditions.push(before);
+    }
+    const rows = await ctx.db
+      .select()
+      .from(approvals)
+      .where(and(...conditions))
+      .orderBy(desc(approvals.createdAt), desc(approvals.id))
+      .limit(PAGE_SIZE + 1);
+    const page = rows.slice(0, PAGE_SIZE);
+    const last = page.at(-1);
+    return {
+      items: await Promise.all(page.map((row) => this.summary(row))),
+      nextCursor: rows.length > PAGE_SIZE && last ? encodeCursor(last) : null,
+    };
+  }
+
+  /** The passkeys the signer accepts for this person in this workspace, as our mirror has them. */
+  async activeApproverCredentials(
+    workspaceId: WorkspaceId,
+    userId?: UserId,
+  ): Promise<(ApproverCredential & { transports: string[] })[]> {
+    const conditions = [
+      eq(approverCredentials.workspaceId, workspaceId),
+      eq(approverCredentials.state, "active"),
+      isNull(credentials.revokedAt),
+    ];
+    if (userId !== undefined) conditions.push(eq(approverCredentials.userId, userId));
+    const rows = await this.#ctx.db
+      .select({
+        userId: approverCredentials.userId,
+        credentialId: approverCredentials.credentialId,
+        publicKey: credentials.publicKey,
+        transports: credentials.transports,
+      })
+      .from(approverCredentials)
+      .innerJoin(credentials, eq(credentials.id, approverCredentials.credentialId))
+      .where(and(...conditions));
+    return rows.map((row) => ({
+      userId: row.userId,
+      credentialId: row.credentialId,
+      publicKey: Buffer.from(row.publicKey).toString("base64url"),
+      transports: row.transports,
+    }));
+  }
+
+  async startCeremony(row: ApprovalRow, session: Session) {
+    if (this.shownStatus(row) !== "pending") {
+      throw new HttpError("conflict", "this request is no longer waiting for approval");
+    }
+    const mine = await this.activeApproverCredentials(row.workspaceId, session.user.id);
+    if (mine.length === 0) {
+      throw new HttpError("forbidden", "you have no passkey that approves for this workspace");
+    }
+    const options = await generateAuthenticationOptions({
+      rpID: this.#ctx.config.relyingParty.id,
+      // The challenge is the envelope's digest itself, as bytes, so the assertion is bound to
+      // exactly this request; nothing about it needs to be remembered here.
+      challenge: new Uint8Array(envelopeChallenge(row.envelope)),
+      allowCredentials: mine.map((credential) => ({
+        id: credential.credentialId,
+        transports: credential.transports as never,
+      })),
+      userVerification: "required",
+      timeout: 120_000,
+    });
+    return options as unknown as Record<string, unknown>;
+  }
+
+  async approve(row: ApprovalRow, session: Session, response: AssertionResponse): Promise<void> {
+    const ctx = this.#ctx;
+    if (this.shownStatus(row) !== "pending") {
+      throw new HttpError("conflict", "this request is no longer waiting for approval");
+    }
+    const mine = await this.activeApproverCredentials(row.workspaceId, session.user.id);
+    const credential = mine.find((candidate) => candidate.credentialId === response.id);
+    if (!credential) {
+      throw new HttpError("forbidden", "this passkey does not approve for this workspace");
+    }
+    const assertion: Assertion = {
+      userId: session.user.id,
+      credentialId: credential.credentialId,
+      response,
+    };
+    // The signer checks again with its own registry; this refuses garbage before it is stored.
+    const verdict = await verifyAuthorization({
+      authorization: { envelope: row.envelope, assertions: [assertion] },
+      approvers: mine,
+      relyingParty: ctx.config.relyingParty,
+      threshold: 1,
+      maxTtlSeconds: row.envelope.expiresAt - row.envelope.issuedAt,
+      now: ctx.now(),
+    });
+    if (!verdict.ok)
+      throw new HttpError("forbidden", "the passkey assertion is not valid", verdict.code);
+
+    const decided = await ctx.db.transaction(async (tx) => {
+      // Lock the request so the threshold is counted once, against concurrent approvals.
+      const [locked] = await tx
+        .select()
+        .from(approvals)
+        .where(eq(approvals.id, row.id))
+        .for("update");
+      if (!locked || locked.status !== "pending" || seconds(locked.expiresAt) <= ctx.now()) {
+        throw new HttpError("conflict", "this request is no longer waiting for approval");
+      }
+      const inserted = await tx
+        .insert(approvalAssertions)
+        .values({
+          approvalId: row.id,
+          userId: session.user.id,
+          credentialId: credential.credentialId,
+          response,
+          createdAt: new Date(ctx.now() * 1000),
+        })
+        .onConflictDoNothing()
+        .returning({ userId: approvalAssertions.userId });
+      if (inserted.length === 0) throw new HttpError("conflict", "you already approved this");
+      await appendAudit(
+        ctx,
+        {
+          workspaceId: row.workspaceId,
+          actor: { type: "user", id: session.user.id },
+          action: "approval.assertion_added",
+          subject: { type: "approval", id: row.id },
+          detail: { credentialId: credential.credentialId },
+        },
+        tx,
+      );
+      const [count] = await tx
+        .select({ n: sql<number>`count(*)::int` })
+        .from(approvalAssertions)
+        .where(eq(approvalAssertions.approvalId, row.id));
+      if ((count?.n ?? 0) < locked.threshold) return false;
+      await tx
+        .update(approvals)
+        .set({ status: "approved", decidedAt: new Date(ctx.now() * 1000), resumeState: "needed" })
+        .where(and(eq(approvals.id, row.id), eq(approvals.status, "pending")));
+      await appendAudit(
+        ctx,
+        {
+          workspaceId: row.workspaceId,
+          actor: { type: "user", id: session.user.id },
+          action: "approval.approved",
+          subject: { type: "approval", id: row.id },
+        },
+        tx,
+      );
+      return true;
+    });
+    if (decided) await this.wake(row.id);
+  }
+
+  async reject(row: ApprovalRow, session: Session): Promise<void> {
+    const ctx = this.#ctx;
+    const mine = await this.activeApproverCredentials(row.workspaceId, session.user.id);
+    if (mine.length === 0) {
+      throw new HttpError("forbidden", "you have no passkey that approves for this workspace");
+    }
+    await ctx.db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(approvals)
+        .set({ status: "rejected", decidedAt: new Date(ctx.now() * 1000), resumeState: "needed" })
+        .where(
+          and(
+            eq(approvals.id, row.id),
+            eq(approvals.status, "pending"),
+            sql`${approvals.expiresAt} > ${new Date(ctx.now() * 1000)}`,
+          ),
+        )
+        .returning({ id: approvals.id });
+      if (!updated)
+        throw new HttpError("conflict", "this request is no longer waiting for approval");
+      await tx.insert(approvalRejections).values({
+        approvalId: row.id,
+        userId: session.user.id,
+        createdAt: new Date(ctx.now() * 1000),
+      });
+      await appendAudit(
+        ctx,
+        {
+          workspaceId: row.workspaceId,
+          actor: { type: "user", id: session.user.id },
+          action: "approval.rejected",
+          subject: { type: "approval", id: row.id },
+        },
+        tx,
+      );
+    });
+    // From here on the signer refuses this approval id for good, whatever happens to our rows.
+    await ctx.signer.revokeApproval(row.id).catch((error: unknown) => {
+      ctx.log.warn("revoking a rejected approval failed", {
+        approvalId: row.id,
+        error: error instanceof Error ? error.name : "unknown",
+      });
+    });
+    await this.wake(row.id);
+  }
+
+  /** What the bundled workflow's steps call. Each is safe to run more than once. */
+  steps(): StepImplementations {
+    const ctx = this.#ctx;
+    return {
+      settle: async (approvalId, runId) => {
+        const id = approvalId as ApprovalId;
+        await ctx.db
+          .update(approvals)
+          .set({ runId })
+          .where(and(eq(approvals.id, id), isNull(approvals.runId)));
+        const row = await this.row(id);
+        if (row.runId !== runId) return "superseded";
+        if (row.status === "pending") {
+          if (seconds(row.expiresAt) > ctx.now()) return "pending";
+          const expired = await ctx.db.transaction(async (tx) => {
+            const [updated] = await tx
+              .update(approvals)
+              .set({ status: "expired", resumeState: "done" })
+              .where(and(eq(approvals.id, id), eq(approvals.status, "pending")))
+              .returning({ id: approvals.id });
+            if (!updated) return false;
+            await appendAudit(
+              ctx,
+              {
+                workspaceId: row.workspaceId,
+                actor: { type: "system", id: null },
+                action: "approval.expired",
+                subject: { type: "approval", id },
+              },
+              tx,
+            );
+            return true;
+          });
+          return expired ? "expired" : (await this.row(id)).status;
+        }
+        // The run has seen the decision, so nothing is left for the outbox to deliver.
+        await ctx.db
+          .update(approvals)
+          .set({ resumeState: "done" })
+          .where(and(eq(approvals.id, id), eq(approvals.resumeState, "needed")));
+        return row.status;
+      },
+
+      execute: async (approvalId) => {
+        const row = await this.row(approvalId);
+        if (row.status === "executed") return { ok: true };
+        if (row.status !== "approved") return { ok: false, code: `not_approved_${row.status}` };
+        const assertions = await ctx.db
+          .select()
+          .from(approvalAssertions)
+          .where(eq(approvalAssertions.approvalId, row.id))
+          .orderBy(asc(approvalAssertions.createdAt));
+        const authorization = {
+          envelope: row.envelope,
+          assertions: assertions.map((assertion) => ({
+            userId: assertion.userId,
+            credentialId: assertion.credentialId,
+            response: assertion.response,
+          })),
+        };
+        try {
+          await this.handler(row.kind).execute(ctx, row, authorization, await this.openDetail(row));
+        } catch (error) {
+          if (error instanceof ApprovalFailure) return { ok: false, code: error.code };
+          throw error;
+        }
+        await ctx.db.transaction(async (tx) => {
+          const [updated] = await tx
+            .update(approvals)
+            .set({ status: "executed" })
+            .where(and(eq(approvals.id, row.id), eq(approvals.status, "approved")))
+            .returning({ id: approvals.id });
+          if (!updated) return;
+          await appendAudit(
+            ctx,
+            {
+              workspaceId: row.workspaceId,
+              actor: { type: "system", id: null },
+              action: "approval.executed",
+              subject: { type: "approval", id: row.id },
+            },
+            tx,
+          );
+        });
+        return { ok: true };
+      },
+
+      fail: async (approvalId, code) => {
+        const row = await this.row(approvalId);
+        await ctx.db.transaction(async (tx) => {
+          const [updated] = await tx
+            .update(approvals)
+            .set({ status: "failed", failureCode: code })
+            .where(
+              and(eq(approvals.id, row.id), inArray(approvals.status, ["approved", "pending"])),
+            )
+            .returning({ id: approvals.id });
+          if (!updated) return;
+          await appendAudit(
+            ctx,
+            {
+              workspaceId: row.workspaceId,
+              actor: { type: "system", id: null },
+              action: "approval.failed",
+              subject: { type: "approval", id: row.id },
+              detail: { code },
+            },
+            tx,
+          );
+        });
+        await this.#end(await this.row(approvalId), "failed");
+      },
+
+      abandon: async (approvalId, status) => {
+        if (!ENDED.includes(status)) return;
+        await this.#end(await this.row(approvalId), status as "rejected");
+      },
+
+      followUp: async (approvalId) => {
+        const row = await this.row(approvalId);
+        const followUp = this.#followUps.get(row.kind);
+        return followUp ? followUp(ctx, row) : { done: true, waitSeconds: 0 };
+      },
+    };
+  }
+
+  /** A request ended without its effect: make sure the signer never acts on it, then undo. */
+  async #end(
+    row: ApprovalRow,
+    status: "rejected" | "expired" | "cancelled" | "failed",
+  ): Promise<void> {
+    const ctx = this.#ctx;
+    await ctx.signer.revokeApproval(row.id);
+    await this.handler(row.kind).abandon?.(ctx, row, status, await this.openDetail(row));
+  }
+
+  async #requester(row: ApprovalRow): Promise<Requester> {
+    const ctx = this.#ctx;
+    if (row.requestedByType === "agent") {
+      const [agent] = await ctx.db
+        .select({ name: agents.name })
+        .from(agents)
+        .where(eq(agents.id, row.requestedById as never));
+      return { type: "agent", id: row.requestedById as never, name: agent?.name ?? "" };
+    }
+    const [user] = await ctx.db
+      .select({ name: users.displayName })
+      .from(users)
+      .where(eq(users.id, row.requestedById as never));
+    return { type: "user", id: row.requestedById as never, name: user?.name ?? "" };
+  }
+
+  /** Tell the operator's webhook that something waits. Identifiers only; never blocks. */
+  #notify(approvalId: ApprovalId, workspaceId: WorkspaceId, kind: ApprovalKind): void {
+    const url = this.#ctx.config.notifyWebhookUrl;
+    if (url === undefined) return;
+    fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ event: "approval.opened", approvalId, workspaceId, kind }),
+      signal: AbortSignal.timeout(5_000),
+    }).catch(() => {
+      this.#ctx.log.warn("approval webhook failed", { approvalId });
+    });
+  }
+}
+
+export function createApprovalEngine(ctx: AppContext): Engine {
+  return new Engine(ctx);
+}
+
+/** The context's engine with the parts only execution uses. */
+export function engineOf(ctx: Pick<AppContext, "approvals">): Engine {
+  if (!(ctx.approvals instanceof Engine)) {
+    throw new Error("the context's approval engine was not created by createApprovalEngine()");
+  }
+  return ctx.approvals;
+}

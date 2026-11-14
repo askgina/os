@@ -1,0 +1,852 @@
+import type { ApprovalSummary, AssetBalance, AuditEvent, Role } from "@askgina/os-api";
+import {
+  type AgentId,
+  type AssetRef,
+  type ChainId,
+  newId,
+  normalizePolicy,
+  PROTOCOL_VERSION,
+  policyHash,
+  type UserId,
+  type WalletId,
+  type WalletPolicy,
+  type WorkspaceId,
+} from "@askgina/os-protocol";
+import { and, asc, count, desc, eq, gt, inArray, isNull, lt } from "drizzle-orm";
+import type { Hono } from "hono";
+import { requireMember } from "../access.ts";
+import { appendAudit, verifyAudit } from "../audit.ts";
+import type { AppContext, Executor, Session } from "../context.ts";
+import {
+  agents,
+  approvals,
+  approverCredentials,
+  auditEvents,
+  credentials,
+  invites,
+  memberships,
+  users,
+  wallets,
+  workspaces,
+} from "../db/schema.ts";
+import { fromSignerError, HttpError } from "../http/errors.ts";
+import { handle } from "../http/route.ts";
+import { finishRegistration, insertPasskey, startRegistration } from "../identity/ceremonies.ts";
+import { sessionInfo } from "../identity/routes.ts";
+import { randomToken, sha256Hex } from "../identity/secrets.ts";
+import { issueSession } from "../identity/sessions.ts";
+import { openAddApprover, withdrawApprover } from "./approvers.ts";
+import type { SetPolicyDetail } from "./kinds.ts";
+import {
+  agentSummary,
+  listMembers,
+  loadWallet,
+  pendingApprovalCount,
+  walletSummary,
+  workspaceDetail,
+} from "./views.ts";
+
+const INVITE_TTL_SECONDS = 7 * 24 * 3600;
+const AUDIT_PAGE = 50;
+const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
+const actorOf = (session: Session) => ({ type: "user" as const, id: session.user.id });
+
+/** Ask the signer something; its refusals become the API's error codes. */
+async function signerCall<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    throw fromSignerError(error);
+  }
+}
+
+/** `osa_<agent ulid>_<32 random bytes>`: recognizable in a leaked-secret scan, unguessable. */
+function mintAgentToken(agentId: AgentId): { token: string; hash: string; prefix: string } {
+  const token = `osa_${agentId.slice("agt_".length)}_${randomToken(32)}`;
+  // The prefix names the agent and four characters of the secret: enough to tell tokens apart.
+  return { token, hash: sha256Hex(token), prefix: token.slice(0, 35) };
+}
+
+/** A pending invite the token names, or `not_found` for any token that cannot be used. */
+async function liveInvite(ctx: AppContext, token: string) {
+  const [invite] = await ctx.db
+    .select()
+    .from(invites)
+    .where(
+      and(
+        eq(invites.tokenHash, sha256Hex(token)),
+        isNull(invites.acceptedAt),
+        gt(invites.expiresAt, new Date(ctx.now() * 1000)),
+      ),
+    );
+  if (!invite) throw new HttpError("not_found", "this invite is not valid any more");
+  return invite;
+}
+
+/**
+ * Use an invite and add the member, in one transaction. The conditional update makes the
+ * invite single use even when two people race with the same link.
+ */
+async function joinByInvite(
+  ctx: AppContext,
+  tx: Executor,
+  tokenHash: string,
+  userId: UserId,
+): Promise<{ workspaceId: WorkspaceId; role: Role }> {
+  const now = new Date(ctx.now() * 1000);
+  const [invite] = await tx
+    .update(invites)
+    .set({ acceptedBy: userId, acceptedAt: now })
+    .where(
+      and(eq(invites.tokenHash, tokenHash), isNull(invites.acceptedAt), gt(invites.expiresAt, now)),
+    )
+    .returning();
+  if (!invite) throw new HttpError("not_found", "this invite is not valid any more");
+  const [already] = await tx
+    .select({ role: memberships.role })
+    .from(memberships)
+    .where(and(eq(memberships.workspaceId, invite.workspaceId), eq(memberships.userId, userId)));
+  if (already) throw new HttpError("conflict", "you are already a member of this workspace");
+  // Every member starts without approving: the signer accepts their passkeys only once the
+  // workspace's approvers authorize each one.
+  await tx
+    .insert(memberships)
+    .values({ workspaceId: invite.workspaceId, userId, role: invite.role });
+  await appendAudit(
+    ctx,
+    {
+      workspaceId: invite.workspaceId,
+      actor: { type: "user", id: userId },
+      action: "member.joined",
+      subject: { type: "user", id: userId },
+      detail: { role: invite.role, invitedBy: invite.createdBy },
+    },
+    tx,
+  );
+  return { workspaceId: invite.workspaceId, role: invite.role };
+}
+
+/** Open an `add-approver` request for each of a person's passkeys. */
+async function enrollPasskeys(
+  ctx: AppContext,
+  workspaceId: WorkspaceId,
+  userId: UserId,
+): Promise<ApprovalSummary[]> {
+  const rows = await ctx.db
+    .select({ id: credentials.id })
+    .from(credentials)
+    .where(and(eq(credentials.userId, userId), isNull(credentials.revokedAt)));
+  const opened: ApprovalSummary[] = [];
+  for (const row of rows) {
+    opened.push(
+      await openAddApprover(ctx, {
+        workspaceId,
+        userId,
+        credentialId: row.id,
+        requestedBy: { type: "user", id: userId },
+      }),
+    );
+  }
+  return opened;
+}
+
+async function ownerCount(ctx: AppContext, workspaceId: WorkspaceId): Promise<number> {
+  const [row] = await ctx.db
+    .select({ n: count() })
+    .from(memberships)
+    .where(and(eq(memberships.workspaceId, workspaceId), eq(memberships.role, "owner")));
+  return row?.n ?? 0;
+}
+
+async function memberRole(ctx: AppContext, workspaceId: WorkspaceId, userId: string) {
+  const [row] = await ctx.db
+    .select({ role: memberships.role })
+    .from(memberships)
+    .where(and(eq(memberships.workspaceId, workspaceId), eq(memberships.userId, userId as UserId)));
+  if (!row) throw new HttpError("not_found", "no such member");
+  return row.role;
+}
+
+async function loadAgent(ctx: AppContext, workspaceId: WorkspaceId, agentId: string) {
+  const [row] = await ctx.db
+    .select()
+    .from(agents)
+    .where(and(eq(agents.id, agentId as AgentId), eq(agents.workspaceId, workspaceId)));
+  if (!row) throw new HttpError("not_found", "no such agent");
+  return row;
+}
+
+/** Create a wallet at the signer and mirror it. The signer is idempotent by wallet id. */
+async function createWallet(
+  ctx: AppContext,
+  input: {
+    workspaceId: WorkspaceId;
+    walletId: WalletId;
+    kind: "agent" | "treasury";
+    label: string;
+  },
+) {
+  const state = await signerCall(() => ctx.signer.createWallet(input));
+  await ctx.db
+    .insert(wallets)
+    .values({
+      id: input.walletId,
+      workspaceId: input.workspaceId,
+      kind: input.kind,
+      label: input.label,
+      address: state.address.toLowerCase() as `0x${string}`,
+    })
+    .onConflictDoNothing();
+  const [row] = await ctx.db.select().from(wallets).where(eq(wallets.id, input.walletId));
+  if (!row) throw new HttpError("internal", "the wallet was not stored");
+  return row;
+}
+
+export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
+  // --- workspaces -----------------------------------------------------------------------------
+
+  handle(app, ctx, "listWorkspaces", async ({ session }) => {
+    const rows = await ctx.db
+      .select({ workspace: workspaces, role: memberships.role })
+      .from(memberships)
+      .innerJoin(workspaces, eq(workspaces.id, memberships.workspaceId))
+      .where(eq(memberships.userId, session.user.id))
+      .orderBy(asc(workspaces.createdAt));
+    const items = [];
+    for (const { workspace, role } of rows) {
+      items.push({
+        id: workspace.id,
+        name: workspace.name,
+        role,
+        paused: workspace.paused,
+        pendingApprovals: await pendingApprovalCount(ctx, workspace.id),
+      });
+    }
+    return { items };
+  });
+
+  handle(app, ctx, "createWorkspace", async ({ session, body }) => {
+    const workspaceId = newId("ws");
+    const passkeys = await ctx.db
+      .select({ id: credentials.id, publicKey: credentials.publicKey })
+      .from(credentials)
+      .where(and(eq(credentials.userId, session.user.id), isNull(credentials.revokedAt)));
+    // Trust on first use: the signer learns the creator's passkeys here and from then on only
+    // changes the set with their assertions.
+    await signerCall(() =>
+      ctx.signer.createWorkspace({
+        workspaceId,
+        adminThreshold: 1,
+        approvers: passkeys.map((passkey) => ({
+          userId: session.user.id,
+          credentialId: passkey.id,
+          publicKey: passkey.publicKey.toString("base64url"),
+        })),
+      }),
+    );
+    await ctx.db.transaction(async (tx) => {
+      await tx.insert(workspaces).values({
+        id: workspaceId,
+        name: body.name,
+        createdBy: session.user.id,
+        adminThreshold: 1,
+      });
+      await tx.insert(memberships).values({ workspaceId, userId: session.user.id, role: "owner" });
+      if (passkeys.length > 0) {
+        await tx.insert(approverCredentials).values(
+          passkeys.map((passkey) => ({
+            workspaceId,
+            credentialId: passkey.id,
+            userId: session.user.id,
+            state: "active" as const,
+          })),
+        );
+      }
+      await appendAudit(
+        ctx,
+        {
+          workspaceId,
+          actor: actorOf(session),
+          action: "workspace.created",
+          subject: { type: "workspace", id: workspaceId },
+          detail: { name: body.name, approvers: passkeys.length },
+        },
+        tx,
+      );
+    });
+    return workspaceDetail(ctx, workspaceId, "owner");
+  });
+
+  handle(app, ctx, "getWorkspace", async ({ session, params }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    const role = await requireMember(ctx, session, workspaceId);
+    return workspaceDetail(ctx, workspaceId, role);
+  });
+
+  handle(app, ctx, "pauseWorkspace", async ({ session, params }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    // Any approver may pull the brake; it only removes authority, so it needs no passkey.
+    const role = await requireMember(ctx, session, workspaceId, "approver");
+    await signerCall(() => ctx.signer.pauseWorkspace(workspaceId));
+    await ctx.db.transaction(async (tx) => {
+      const changed = await tx
+        .update(workspaces)
+        .set({ paused: true })
+        .where(and(eq(workspaces.id, workspaceId), eq(workspaces.paused, false)))
+        .returning({ id: workspaces.id });
+      if (changed.length === 0) return;
+      await appendAudit(
+        ctx,
+        {
+          workspaceId,
+          actor: actorOf(session),
+          action: "workspace.paused",
+          subject: { type: "workspace", id: workspaceId },
+        },
+        tx,
+      );
+    });
+    return workspaceDetail(ctx, workspaceId, role);
+  });
+
+  handle(app, ctx, "requestResume", async ({ session, params }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    await requireMember(ctx, session, workspaceId, "approver");
+    const [workspace] = await ctx.db
+      .select()
+      .from(workspaces)
+      .where(eq(workspaces.id, workspaceId));
+    if (!workspace?.paused) throw new HttpError("conflict", "this workspace is not paused");
+    return ctx.approvals.open({
+      workspaceId,
+      kind: "resume-workspace",
+      subjectId: workspaceId,
+      envelope: {},
+      threshold: workspace.adminThreshold,
+      ttlSeconds: ctx.config.adminApprovalTtlSeconds,
+      detail: {},
+      requestedBy: actorOf(session),
+    });
+  });
+
+  handle(app, ctx, "requestAdminThreshold", async ({ session, params, body }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    await requireMember(ctx, session, workspaceId, "owner");
+    const [workspace] = await ctx.db
+      .select()
+      .from(workspaces)
+      .where(eq(workspaces.id, workspaceId));
+    if (!workspace) throw new HttpError("not_found", "no such workspace");
+    return ctx.approvals.open({
+      workspaceId,
+      kind: "set-admin-threshold",
+      subjectId: workspaceId,
+      envelope: { adminThreshold: body.adminThreshold },
+      // The threshold in force decides whether it may change.
+      threshold: workspace.adminThreshold,
+      ttlSeconds: ctx.config.adminApprovalTtlSeconds,
+      detail: {},
+      requestedBy: actorOf(session),
+    });
+  });
+
+  // --- members --------------------------------------------------------------------------------
+
+  handle(app, ctx, "createInvite", async ({ session, params, body }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    await requireMember(ctx, session, workspaceId, "owner");
+    const token = randomToken(32);
+    const expiresAt = ctx.now() + INVITE_TTL_SECONDS;
+    await ctx.db.transaction(async (tx) => {
+      await tx.insert(invites).values({
+        tokenHash: sha256Hex(token),
+        workspaceId,
+        role: body.role,
+        createdBy: session.user.id,
+        expiresAt: new Date(expiresAt * 1000),
+      });
+      await appendAudit(
+        ctx,
+        {
+          workspaceId,
+          actor: actorOf(session),
+          action: "invite.created",
+          detail: { role: body.role, expiresAt },
+        },
+        tx,
+      );
+    });
+    return { url: `${ctx.config.publicOrigin}/invite/${token}`, expiresAt };
+  });
+
+  handle(app, ctx, "getInvite", async ({ params }) => {
+    const invite = await liveInvite(ctx, params.token);
+    const [row] = await ctx.db
+      .select({ workspaceName: workspaces.name, invitedBy: users.displayName })
+      .from(workspaces)
+      .innerJoin(users, eq(users.id, invite.createdBy))
+      .where(eq(workspaces.id, invite.workspaceId));
+    if (!row) throw new HttpError("not_found", "this invite is not valid any more");
+    return { workspaceName: row.workspaceName, role: invite.role, invitedBy: row.invitedBy };
+  });
+
+  handle(app, ctx, "startInviteRegistration", async ({ params, body }) => {
+    const invite = await liveInvite(ctx, params.token);
+    return startRegistration(ctx, {
+      kind: "invite",
+      userId: newId("usr"),
+      displayName: body.displayName,
+      context: { displayName: body.displayName, tokenHash: invite.tokenHash },
+    });
+  });
+
+  handle(app, ctx, "finishInviteRegistration", async ({ params, body, c }) => {
+    const { ceremony, passkey } = await finishRegistration(ctx, {
+      ceremonyId: body.ceremonyId,
+      kind: "invite",
+      response: body.response,
+    });
+    // The ceremony was started for one invite; it cannot finish another.
+    if (ceremony.context.tokenHash !== sha256Hex(params.token)) {
+      throw new HttpError("not_found", "this invite is not valid any more");
+    }
+    const userId = ceremony.userId as UserId;
+    const displayName = ceremony.context.displayName ?? "Member";
+    const joined = await ctx.db.transaction(async (tx) => {
+      await tx.insert(users).values({ id: userId, displayName });
+      await insertPasskey(tx, userId, passkey, "First passkey");
+      const result = await joinByInvite(ctx, tx, sha256Hex(params.token), userId);
+      await issueSession(ctx, c, { userId, credentialId: passkey.id }, tx);
+      return result;
+    });
+    if (joined.role !== "viewer") await enrollPasskeys(ctx, joined.workspaceId, userId);
+    return sessionInfo(ctx, { id: userId, displayName });
+  });
+
+  handle(app, ctx, "acceptInvite", async ({ session, params }) => {
+    const joined = await ctx.db.transaction((tx) =>
+      joinByInvite(ctx, tx, sha256Hex(params.token), session.user.id),
+    );
+    if (joined.role !== "viewer") await enrollPasskeys(ctx, joined.workspaceId, session.user.id);
+    return { workspaceId: joined.workspaceId };
+  });
+
+  handle(app, ctx, "setMemberRole", async ({ session, params, body }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    await requireMember(ctx, session, workspaceId, "owner");
+    const userId = params.userId as UserId;
+    const current = await memberRole(ctx, workspaceId, userId);
+    if (
+      current === "owner" &&
+      body.role !== "owner" &&
+      (await ownerCount(ctx, workspaceId)) === 1
+    ) {
+      throw new HttpError("conflict", "a workspace needs at least one owner");
+    }
+    const setRole = async (role: Role) => {
+      await ctx.db.transaction(async (tx) => {
+        await tx
+          .update(memberships)
+          .set({ role })
+          .where(and(eq(memberships.workspaceId, workspaceId), eq(memberships.userId, userId)));
+        await appendAudit(
+          ctx,
+          {
+            workspaceId,
+            actor: actorOf(session),
+            action: "member.role_changed",
+            subject: { type: "user", id: userId },
+            detail: { role },
+          },
+          tx,
+        );
+      });
+    };
+    let opened: ApprovalSummary[] = [];
+    if (body.role === current) {
+      // Nothing to change.
+    } else if (body.role === "viewer") {
+      // The role drops only once the signer stops accepting the member's passkeys.
+      opened = await withdrawApprover(ctx, {
+        workspaceId,
+        userId,
+        afterwards: "viewer",
+        requestedBy: actorOf(session),
+      });
+      if (opened.length === 0) await setRole("viewer");
+    } else {
+      await setRole(body.role);
+      if (current === "viewer") opened = await enrollPasskeys(ctx, workspaceId, userId);
+    }
+    const member = (await listMembers(ctx, workspaceId)).find((m) => m.user.id === userId);
+    if (!member) throw new HttpError("not_found", "no such member");
+    return { member, approvals: opened };
+  });
+
+  handle(app, ctx, "removeMember", async ({ session, params }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    await requireMember(ctx, session, workspaceId, "owner");
+    const userId = params.userId as UserId;
+    const current = await memberRole(ctx, workspaceId, userId);
+    if (current === "owner" && (await ownerCount(ctx, workspaceId)) === 1) {
+      throw new HttpError("conflict", "a workspace needs at least one owner");
+    }
+    const opened = await withdrawApprover(ctx, {
+      workspaceId,
+      userId,
+      afterwards: "remove",
+      requestedBy: actorOf(session),
+    });
+    if (opened.length === 0) {
+      await ctx.db.transaction(async (tx) => {
+        await tx
+          .delete(memberships)
+          .where(and(eq(memberships.workspaceId, workspaceId), eq(memberships.userId, userId)));
+        await appendAudit(
+          ctx,
+          {
+            workspaceId,
+            actor: actorOf(session),
+            action: "member.removed",
+            subject: { type: "user", id: userId },
+          },
+          tx,
+        );
+      });
+    }
+    return { approvals: opened };
+  });
+
+  // --- agents and wallets ---------------------------------------------------------------------
+
+  handle(app, ctx, "createAgent", async ({ session, params, body }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    await requireMember(ctx, session, workspaceId, "owner");
+    // A wallet left behind by an earlier attempt whose agent insert failed is reused, so a retry
+    // does not leave an orphan key at the signer.
+    const [orphan] = await ctx.db
+      .select({ id: wallets.id })
+      .from(wallets)
+      .leftJoin(agents, eq(agents.walletId, wallets.id))
+      .where(
+        and(
+          eq(wallets.workspaceId, workspaceId),
+          eq(wallets.kind, "agent"),
+          eq(wallets.label, body.name),
+          isNull(agents.id),
+        ),
+      );
+    const wallet = await createWallet(ctx, {
+      workspaceId,
+      walletId: orphan?.id ?? newId("wal"),
+      kind: "agent",
+      label: body.name,
+    });
+    const agentId = newId("agt");
+    const minted = mintAgentToken(agentId);
+    const agent = await ctx.db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(agents)
+        .values({
+          id: agentId,
+          workspaceId,
+          name: body.name,
+          tokenHash: minted.hash,
+          tokenPrefix: minted.prefix,
+          walletId: wallet.id,
+        })
+        .returning();
+      await appendAudit(
+        ctx,
+        {
+          workspaceId,
+          actor: actorOf(session),
+          action: "agent.created",
+          subject: { type: "agent", id: agentId },
+          detail: { name: body.name, walletId: wallet.id, address: wallet.address },
+        },
+        tx,
+      );
+      return row;
+    });
+    if (!agent) throw new HttpError("internal", "the agent was not stored");
+    ctx.log.info("agent created", { event: "agent.created", workspaceId, agentId });
+    return {
+      agent: agentSummary(agent),
+      wallet: walletSummary(wallet, agentId),
+      token: minted.token,
+      mcpUrl: `${ctx.config.publicOrigin}/mcp`,
+    };
+  });
+
+  handle(app, ctx, "rotateAgentToken", async ({ session, params }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    await requireMember(ctx, session, workspaceId, "owner");
+    const agent = await loadAgent(ctx, workspaceId, params.agentId);
+    if (agent.status !== "active") throw new HttpError("conflict", "this agent is disabled");
+    const minted = mintAgentToken(agent.id);
+    await ctx.db.transaction(async (tx) => {
+      await tx
+        .update(agents)
+        .set({ tokenHash: minted.hash, tokenPrefix: minted.prefix })
+        .where(eq(agents.id, agent.id));
+      await appendAudit(
+        ctx,
+        {
+          workspaceId,
+          actor: actorOf(session),
+          action: "agent.token_rotated",
+          subject: { type: "agent", id: agent.id },
+        },
+        tx,
+      );
+    });
+    return { token: minted.token };
+  });
+
+  handle(app, ctx, "disableAgent", async ({ session, params }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    await requireMember(ctx, session, workspaceId, "owner");
+    const agent = await loadAgent(ctx, workspaceId, params.agentId);
+    const updated = await ctx.db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(agents)
+        .set({ status: "disabled" })
+        .where(eq(agents.id, agent.id))
+        .returning();
+      if (agent.status === "active") {
+        await appendAudit(
+          ctx,
+          {
+            workspaceId,
+            actor: actorOf(session),
+            action: "agent.disabled",
+            subject: { type: "agent", id: agent.id },
+          },
+          tx,
+        );
+      }
+      return row;
+    });
+    if (!updated) throw new HttpError("not_found", "no such agent");
+    return agentSummary(updated);
+  });
+
+  handle(app, ctx, "createTreasury", async ({ session, params, body }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    await requireMember(ctx, session, workspaceId, "owner");
+    const [existing] = await ctx.db
+      .select({ id: wallets.id })
+      .from(wallets)
+      .where(and(eq(wallets.workspaceId, workspaceId), eq(wallets.kind, "treasury")));
+    if (existing) throw new HttpError("conflict", "this workspace already has a treasury");
+    const wallet = await createWallet(ctx, {
+      workspaceId,
+      walletId: newId("wal"),
+      kind: "treasury",
+      label: body.label,
+    });
+    await appendAudit(ctx, {
+      workspaceId,
+      actor: actorOf(session),
+      action: "treasury.created",
+      subject: { type: "wallet", id: wallet.id },
+      detail: { label: body.label, address: wallet.address },
+    });
+    return walletSummary(wallet, null);
+  });
+
+  handle(app, ctx, "getWallet", async ({ session, params }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    await requireMember(ctx, session, workspaceId);
+    const { wallet, agentId } = await loadWallet(ctx, workspaceId, params.walletId);
+    const state = await signerCall(() => ctx.signer.getWallet(wallet.id));
+    const policy = state.policy;
+    const chains = policy?.chains ?? ctx.chains.list().map((chain) => chain.chainId);
+    const assets: { chainId: ChainId; asset: AssetRef }[] = chains.map((chainId) => ({
+      chainId,
+      asset: "native",
+    }));
+    for (const limit of policy?.assets ?? []) {
+      if (limit.asset !== "native") assets.push({ chainId: limit.chainId, asset: limit.asset });
+    }
+    const balances: AssetBalance[] = await ctx.chains.balances(wallet.address, assets);
+    const [pending] = await ctx.db
+      .select({ id: approvals.id })
+      .from(approvals)
+      .where(
+        and(
+          eq(approvals.workspaceId, workspaceId),
+          eq(approvals.kind, "set-policy"),
+          eq(approvals.subjectId, wallet.id),
+          eq(approvals.status, "pending"),
+        ),
+      );
+    return {
+      // The signer's copy of the policy is the one that is enforced.
+      ...walletSummary({ ...wallet, policy, policyHash: state.policyHash }, agentId),
+      balances,
+      spent: state.spent,
+      pendingPolicyApprovalId: pending?.id ?? null,
+    };
+  });
+
+  handle(app, ctx, "requestPolicy", async ({ session, params, body }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    await requireMember(ctx, session, workspaceId, "owner");
+    const { wallet } = await loadWallet(ctx, workspaceId, params.walletId);
+    const [workspace] = await ctx.db
+      .select()
+      .from(workspaces)
+      .where(eq(workspaces.id, workspaceId));
+    if (!workspace) throw new HttpError("not_found", "no such workspace");
+    const draft = body.draft;
+    const configured = new Set<string>(ctx.chains.list().map((chain) => chain.chainId));
+    const unknownChain = draft.chains.find((chainId) => !configured.has(chainId));
+    if (unknownChain !== undefined) {
+      throw new HttpError("invalid_request", "draft.chains: a chain is not configured here");
+    }
+    if (draft.requesters.length > 0) {
+      const found = await ctx.db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.workspaceId, workspaceId), inArray(agents.id, draft.requesters)));
+      if (found.length !== new Set(draft.requesters).size) {
+        throw new HttpError("invalid_request", "draft.requesters: not an agent of this workspace");
+      }
+    }
+    const current = await signerCall(() => ctx.signer.getWallet(wallet.id));
+    const policy: WalletPolicy = normalizePolicy({
+      ...draft,
+      v: PROTOCOL_VERSION,
+      workspaceId,
+      walletId: wallet.id,
+      revision: (current.policy?.revision ?? 0) + 1,
+      previousHash: current.policyHash,
+    } as WalletPolicy);
+    // One draft at a time per wallet: a newer draft replaces the one still waiting.
+    const waiting = await ctx.db
+      .select({ id: approvals.id })
+      .from(approvals)
+      .where(
+        and(
+          eq(approvals.workspaceId, workspaceId),
+          eq(approvals.kind, "set-policy"),
+          eq(approvals.subjectId, wallet.id),
+          eq(approvals.status, "pending"),
+        ),
+      );
+    for (const approval of waiting) await ctx.approvals.cancel(approval.id);
+    const detail: SetPolicyDetail = { policy };
+    return ctx.approvals.open({
+      workspaceId,
+      kind: "set-policy",
+      subjectId: wallet.id,
+      envelope: {
+        walletId: wallet.id,
+        policyHash: policyHash(policy),
+        previousPolicyHash: current.policyHash,
+      },
+      threshold: workspace.adminThreshold,
+      ttlSeconds: ctx.config.adminApprovalTtlSeconds,
+      detail,
+      requestedBy: actorOf(session),
+    });
+  });
+
+  // --- audit ----------------------------------------------------------------------------------
+
+  handle(app, ctx, "listAudit", async ({ session, params, query }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    await requireMember(ctx, session, workspaceId);
+    const before = query.cursor === undefined ? null : Number.parseInt(query.cursor, 10);
+    if (before !== null && !Number.isSafeInteger(before)) {
+      throw new HttpError("invalid_request", "cursor: not a cursor from this list");
+    }
+    const rows = await ctx.db
+      .select()
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.workspaceId, workspaceId),
+          ...(before === null ? [] : [lt(auditEvents.seq, before)]),
+        ),
+      )
+      .orderBy(desc(auditEvents.seq))
+      .limit(AUDIT_PAGE + 1);
+    const pageRows = rows.slice(0, AUDIT_PAGE);
+    const names = await actorNames(ctx, pageRows);
+    const items: AuditEvent[] = [];
+    for (const row of pageRows) {
+      const detail = await ctx.sealer.open(
+        workspaceId,
+        `audit_events.detail:${workspaceId}:${row.seq}`,
+        row.detail,
+      );
+      items.push({
+        seq: row.seq,
+        at: seconds(row.at),
+        actor: {
+          type: row.actorType,
+          id: row.actorId,
+          name: row.actorId === null ? null : (names.get(row.actorId) ?? null),
+        },
+        action: row.action,
+        subject:
+          row.subjectType === null || row.subjectId === null
+            ? null
+            : { type: row.subjectType, id: row.subjectId },
+        detail: detail as Record<string, unknown>,
+        previousHash: row.previousHash,
+        hash: row.hash,
+      });
+    }
+    const last = pageRows.at(-1);
+    return {
+      items,
+      nextCursor: rows.length > AUDIT_PAGE && last ? String(last.seq) : null,
+    };
+  });
+
+  handle(app, ctx, "verifyAudit", async ({ session, params }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    await requireMember(ctx, session, workspaceId);
+    return verifyAudit(ctx, workspaceId);
+  });
+
+  handle(app, ctx, "listSignerDecisions", async ({ session, params, query }) => {
+    const workspaceId = params.workspaceId as WorkspaceId;
+    await requireMember(ctx, session, workspaceId);
+    const response = await signerCall(() =>
+      ctx.signer.listDecisions(
+        workspaceId,
+        query.after === undefined ? {} : { after: Number(query.after) },
+      ),
+    );
+    return { items: response.decisions };
+  });
+}
+
+async function actorNames(
+  ctx: AppContext,
+  rows: { actorType: string; actorId: string | null }[],
+): Promise<Map<string, string>> {
+  const userIds = rows.filter((r) => r.actorType === "user" && r.actorId).map((r) => r.actorId);
+  const agentIds = rows.filter((r) => r.actorType === "agent" && r.actorId).map((r) => r.actorId);
+  const names = new Map<string, string>();
+  if (userIds.length > 0) {
+    const found = await ctx.db
+      .select({ id: users.id, name: users.displayName })
+      .from(users)
+      .where(inArray(users.id, userIds as UserId[]));
+    for (const row of found) names.set(row.id, row.name);
+  }
+  if (agentIds.length > 0) {
+    const found = await ctx.db
+      .select({ id: agents.id, name: agents.name })
+      .from(agents)
+      .where(inArray(agents.id, agentIds as AgentId[]));
+    for (const row of found) names.set(row.id, row.name);
+  }
+  return names;
+}
