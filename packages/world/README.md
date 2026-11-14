@@ -73,7 +73,8 @@ metadata rows remain; an attribute set in a workflow body under an unlisted key 
 and is not stored; and a key failure at start writes no run row. The identical scenario on the
 stock World must expose all ten markers, or the test fails, because then the scanner is blind.
 `test/conformance.test.ts` runs upstream's World conformance suite and allows only the failures
-the suite causes itself by decoding outputs without a key.
+the suite causes itself by decoding outputs without a key. The suite writes one attribute,
+`fence_probe`, as a workflow body would; the test World lists that key as readable.
 
 ## What stays readable
 

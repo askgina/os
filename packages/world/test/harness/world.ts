@@ -34,7 +34,9 @@ export function createWorld() {
   return createEncryptedWorld({
     postgres: { connectionString },
     dataKeys: new DataKeyStore({ pool, provider: LocalKeyring.fromFile(keyringFile) }),
-    readableAttributeKeys: ["kind"],
+    // `kind` is the proof's readable attribute. `fence_probe` is written by upstream's
+    // conformance suite as a workflow-body attribute, which is refused unless listed.
+    readableAttributeKeys: ["kind", "fence_probe"],
     onKeyRequest: (runId, context) => {
       if (process.env.HARNESS_KEY_FAIL === "1") throw new Error("harness: injected key failure");
       keyRequests().push({ runId, context: context ?? null });
