@@ -113,8 +113,10 @@ database.
 Two limits are worth knowing before you rely on this:
 
 - A passkey proves that a person approved a digest. It does not prove they saw the right details.
-  A compromised control plane could show one operation and submit another. The signer's limits
-  bound the damage.
+  A compromised control plane could show one operation and submit another. For a payment the
+  signer's limits bound the damage. For a change of limits or approvers they do not: with one
+  approver, one misled tap can hand over a workspace's wallets. Add a second approver and raise
+  the admin threshold to 2.
 - Running every service on one machine gives no protection against that machine.
 
 The full list is in [`docs/threat-model.md`](docs/threat-model.md).

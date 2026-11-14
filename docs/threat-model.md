@@ -210,8 +210,14 @@ passkey research puts it this way
 > extension, compromised control-plane build) can obtain a valid approval for a different grant
 > from a user who believes they are approving the one shown.
 
-So a compromised control plane can show one operation and submit another for approval. The
-signer's policy caps bound the loss. A trusted display is not designed yet.
+So a compromised control plane can show one operation and submit another for approval. For a
+payment, the signer's policy caps bound the loss. For a change of authority they do not: the
+control plane chooses the challenge on every passkey prompt it serves, the sign-in prompt
+included, so one misled tap by an approver can approve a new policy or enroll an attacker's
+passkey as an approver. A workspace starts with an admin threshold of 1, where one such tap is
+enough for lasting control of its wallets. Until a trusted display exists, raise the admin
+threshold to 2 as soon as a second approver is enrolled. The design is drafted in
+[`specs/trusted-display.md`](../specs/trusted-display.md) and not built.
 
 **One machine running everything gives no protection against that machine.** The network
 separation between server and signer protects only when they run on different hosts with

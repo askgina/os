@@ -249,7 +249,7 @@ Trust, stated plainly:
 
 The third row is the known gap: a passkey proves a person approved a digest, not that they saw the
 right details. A compromised control plane can show one operation and submit another for
-approval. The signer's policy caps bound the damage. The map lists a trusted display as future work.
+approval. The signer's policy caps bound the damage for payments only: a misled approval of a policy change or a new approver is not bounded by them (found by the trusted-display research, [trusted-display.md](./trusted-display.md)). The map lists a trusted display as future work.
 
 Assumptions:
 
@@ -486,7 +486,7 @@ The release gates. Each line is a test; the name in brackets is where it lives.
 ## Risks and Open Questions
 
 - Risk: a compromised control plane shows one operation and submits another for approval.
-  Mitigation: signer-side caps bound the loss; the threat model says so; a trusted display is on the map.
+  Mitigation: signer-side caps bound the loss of a payment, not of a misled policy or approver change; the threat model says so and recommends an admin threshold of 2; a trusted display is drafted in [trusted-display.md](./trusted-display.md).
 - Risk: OWS error classification is by message text.
   Mitigation: exact version pin; a test per error class against the real SDK.
 - Risk: linux-arm64 (Apple Silicon Docker) for the OWS native module.
