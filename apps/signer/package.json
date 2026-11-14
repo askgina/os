@@ -1,0 +1,31 @@
+{
+  "name": "@askgina/os-signer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "The isolated signer: holds wallet keys, verifies passkey authorizations itself, and signs one transaction per approval.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "admin": "node src/admin.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "smoke:image": "test -n \"$SIGNER_IMAGE\" && vitest run"
+  },
+  "dependencies": {
+    "@askgina/os-keys": "workspace:*",
+    "@askgina/os-protocol": "workspace:*",
+    "@hono/node-server": "2.1.8",
+    "@noble/curves": "2.4.0",
+    "@open-wallet-standard/core": "1.4.5",
+    "hono": "4.13.18",
+    "viem": "2.57.19",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6"
+  }
+}
