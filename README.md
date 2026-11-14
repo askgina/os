@@ -133,6 +133,7 @@ other chains, a bundled agent runtime, cloud key management, push notifications.
 - [`docs/threat-model.md`](docs/threat-model.md): every attacker position and the known limits.
 - [`deploy/README.md`](deploy/README.md): services, networks, volumes, backups, key rotation.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`SECURITY.md`](SECURITY.md).
+- [`THIRD_PARTY.md`](THIRD_PARTY.md): dependencies whose licence is not MIT or Apache-2.0.
 
 ## Development
 

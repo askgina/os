@@ -14,6 +14,7 @@ import { connectAgent } from "../src/agent.ts";
 import { setupToken, stack, waitUntilHealthy } from "../src/stack.ts";
 
 const RECIPIENT = "0x00000000000000000000000000000000000b0b0b";
+const HTTPS = stack.origin.startsWith("https:");
 
 const chain = createPublicClient({
   chain: foundry,
@@ -65,6 +66,10 @@ test("setup, an agent with limits, and one payment approved with a passkey in th
     await page.getByLabel("Your name").fill("Ada Owner");
     await page.getByRole("button", { name: "Create owner passkey" }).click();
     await expect(page.getByRole("heading", { name: "Workspaces" })).toBeVisible();
+    if (HTTPS) {
+      const session = (await page.context().cookies()).find((c) => c.name.endsWith("os_session"));
+      expect(session).toMatchObject({ name: "__Host-os_session", secure: true, httpOnly: true });
+    }
   });
 
   await test.step("a workspace and an agent, whose token is shown once", async () => {
@@ -131,4 +136,17 @@ test("setup, an agent with limits, and one payment approved with a passkey in th
   });
 
   expect(problems).toEqual([]);
+});
+
+test("over HTTPS, plain HTTP is redirected and browsers are told to stay on HTTPS", async () => {
+  test.skip(!HTTPS, "the stack under test is served without TLS");
+  // These requests verify the certificate against Caddy's local authority and the host name.
+  const secure = await fetch(`${stack.origin}/healthz`);
+  expect(secure.status).toBe(200);
+  expect(secure.headers.get("strict-transport-security")).toMatch(/max-age=\d{7,}/);
+  const plain = await fetch(`${stack.origin.replace("https:", "http:")}/healthz`, {
+    redirect: "manual",
+  });
+  expect(plain.status).toBe(308);
+  expect(plain.headers.get("location")).toBe(`${stack.origin}/healthz`);
 });

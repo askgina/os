@@ -82,9 +82,21 @@ jobs:
           path: apps/web/test-results
           retention-days: 7
 
+  # The same gates three ways: on x86-64, on arm64 (the images and the wallet library's native
+  # module are built for the runner's architecture), and the browser gate over HTTPS.
   stack:
-    runs-on: ubuntu-latest
+    name: stack (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: amd64, runner: ubuntu-latest, tls: "0" }
+          - { name: arm64, runner: ubuntu-24.04-arm, tls: "0" }
+          - { name: tls, runner: ubuntu-latest, tls: "1" }
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
+    env:
+      E2E_TLS: ${{ matrix.tls }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

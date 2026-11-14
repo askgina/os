@@ -3,6 +3,7 @@
 # remove it again.
 #   ./e2e/run.sh           build, start, test, remove
 #   ./e2e/run.sh --keep    leave the stack running afterwards, for looking around
+#   E2E_TLS=1 ./e2e/run.sh the browser gate only, over HTTPS with compose.tls.yaml (ports 80, 443)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -16,7 +17,16 @@ export E2E_POSTGRES_PORT="${E2E_POSTGRES_PORT:-55900}"
 export E2E_ANVIL_PORT="${E2E_ANVIL_PORT:-55901}"
 export E2E_ANVIL_URL="http://127.0.0.1:${E2E_ANVIL_PORT}"
 
+tls="${E2E_TLS:-0}"
 overlay=(-f compose.yaml -f e2e/compose.e2e.yaml --profile dev --profile agent)
+if [ "$tls" = "1" ]; then
+  # The host name is `localhost`, so Caddy issues the certificate from its own local authority
+  # instead of asking a public one. Everything else is the overlay an operator would use.
+  export PUBLIC_ORIGIN="https://localhost"
+  export PUBLIC_HOST="localhost"
+  export E2E_ORIGIN="${PUBLIC_ORIGIN}"
+  overlay=(-f compose.yaml -f compose.tls.yaml -f e2e/compose.e2e.yaml --profile dev --profile agent)
+fi
 compose=(docker compose -p "$E2E_PROJECT" "${overlay[@]}")
 ui=(docker compose -p "${E2E_PROJECT}-ui" "${overlay[@]}")
 # `init` is not listed: it runs once and exits, and the others depend on it.
@@ -43,15 +53,30 @@ status=0
 # First stack: the gates that drive people through the API. The backup gate ends on a restored
 # copy of this stack under a second project name.
 # A stack that does not come up healthy is a failed gate too: its logs are printed below.
-"${compose[@]}" up -d --wait --wait-timeout 300 "${services[@]}" || status=$?
-if [ "$status" -eq 0 ]; then
-  (cd e2e && bunx playwright test release-gates.spec.ts) || status=$?
+# Over HTTPS this part is skipped: the gates below it do not depend on the scheme, and the backup
+# gate's restored copy would get a new certificate authority.
+if [ "$tls" != "1" ]; then
+  "${compose[@]}" up -d --wait --wait-timeout 300 "${services[@]}" || status=$?
+  if [ "$status" -eq 0 ]; then
+    (cd e2e && bunx playwright test release-gates.spec.ts) || status=$?
+  fi
 fi
 
 # Second stack, empty: the browser gate, which claims a fresh installation through the UI.
 if [ "$status" -eq 0 ]; then
   remove
   "${ui[@]}" up -d --wait --wait-timeout 300 "${services[@]}" || status=$?
+  if [ "$status" -eq 0 ] && [ "$tls" = "1" ]; then
+    # The test process trusts Caddy's local authority and nothing weaker: its requests still
+    # verify the certificate chain and the host name.
+    ca="$(mktemp)"
+    for _ in $(seq 1 60); do
+      "${ui[@]}" cp caddy:/data/caddy/pki/authorities/local/root.crt "$ca" >/dev/null 2>&1 && break
+      sleep 1
+    done
+    [ -s "$ca" ] || status=1
+    export NODE_EXTRA_CA_CERTS="$ca"
+  fi
   if [ "$status" -eq 0 ]; then
     (cd e2e && E2E_PROJECT="${E2E_PROJECT}-ui" bunx playwright test browser.spec.ts) || status=$?
   fi
