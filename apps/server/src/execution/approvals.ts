@@ -18,6 +18,7 @@ import {
   type UserId,
   type WorkspaceId,
 } from "@askgina/os-protocol";
+import { SignerError } from "@askgina/os-protocol/signer";
 import { verifyAuthorization } from "@askgina/os-protocol/webauthn";
 import { generateAuthenticationOptions } from "@simplewebauthn/server";
 import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
@@ -29,7 +30,7 @@ import {
   type OpenApproval,
 } from "../approvals/kinds.ts";
 import { appendAudit } from "../audit.ts";
-import type { AppContext, Executor, Session } from "../context.ts";
+import type { AppContext, Executor, Session, Transaction } from "../context.ts";
 import {
   agents,
   approvalAssertions,
@@ -37,6 +38,7 @@ import {
   approvals,
   approverCredentials,
   credentials,
+  memberships,
   users,
 } from "../db/schema.ts";
 import { HttpError } from "../http/errors.ts";
@@ -53,6 +55,10 @@ const PAGE_SIZE = 50;
 const ENDED: readonly SettledStatus[] = ["rejected", "expired", "cancelled", "failed"];
 
 const detailLocation = (id: string) => `approvals.detail:${id}`;
+
+/** Where a person approves a request in the web app. Every link handed out points here. */
+export const approvalLink = (origin: string, workspaceId: string, approvalId: string) =>
+  `${origin}/w/${workspaceId}/approvals/${approvalId}`;
 
 /** A list position: the last row's creation time and id, so equal timestamps still page. */
 function encodeCursor(row: { createdAt: Date; id: string }): string {
@@ -153,7 +159,14 @@ export class Engine implements ApprovalEngine {
     return this.summary(await this.row(id));
   }
 
-  async cancel(approvalId: ApprovalId): Promise<void> {
+  /**
+   * End a pending request with no effect. True only when this call cancelled it; `alongside`
+   * runs in the same transaction, so a subject is marked cancelled exactly when its request is.
+   */
+  async cancel(
+    approvalId: ApprovalId,
+    alongside?: (tx: Transaction) => Promise<unknown>,
+  ): Promise<boolean> {
     const ctx = this.#ctx;
     const ended = await ctx.db.transaction(async (tx) => {
       const [row] = await tx
@@ -162,6 +175,7 @@ export class Engine implements ApprovalEngine {
         .where(and(eq(approvals.id, approvalId), eq(approvals.status, "pending")))
         .returning();
       if (!row) return false;
+      await alongside?.(tx);
       await appendAudit(
         ctx,
         {
@@ -175,19 +189,36 @@ export class Engine implements ApprovalEngine {
       return true;
     });
     if (ended) await this.wake(approvalId);
+    return ended;
   }
 
-  /** Start the waiting workflow. A failure is left to the sweeper, which starts it later. */
+  /**
+   * Start the waiting workflow. A failure is left to the sweeper, which starts it later.
+   *
+   * At most one run may exist per request: every run creates the hook `apr:<id>`, and the
+   * Workflow runtime gives a second run's hook a `HookConflictError`. If that second run settled
+   * first it would record itself as the owner while every wake-up went to the other run, and the
+   * request would never move. So starts for one request are serialized under an advisory lock,
+   * and a start happens only while no run is recorded.
+   */
   async startRun(id: ApprovalId, workspaceId: WorkspaceId, expiresAt: number): Promise<void> {
     const ctx = this.#ctx;
     const runtime = this.#runtime;
     if (runtime === null) return;
     try {
-      const runId = await runtime.startRun({ approvalId: id, workspaceId, expiresAt });
-      await ctx.db
-        .update(approvals)
-        .set({ runId })
-        .where(and(eq(approvals.id, id), isNull(approvals.runId)));
+      await ctx.db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`run:${id}`}, 0))`);
+        const [row] = await tx
+          .select({ runId: approvals.runId })
+          .from(approvals)
+          .where(eq(approvals.id, id));
+        if (!row || row.runId !== null) return;
+        const runId = await runtime.startRun({ approvalId: id, workspaceId, expiresAt });
+        await tx
+          .update(approvals)
+          .set({ runId })
+          .where(and(eq(approvals.id, id), isNull(approvals.runId)));
+      });
     } catch (error) {
       ctx.log.warn("approval workflow start failed", {
         approvalId: id,
@@ -267,9 +298,18 @@ export class Engine implements ApprovalEngine {
       .innerJoin(users, eq(users.id, approvalRejections.userId))
       .where(eq(approvalRejections.approvalId, row.id));
     const decided = approvedBy.some((user) => user.id === session.user.id);
+    // The same rule the approve and reject routes apply: the approver role and a passkey the
+    // signer accepts.
+    const [membership] = await ctx.db
+      .select({ role: memberships.role })
+      .from(memberships)
+      .where(
+        and(eq(memberships.workspaceId, row.workspaceId), eq(memberships.userId, session.user.id)),
+      );
     const canDecide =
       this.shownStatus(row) === "pending" &&
       !decided &&
+      (membership?.role === "approver" || membership?.role === "owner") &&
       (await this.activeApproverCredentials(row.workspaceId, session.user.id)).length > 0;
     return {
       ...(await this.summary(row)),
@@ -314,14 +354,17 @@ export class Engine implements ApprovalEngine {
     };
   }
 
-  /** The passkeys the signer accepts for this person in this workspace, as our mirror has them. */
+  /**
+   * The passkeys the signer accepts for this person in this workspace, as our mirror has them.
+   * A passkey being removed still counts: the signer accepts it until the removal is applied.
+   */
   async activeApproverCredentials(
     workspaceId: WorkspaceId,
     userId?: UserId,
   ): Promise<(ApproverCredential & { transports: string[] })[]> {
     const conditions = [
       eq(approverCredentials.workspaceId, workspaceId),
-      eq(approverCredentials.state, "active"),
+      inArray(approverCredentials.state, ["active", "removing"]),
       isNull(credentials.revokedAt),
     ];
     if (userId !== undefined) conditions.push(eq(approverCredentials.userId, userId));
@@ -400,7 +443,7 @@ export class Engine implements ApprovalEngine {
         .from(approvals)
         .where(eq(approvals.id, row.id))
         .for("update");
-      if (!locked || locked.status !== "pending" || seconds(locked.expiresAt) <= ctx.now()) {
+      if (locked?.status !== "pending" || seconds(locked.expiresAt) <= ctx.now()) {
         throw new HttpError("conflict", "this request is no longer waiting for approval");
       }
       const inserted = await tx
@@ -487,7 +530,7 @@ export class Engine implements ApprovalEngine {
       );
     });
     // From here on the signer refuses this approval id for good, whatever happens to our rows.
-    await ctx.signer.revokeApproval(row.id).catch((error: unknown) => {
+    await ctx.signer.revokeApproval(row.id, row.workspaceId).catch((error: unknown) => {
       ctx.log.warn("revoking a rejected approval failed", {
         approvalId: row.id,
         error: error instanceof Error ? error.name : "unknown",
@@ -622,14 +665,51 @@ export class Engine implements ApprovalEngine {
     };
   }
 
-  /** A request ended without its effect: make sure the signer never acts on it, then undo. */
+  /**
+   * A request ended without its effect: undo what opening it set up, then make sure the signer
+   * never acts on it. The undo comes first so a signer problem cannot leave the subject hanging.
+   * The signer's `conflict` (it already applied the request) and an unreachable signer do not
+   * fail the cleanup: the first is final, and an unreachable signer cannot be sent the request
+   * by anyone either, since only this request's own run would.
+   */
   async #end(
     row: ApprovalRow,
     status: "rejected" | "expired" | "cancelled" | "failed",
   ): Promise<void> {
     const ctx = this.#ctx;
-    await ctx.signer.revokeApproval(row.id);
     await this.handler(row.kind).abandon?.(ctx, row, status, await this.openDetail(row));
+    try {
+      await ctx.signer.revokeApproval(row.id, row.workspaceId);
+    } catch (error) {
+      if (error instanceof SignerError && error.code !== "conflict") throw error;
+      ctx.log.warn("revoking an ended approval failed", {
+        approvalId: row.id,
+        error: error instanceof SignerError ? error.code : "unreachable",
+      });
+    }
+  }
+
+  /**
+   * A request decided before any workflow run was recorded for it (the process died between
+   * the two). A pending or approved one gets a run; an ended one is abandoned here, since no
+   * run will. Returns what it did, for the sweeper's counts.
+   */
+  async recoverOrphan(row: ApprovalRow): Promise<"started" | "abandoned" | "none"> {
+    const ctx = this.#ctx;
+    if (row.runId !== null) return "none";
+    if (row.status === "pending" || row.status === "approved") {
+      await this.startRun(row.id, row.workspaceId, seconds(row.expiresAt));
+      return "started";
+    }
+    if (row.status === "rejected" || row.status === "expired" || row.status === "cancelled") {
+      await this.#end(row, row.status);
+      await ctx.db
+        .update(approvals)
+        .set({ resumeState: "done" })
+        .where(and(eq(approvals.id, row.id), eq(approvals.resumeState, "needed")));
+      return "abandoned";
+    }
+    return "none";
   }
 
   async #requester(row: ApprovalRow): Promise<Requester> {

@@ -24,6 +24,8 @@ type AgentRow = typeof agents.$inferSelect;
 
 /** Requests an agent may make per minute. Generous for a model, tight for a runaway loop. */
 const REQUESTS_PER_MINUTE = 120;
+/** Failed authentications one client may make per minute before it is refused unread. */
+export const FAILED_AUTH_PER_MINUTE = 10;
 const LAST_SEEN_INTERVAL_SECONDS = 60;
 /** How often `get_intent` re-reads the status while it waits. */
 const WAIT_POLL_MS = 1_000;
@@ -71,7 +73,7 @@ export const MCP_TOOL_NAMES = [
 ] as const;
 
 const APPROVAL_NOTE =
-  "Nothing is sent yet: a person must approve the proposal with their passkey first. Call get_intent with the returned intentId and waitSeconds (up to 50) to wait for the outcome; repeat until the status is final (confirmed, reverted, stuck, rejected, expired, cancelled, denied or failed).";
+  "Nothing is sent yet: a person must approve the proposal with their passkey first. Call get_intent with the returned intentId and waitSeconds (up to 50) to wait for the outcome; repeat until the status is final (confirmed, reverted, stuck, rejected, expired, cancelled, denied or failed). A stuck transaction is still valid and can later become confirmed or reverted.";
 
 function json(value: unknown) {
   return {
@@ -80,20 +82,36 @@ function json(value: unknown) {
   };
 }
 
-/** A refusal the agent can act on: a fixed message and a stable code, never echoed input. */
-function refusal(error: unknown) {
-  if (error instanceof HttpError) {
+/**
+ * Run a tool and turn any failure into a refusal the agent can act on: a fixed message and a
+ * stable code, never echoed input. Anything that is not an `HttpError` becomes one fixed
+ * `internal` refusal, because its message can carry internals (a viem error carries the RPC
+ * URL, which often holds an API key); only the error's kind is logged.
+ */
+async function answer<T>(ctx: AppContext, tool: string, run: () => Promise<T>) {
+  try {
+    return await run();
+  } catch (error) {
+    const known =
+      error instanceof HttpError
+        ? error
+        : new HttpError("internal", "something went wrong; try again later");
+    if (!(error instanceof HttpError)) {
+      ctx.log.error("mcp tool failed", {
+        tool,
+        error: error instanceof Error ? error.name : "unknown",
+      });
+    }
     return {
-      isError: true,
+      isError: true as const,
       content: [
         {
           type: "text" as const,
-          text: JSON.stringify({ error: error.code, message: error.message, detail: error.detail }),
+          text: JSON.stringify({ error: known.code, message: known.message, detail: known.detail }),
         },
       ],
     };
   }
-  throw error;
 }
 
 async function walletsFor(ctx: AppContext, agent: AgentRow) {
@@ -147,31 +165,32 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
         "Describe who you are in this system: your agent id and name, your workspace, and the wallets you may propose from, with their addresses, the chains they work on and their per-transaction and daily limits. Call this first.",
       inputSchema: z.object({}),
     },
-    async () => {
-      const usable = await walletsFor(ctx, agent);
-      return json({
-        agent: { id: agent.id, name: agent.name },
-        workspaceId: agent.workspaceId,
-        chains: chainAccess(ctx).list(),
-        wallets: usable.map((wallet) => ({
-          walletId: wallet.id,
-          kind: wallet.kind,
-          label: wallet.label,
-          address: wallet.address,
-          isDefault: wallet.id === agent.walletId,
-          policy:
-            wallet.policy === null
-              ? null
-              : {
-                  chains: wallet.policy.chains,
-                  limits: wallet.policy.assets,
-                  recipients: wallet.policy.recipients,
-                  contractCalls: wallet.policy.contractCalls,
-                  approvalsNeeded: wallet.policy.approvals.threshold,
-                },
-        })),
-      });
-    },
+    async () =>
+      answer(ctx, "whoami", async () => {
+        const usable = await walletsFor(ctx, agent);
+        return json({
+          agent: { id: agent.id, name: agent.name },
+          workspaceId: agent.workspaceId,
+          chains: chainAccess(ctx).list(),
+          wallets: usable.map((wallet) => ({
+            walletId: wallet.id,
+            kind: wallet.kind,
+            label: wallet.label,
+            address: wallet.address,
+            isDefault: wallet.id === agent.walletId,
+            policy:
+              wallet.policy === null
+                ? null
+                : {
+                    chains: wallet.policy.chains,
+                    limits: wallet.policy.assets,
+                    recipients: wallet.policy.recipients,
+                    contractCalls: wallet.policy.contractCalls,
+                    approvalsNeeded: wallet.policy.approvals.threshold,
+                  },
+          })),
+        });
+      }),
   );
 
   server.registerTool(
@@ -183,8 +202,8 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
         walletId: WalletIdInput.optional().describe("A wallet id from whoami; defaults to yours."),
       }),
     },
-    async ({ walletId }) => {
-      try {
+    async ({ walletId }) =>
+      answer(ctx, "get_balances", async () => {
         const usable = await walletsFor(ctx, agent);
         const wallet = usable.find((candidate) => candidate.id === (walletId ?? agent.walletId));
         if (!wallet) throw new HttpError("not_found", "no such wallet");
@@ -203,10 +222,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
           address: wallet.address,
           balances: await chains.balances(wallet.address, assets),
         });
-      } catch (error) {
-        return refusal(error);
-      }
-    },
+      }),
   );
 
   server.registerTool(
@@ -230,8 +246,8 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
         walletId: WalletIdInput.optional().describe("A wallet id from whoami; defaults to yours."),
       }),
     },
-    async (input) => {
-      try {
+    async (input) =>
+      answer(ctx, "propose_transfer", async () => {
         const result = await proposeTransfer(ctx, agent, input);
         return json({
           intentId: result.intentId,
@@ -239,10 +255,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
           approvalUrl: result.approvalUrl,
           expiresAt: result.expiresAt,
         });
-      } catch (error) {
-        return refusal(error);
-      }
-    },
+      }),
   );
 
   server.registerTool(
@@ -264,8 +277,8 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
         walletId: WalletIdInput.optional().describe("A wallet id from whoami; defaults to yours."),
       }),
     },
-    async (input) => {
-      try {
+    async (input) =>
+      answer(ctx, "propose_contract_call", async () => {
         const result = await proposeContractCall(ctx, agent, input);
         return json({
           intentId: result.intentId,
@@ -273,10 +286,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
           approvalUrl: result.approvalUrl,
           expiresAt: result.expiresAt,
         });
-      } catch (error) {
-        return refusal(error);
-      }
-    },
+      }),
   );
 
   server.registerTool(
@@ -295,8 +305,8 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
           .describe("0 to 50; 0 answers at once."),
       }),
     },
-    async ({ intentId, waitSeconds }, extra) => {
-      try {
+    async ({ intentId, waitSeconds }, extra) =>
+      answer(ctx, "get_intent", async () => {
         let row = await ownIntent(intentId);
         const initial = row.status;
         const deadline = Date.now() + (waitSeconds ?? 0) * 1000;
@@ -311,10 +321,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
           row = await ownIntent(intentId);
         }
         return json(intentView(ctx, await intentSummary(ctx, row)));
-      } catch (error) {
-        return refusal(error);
-      }
-    },
+      }),
   );
 
   server.registerTool(
@@ -327,16 +334,17 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
         limit: z.number().int().min(1).max(50).optional().describe("How many; default 20."),
       }),
     },
-    async ({ status, limit }) => {
-      const { rows } = await listIntentRows(ctx, {
-        workspaceId: agent.workspaceId,
-        agentId: agent.id,
-        ...(status === undefined ? {} : { status }),
-        limit: limit ?? 20,
-      });
-      const summaries = await Promise.all(rows.map((row) => intentSummary(ctx, row)));
-      return json({ intents: summaries.map((summary) => intentView(ctx, summary)) });
-    },
+    async ({ status, limit }) =>
+      answer(ctx, "list_intents", async () => {
+        const { rows } = await listIntentRows(ctx, {
+          workspaceId: agent.workspaceId,
+          agentId: agent.id,
+          ...(status === undefined ? {} : { status }),
+          limit: limit ?? 20,
+        });
+        const summaries = await Promise.all(rows.map((row) => intentSummary(ctx, row)));
+        return json({ intents: summaries.map((summary) => intentView(ctx, summary)) });
+      }),
   );
 
   server.registerTool(
@@ -348,14 +356,11 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
         intentId: z.string().describe("The intentId a propose tool returned."),
       }),
     },
-    async ({ intentId }) => {
-      try {
+    async ({ intentId }) =>
+      answer(ctx, "cancel_intent", async () => {
         const row = await ownIntent(intentId);
         return json({ intentId: row.id, status: await cancelIntent(ctx, row) });
-      } catch (error) {
-        return refusal(error);
-      }
-    },
+      }),
   );
 
   return server;
@@ -382,16 +387,44 @@ export function mountMcp(app: Hono, ctx: AppContext): void {
   const publicUrl = new URL(ctx.config.publicOrigin);
   const buckets = new Map<string, { tokens: number; at: number }>();
   const handlers = new Map<string, McpHttpHandler>();
+  /** Recent failed authentications per client, as timestamps in milliseconds. */
+  const failures = new Map<string, number[]>();
+
+  /**
+   * The client a failed authentication is charged to. Behind the bundled proxy that is the
+   * address the proxy appended last to `X-Forwarded-For`; a request without one is charged to a
+   * shared bucket.
+   */
+  const clientOf = (request: Request) =>
+    request.headers.get("x-forwarded-for")?.split(",").at(-1)?.trim() || "direct";
+
+  const recentFailures = (client: string, now: number) => {
+    const recent = (failures.get(client) ?? []).filter((at) => now - at < 60_000);
+    if (recent.length === 0) failures.delete(client);
+    else failures.set(client, recent);
+    return recent;
+  };
 
   const authenticate = async (request: Request): Promise<AgentRow | Response> => {
+    const client = clientOf(request);
+    const now = Date.now();
+    const recent = recentFailures(client, now);
+    // Checked before the database is read, so guessing tokens costs no lookups.
+    if (recent.length >= FAILED_AUTH_PER_MINUTE) {
+      return deny(429, "rate_limited", "too many failed authentications; slow down");
+    }
+    const fail = () => {
+      failures.set(client, [...recent, now]);
+      return deny(401, "unauthenticated", "a valid agent token is required");
+    };
     const header = request.headers.get("authorization") ?? "";
     const match = /^Bearer (osa_[A-Za-z0-9_-]{16,200})$/.exec(header);
-    if (!match?.[1]) return deny(401, "unauthenticated", "a valid agent token is required");
+    if (!match?.[1]) return fail();
     const hash = sha256(match[1]);
     const [agent] = await ctx.db.select().from(agents).where(eq(agents.tokenHash, hash));
     // The lookup is by hash; the constant-time compare keeps the final check free of timing.
     if (!agent || !timingSafeEqual(Buffer.from(agent.tokenHash), Buffer.from(hash))) {
-      return deny(401, "unauthenticated", "a valid agent token is required");
+      return fail();
     }
     if (agent.status !== "active") return deny(403, "forbidden", "this agent is disabled");
     return agent;

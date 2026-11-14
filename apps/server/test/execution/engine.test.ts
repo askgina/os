@@ -1,9 +1,10 @@
 import { randomBytes } from "node:crypto";
 import type { ApprovalId, IntentId } from "@askgina/os-protocol";
+import type { SignRequest, SignResponse } from "@askgina/os-protocol/signer";
 import { scanForMarkers } from "@askgina/os-testkit";
 import type { Client } from "@modelcontextprotocol/client";
 import { eq } from "drizzle-orm";
-import { encodeFunctionData, erc20Abi } from "viem";
+import { encodeFunctionData, erc20Abi, parseTransaction } from "viem";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, intents, transactions } from "../../src/db/schema.ts";
 import { engineOf } from "../../src/execution/approvals.ts";
@@ -83,7 +84,7 @@ async function agentWith(name: string, overrides: Parameters<typeof draftFor>[1]
 }
 
 describe("approving an intent", () => {
-  it("signs once through the API, even when the signing step runs twice, and confirms on chain", async () => {
+  it("signs once through the API, even when the process dies between the signature and our row, and confirms on chain", async () => {
     const client = await f.mcp(f.agent.token);
     const recipient = randomAddress();
     const nonceBefore = await anvil.getTransactionCount({ address: f.agent.address });
@@ -104,13 +105,43 @@ describe("approving an intent", () => {
     expect(decided.status).toBe("approved");
 
     const steps = engineOf(f.t.ctx).steps();
-    expect(await steps.execute(approvalId)).toEqual({ ok: true });
+    // The signer signs, then this process dies before the transaction row is stored.
+    const signer = f.t.ctx.signer;
+    const realSign = signer.sign.bind(signer);
+    let signedFirst: SignResponse | undefined;
+    Object.defineProperty(signer, "sign", {
+      configurable: true,
+      writable: true,
+      value: async (input: SignRequest) => {
+        signedFirst = await realSign(input);
+        throw new Error("process died");
+      },
+    });
+    try {
+      await expect(steps.execute(approvalId)).rejects.toThrow("process died");
+    } finally {
+      Object.defineProperty(signer, "sign", {
+        configurable: true,
+        writable: true,
+        value: realSign,
+      });
+    }
+    if (!signedFirst) throw new Error("the signer was never reached");
+    expect(
+      await f.t.ctx.db.select().from(transactions).where(eq(transactions.intentId, intentId)),
+    ).toHaveLength(0);
+    // The retried step gets the signer's replay of the first signature: one transaction, with
+    // the nonce the signed transaction carries.
     expect(await steps.execute(approvalId)).toEqual({ ok: true });
     const rows = await f.t.ctx.db
       .select()
       .from(transactions)
       .where(eq(transactions.intentId, intentId));
     expect(rows).toHaveLength(1);
+    expect(rows[0]?.hash).toBe(signedFirst.transactionHash);
+    expect(rows[0]?.nonce).toBe(
+      parseTransaction(signedFirst.signedTransaction as `0x${string}`).nonce,
+    );
 
     await followUntilDone(approvalId);
     // A second broadcast of the same bytes changes nothing on chain.
@@ -127,9 +158,25 @@ describe("approving an intent", () => {
   });
 
   it("waits for two different people when the policy asks for two", async () => {
-    const { client } = await agentWith("Two-person", {
-      approvals: { threshold: 2, ttlSeconds: 3_600 },
+    // A policy may not ask for more people than the workspace's admin threshold, so this runs
+    // in its own workspace with two approvers and an admin threshold of two.
+    const workspaceId = await f.newWorkspace("Two people");
+    const carol = await f.addApprover(workspaceId, "Carol Approver");
+    const raised = await f.t.owner.browser.api.call("requestAdminThreshold", {
+      params: { workspaceId },
+      body: { adminThreshold: 2 },
     });
+    expect((await f.t.approve(raised.id as ApprovalId, [f.t.owner])).status).toBe("executed");
+    const agent = await f.newAgent("Two-person", workspaceId);
+    const policy = await f.t.owner.browser.api.call("requestPolicy", {
+      params: { workspaceId, walletId: agent.walletId },
+      body: { draft: draftFor(agent.id, { approvals: { threshold: 2, ttlSeconds: 3_600 } }) },
+    });
+    expect((await f.t.approve(policy.id as ApprovalId, [f.t.owner, carol])).status).toBe(
+      "executed",
+    );
+    await fund(agent.address, 50n * 10n ** 18n);
+    const client = await f.mcp(agent.token);
     const { intentId, approvalId } = await propose(client, {
       chainId: TEST_CHAIN_ID,
       to: randomAddress(),
@@ -139,7 +186,7 @@ describe("approving an intent", () => {
     const first = await approveViaApi(f.t.owner, approvalId);
     expect(first).toMatchObject({ status: "pending", approvals: 1, canDecide: false });
     await expect(approveViaApi(f.t.owner, approvalId)).rejects.toMatchObject({ code: "conflict" });
-    const second = await approveViaApi(bob, approvalId);
+    const second = await approveViaApi(carol, approvalId);
     expect(second).toMatchObject({ status: "approved", approvals: 2 });
     expect(await engineOf(f.t.ctx).steps().execute(approvalId)).toEqual({ ok: true });
     expect((await intentStatus(intentId)).status).toBe("signed");
@@ -188,8 +235,14 @@ describe("approving an intent", () => {
       .where(eq(transactions.walletId, agent.walletId));
     const start = await anvil.getTransactionCount({ address: agent.address });
     expect(rows.map((row) => row.nonce).sort()).toEqual([start, start + 1]);
-    await followUntilDone(first.approvalId);
-    await followUntilDone(second.approvalId);
+    // Either may hold the lower nonce, and the higher one is mined only after it: follow both.
+    const pending = new Set([first.approvalId, second.approvalId]);
+    for (let i = 0; i < 40 && pending.size > 0; i += 1) {
+      for (const id of [...pending]) {
+        if ((await steps.followUp(id)).done) pending.delete(id);
+      }
+    }
+    expect(pending.size).toBe(0);
     expect(await anvil.getTransactionCount({ address: agent.address })).toBe(start + 2);
   });
 

@@ -1,5 +1,4 @@
-import { ApprovalId } from "@askgina/os-protocol";
-import { and, eq, isNull, lt } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, or } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { AppContext } from "../context.ts";
 import { approvals } from "../db/schema.ts";
@@ -46,12 +45,15 @@ export function mountWorkflowDelivery(internal: Hono, ctx: AppContext): void {
 }
 
 /** One pass of the outbox and start sweeper. Exported so tests can run it without a timer. */
-export async function sweep(ctx: AppContext): Promise<{ woken: number; started: number }> {
+export async function sweep(
+  ctx: AppContext,
+): Promise<{ woken: number; started: number; abandoned: number }> {
   const engine = engineOf(ctx);
   const runtime = workflowRuntime(ctx);
   const now = ctx.now();
   let woken = 0;
   let started = 0;
+  let abandoned = 0;
 
   const waiting = await ctx.db
     .select({ id: approvals.id, runId: approvals.runId })
@@ -84,20 +86,25 @@ export async function sweep(ctx: AppContext): Promise<{ woken: number; started: 
     .from(approvals)
     .where(
       and(
-        eq(approvals.status, "pending"),
         isNull(approvals.runId),
         lt(approvals.createdAt, new Date((now - START_GRACE_SECONDS) * 1000)),
+        // Waiting or approved requests need a run; one that ended before any run was recorded
+        // (decided, then the process died) still has its outbox entry and is abandoned here.
+        or(
+          inArray(approvals.status, ["pending", "approved"]),
+          and(
+            inArray(approvals.status, ["rejected", "expired", "cancelled"]),
+            eq(approvals.resumeState, "needed"),
+          ),
+        ),
       ),
     );
   for (const row of unstarted) {
-    await engine.startRun(
-      ApprovalId.parse(row.id),
-      row.workspaceId,
-      Math.floor(row.expiresAt.getTime() / 1000),
-    );
-    started += 1;
+    const outcome = await engine.recoverOrphan(row);
+    if (outcome === "started") started += 1;
+    if (outcome === "abandoned") abandoned += 1;
   }
-  return { woken, started };
+  return { woken, started, abandoned };
 }
 
 /**

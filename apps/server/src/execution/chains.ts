@@ -8,6 +8,9 @@ import {
   type Hex,
   http,
   type PublicClient,
+  TransactionNotFoundError,
+  type TransactionReceipt,
+  TransactionReceiptNotFoundError,
 } from "viem";
 import type { ChainConfig, Config } from "../config.ts";
 import type { AppContext, Chains } from "../context.ts";
@@ -53,6 +56,8 @@ export function sanitizeReason(text: string): string {
 export class ChainAccess implements Chains {
   readonly #chains = new Map<ChainId, { config: ChainConfig; client: PublicClient }>();
   readonly #tokens = new Map<string, TokenInfo>();
+  /** Chains whose endpoint answered with the configured chain id. */
+  readonly #verified = new Set<ChainId>();
 
   constructor(chains: readonly ChainConfig[]) {
     for (const config of chains) {
@@ -84,6 +89,25 @@ export class ChainAccess implements Chains {
     return this.#entry(chainId).client;
   }
 
+  /**
+   * The chain's client, after checking once that its endpoint serves the configured chain. A
+   * misconfigured endpoint would otherwise show one chain's balances and simulations on another
+   * chain's approval card. An RPC failure is not cached, so the check runs again next time.
+   */
+  async #ready(chainId: ChainId): Promise<PublicClient> {
+    const { client, config } = this.#entry(chainId);
+    if (this.#verified.has(chainId)) return client;
+    let answered: number;
+    try {
+      answered = await client.getChainId();
+    } catch {
+      throw new ChainError("rpc_unavailable");
+    }
+    if (`eip155:${answered}` !== config.chainId) throw new ChainError("chain_mismatch");
+    this.#verified.add(chainId);
+    return client;
+  }
+
   explorerLink(chainId: ChainId, hash: string): string | null {
     const base = this.#chains.get(chainId)?.config.explorerUrl;
     return base ? `${base.replace(/\/$/, "")}/tx/${hash}` : null;
@@ -95,7 +119,7 @@ export class ChainAccess implements Chains {
   ): Promise<AssetBalance[]> {
     return Promise.all(
       assets.map(async ({ chainId, asset }) => {
-        const client = this.client(chainId);
+        const client = await this.#ready(chainId);
         if (asset === "native") {
           return {
             chainId,
@@ -123,7 +147,7 @@ export class ChainAccess implements Chains {
     const key = `${chainId}|${token}`;
     const cached = this.#tokens.get(key);
     if (cached) return cached;
-    const client = this.client(chainId);
+    const client = await this.#ready(chainId);
     const [symbol, decimals] = await Promise.all([
       client.readContract({ address: token, abi: erc20Abi, functionName: "symbol" }),
       client.readContract({ address: token, abi: erc20Abi, functionName: "decimals" }),
@@ -141,7 +165,7 @@ export class ChainAccess implements Chains {
     value: bigint;
     data: Hex | undefined;
   }): Promise<SimulationResult> {
-    const client = this.client(input.chainId);
+    const client = await this.#ready(input.chainId);
     const block = await client.getBlock({ blockTag: "latest" });
     const request = {
       account: input.from,
@@ -170,7 +194,7 @@ export class ChainAccess implements Chains {
   }
 
   async fees(chainId: ChainId): Promise<FeeQuote> {
-    const client = this.client(chainId);
+    const client = await this.#ready(chainId);
     const [block, tip] = await Promise.all([
       client.getBlock({ blockTag: "latest" }),
       client.estimateMaxPriorityFeePerGas().catch(() => 1_000_000_000n),
@@ -179,7 +203,7 @@ export class ChainAccess implements Chains {
   }
 
   async pendingNonce(chainId: ChainId, address: Address): Promise<number> {
-    return this.client(chainId).getTransactionCount({ address, blockTag: "pending" });
+    return (await this.#ready(chainId)).getTransactionCount({ address, blockTag: "pending" });
   }
 
   /**
@@ -188,7 +212,7 @@ export class ChainAccess implements Chains {
    * as success.
    */
   async broadcast(chainId: ChainId, raw: Hex, hash: Hex): Promise<void> {
-    const client = this.client(chainId);
+    const client = await this.#ready(chainId);
     try {
       await client.sendRawTransaction({ serializedTransaction: raw });
     } catch (error) {
@@ -202,12 +226,37 @@ export class ChainAccess implements Chains {
     }
   }
 
+  /**
+   * Whether the chain knows the transaction (pending or mined). Only a definite "not found" is
+   * `false`; an RPC failure throws, because it says nothing about the transaction.
+   */
+  async known(chainId: ChainId, hash: Hex): Promise<boolean> {
+    const client = await this.#ready(chainId);
+    try {
+      await client.getTransaction({ hash });
+      return true;
+    } catch (error) {
+      if (error instanceof TransactionNotFoundError) return false;
+      throw new ChainError("rpc_unavailable");
+    }
+  }
+
+  /**
+   * The transaction's receipt. `missing` means the node answered and has none; an RPC failure
+   * throws, so an outage is never read as a missing transaction.
+   */
   async receipt(chainId: ChainId, hash: Hex): Promise<ReceiptState> {
-    const client = this.client(chainId);
-    const receipt = await client.getTransactionReceipt({ hash }).catch(() => null);
-    if (receipt === null) return { state: "missing" };
-    // viem caches the block number for a few seconds; a stale head would undercount depth.
-    const head = await client.getBlockNumber({ cacheTime: 0 });
+    const client = await this.#ready(chainId);
+    let receipt: TransactionReceipt;
+    let head: bigint;
+    try {
+      receipt = await client.getTransactionReceipt({ hash });
+      // viem caches the block number for a few seconds; a stale head would undercount depth.
+      head = await client.getBlockNumber({ cacheTime: 0 });
+    } catch (error) {
+      if (error instanceof TransactionReceiptNotFoundError) return { state: "missing" };
+      throw new ChainError("rpc_unavailable");
+    }
     const depth = head - receipt.blockNumber + 1n;
     const blockNumber = Number(receipt.blockNumber);
     if (depth < BigInt(this.config(chainId).confirmations))

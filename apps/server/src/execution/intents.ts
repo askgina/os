@@ -25,7 +25,7 @@ import {
   type WorkspaceId,
 } from "@askgina/os-protocol";
 import { SignerError, type SignResponse } from "@askgina/os-protocol/signer";
-import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
+import { and, count, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import {
   encodeFunctionData,
   erc20Abi,
@@ -36,10 +36,17 @@ import {
 import { ApprovalFailure, type ApprovalKindHandler, type ApprovalRow } from "../approvals/kinds.ts";
 import { appendAudit } from "../audit.ts";
 import type { AppContext, Executor } from "../context.ts";
-import { agents, intents, transactions, wallets } from "../db/schema.ts";
+import {
+  agents,
+  intents,
+  nonceReservations,
+  transactions,
+  wallets,
+  workspaces,
+} from "../db/schema.ts";
 import { HttpError } from "../http/errors.ts";
-import { engineOf } from "./approvals.ts";
-import { ChainError, chainAccess } from "./chains.ts";
+import { approvalLink, engineOf } from "./approvals.ts";
+import { ChainError, chainAccess, type ReceiptState } from "./chains.ts";
 
 type IntentRow = typeof intents.$inferSelect;
 type TransactionRow = typeof transactions.$inferSelect;
@@ -58,6 +65,12 @@ interface IntentApprovalDetail {
 
 const PAGE_SIZE = 50;
 const REBROADCAST_SECONDS = 60;
+/** Longest wait between broadcast attempts while the chain will not take a transaction. */
+const MAX_BROADCAST_BACKOFF_SECONDS = 60;
+/** How often a `stuck` transaction is looked at again: it is still valid and may be mined. */
+const STUCK_POLL_SECONDS = 600;
+/** Proposals one agent may have waiting for people at once; more is a loop, not a request. */
+export const MAX_PENDING_PER_AGENT = 20;
 /** Gas the estimate is multiplied by, in percent, to absorb state changes before signing. */
 const GAS_MARGIN_PERCENT = 125n;
 /** Used when a simulation failed and gave no estimate; the fee ceiling still bounds the cost. */
@@ -302,6 +315,15 @@ async function propose(
   }
   const chainId = input.chainId;
   const wallet = await resolveWallet(ctx, agent, input.walletId);
+  // The signer refuses every signature while the workspace is paused; say so now rather than
+  // after someone approved.
+  const [workspace] = await ctx.db
+    .select({ paused: workspaces.paused })
+    .from(workspaces)
+    .where(eq(workspaces.id, agent.workspaceId));
+  if (workspace?.paused) {
+    throw new HttpError("conflict", "this workspace is paused", "workspace_paused");
+  }
   // The signer's copy of the policy is the one that will decide, so it is the one checked here.
   const state = await ctx.signer.getWallet(wallet.id).catch((error: unknown) => {
     throw new HttpError(
@@ -318,18 +340,27 @@ async function propose(
       "policy_missing",
     );
   }
-  const { operation, display, call } = await input.build(wallet, chainId);
-  const simulated = await chains.simulate({
-    chainId,
-    from: wallet.address,
-    to: call.to,
-    value: call.value,
-    data: call.data,
+  const read = async () => {
+    const built = await input.build(wallet, chainId);
+    const simulated = await chains.simulate({
+      chainId,
+      from: wallet.address,
+      to: built.call.to,
+      value: built.call.value,
+      data: built.call.data,
+    });
+    return { ...built, simulated, fees: await chains.fees(chainId) };
+  };
+  const { operation, display, simulated, fees } = await read().catch((error: unknown) => {
+    if (error instanceof ChainError) {
+      throw new HttpError("internal", "the chain could not be read", error.code);
+    }
+    throw error;
   });
-  const fees = await chains.fees(chainId);
   const gas = ((simulated.gasEstimate ?? FALLBACK_GAS) * GAS_MARGIN_PERCENT) / 100n;
   const wanted = 2n * gas * (2n * fees.baseFeePerGas + fees.maxPriorityFeePerGas);
   const ceiling = BigInt(policy.fees.maxPerTxWei);
+  // biome-ignore lint/complexity/useMathMinMax: Math.min does not take bigints
   const maxFeeWei = wanted < ceiling ? wanted : ceiling;
   const id = newId("int");
   const intent = Intent.parse({
@@ -377,6 +408,21 @@ async function propose(
     detail: { intentId: id } satisfies IntentApprovalDetail,
     requestedBy: { type: "agent", id: agent.id },
     alongside: async (tx, approvalId) => {
+      // Counted under a per-agent lock so concurrent proposals cannot all slip under the limit.
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${`pending:${agent.id}`}, 0))`,
+      );
+      const [waiting] = await tx
+        .select({ n: count() })
+        .from(intents)
+        .where(and(eq(intents.agentId, agent.id), eq(intents.status, "pending_approval")));
+      if ((waiting?.n ?? 0) >= MAX_PENDING_PER_AGENT) {
+        throw new HttpError(
+          "rate_limited",
+          `you have ${MAX_PENDING_PER_AGENT} proposals waiting for approval; wait until some are decided`,
+          "too_many_pending",
+        );
+      }
       await tx.insert(intents).values({
         id,
         workspaceId: agent.workspaceId,
@@ -416,7 +462,7 @@ async function propose(
     intentId: id,
     status: stored?.status ?? "pending_approval",
     approvalId: summary.id,
-    approvalUrl: `${ctx.config.publicOrigin}/approvals/${summary.id}`,
+    approvalUrl: approvalLink(ctx.config.publicOrigin, agent.workspaceId, summary.id),
     expiresAt: summary.expiresAt,
   };
 }
@@ -527,9 +573,11 @@ export function proposeContractCall(
 /** An agent withdraws its own proposal while it still waits for people. */
 export async function cancelIntent(ctx: AppContext, row: IntentRow): Promise<IntentStatus> {
   if (row.status === "pending_approval" && row.approvalId !== null) {
-    await engineOf(ctx).cancel(row.approvalId);
-    // The workflow marks the intent; record it here too so the agent sees the result at once.
-    await moveIntent(ctx, row, ["pending_approval"], "cancelled");
+    // Only a request that was still pending is cancelled; one already approved goes on to be
+    // signed, so the intent moves in the same transaction as the request, or not at all.
+    await engineOf(ctx).cancel(row.approvalId, (tx) =>
+      moveIntent(ctx, row, ["pending_approval"], "cancelled", { executor: tx }),
+    );
   }
   return (await intentRow(ctx, row.id)).status;
 }
@@ -554,12 +602,18 @@ async function walletSummary(ctx: AppContext, walletId: WalletId): Promise<Walle
   };
 }
 
+interface FeeChoice {
+  gas: bigint;
+  maxFeePerGas: bigint;
+  maxPriorityFeePerGas: bigint;
+}
+
 /** Pick gas and fees for signing, inside the intent's approved fee ceiling. */
 function chooseFees(
   maxFeeWei: bigint,
   gasEstimate: bigint,
   fees: { baseFeePerGas: bigint; maxPriorityFeePerGas: bigint },
-): { gas: bigint; maxFeePerGas: bigint; maxPriorityFeePerGas: bigint } {
+): FeeChoice {
   const gas = (gasEstimate * GAS_MARGIN_PERCENT) / 100n;
   const needed = fees.baseFeePerGas + fees.maxPriorityFeePerGas;
   const affordable = maxFeeWei / gas;
@@ -572,9 +626,78 @@ function chooseFees(
   const preferred = 2n * fees.baseFeePerGas + fees.maxPriorityFeePerGas;
   return {
     gas,
+    // biome-ignore lint/complexity/useMathMinMax: Math.min does not take bigints
     maxFeePerGas: preferred < affordable ? preferred : affordable,
     maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
   };
+}
+
+/**
+ * Signer refusals that a retry can cure: its own failures, and `unauthenticated`, which comes
+ * from clock skew or a secret being rotated on one side first. Every other code is permanent.
+ */
+const RETRYABLE_SIGNER_CODES: readonly string[] = ["internal", "vault_error", "unauthenticated"];
+
+/**
+ * The account nonce for this approval's transaction, reserved and committed before the signer
+ * is asked. The signer accepts a repeated account nonce (a reset chain counts from zero again;
+ * a replacement needs the old one), so if this process died after the signer signed and before
+ * the transaction row was stored, another approval of the same wallet must still not be given
+ * the same nonce. A retry of this approval reuses its reservation.
+ */
+async function reserveNonce(
+  ctx: AppContext,
+  approvalId: ApprovalId,
+  wallet: WalletRow,
+  chainId: ChainId,
+): Promise<number> {
+  const chains = chainAccess(ctx);
+  return ctx.db.transaction(async (tx) => {
+    // One nonce allocator per wallet and chain.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`nonce:${wallet.id}:${chainId}`}, 0))`,
+    );
+    const [existing] = await tx
+      .select({ nonce: nonceReservations.nonce })
+      .from(nonceReservations)
+      .where(eq(nonceReservations.approvalId, approvalId));
+    if (existing) return existing.nonce;
+    const [highest] = await tx
+      .select({ nonce: sql<number | null>`max(${transactions.nonce})` })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.walletId, wallet.id),
+          eq(transactions.chainId, chainId),
+          inArray(transactions.status, ["signed", "broadcast"]),
+        ),
+      );
+    const [reserved] = await tx
+      .select({ nonce: sql<number | null>`max(${nonceReservations.nonce})` })
+      .from(nonceReservations)
+      .where(
+        and(eq(nonceReservations.walletId, wallet.id), eq(nonceReservations.chainId, chainId)),
+      );
+    const next = (value: number | null | undefined) =>
+      value === null || value === undefined ? 0 : Number(value) + 1;
+    const nonce = Math.max(
+      await chains.pendingNonce(chainId, wallet.address),
+      next(highest?.nonce),
+      next(reserved?.nonce),
+    );
+    await tx.insert(nonceReservations).values({
+      approvalId,
+      walletId: wallet.id,
+      chainId,
+      nonce,
+      createdAt: new Date(ctx.now() * 1000),
+    });
+    return nonce;
+  });
+}
+
+async function releaseNonce(ctx: AppContext, approvalId: ApprovalId): Promise<void> {
+  await ctx.db.delete(nonceReservations).where(eq(nonceReservations.approvalId, approvalId));
 }
 
 /**
@@ -596,56 +719,43 @@ async function executeIntent(
   const [wallet] = await ctx.db.select().from(wallets).where(eq(wallets.id, row.walletId));
   if (!wallet) throw new ApprovalFailure("wallet_missing", "the wallet no longer exists");
 
-  await ctx.db.transaction(async (tx) => {
-    // One nonce allocator per wallet and chain, held until the signed transaction is recorded,
-    // so two approvals for the same wallet can never be given the same nonce.
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`nonce:${wallet.id}:${intent.chainId}`}, 0))`,
-    );
-    const [highest] = await tx
-      .select({ nonce: sql<number | null>`max(${transactions.nonce})` })
-      .from(transactions)
-      .where(
-        and(
-          eq(transactions.walletId, wallet.id),
-          eq(transactions.chainId, intent.chainId),
-          inArray(transactions.status, ["signed", "broadcast"]),
-        ),
-      );
-    const chainNonce = await chains.pendingNonce(intent.chainId, wallet.address);
-    const local = highest?.nonce === null || highest?.nonce === undefined ? 0 : highest.nonce + 1;
-    const nonce = Math.max(chainNonce, local);
-    const quote = await chains.fees(intent.chainId);
-    const estimate = BigInt(presentation.simulation?.gasEstimate ?? FALLBACK_GAS.toString());
-    const chosen = chooseFees(BigInt(intent.maxFeeWei), estimate, quote);
+  const nonce = await reserveNonce(ctx, approval.id, wallet, intent.chainId);
+  const quote = await chains.fees(intent.chainId);
+  const estimate = BigInt(presentation.simulation?.gasEstimate ?? FALLBACK_GAS.toString());
+  let chosen: FeeChoice;
+  try {
+    chosen = chooseFees(BigInt(intent.maxFeeWei), estimate, quote);
+  } catch (error) {
+    if (error instanceof ApprovalFailure) await releaseNonce(ctx, approval.id);
+    throw error;
+  }
 
-    let signed: SignResponse;
-    try {
-      signed = await ctx.signer.sign({
-        intent,
-        authorization,
-        transaction: {
-          nonce,
-          gas: chosen.gas.toString(),
-          maxFeePerGas: chosen.maxFeePerGas.toString(),
-          maxPriorityFeePerGas: chosen.maxPriorityFeePerGas.toString(),
-        },
-      });
-    } catch (error) {
-      if (
-        error instanceof SignerError &&
-        error.code !== "internal" &&
-        error.code !== "vault_error"
-      ) {
-        throw new ApprovalFailure(
-          error.code === "policy_denied" && error.detail ? error.detail : error.code,
-          "the signer refused to sign",
-        );
-      }
-      throw error;
+  let signed: SignResponse;
+  try {
+    signed = await ctx.signer.sign({
+      intent,
+      authorization,
+      transaction: {
+        nonce,
+        gas: chosen.gas.toString(),
+        maxFeePerGas: chosen.maxFeePerGas.toString(),
+        maxPriorityFeePerGas: chosen.maxPriorityFeePerGas.toString(),
+      },
+    });
+  } catch (error) {
+    if (error instanceof SignerError && !RETRYABLE_SIGNER_CODES.includes(error.code)) {
+      // A permanent refusal: nothing was signed, so the nonce is free for the next approval.
+      await releaseNonce(ctx, approval.id);
+      throw new ApprovalFailure(
+        error.code === "policy_denied" && error.detail ? error.detail : error.code,
+        "the signer refused to sign",
+      );
     }
-    // A repeated request returns the transaction signed the first time, with its own nonce.
-    const parsed = parseTransaction(signed.signedTransaction as ViemHex);
+    throw error;
+  }
+  // A repeated request returns the transaction signed the first time, with its own nonce.
+  const parsed = parseTransaction(signed.signedTransaction as ViemHex);
+  await ctx.db.transaction(async (tx) => {
     await tx
       .insert(transactions)
       .values({
@@ -664,6 +774,7 @@ async function executeIntent(
         updatedAt: new Date(ctx.now() * 1000),
       })
       .onConflictDoNothing();
+    await tx.delete(nonceReservations).where(eq(nonceReservations.approvalId, approval.id));
     await moveIntent(ctx, row, ["approved", "pending_approval"], "signed", { executor: tx });
   });
 }
@@ -696,41 +807,80 @@ async function followUpIntent(
       .where(eq(transactions.approvalId, approval.id));
   };
 
+  const age = now - seconds(transaction.createdAt);
+  const overdue = age >= ctx.config.reconcileTimeoutSeconds;
+  const retryLater = (code: string, waitSeconds: number) => {
+    ctx.log.warn("chain access failed", { approvalId: approval.id, code });
+    return { done: false, waitSeconds };
+  };
+
   if (transaction.status === "signed") {
     try {
       await chains.broadcast(chainId, raw, transaction.hash as ViemHex);
     } catch (error) {
-      if (error instanceof ChainError) {
-        ctx.log.warn("broadcast failed", { approvalId: approval.id, code: error.code });
+      if (!(error instanceof ChainError)) throw error;
+      if (!overdue) {
+        // Back off as the attempts age, up to a minute, until the reconcile timeout.
+        const backoff = Math.min(
+          MAX_BROADCAST_BACKOFF_SECONDS,
+          Math.max(options.pollSeconds, Math.floor(age / 4)),
+        );
+        return retryLater(error.code, backoff);
       }
-      throw error;
+      // Out of time. Only a chain that answers "unknown" ends it; an RPC error is no answer.
+      let known: boolean;
+      try {
+        known = await chains.known(chainId, transaction.hash as ViemHex);
+      } catch (lookup) {
+        if (lookup instanceof ChainError) return retryLater(lookup.code, options.pollSeconds);
+        throw lookup;
+      }
+      if (!known) {
+        // Never accepted and no longer offered: its nonce is free again for this wallet.
+        await touch("rejected");
+        await moveIntent(ctx, intent, ["signed"], "failed", { failureCode: "broadcast_rejected" });
+        return { done: true, waitSeconds: 0 };
+      }
     }
     await touch("broadcast");
     await moveIntent(ctx, intent, ["signed"], "broadcast");
     return { done: false, waitSeconds: options.pollSeconds };
   }
-  if (transaction.status === "confirmed" || transaction.status === "reverted") {
+  if (
+    transaction.status === "confirmed" ||
+    transaction.status === "reverted" ||
+    transaction.status === "rejected"
+  ) {
     return { done: true, waitSeconds: 0 };
   }
 
-  const receipt = await chains.receipt(chainId, transaction.hash as ViemHex);
+  // `broadcast` or `stuck`. A stuck transaction is still valid and may be mined any time, so it
+  // is looked at again, slowly, for as long as the run lives.
+  const wait = transaction.status === "stuck" ? STUCK_POLL_SECONDS : options.pollSeconds;
+  let receipt: ReceiptState;
+  try {
+    receipt = await chains.receipt(chainId, transaction.hash as ViemHex);
+  } catch (error) {
+    if (error instanceof ChainError) return retryLater(error.code, wait);
+    throw error;
+  }
   if (receipt.state === "confirmed" || receipt.state === "reverted") {
     await touch(receipt.state, receipt.blockNumber);
     await moveIntent(ctx, intent, ["broadcast", "stuck", "signed"], receipt.state);
     return { done: true, waitSeconds: 0 };
   }
-  if (receipt.state === "missing") {
-    if (now - seconds(transaction.createdAt) >= ctx.config.reconcileTimeoutSeconds) {
+  if (receipt.state === "missing" && transaction.status === "broadcast") {
+    if (overdue) {
       await touch("stuck");
       await moveIntent(ctx, intent, ["broadcast"], "stuck");
-      return { done: true, waitSeconds: 0 };
+      return { done: false, waitSeconds: STUCK_POLL_SECONDS };
     }
     if (now - seconds(transaction.updatedAt) >= REBROADCAST_SECONDS) {
-      await chains.broadcast(chainId, raw, transaction.hash as ViemHex);
+      await chains.broadcast(chainId, raw, transaction.hash as ViemHex).catch(() => {});
       await touch(transaction.status);
     }
   }
-  return { done: false, waitSeconds: options.pollSeconds };
+  return { done: false, waitSeconds: wait };
 }
 
 export function approveIntentKind(): ApprovalKindHandler<"approve-intent"> {
@@ -767,6 +917,8 @@ export function approveIntentKind(): ApprovalKindHandler<"approve-intent"> {
       await executeIntent(ctx, approval, authorization, detail as IntentApprovalDetail);
     },
     async abandon(ctx, approval, status, detail) {
+      // Ended without a signature we stored: a reserved nonce goes back to the wallet.
+      await releaseNonce(ctx, approval.id);
       const row = await intentRow(ctx, (detail as IntentApprovalDetail).intentId);
       if (status === "failed") {
         const code = approval.failureCode ?? "failed";

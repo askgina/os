@@ -84,6 +84,10 @@ export interface ApprovalEngine {
   /** Called once per kind at boot. */
   register<K extends ApprovalKind>(handler: ApprovalKindHandler<K>): void;
   open<K extends ApprovalKind>(input: OpenApproval<K>): Promise<ApprovalSummary>;
-  /** End a pending request with no effect. A no-op when it is no longer pending. */
-  cancel(approvalId: ApprovalId): Promise<void>;
+  /**
+   * End a pending request with no effect. Resolves to whether it did: `false` means the request
+   * was no longer pending (already approved, rejected, expired or cancelled), and the caller
+   * must not treat its subject as cancelled.
+   */
+  cancel(approvalId: ApprovalId): Promise<boolean>;
 }

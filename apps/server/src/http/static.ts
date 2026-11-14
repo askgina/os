@@ -25,7 +25,7 @@ async function readRegularFile(path: string): Promise<Buffer | null> {
 
 /**
  * Serve the built UI. A path that names a file under `root` gets that file; any other GET gets
- * `index.html`, so the single-page app's own routes (`/invite/…`, `/w/…`) load on refresh.
+ * `index.html`, so the single-page app's own routes (`/join/…`, `/w/…`) load on refresh.
  */
 export function serveWebApp(app: Hono, root: string): void {
   const base = resolve(root);

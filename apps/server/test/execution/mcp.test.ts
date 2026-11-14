@@ -107,7 +107,9 @@ describe("the MCP gateway", () => {
       }),
     );
     expect(proposed.status).toBe("pending_approval");
-    expect(String(proposed.approvalUrl)).toMatch(new RegExp(`^${TEST_ORIGIN}/approvals/apr_`));
+    expect(String(proposed.approvalUrl)).toMatch(
+      new RegExp(`^${TEST_ORIGIN}/w/${f.workspaceId}/approvals/apr_`),
+    );
 
     const sibling = await f.newAgent("Sibling");
     const theirs = await f.mcp(sibling.token);
