@@ -43,8 +43,10 @@ export type SignerRouteScope = "control" | "confirm" | "unsigned";
  * The signer's HTTP API. Only the control plane and the `approve` service can reach it, and every
  * request except the health check carries a request signature made with the secret of its
  * route's scope. That signature only says which of the two sent it. Whatever adds authority
- * (signing, a new policy, a new approver, resuming) also needs passkey assertions that the
- * signer verifies itself.
+ * (signing, a new policy, a new approver, resuming) or schedules a key's destruction (retiring a
+ * wallet, deleting a workspace) also needs passkey assertions that the signer verifies itself.
+ * Cancelling a scheduled destruction, and finalizing one whose time has come, need only the
+ * request signature: the first only keeps a key, and the second does what people approved.
  */
 export const signerRoutes = {
   health: { method: "GET", path: "/healthz", scope: "unsigned" },
@@ -71,6 +73,32 @@ export const signerRoutes = {
   createWallet: { method: "POST", path: "/v1/wallets", scope: "control" },
   getWallet: { method: "GET", path: "/v1/wallets/:walletId", scope: "control" },
   setPolicy: { method: "PUT", path: "/v1/wallets/:walletId/policy", scope: "control" },
+  retireWallet: { method: "POST", path: "/v1/wallets/:walletId/retire", scope: "control" },
+  cancelRetireWallet: {
+    method: "POST",
+    path: "/v1/wallets/:walletId/retire/cancel",
+    scope: "control",
+  },
+  finalizeRetireWallet: {
+    method: "POST",
+    path: "/v1/wallets/:walletId/retire/finalize",
+    scope: "control",
+  },
+  deleteWorkspace: {
+    method: "POST",
+    path: "/v1/workspaces/:workspaceId/delete",
+    scope: "control",
+  },
+  cancelDeleteWorkspace: {
+    method: "POST",
+    path: "/v1/workspaces/:workspaceId/delete/cancel",
+    scope: "control",
+  },
+  finalizeDeleteWorkspace: {
+    method: "POST",
+    path: "/v1/workspaces/:workspaceId/delete/finalize",
+    scope: "control",
+  },
   sign: { method: "POST", path: "/v1/sign", scope: "control" },
   sweep: { method: "POST", path: "/v1/wallets/:walletId/sweep", scope: "control" },
   revokeApproval: { method: "POST", path: "/v1/approvals/:approvalId/revoke", scope: "control" },
@@ -130,17 +158,44 @@ export const CreateWorkspaceRequest = z.strictObject({
 });
 export type CreateWorkspaceRequest = z.infer<typeof CreateWorkspaceRequest>;
 
-export const WorkspaceState = z.strictObject({
-  workspaceId: WorkspaceId,
-  adminThreshold: z.number().int(),
-  paused: z.boolean(),
-  approvers: z.array(
-    z.strictObject({ userId: UserId, credentialId: Base64Url, addedAt: EpochSeconds }),
-  ),
-});
+/**
+ * Where a workspace stands in its lifecycle.
+ * - `active`: as always; it may also be paused.
+ * - `deleting`: a `delete-workspace` envelope applied; the workspace is paused and its wallets
+ *   are retiring until `destroyAfter`. Any member can still cancel.
+ * - `deleted`: the deletion was finalized; its keys are destroyed and the signer refuses every
+ *   request for it except reading its state and its decision log.
+ */
+export const WorkspaceLifecycle = z.enum(["active", "deleting", "deleted"]);
+export type WorkspaceLifecycle = z.infer<typeof WorkspaceLifecycle>;
+
+export const WorkspaceState = z
+  .strictObject({
+    workspaceId: WorkspaceId,
+    adminThreshold: z.number().int(),
+    paused: z.boolean(),
+    approvers: z.array(
+      z.strictObject({ userId: UserId, credentialId: Base64Url, addedAt: EpochSeconds }),
+    ),
+    state: WorkspaceLifecycle,
+    /** When the deletion destroys keys, kept once deleted; null exactly while `active`. */
+    destroyAfter: EpochSeconds.nullable(),
+    /**
+     * The shortest delay the signer accepts from a retire or delete envelope's `issuedAt` to its
+     * `destroyAfter`, for the control plane to offer as the earliest destroy time.
+     */
+    minDestroyDelaySeconds: z.number().int().min(0),
+  })
+  .refine((state) => (state.state === "active") === (state.destroyAfter === null), {
+    path: ["destroyAfter"],
+    message: "only a workspace being deleted or deleted has a destroy time",
+  });
 export type WorkspaceState = z.infer<typeof WorkspaceState>;
 
-/** Carries an `add-approver`, `remove-approver`, `set-admin-threshold` or `resume-workspace` envelope. */
+/**
+ * Carries an `add-approver`, `remove-approver`, `set-admin-threshold`, `resume-workspace`,
+ * `retire-wallet` or `delete-workspace` envelope.
+ */
 export const AuthorizedRequest = z.strictObject({ authorization: Authorization });
 export type AuthorizedRequest = z.infer<typeof AuthorizedRequest>;
 
@@ -192,18 +247,51 @@ export const CreateWalletRequest = z.strictObject({
 });
 export type CreateWalletRequest = z.infer<typeof CreateWalletRequest>;
 
-export const WalletState = z.strictObject({
-  walletId: WalletId,
-  workspaceId: WorkspaceId,
-  kind: WalletKind,
-  label: z.string(),
-  address: Address,
-  policy: WalletPolicy.nullable(),
-  policyHash: Digest.nullable(),
-  /** What the signer has signed for in the last 24 hours, per asset. */
-  spent: z.array(z.strictObject({ chainId: ChainId, asset: AssetRef, amount: Amount })),
-});
+/**
+ * Where a wallet stands in its lifecycle.
+ * - `active`: signs within its policy.
+ * - `retiring`: a `retire-wallet` or `delete-workspace` envelope applied; it signs nothing, and
+ *   its key is destroyed at `destroyAfter` or later unless the retirement is cancelled.
+ * - `held`: its retirement was cancelled; it keeps its key and signs nothing until a new policy
+ *   is approved for it, which makes it `active` again.
+ * - `destroyed`: its key is gone.
+ */
+export const WalletLifecycle = z.enum(["active", "retiring", "held", "destroyed"]);
+export type WalletLifecycle = z.infer<typeof WalletLifecycle>;
+
+export const WalletState = z
+  .strictObject({
+    walletId: WalletId,
+    workspaceId: WorkspaceId,
+    kind: WalletKind,
+    label: z.string(),
+    address: Address,
+    policy: WalletPolicy.nullable(),
+    policyHash: Digest.nullable(),
+    /** What the signer has signed for in the last 24 hours, per asset. */
+    spent: z.array(z.strictObject({ chainId: ChainId, asset: AssetRef, amount: Amount })),
+    state: WalletLifecycle,
+    /** When its key is, or was, destroyed; null exactly while `active` or `held`. */
+    destroyAfter: EpochSeconds.nullable(),
+  })
+  .refine(
+    (wallet) =>
+      (wallet.state === "retiring" || wallet.state === "destroyed") ===
+      (wallet.destroyAfter !== null),
+    {
+      path: ["destroyAfter"],
+      message: "only a retiring or destroyed wallet has a destroy time",
+    },
+  );
 export type WalletState = z.infer<typeof WalletState>;
+
+/**
+ * Cancel or finalize a wallet's retirement. Needs no passkey; names the workspace, so the step is
+ * recorded in that workspace's decision log. The workspace routes of the same steps take an
+ * empty body.
+ */
+export const RetireWalletStepRequest = z.strictObject({ workspaceId: WorkspaceId });
+export type RetireWalletStepRequest = z.infer<typeof RetireWalletStepRequest>;
 
 /** Carries a `set-policy` envelope whose `policyHash` is the hash of `policy`. */
 export const SetPolicyRequest = z.strictObject({
@@ -344,7 +432,8 @@ export type AttemptResponse = z.infer<typeof AttemptResponse>;
  * - `revoked`: refused for good; no signature exists or will exist.
  * - `signed`: an intent, a sweep or a mandate use was signed; `transactionHash` is the first
  *   signature's, and `attempts` lists every attempt, the first included, by number.
- * - `applied`: a non-signing envelope (policy, approver, threshold, resume, grant) took effect.
+ * - `applied`: a non-signing envelope (policy, approver, threshold, resume, grant, retire,
+ *   delete) took effect.
  *   For a `cancel-transaction` envelope, `attempts` holds the one attempt it produced and
  *   `transactionHash` is that attempt's.
  * Otherwise `attempts` is empty.
@@ -553,6 +642,8 @@ export const SignerErrorCode = z.enum([
    * the passkey it adds: it takes no approval and the signer adds no one.
    */
   "possession_unproven",
+  /** A finalize before `destroyAfter` by the signer's clock. */
+  "destroy_not_due",
   // 429
   /** More than 64 assertions were submitted for one confirmation. */
   "rate_limited",
@@ -591,6 +682,16 @@ export const SignerErrorCode = z.enum([
   "attempts_exhausted",
   /** More than `SIGNER_REPRICE_WINDOW_SECONDS` since the first signature: only a cancel now. */
   "reprice_window_closed",
+  /** The workspace is being deleted: only cancelling or finalizing the deletion, and reads. */
+  "workspace_deleting",
+  /** The workspace was deleted: only reading its state and its decision log. */
+  "workspace_deleted",
+  /** The wallet is retiring, held or destroyed: it signs nothing and takes no mandate. */
+  "wallet_retired",
+  /** A retire or delete envelope's wallets are not exactly the signer's, by id and address. */
+  "wallet_set_mismatch",
+  /** `destroyAfter − issuedAt` is outside the signer's minimum and maximum destroy delay. */
+  "destroy_delay_out_of_range",
   // 500
   "vault_error",
   "internal",
@@ -632,6 +733,12 @@ export const signerErrorStatus: Record<SignerErrorCode, 400 | 401 | 403 | 404 | 
   fee_not_raised: 403,
   attempts_exhausted: 403,
   reprice_window_closed: 403,
+  workspace_deleting: 403,
+  workspace_deleted: 403,
+  wallet_retired: 403,
+  wallet_set_mismatch: 403,
+  destroy_delay_out_of_range: 403,
+  destroy_not_due: 409,
   vault_error: 500,
   internal: 500,
 };

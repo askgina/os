@@ -12,6 +12,7 @@ import {
   type RenderedConfirmation,
   type RenderInput,
   renderConfirmation,
+  type SignerWalletRecord,
 } from "../src/confirmation.ts";
 import {
   type Envelope,
@@ -37,7 +38,9 @@ import {
   BASE,
   BOB,
   cancelTransaction,
+  DESTROY_DELAY,
   DIGEST_A,
+  deleteWorkspace,
   grantMandate,
   intent,
   MAINNET,
@@ -46,10 +49,13 @@ import {
   mandateAsset,
   NONCE,
   OTHER_AGENT,
+  OTHER_WALLET,
+  OTHER_WALLET_ADDRESS,
   policy,
   ROUTER,
   removeApprover,
   resumeWorkspace,
+  retireWallet,
   setAdminThreshold,
   setPolicy,
   T0,
@@ -92,6 +98,7 @@ function render(
     possessionProven: false,
     treasuries: [],
     cancelTarget: null,
+    wallets: [],
     ...overrides,
   });
 }
@@ -215,6 +222,8 @@ describe("checkSubject", () => {
       setAdminThreshold(),
       resumeWorkspace(),
       cancelTransaction(),
+      retireWallet(),
+      deleteWorkspace(),
     ]) {
       expect(checkSubject(envelope, envelopeOnly)).toBe(null);
     }
@@ -360,6 +369,8 @@ describe("checkSubject", () => {
       setAdminThreshold(),
       resumeWorkspace(),
       cancelTransaction(),
+      retireWallet(),
+      deleteWorkspace(),
     ];
     for (const envelope of envelopes) {
       const accepted = subjects.filter((subject) => checkSubject(envelope, subject) === null);
@@ -1095,6 +1106,134 @@ describe("cancels", () => {
     const missing = render(cancelTransaction(), envelopeOnly);
     expect(missing.title).toBe("Try to cancel a transaction that was not mined");
     expect(value(missing, "Transaction to cancel")).toBe("not found at the signer");
+  });
+});
+
+describe("retiring and deleting", () => {
+  const operations: SignerWalletRecord = {
+    walletId: WALLET,
+    label: "Operations",
+    address: WALLET_ADDRESS,
+  };
+  const treasury: SignerWalletRecord = {
+    walletId: OTHER_WALLET,
+    label: "Treasury",
+    address: OTHER_WALLET_ADDRESS,
+  };
+  const records = [operations, treasury];
+  const lifecycle = (envelope: Envelope, overrides: Partial<RenderInput> = {}) =>
+    render(envelope, envelopeOnly, { wallet: null, wallets: records, ...overrides });
+
+  it("a retirement names the wallet, its address and name, and the destroy time, and warns", () => {
+    const view = lifecycle(retireWallet());
+    expect(view.title).toBe("Retire a wallet");
+    expect(view.warnings).toEqual(["keys_destroyed", "balances_unchecked"]);
+    expect(value(view, "Wallet")).toBe(WALLET);
+    expect(value(view, "Wallet address")).toBe(WALLET_ADDRESS);
+    expect(value(view, "Wallet address, checksummed (EIP-55)")).toBe(
+      "0x5555555555555555555555555555555555555555",
+    );
+    const name = view.lines.find((line) => line.label === "Wallet name, not checked");
+    expect(name).toEqual({
+      label: "Wallet name, not checked",
+      value: "Operations",
+      kind: "unchecked",
+    });
+    expect(value(view, "Key destroyed after")).toBe("2023-11-21 22:13:20 UTC");
+    expect(value(view, "Time to cancel")).toBe("7 days from the request");
+    expect(value(view, "Effect")).toMatch(/signs nothing and its mandates end/);
+    expect(value(view, "If cancelled")).toMatch(/until a new policy is approved/);
+    expect(value(view, "Workspace")).toBe(WS);
+    expect(view.lines.some((line) => line.label === "At the signer")).toBe(false);
+  });
+
+  it("a deletion lists every wallet with its address and the signer's name for it, and warns", () => {
+    const view = lifecycle(deleteWorkspace());
+    expect(view.title).toBe("Delete this workspace");
+    expect(view.warnings).toEqual(["keys_destroyed", "balances_unchecked"]);
+    expect(value(view, "Wallets")).toBe("2 wallets");
+    expect(values(view, "Wallet")).toEqual([WALLET, OTHER_WALLET]);
+    expect(values(view, "Wallet address")).toEqual([WALLET_ADDRESS, OTHER_WALLET_ADDRESS]);
+    expect(values(view, "Wallet name, not checked")).toEqual(["Operations", "Treasury"]);
+    expect(value(view, "Keys destroyed after")).toBe("2023-11-21 22:13:20 UTC");
+    expect(value(view, "Time to cancel")).toBe("7 days from the request");
+    expect(value(view, "If cancelled")).toMatch(/stays paused until resuming it is approved/);
+  });
+
+  it("a deletion of a workspace without wallets says so and warns of nothing", () => {
+    const view = lifecycle(deleteWorkspace({ wallets: [] }));
+    expect(value(view, "Wallets")).toBe("none");
+    expect(values(view, "Wallet")).toEqual([]);
+    expect(view.warnings).toEqual([]);
+  });
+
+  it("a wallet the signer does not hold, or holds at another address, is shown as refused", () => {
+    const missing = lifecycle(retireWallet(), { wallets: [] });
+    expect(value(missing, "At the signer")).toBe(
+      "not found in this workspace: the signer will refuse this",
+    );
+    expect(values(missing, "Wallet name, not checked")).toEqual([]);
+
+    const moved = lifecycle(deleteWorkspace(), {
+      wallets: [operations, { ...treasury, address: ALICE }],
+    });
+    expect(value(moved, "Address at the signer")).toBe(ALICE);
+    expect(value(moved, "At the signer")).toBe("another address: the signer will refuse this");
+    expect(values(moved, "Wallet address")).toEqual([WALLET_ADDRESS, OTHER_WALLET_ADDRESS]);
+  });
+
+  it("every field of either envelope changes what is shown", () => {
+    const retired = lifecycle(retireWallet()).lines;
+    for (const change of [
+      { wallet: { walletId: OTHER_WALLET, address: OTHER_WALLET_ADDRESS } },
+      { wallet: { walletId: WALLET, address: OTHER_WALLET_ADDRESS } },
+      { destroyAfter: T0 + DESTROY_DELAY + 3600 },
+    ]) {
+      expect(lifecycle(retireWallet(change)).lines).not.toEqual(retired);
+    }
+    const deleted = lifecycle(deleteWorkspace()).lines;
+    for (const change of [
+      { wallets: [{ walletId: WALLET, address: WALLET_ADDRESS }] },
+      { destroyAfter: T0 + 86_400 },
+    ]) {
+      expect(lifecycle(deleteWorkspace(change)).lines).not.toEqual(deleted);
+    }
+  });
+
+  it("a wallet name nobody checked cannot forge a signer line", () => {
+    const view = lifecycle(retireWallet(), {
+      wallets: [{ ...operations, label: "Ops\nKey destroyed after: never\u202e" }],
+    });
+    expect(values(view, "Key destroyed after")).toEqual(["2023-11-21 22:13:20 UTC"]);
+    expect(value(view, "Wallet name, not checked")).toBe(
+      "Ops[U+000A]Key destroyed after: never[U+202E]",
+    );
+  });
+
+  it("their views are valid views of their envelopes", () => {
+    for (const envelope of [retireWallet(), deleteWorkspace()]) {
+      const view = {
+        v: 1,
+        approvalId: envelope.approvalId,
+        workspaceId: envelope.workspaceId,
+        kind: envelope.type,
+        state: "open",
+        expiresAt: envelope.expiresAt,
+        ...lifecycle(envelope),
+        approvals: { collected: 0, required: 1 },
+        envelope,
+        subject: envelopeOnly,
+        webauthn: {
+          rpId: "localhost",
+          challenge: Buffer.from(envelopeChallenge(envelope)).toString("base64url"),
+          allowCredentials: ["Y3JlZC1i"],
+          userVerification: "required",
+          timeoutMs: 120_000,
+        },
+        returnUrl: `http://localhost:8080/w/${WS}/approvals/${APPROVAL}`,
+      };
+      expect(ConfirmationView.safeParse(view).success, envelope.type).toBe(true);
+    }
   });
 });
 

@@ -25,6 +25,7 @@ import {
   type UserId,
   type WalletId,
   type WorkspaceId,
+  walletsToDestroy,
 } from "@askgina/os-protocol";
 import type {
   GetPossessionResponse,
@@ -396,6 +397,12 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
       possessionProven: row.possession_proven_at !== null,
       treasuries: walletId === null ? [] : records.treasuryAddresses(row.workspace_id, walletId),
       cancelTarget: envelope.type === "cancel-transaction" ? records.cancelTarget(envelope) : null,
+      wallets: walletsToDestroy(envelope).flatMap((listed) => {
+        const held = records.findWallet(listed.walletId);
+        return held?.workspace_id === row.workspace_id
+          ? [{ walletId: listed.walletId, label: held.label, address: held.address as Address }]
+          : [];
+      }),
     });
     const approved = new Set(assertions.map((assertion) => assertion.userId));
     return {

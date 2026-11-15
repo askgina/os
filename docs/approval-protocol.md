@@ -156,17 +156,25 @@ Every envelope has this header:
 
 The kinds and their extra fields:
 
-| `type`                | Extra fields                                                                                          | Authorizes                                                                                                                                                                                                                                                                                                                                                 |
-| --------------------- | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `approve-intent`      | `intentHash: Digest`, `walletId`, `agentId`, `chainId`, `policyHash: Digest`                          | Sign exactly one transaction for exactly one intent under exactly one policy revision.                                                                                                                                                                                                                                                                     |
-| `set-policy`          | `walletId`, `policyHash: Digest`, `previousPolicyHash: Digest \| null`                                | Replace a wallet's policy. `previousPolicyHash` is `null` only for the wallet's first policy.                                                                                                                                                                                                                                                              |
-| `add-approver`        | `userId`, `credentialId: Base64Url`, `publicKey: Base64Url` (the COSE public key)                     | Let one more passkey approve for this workspace.                                                                                                                                                                                                                                                                                                           |
-| `remove-approver`     | `userId`, `credentialId: Base64Url`                                                                   | Stop one passkey from approving for this workspace.                                                                                                                                                                                                                                                                                                        |
-| `set-admin-threshold` | `adminThreshold`: integer 1–16                                                                        | Change how many people must approve changes to approvers and policies. Never below any wallet's current `approvals.threshold` (`threshold_unreachable`).                                                                                                                                                                                                   |
-| `resume-workspace`    | none                                                                                                  | Let a paused workspace sign again. Pausing needs no envelope, because it only removes authority.                                                                                                                                                                                                                                                           |
-| `sweep-wallet`        | `walletId`, `chainId`, `sweepHash: Digest`                                                            | Sign exactly one transaction that moves the sweep below out of the wallet, with no agent and no cap. Approved at the workspace's `adminThreshold`.                                                                                                                                                                                                         |
-| `grant-mandate`       | `mandateId: mnd_…`, `walletId`, `agentId`, `mandateHash: Digest`                                      | Let one agent transfer from one wallet within the mandate below, with no passkey per payment, until it ends or is revoked. Approved at the workspace's `adminThreshold`.                                                                                                                                                                                   |
-| `cancel-transaction`  | `targetApprovalId: apr_…`, `walletId`, `chainId`, `txNonce`: integer ≥ 0, `maxFeeWei: PositiveAmount` | Sign, at account nonce `txNonce`, a transfer of nothing from the wallet to itself with `gas × maxFeePerGas ≤ maxFeeWei`, so the signed transaction of the approval `targetApprovalId` can no longer be mined. `targetApprovalId` MUST differ from `approvalId`. Approved at the wallet policy's `approvals.threshold` (section 8, "Reprices and cancels"). |
+| `type`                | Extra fields                                                                                          | Authorizes                                                                                                                                                                                                                                                                                                                                                                     |
+| --------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `approve-intent`      | `intentHash: Digest`, `walletId`, `agentId`, `chainId`, `policyHash: Digest`                          | Sign exactly one transaction for exactly one intent under exactly one policy revision.                                                                                                                                                                                                                                                                                         |
+| `set-policy`          | `walletId`, `policyHash: Digest`, `previousPolicyHash: Digest \| null`                                | Replace a wallet's policy. `previousPolicyHash` is `null` only for the wallet's first policy.                                                                                                                                                                                                                                                                                  |
+| `add-approver`        | `userId`, `credentialId: Base64Url`, `publicKey: Base64Url` (the COSE public key)                     | Let one more passkey approve for this workspace.                                                                                                                                                                                                                                                                                                                               |
+| `remove-approver`     | `userId`, `credentialId: Base64Url`                                                                   | Stop one passkey from approving for this workspace.                                                                                                                                                                                                                                                                                                                            |
+| `set-admin-threshold` | `adminThreshold`: integer 1–16                                                                        | Change how many people must approve changes to approvers and policies. Never below any wallet's current `approvals.threshold` (`threshold_unreachable`).                                                                                                                                                                                                                       |
+| `resume-workspace`    | none                                                                                                  | Let a paused workspace sign again. Pausing needs no envelope, because it only removes authority.                                                                                                                                                                                                                                                                               |
+| `sweep-wallet`        | `walletId`, `chainId`, `sweepHash: Digest`                                                            | Sign exactly one transaction that moves the sweep below out of the wallet, with no agent and no cap. Approved at the workspace's `adminThreshold`.                                                                                                                                                                                                                             |
+| `grant-mandate`       | `mandateId: mnd_…`, `walletId`, `agentId`, `mandateHash: Digest`                                      | Let one agent transfer from one wallet within the mandate below, with no passkey per payment, until it ends or is revoked. Approved at the workspace's `adminThreshold`.                                                                                                                                                                                                       |
+| `cancel-transaction`  | `targetApprovalId: apr_…`, `walletId`, `chainId`, `txNonce`: integer ≥ 0, `maxFeeWei: PositiveAmount` | Sign, at account nonce `txNonce`, a transfer of nothing from the wallet to itself with `gas × maxFeePerGas ≤ maxFeeWei`, so the signed transaction of the approval `targetApprovalId` can no longer be mined. `targetApprovalId` MUST differ from `approvalId`. Approved at the wallet policy's `approvals.threshold` (section 8, "Reprices and cancels").                     |
+| `retire-wallet`       | `wallet: WalletRef`, `destroyAfter: EpochSeconds`                                                     | Stop the wallet from signing anything and revoke its live mandates when applied; destroy its key at `destroyAfter` or later unless cancelled first. `destroyAfter` MUST be greater than `issuedAt`. Approved at the workspace's `adminThreshold` (section 8, "Retiring a wallet and deleting a workspace").                                                                    |
+| `delete-workspace`    | `wallets`: array of `WalletRef`, 0 to 256, sorted by `walletId`, unique; `destroyAfter: EpochSeconds` | Pause the workspace, retire every listed wallet and revoke every live mandate of the workspace when applied; destroy every listed key at `destroyAfter` or later unless cancelled first. `wallets` MUST be exactly the signer's wallets of the workspace that are not destroyed. `destroyAfter` MUST be greater than `issuedAt`. Approved at the workspace's `adminThreshold`. |
+
+A **`WalletRef`** is `{ walletId: wal_…, address: Address }`: a wallet by its id and its
+address, both as the signer holds them, so the passkey covers the exact address whose key is
+destroyed. `walletsToDestroy(envelope)` returns the one `WalletRef` of a `retire-wallet`, the list
+of a `delete-workspace`, and nothing for every other kind. Neither envelope names a balance: the
+signer cannot see one (section 8).
 
 A **sweep** (source: [`sweep.ts`](../packages/protocol/src/sweep.ts)) is the structure a
 `sweep-wallet` envelope binds by its hash. Like an intent it is immutable.
@@ -649,6 +657,87 @@ so a landed cancel ages out of the 24-hour window like any spend. Every refusal 
 workspace is in the decision log, with action `reprice` under the signed approval's id or
 `cancel-transaction` under the cancel's approval id.
 
+### Retiring a wallet and deleting a workspace
+
+Destroying a key is treated like signing: people approve it with passkeys at the workspace's
+`adminThreshold`, on the confirmation page, over an envelope that names the exact wallets and the
+destroy time, and the signer enforces a delay the control plane cannot shorten. The signer cannot
+see balances, so the delay and a free cancel are the protection against destroying a key that
+still holds assets. Six routes, all in the control scope (section 10), serve it
+([`signer/api.ts`](../packages/protocol/src/signer/api.ts)). They are part of the contract now;
+the signer serves them from Milestone 2 of
+[`specs/workspace-lifecycle.md`](../specs/workspace-lifecycle.md).
+
+| Route                                              | Body                | Answer           |
+| -------------------------------------------------- | ------------------- | ---------------- |
+| `POST /v1/wallets/:walletId/retire`                | `{ authorization }` | `WalletState`    |
+| `POST /v1/wallets/:walletId/retire/cancel`         | `{ workspaceId }`   | `WalletState`    |
+| `POST /v1/wallets/:walletId/retire/finalize`       | `{ workspaceId }`   | `WalletState`    |
+| `POST /v1/workspaces/:workspaceId/delete`          | `{ authorization }` | `WorkspaceState` |
+| `POST /v1/workspaces/:workspaceId/delete/cancel`   | `{}`                | `WorkspaceState` |
+| `POST /v1/workspaces/:workspaceId/delete/finalize` | `{}`                | `WorkspaceState` |
+
+**States.** `WorkspaceState` carries `state`: `active`, `deleting` or `deleted`; `destroyAfter`,
+null exactly while `active`; and `minDestroyDelaySeconds`, the shortest delay the signer accepts
+(`SIGNER_MIN_DESTROY_DELAY_SECONDS`, by default 604800, seven days). `WalletState` carries
+`state`: `active`, `retiring`, `held` (a cancelled retirement: the key is kept, the wallet signs
+nothing until a new policy is approved for it) or `destroyed`; and `destroyAfter`, set exactly
+while `retiring` or `destroyed`.
+
+**Retiring and deleting** carry a `retire-wallet` or `delete-workspace` envelope and follow the
+shape of the other non-signing kinds above: the same idempotency (a repeat of the same envelope
+returns the state), the same restore fence (`envelope_fenced`), section 6 at the workspace's
+`adminThreshold` with the signer's longest admin lifetime, and the nonce recorded in the same
+database transaction that applies the change. In place of steps 4 to 6:
+
+- `retire-wallet`: the path's wallet and `envelope.wallet` are the same wallet of the envelope's
+  workspace at the same address (`envelope_mismatch`); the wallet is `active` or `held`
+  (`wallet_retired` otherwise).
+- `delete-workspace`: `envelope.wallets` is exactly the signer's wallets of the workspace whose
+  state is not `destroyed`, by id and address (`wallet_set_mismatch`); the workspace is `active`
+  (`workspace_deleting`, `workspace_deleted` otherwise).
+- Both: `destroyAfter − issuedAt` is at least `SIGNER_MIN_DESTROY_DELAY_SECONDS` and at most
+  `SIGNER_MAX_DESTROY_DELAY_SECONDS` (by default 7776000, 90 days), else
+  `destroy_delay_out_of_range`.
+
+Applying a retirement sets the wallet `retiring` with the envelope's `destroyAfter`. Applying a
+deletion pauses the workspace, sets it `deleting` and every listed wallet `retiring`, all with the
+envelope's `destroyAfter`. In the same database transaction the signer revokes every live mandate
+of the wallet, or of the workspace, with reason `requested`.
+
+**From then on** the signer refuses, for a workspace that is `deleting` or `deleted`
+(`workspace_deleting`, `workspace_deleted`): signing, sweeping, signing under or granting a
+mandate, setting a policy, adding or removing an approver, changing the threshold, resuming,
+creating a wallet and opening a confirmation. A `deleted` workspace answers nothing but reading
+its state and its decision log. The signer refuses to sign, sweep, sign under a mandate or grant
+a mandate for a wallet that is not `active` (`wallet_retired`). Reprices and
+`cancel-transaction` are refused only for a `destroyed` wallet, so a transaction that is stuck
+can still be cleared during the delay. A new policy for a `held` wallet makes it `active` again.
+A confirmation of another kind that is open when a retirement or deletion applies becomes
+`superseded`.
+
+**Cancelling** needs only the request signature, because it only keeps a key. It turns a
+`retiring` wallet `held`, or a `deleting` workspace `active` again with every wallet the deletion
+retired back to `active`; the workspace stays paused until `resume-workspace` is approved. A
+mandate revoked by the retirement or deletion stays revoked. Anything not `retiring` or
+`deleting` is `conflict`.
+
+**Finalizing** needs only the request signature, because people approved it already. Before
+`destroyAfter` by the signer's clock it is `destroy_not_due` (409). Then the signer deletes each
+wallet's key from its key store, empties its sealed credential and every signed transaction of
+the wallet it kept (attempts included), and marks it `destroyed`. For a deletion it also removes
+the workspace's approvers, confirmations, confirmation assertions and possession challenges,
+blanks the text of its mandates while keeping their ids, hashes, times, grantors, revocations and
+uses, and marks the workspace `deleted`. Used nonces, approvals, spends, policies and the decision
+log stay, so no approval id or envelope nonce of the workspace can be used again. A repeat
+returns the state. Each step is recorded in the decision log (`retire-wallet`,
+`cancel-retire-wallet`, `destroy-wallet`, `delete-workspace`, `cancel-delete-workspace`).
+
+`destroyAfter` is read with the signer's own clock, as mandate windows and the restore fence
+are. A finalize needs no envelope, so the restore fence does not stop one: a backup restored
+during the delay keeps counting down, and must be cancelled if the restore was meant to undo the
+deletion.
+
 ## 9. What may vary after approval
 
 Only these four fields of the signed transaction are chosen after approval
@@ -696,9 +785,10 @@ a malformed signature, and compares in constant time.
 What this proves: the request came from a holder of the secret and was not altered. What it does
 not do:
 
-- It does not authorize anything that adds authority. Signing, setting a policy, adding an
-  approver, changing the threshold and resuming all need passkey assertions that the signer
-  verifies itself.
+- It does not authorize anything that adds authority or destroys a key. Signing, setting a
+  policy, adding an approver, changing the threshold, resuming, retiring a wallet and deleting a
+  workspace all need passkey assertions that the signer verifies itself. Cancelling or
+  finalizing a retirement or a deletion needs only this signature (section 8).
 - It does not stop a replay within the 60-second window. Single use comes from the envelope's
   nonce and the approval id.
 
@@ -748,7 +838,14 @@ Rules:
   (`envelope_mismatch`). Its view shows what the transaction would do, read back from the bytes
   the signer signed (amount and recipient, or contract and value), the approval it was signed
   under, the network, the nonce, the cancel's own fee ceiling, the attempts so far, and that a
-  cancel is an attempt, not a guarantee, and does not give back the wallet's limits.
+  cancel is an attempt, not a guarantee, and does not give back the wallet's limits. A
+  `retire-wallet` or `delete-workspace` envelope's subject is `envelope-only` too. Its view lists
+  every wallet the envelope names with its id, its address (also checksummed) and the signer's
+  name for it as text nobody checked, says so when the signer holds no such wallet in the
+  workspace or holds it at another address, and shows the destroy time, the time left to cancel
+  and what a cancel leaves. It carries the warnings `keys_destroyed` (whatever is left in these
+  wallets is lost after the destroy time) and `balances_unchecked` (the signer cannot see
+  balances), before any other warning, whenever at least one wallet is listed.
 - The token is 16 random bytes in base64url. The signer stores only its SHA-256 and compares in
   constant time; a wrong token is `not_found`. Opening the same approval again issues a new token
   and ends the old one. The token travels in the link's fragment and in the `x-confirm-token`
@@ -763,7 +860,9 @@ Rules:
   `checkMandateAgainstPolicy` with the signer's current policy, clock and lifetime ceiling
   (`policy_missing`, `mandate_invalid` with the reason); for a cancel the wallet has no policy,
   its fee cap is below the cancel's `maxFeeWei`, or the target has `SIGNER_MAX_TX_ATTEMPTS`
-  attempts already (`policy_missing`, `fee_cap_exceeded`, `attempts_exhausted`). The state is
+  attempts already (`policy_missing`, `fee_cap_exceeded`, `attempts_exhausted`); for a
+  retirement or a deletion the wallets it lists are no longer the ones the signer would retire
+  (`envelope_mismatch`, `wallet_retired`, `wallet_set_mismatch`). The state is
   computed each time, so a
   grant reopens if the policy is edited back to admit it; the cap on live mandates does not make
   a grant superseded, because it only waits for a mandate to end. Opening a confirmation in that
@@ -1038,6 +1137,58 @@ used under this mandate with the approval id `apr_01jd0000000000000000000005`:
 
 Challenge (base64url) = `FYp0khasgxD2rQxW3vUf47xd5PbsXrKOGUXaK1L_2ro`
 
+`retire-wallet` envelope JSON (canonical), retiring wallet `wal_01jd0000000000000000000003` at
+`0x5555555555555555555555555555555555555555` with its key destroyed after 1700604800, seven days
+after `issuedAt`. The test vectors of these two envelopes are in
+[`packages/protocol/test/lifecycle-envelopes.test.ts`](../packages/protocol/test/lifecycle-envelopes.test.ts):
+
+```json
+{
+  "approvalId": "apr_01jd0000000000000000000005",
+  "destroyAfter": 1700604800,
+  "expiresAt": 1700000600,
+  "issuedAt": 1700000000,
+  "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+  "type": "retire-wallet",
+  "v": 1,
+  "wallet": {
+    "address": "0x5555555555555555555555555555555555555555",
+    "walletId": "wal_01jd0000000000000000000003"
+  },
+  "workspaceId": "ws_01jd0000000000000000000001"
+}
+```
+
+Challenge (base64url) = `sf-9sPBaI68XkcDwsMoRcvXRh0r9Hh-ZlGsDkt1mXSQ`
+
+`delete-workspace` envelope JSON (canonical), deleting the workspace with its two wallets, sorted
+by `walletId`, and the same destroy time:
+
+```json
+{
+  "approvalId": "apr_01jd0000000000000000000005",
+  "destroyAfter": 1700604800,
+  "expiresAt": 1700000600,
+  "issuedAt": 1700000000,
+  "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+  "type": "delete-workspace",
+  "v": 1,
+  "wallets": [
+    {
+      "address": "0x5555555555555555555555555555555555555555",
+      "walletId": "wal_01jd0000000000000000000003"
+    },
+    {
+      "address": "0x7777777777777777777777777777777777777777",
+      "walletId": "wal_01jd000000000000000000000g"
+    }
+  ],
+  "workspaceId": "ws_01jd0000000000000000000001"
+}
+```
+
+Challenge (base64url) = `Eh-cbJJV6jfq43fRilytGeljY5_IabAPNBhMfw-GHX4`
+
 ## 12. Versioning
 
 `v` is `1` in every hashed structure, and the domain tags carry `v1`. Any change to the shape or
@@ -1059,4 +1210,9 @@ added the same way, within version 1 (owner decision of 2026-11-15): it is a new
 existing `askgina.os/v1/authorize` tag, no existing structure changed shape or meaning, every
 existing digest and test vector keeps its value, and a signer that does not know the kind refuses
 it as an invalid envelope. Reprices hash nothing new: they are bound to the digest the signer
-stored at the first signature.
+stored at the first signature. The `retire-wallet` and `delete-workspace` envelopes were added
+the same way, within version 1 (owner decision D1 of
+[`specs/workspace-lifecycle.md`](../specs/workspace-lifecycle.md), 2026-11-15): new kinds under
+the existing `askgina.os/v1/authorize` tag, no existing digest or test vector changed, and a
+signer that does not know them refuses them as invalid envelopes. The lifecycle fields of
+`WorkspaceState` and `WalletState` and the new error codes hash nothing.

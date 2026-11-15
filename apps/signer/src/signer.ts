@@ -64,6 +64,12 @@ import { createMandateOperations } from "./mandates.ts";
 import { type EvmTransaction, type Vault, VaultError } from "./vault.ts";
 
 const DAY_SECONDS = 86_400;
+/**
+ * The shortest destroy delay reported in `WorkspaceState`: the 7-day default of owner decision
+ * D2 (`specs/workspace-lifecycle.md`). Retiring and deleting are not served yet; the lifecycle's
+ * signer milestone replaces this with `SIGNER_MIN_DESTROY_DELAY_SECONDS`.
+ */
+const MIN_DESTROY_DELAY_SECONDS = 604_800;
 
 export interface SignerCoreOptions {
   db: DatabaseSync;
@@ -217,6 +223,10 @@ export function createSignerCore(options: SignerCoreOptions) {
         credentialId: approver.credential_id,
         addedAt: approver.added_at,
       })),
+      // No lifecycle step is served yet, so every workspace is active.
+      state: "active",
+      destroyAfter: null,
+      minDestroyDelaySeconds: MIN_DESTROY_DELAY_SECONDS,
     };
   }
 
@@ -285,6 +295,9 @@ export function createSignerCore(options: SignerCoreOptions) {
       policy: policy?.policy ?? null,
       policyHash: policy?.hash ?? null,
       spent,
+      // No lifecycle step is served yet, so every wallet is active.
+      state: "active",
+      destroyAfter: null,
     };
   }
 

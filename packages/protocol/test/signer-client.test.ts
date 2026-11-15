@@ -17,15 +17,19 @@ import {
   APPROVAL,
   approveIntent,
   cancelTransaction,
+  DESTROY_DELAY,
+  deleteWorkspace,
   grantMandate,
   intent,
   MANDATE,
   mandate,
+  retireWallet,
   sweep,
   sweepWallet,
   T0,
   TARGET_APPROVAL,
   WALLET,
+  WALLET_ADDRESS,
   WS,
 } from "./fixtures.ts";
 
@@ -98,7 +102,15 @@ function fakeFetch(respond: (url: string) => { status: number; body: unknown; ra
   return { fetch, calls };
 }
 
-const workspaceState = { workspaceId: WS, adminThreshold: 1, paused: false, approvers: [] };
+const workspaceState = {
+  workspaceId: WS,
+  adminThreshold: 1,
+  paused: false,
+  approvers: [],
+  state: "active",
+  destroyAfter: null,
+  minDestroyDelaySeconds: DESTROY_DELAY,
+};
 const approvalState = {
   approvalId: APPROVAL,
   state: "unknown",
@@ -348,6 +360,71 @@ describe("signer client", () => {
       body: { ...attempted, attempt: { ...attempted.attempt, kind: "original" } },
     }));
     await expect(odd.signer.reprice(TARGET_APPROVAL, reprice)).rejects.not.toBeInstanceOf(
+      SignerError,
+    );
+  });
+
+  it("sends each retire and delete call to its route, signed, with its body, and parses the answer", async () => {
+    const destroyAfter = T0 + DESTROY_DELAY;
+    const retiring = {
+      walletId: WALLET,
+      workspaceId: WS,
+      kind: "agent",
+      label: "Operations",
+      address: WALLET_ADDRESS,
+      policy: null,
+      policyHash: null,
+      spent: [],
+      state: "retiring",
+      destroyAfter,
+    };
+    const deleting = { ...workspaceState, paused: true, state: "deleting", destroyAfter };
+    const { signer, calls } = client((url) => ({
+      status: 200,
+      body: new URL(url).pathname.startsWith("/v1/wallets/") ? retiring : deleting,
+    }));
+    const retire = { envelope: retireWallet(), assertions: [] };
+    const remove = { envelope: deleteWorkspace(), assertions: [] };
+
+    expect(await signer.retireWallet(WALLET, retire as never)).toEqual(retiring);
+    expect(await signer.cancelRetireWallet(WALLET, WS)).toEqual(retiring);
+    expect(await signer.finalizeRetireWallet(WALLET, WS)).toEqual(retiring);
+    expect(await signer.deleteWorkspace(WS, remove as never)).toEqual(deleting);
+    expect(await signer.cancelDeleteWorkspace(WS)).toEqual(deleting);
+    expect(await signer.finalizeDeleteWorkspace(WS)).toEqual(deleting);
+
+    expect(calls.map((c) => `${c.init.method} ${new URL(c.url).pathname}`)).toEqual([
+      `POST /v1/wallets/${WALLET}/retire`,
+      `POST /v1/wallets/${WALLET}/retire/cancel`,
+      `POST /v1/wallets/${WALLET}/retire/finalize`,
+      `POST /v1/workspaces/${WS}/delete`,
+      `POST /v1/workspaces/${WS}/delete/cancel`,
+      `POST /v1/workspaces/${WS}/delete/finalize`,
+    ]);
+    for (const call of calls) expect(verifyRecorded(call)).toBe(true);
+    expect(
+      calls.map((call) => JSON.parse(new TextDecoder().decode(call.init.body as Uint8Array))),
+    ).toEqual([
+      { authorization: retire },
+      { workspaceId: WS },
+      { workspaceId: WS },
+      { authorization: remove },
+      {},
+      {},
+    ]);
+
+    // A refusal keeps its code and status; a state that contradicts itself is not passed on.
+    const early = client(() => ({
+      status: 409,
+      body: { error: { code: "destroy_not_due", message: "not yet" } },
+    }));
+    await expect(early.signer.finalizeDeleteWorkspace(WS)).rejects.toMatchObject({
+      name: "SignerError",
+      code: "destroy_not_due",
+      status: 409,
+    });
+    const odd = client(() => ({ status: 200, body: { ...retiring, destroyAfter: null } }));
+    await expect(odd.signer.retireWallet(WALLET, retire as never)).rejects.not.toBeInstanceOf(
       SignerError,
     );
   });

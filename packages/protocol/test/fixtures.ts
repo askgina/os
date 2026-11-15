@@ -2,6 +2,7 @@ import type {
   AddApproverEnvelope,
   ApproveIntentEnvelope,
   CancelTransactionEnvelope,
+  DeleteWorkspaceEnvelope,
   Envelope,
   GrantMandateEnvelope,
   Intent,
@@ -9,6 +10,7 @@ import type {
   MandateAssetLimit,
   RemoveApproverEnvelope,
   ResumeWorkspaceEnvelope,
+  RetireWalletEnvelope,
   SetAdminThresholdEnvelope,
   SetPolicyEnvelope,
   Sweep,
@@ -30,11 +32,16 @@ export const OTHER_AGENT = `agt_${ULID}9` as const;
 export const MANDATE = `mnd_${ULID}6` as const;
 /** The approval whose transaction the fixture cancel targets. */
 export const TARGET_APPROVAL = `apr_${ULID}e` as const;
+/** A second wallet of the workspace, listed by the fixture deletion after `WALLET`. */
+export const OTHER_WALLET = `wal_${ULID}g` as const;
 
 export const ALICE = "0x1111111111111111111111111111111111111111" as const;
 export const BOB = "0x2222222222222222222222222222222222222222" as const;
 export const TOKEN = "0x3333333333333333333333333333333333333333" as const;
 export const ROUTER = "0x4444444444444444444444444444444444444444" as const;
+/** The addresses of `WALLET` and `OTHER_WALLET`, as a retire or delete envelope names them. */
+export const WALLET_ADDRESS = "0x5555555555555555555555555555555555555555" as const;
+export const OTHER_WALLET_ADDRESS = "0x7777777777777777777777777777777777777777" as const;
 /** USDC on Base, the asset of the fixture mandate. */
 export const USDC_BASE = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" as const;
 export const BASE = "eip155:8453" as const;
@@ -223,6 +230,30 @@ export const cancelTransaction = (
   ...o,
 });
 
+/** Seven days, the default shortest destroy delay. */
+export const DESTROY_DELAY = 604_800;
+
+export const retireWallet = (o: Partial<RetireWalletEnvelope> = {}): RetireWalletEnvelope => ({
+  ...header,
+  type: "retire-wallet",
+  wallet: { walletId: WALLET, address: WALLET_ADDRESS },
+  destroyAfter: T0 + DESTROY_DELAY,
+  ...o,
+});
+
+export const deleteWorkspace = (
+  o: Partial<DeleteWorkspaceEnvelope> = {},
+): DeleteWorkspaceEnvelope => ({
+  ...header,
+  type: "delete-workspace",
+  wallets: [
+    { walletId: WALLET, address: WALLET_ADDRESS },
+    { walletId: OTHER_WALLET, address: OTHER_WALLET_ADDRESS },
+  ],
+  destroyAfter: T0 + DESTROY_DELAY,
+  ...o,
+});
+
 /**
  * For every field of every envelope type, a replacement value that is still valid. Each entry is
  * one way a compromised control plane could try to reuse an approval for something else.
@@ -315,6 +346,24 @@ export const envelopeVariants: {
       chainId: MAINNET,
       txNonce: 8,
       maxFeeWei: "2000000000000001",
+    },
+  },
+  {
+    name: "retire-wallet",
+    base: retireWallet(),
+    changes: {
+      ...headerChanges,
+      wallet: { walletId: OTHER_WALLET, address: WALLET_ADDRESS },
+      destroyAfter: T0 + DESTROY_DELAY + 1,
+    },
+  },
+  {
+    name: "delete-workspace",
+    base: deleteWorkspace(),
+    changes: {
+      ...headerChanges,
+      wallets: [{ walletId: WALLET, address: WALLET_ADDRESS }],
+      destroyAfter: T0 + DESTROY_DELAY + 1,
     },
   },
 ];

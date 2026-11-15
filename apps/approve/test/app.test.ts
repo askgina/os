@@ -91,6 +91,7 @@ function viewOf(
     possessionProven: change?.possessionProven ?? false,
     treasuries: [],
     cancelTarget: null,
+    wallets: [],
   });
   return ConfirmationView.parse({
     v: 1,

@@ -96,6 +96,19 @@ export interface SignerClient {
   getWallet(walletId: WalletId): Promise<WalletState>;
   setPolicy(walletId: WalletId, request: SetPolicyRequest): Promise<WalletState>;
 
+  /** Retire a wallet, approved by a `retire-wallet` envelope: it signs nothing from now on. */
+  retireWallet(walletId: WalletId, authorization: Authorization): Promise<WalletState>;
+  /** Keep a retiring wallet's key: it becomes `held`. No passkey. */
+  cancelRetireWallet(walletId: WalletId, workspaceId: WorkspaceId): Promise<WalletState>;
+  /** Destroy a retiring wallet's key once its `destroyAfter` has passed. No passkey; idempotent. */
+  finalizeRetireWallet(walletId: WalletId, workspaceId: WorkspaceId): Promise<WalletState>;
+  /** Delete a workspace, approved by a `delete-workspace` envelope: it pauses and stops signing. */
+  deleteWorkspace(workspaceId: WorkspaceId, authorization: Authorization): Promise<WorkspaceState>;
+  /** Keep a deleting workspace's keys: it becomes `active` and stays paused. No passkey. */
+  cancelDeleteWorkspace(workspaceId: WorkspaceId): Promise<WorkspaceState>;
+  /** Destroy every key of a deleting workspace once its `destroyAfter` has passed. Idempotent. */
+  finalizeDeleteWorkspace(workspaceId: WorkspaceId): Promise<WorkspaceState>;
+
   sign(request: SignRequest): Promise<SignResponse>;
   sweep(walletId: WalletId, request: SweepRequest): Promise<SignResponse>;
   revokeApproval(approvalId: ApprovalId, workspaceId: WorkspaceId): Promise<ApprovalState>;
@@ -252,6 +265,37 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
       call(signerRoutes.getWallet, WalletState, { params: { walletId } }),
     setPolicy: (walletId: WalletId, request: SetPolicyRequest) =>
       call(signerRoutes.setPolicy, WalletState, { params: { walletId }, body: request }),
+
+    retireWallet: (walletId: WalletId, authorization: Authorization) =>
+      call(signerRoutes.retireWallet, WalletState, {
+        params: { walletId },
+        body: { authorization },
+      }),
+    cancelRetireWallet: (walletId: WalletId, workspaceId: WorkspaceId) =>
+      call(signerRoutes.cancelRetireWallet, WalletState, {
+        params: { walletId },
+        body: { workspaceId },
+      }),
+    finalizeRetireWallet: (walletId: WalletId, workspaceId: WorkspaceId) =>
+      call(signerRoutes.finalizeRetireWallet, WalletState, {
+        params: { walletId },
+        body: { workspaceId },
+      }),
+    deleteWorkspace: (workspaceId: WorkspaceId, authorization: Authorization) =>
+      call(signerRoutes.deleteWorkspace, WorkspaceState, {
+        ...workspace(workspaceId),
+        body: { authorization },
+      }),
+    cancelDeleteWorkspace: (workspaceId: WorkspaceId) =>
+      call(signerRoutes.cancelDeleteWorkspace, WorkspaceState, {
+        ...workspace(workspaceId),
+        body: {},
+      }),
+    finalizeDeleteWorkspace: (workspaceId: WorkspaceId) =>
+      call(signerRoutes.finalizeDeleteWorkspace, WorkspaceState, {
+        ...workspace(workspaceId),
+        body: {},
+      }),
 
     sign: (request: SignRequest) => call(signerRoutes.sign, SignResponse, { body: request }),
     sweep: (walletId: WalletId, request: SweepRequest) =>

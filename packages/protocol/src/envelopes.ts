@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { DomainTag, digest } from "./canonical.ts";
 import {
+  Address,
   AgentId,
   ApprovalId,
   Base64Url,
   ChainId,
   Digest,
   EpochSeconds,
+  isSortedUnique,
   MandateId,
   Nonce,
   PositiveAmount,
@@ -141,6 +143,57 @@ export const CancelTransactionEnvelope = z
   });
 export type CancelTransactionEnvelope = z.infer<typeof CancelTransactionEnvelope>;
 
+/**
+ * A wallet as a retire or delete envelope names it: its id and its address, both as the signer
+ * holds them, so the person approving reads the exact address whose key is destroyed.
+ */
+export const WalletRef = z.strictObject({ walletId: WalletId, address: Address });
+export type WalletRef = z.infer<typeof WalletRef>;
+
+const destroyAfterIssue = {
+  path: ["destroyAfter"],
+  message: "destroyAfter must be after issuedAt",
+};
+
+/**
+ * Retire one wallet: from the moment the signer applies it the wallet signs nothing and its live
+ * mandates are revoked; at `destroyAfter` or later the signer destroys its key, unless the
+ * retirement was cancelled first. Approved at the workspace's admin threshold. The signer also
+ * refuses a delay `destroyAfter − issuedAt` outside its configured range.
+ */
+export const RetireWalletEnvelope = z
+  .strictObject({
+    ...envelopeHeader,
+    type: z.literal("retire-wallet"),
+    wallet: WalletRef,
+    destroyAfter: EpochSeconds,
+  })
+  .refine((envelope) => envelope.destroyAfter > envelope.issuedAt, destroyAfterIssue);
+export type RetireWalletEnvelope = z.infer<typeof RetireWalletEnvelope>;
+
+/**
+ * Delete a workspace: every listed wallet is retired as by `retire-wallet`, the workspace is
+ * paused and every live mandate of it revoked; at `destroyAfter` or later the signer destroys
+ * every listed key and the workspace's records become a tombstone. `wallets` must be exactly the
+ * signer's wallets of the workspace that are not destroyed yet, sorted by `walletId`; it is empty
+ * for a workspace without one. Approved at the workspace's admin threshold.
+ */
+export const DeleteWorkspaceEnvelope = z
+  .strictObject({
+    ...envelopeHeader,
+    type: z.literal("delete-workspace"),
+    wallets: z
+      .array(WalletRef)
+      .max(256)
+      .refine(
+        (wallets) => isSortedUnique(wallets.map((wallet) => wallet.walletId)),
+        "must be sorted by walletId without duplicates",
+      ),
+    destroyAfter: EpochSeconds,
+  })
+  .refine((envelope) => envelope.destroyAfter > envelope.issuedAt, destroyAfterIssue);
+export type DeleteWorkspaceEnvelope = z.infer<typeof DeleteWorkspaceEnvelope>;
+
 export const Envelope = z
   .discriminatedUnion("type", [
     ApproveIntentEnvelope,
@@ -152,6 +205,8 @@ export const Envelope = z
     SweepWalletEnvelope,
     GrantMandateEnvelope,
     CancelTransactionEnvelope,
+    RetireWalletEnvelope,
+    DeleteWorkspaceEnvelope,
   ])
   .refine((envelope) => envelope.expiresAt > envelope.issuedAt, {
     path: ["expiresAt"],
@@ -159,6 +214,21 @@ export const Envelope = z
   });
 export type Envelope = z.infer<typeof Envelope>;
 export type EnvelopeType = Envelope["type"];
+
+/**
+ * The wallets whose keys an envelope schedules for destruction: the one of a `retire-wallet`,
+ * every one of a `delete-workspace`, none for any other kind.
+ */
+export function walletsToDestroy(envelope: Envelope): readonly WalletRef[] {
+  switch (envelope.type) {
+    case "retire-wallet":
+      return [envelope.wallet];
+    case "delete-workspace":
+      return envelope.wallets;
+    default:
+      return [];
+  }
+}
 
 /** The 32 bytes a passkey signs: the WebAuthn challenge for this envelope. */
 export function envelopeChallenge(envelope: Envelope): Uint8Array {

@@ -6,11 +6,14 @@ import { DomainTag, digest } from "./canonical.ts";
 import {
   type ApproveIntentEnvelope,
   type CancelTransactionEnvelope,
+  type DeleteWorkspaceEnvelope,
   Envelope,
   type EnvelopeType,
   type GrantMandateEnvelope,
+  type RetireWalletEnvelope,
   type SetPolicyEnvelope,
   type SweepWalletEnvelope,
+  type WalletRef,
 } from "./envelopes.ts";
 import { Intent, intentHash, intentSpend, type Operation } from "./intent.ts";
 import { Mandate, mandateHash, mandateWorstCase } from "./mandate.ts";
@@ -24,6 +27,7 @@ import {
   EpochSeconds,
   Nonce,
   PROTOCOL_VERSION,
+  type WalletId,
   WorkspaceId,
 } from "./primitives.ts";
 import type { SignerErrorCode } from "./signer/api.ts";
@@ -89,8 +93,9 @@ export type AssetLabels = z.infer<typeof AssetLabels>;
 /**
  * The structure an envelope names by hash, kept by the signer next to the envelope so it can
  * show exactly what the approval authorizes. Envelopes that carry everything themselves have an
- * `envelope-only` subject: approver and threshold changes, resuming, and a cancel, whose target
- * the signer reads from its own record of the signature it would replace.
+ * `envelope-only` subject: approver and threshold changes, resuming, a cancel, whose target the
+ * signer reads from its own record of the signature it would replace, and retiring a wallet or
+ * deleting a workspace, whose wallets the signer reads from its own records.
  */
 export const ConfirmationSubject = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("approve-intent"), intent: Intent }),
@@ -189,6 +194,8 @@ function matchSubject(envelope: Envelope, subject: ConfirmationSubject): Matched
     case "set-admin-threshold":
     case "resume-workspace":
     case "cancel-transaction":
+    case "retire-wallet":
+    case "delete-workspace":
       return subject.kind === "envelope-only"
         ? { kind: "envelope-only", envelope }
         : "envelope_mismatch";
@@ -224,8 +231,14 @@ export const ConfirmationLine = z.strictObject({
 });
 export type ConfirmationLine = z.infer<typeof ConfirmationLine>;
 
-/** Shown before the lines. Always listed in this order. */
+/**
+ * Shown before the lines. Always listed in this order. `keys_destroyed`: whatever is left in the
+ * listed wallets is lost once their keys are destroyed. `balances_unchecked`: the signer cannot
+ * see balances, so nothing it shows says the wallets are empty.
+ */
 export const ConfirmationWarning = z.enum([
+  "keys_destroyed",
+  "balances_unchecked",
   "raw_contract_call",
   "unknown_token",
   "unknown_chain",
@@ -246,7 +259,8 @@ export type ConfirmationWarning = z.infer<typeof ConfirmationWarning>;
  * - `superseded`: the signer would refuse it whatever approvals it gets, because the wallet's
  *   policy changed since it was proposed, it was issued before the signer's restore fence, or,
  *   for a cancel, the wallet's fee cap is now below its fee ceiling or its transaction has no
- *   attempt left. It must be proposed again.
+ *   attempt left, or, for a retirement or a deletion, the wallets it lists are no longer the
+ *   signer's wallets it would retire. It must be proposed again.
  */
 export const ConfirmationState = z.enum([
   "open",
@@ -327,7 +341,16 @@ export type RenderInput = {
   treasuries: readonly Address[];
   /** For `cancel-transaction`: the transaction it would stop, or null when the signer has none. */
   cancelTarget: CancelTarget | null;
+  /**
+   * For `retire-wallet` and `delete-workspace`: the signer's record of each wallet the envelope
+   * lists (see `walletsToDestroy`) that it holds in the envelope's workspace. A listed wallet
+   * without a record is shown as not found. Empty for every other kind.
+   */
+  wallets: readonly SignerWalletRecord[];
 };
+
+/** A wallet as the signer holds it, for the confirmation of a retirement or a deletion. */
+export type SignerWalletRecord = { walletId: WalletId; label: string; address: Address };
 
 /**
  * What a `cancel-transaction` envelope would stop, from the signer's own records: the operation
@@ -657,7 +680,93 @@ function renderEnvelopeOnly(out: Output, envelope: EnvelopeOnly): string {
       return "Resume the workspace";
     case "cancel-transaction":
       return renderCancel(out, envelope);
+    case "retire-wallet":
+      return renderRetire(out, envelope);
+    case "delete-workspace":
+      return renderDelete(out, envelope);
   }
+}
+
+// --- retiring and deleting --------------------------------------------------------------------
+
+function renderRetire(out: Output, envelope: RetireWalletEnvelope): string {
+  push(
+    out,
+    "Effect",
+    "from approval the wallet signs nothing and its mandates end; after the time below the signer destroys its key",
+    "text",
+  );
+  destroyedWalletLines(out, [envelope.wallet]);
+  push(out, "Key destroyed after", formatUtc(envelope.destroyAfter), "text");
+  push(out, "Time to cancel", delayText(envelope), "text");
+  push(
+    out,
+    "If cancelled",
+    "the key is kept, and the wallet signs nothing until a new policy is approved for it",
+    "text",
+  );
+  return "Retire a wallet";
+}
+
+function renderDelete(out: Output, envelope: DeleteWorkspaceEnvelope): string {
+  push(
+    out,
+    "Effect",
+    "the workspace is paused, every wallet below signs nothing and every mandate of the workspace ends; after the time below the signer destroys their keys and the workspace's stored data is shredded",
+    "text",
+  );
+  const count = envelope.wallets.length;
+  push(
+    out,
+    "Wallets",
+    count === 0 ? "none" : count === 1 ? "1 wallet" : `${count} wallets`,
+    "text",
+  );
+  destroyedWalletLines(out, envelope.wallets);
+  push(out, "Keys destroyed after", formatUtc(envelope.destroyAfter), "text");
+  push(out, "Time to cancel", delayText(envelope), "text");
+  push(
+    out,
+    "If cancelled",
+    "the keys are kept, and the workspace stays paused until resuming it is approved",
+    "text",
+  );
+  return "Delete this workspace";
+}
+
+/**
+ * Each wallet as the envelope names it, checked against the signer's record: the signer refuses
+ * an envelope whose wallet it does not hold in this workspace, or holds at another address.
+ */
+function destroyedWalletLines(out: Output, wallets: readonly WalletRef[]): void {
+  if (wallets.length > 0) {
+    out.warnings.add("keys_destroyed");
+    out.warnings.add("balances_unchecked");
+  }
+  for (const listed of wallets) {
+    push(out, "Wallet", listed.walletId, "code");
+    addressLines(out, "Wallet address", listed.address);
+    const record = out.input.wallets.find((wallet) => wallet.walletId === listed.walletId);
+    if (record === undefined) {
+      push(
+        out,
+        "At the signer",
+        "not found in this workspace: the signer will refuse this",
+        "text",
+      );
+      continue;
+    }
+    if (record.address !== listed.address) {
+      push(out, "Address at the signer", record.address, "address");
+      push(out, "At the signer", "another address: the signer will refuse this", "text");
+    }
+    push(out, WALLET_NAME, uncheckedText(record.label), "unchecked");
+  }
+}
+
+/** "7 days from the request": how long anyone can still cancel, counted from `issuedAt`. */
+function delayText(envelope: { issuedAt: number; destroyAfter: number }): string {
+  return `${formatDuration(envelope.destroyAfter - envelope.issuedAt)} from the request`;
 }
 
 // --- cancels ----------------------------------------------------------------------------------

@@ -37,6 +37,12 @@ const MESSAGES: Record<SignerErrorCode, string> = {
   fee_not_raised: "both fees must be higher than the latest attempt's",
   attempts_exhausted: "the transaction has as many attempts as the signer allows",
   reprice_window_closed: "the transaction can no longer be repriced without a person; cancel it",
+  workspace_deleting: "the workspace is being deleted",
+  workspace_deleted: "the workspace was deleted",
+  wallet_retired: "the wallet is retired and signs nothing",
+  wallet_set_mismatch: "the wallets named are not the signer's wallets",
+  destroy_delay_out_of_range: "the destroy time is outside the delay the signer allows",
+  destroy_not_due: "the destroy time has not come yet",
   vault_error: "the key store failed",
   internal: "internal error",
 };
