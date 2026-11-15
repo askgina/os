@@ -94,7 +94,14 @@ Success means:
       code; `selfhosted` refuses each seam by name until its milestone adds an implementation.
       As built: the deploy seam is `deployPlatform()` and also covers deletion and promotion;
       computers are a bot-scoped handle; `SchedulesClient` is structural and includes `list`.
-- [ ] Milestone 3: OpenAI-compatible model connection.
+- [x] (2026-11-15) Milestone 3: OpenAI-compatible model connection. `askgina/busy` `444a46a`,
+      `Ultracite` green (run 43727555327), `fork-notice` green (run 43727555315). As built:
+      `@ai-sdk/openai-compatible` 3.0.81 (3.0.92 needs a newer `ai` than the fork's pin, D9); a
+      bot stores `openai-compatible/<id>`; the proxy refuses a model other than the bot's own;
+      the key is sealed bound to the base URL; fast replies call the endpoint directly.
+      Unproven: a real endpoint end to end (Milestone 4's stub-model stack).
+- [x] (2026-11-15) `@askgina/os-world` and `@askgina/os-keys` 0.1.0 published privately to
+      GitHub Packages from tag `world-v0.1.0` (askgina/os run 43727574831).
 - [ ] Milestone 4: bot runner, bot identity, bots on the encrypting World.
 - [ ] Milestone 5: computers on gVisor with per-bot volumes.
 - [ ] Milestone 6: Hub on the encrypting World; storage, schedules, queues, observability.
