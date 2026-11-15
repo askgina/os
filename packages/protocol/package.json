@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./signer": "./src/signer/index.ts",
+    "./signer-transport": "./src/signer/transport.ts",
     "./webauthn": "./src/webauthn/index.ts",
     "./testing": "./src/testing/index.ts"
   },
@@ -20,6 +21,7 @@
     "@simplewebauthn/server": "14.1.0",
     "canonicalize": "5.1.0",
     "ulid": "3.0.2",
+    "undici": "8.12.4",
     "zod": "4.6.7"
   }
 }

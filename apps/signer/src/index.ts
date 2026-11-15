@@ -1,4 +1,7 @@
+import { createHash, X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { IncomingMessage } from "node:http";
+import { TLSSocket } from "node:tls";
 import {
   type Address,
   ApprovalId,
@@ -129,6 +132,14 @@ export interface SignerOptions {
   minDestroyDelaySeconds?: number;
   /** The longest (`SIGNER_MAX_DESTROY_DELAY_SECONDS`). Defaults to 90 days. */
   maxDestroyDelaySeconds?: number;
+  /**
+   * The certificates (PEM) of the signer's two TLS clients, when it serves mutual TLS on its own
+   * host. The client certificate a request's connection verified then decides its scope, before
+   * the request signature is checked: the control plane's reaches control-scope routes only, the
+   * `approve` service's confirm-scope routes only, so a stolen confirm secret is useless from the
+   * control host. Unset, as on one machine, the request signature alone decides.
+   */
+  clientCertificates?: { control: Uint8Array; approve: Uint8Array };
   /** Seconds since the Unix epoch. Tests inject a clock. */
   now?: () => number;
   log?: Logger;
@@ -230,6 +241,36 @@ async function readBody(stream: ReadableStream<Uint8Array> | null): Promise<Uint
   return Buffer.concat(chunks);
 }
 
+type SignedScope = "control" | "confirm";
+
+const derFingerprint = (der: Uint8Array) => createHash("sha256").update(der).digest("hex");
+
+/** Each client certificate's fingerprint, the SHA-256 of its DER, mapped to the scope it reaches. */
+function clientScopes(certificates: SignerOptions["clientCertificates"]) {
+  if (certificates === undefined) return null;
+  const control = derFingerprint(new X509Certificate(certificates.control).raw);
+  const approve = derFingerprint(new X509Certificate(certificates.approve).raw);
+  if (control === approve) throw new RangeError("the two client certificates must differ");
+  return new Map<string, SignedScope>([
+    [control, "control"],
+    [approve, "confirm"],
+  ]);
+}
+
+/**
+ * The fingerprint of the client certificate the request's TLS connection verified, or null for
+ * a request that did not arrive over a verified TLS connection. `env` is what
+ * `@hono/node-server` passes along: the Node request, whose socket is the TLS socket.
+ */
+function verifiedClientFingerprint(env: unknown): string | null {
+  if (typeof env !== "object" || env === null || !("incoming" in env)) return null;
+  if (!(env.incoming instanceof IncomingMessage)) return null;
+  const socket = env.incoming.socket;
+  if (!(socket instanceof TLSSocket) || !socket.authorized) return null;
+  const { raw } = socket.getPeerCertificate();
+  return Buffer.isBuffer(raw) ? derFingerprint(raw) : null;
+}
+
 function parse<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
   const result = schema.safeParse(value);
   if (!result.success) throw new SignerFailure("invalid_request");
@@ -262,6 +303,7 @@ export function createSigner(options: SignerOptions): Signer {
     throw new RangeError("confirmSecret must differ from requestSecret");
   }
   const secrets = { control: options.requestSecret, confirm: options.confirmSecret };
+  const scopeOfClient = clientScopes(options.clientCertificates);
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const log = options.log ?? silentLogger;
   const maxMandateSeconds = options.maxMandateSeconds ?? DEFAULT_MAX_MANDATE_SECONDS;
@@ -463,6 +505,14 @@ export function createSigner(options: SignerOptions): Signer {
       // cannot sign or apply anything, and the control plane's cannot submit an assertion.
       const { scope } = signerRoutes[route.name];
       if (scope !== "unsigned") {
+        // With mutual TLS the client certificate is checked first: the right secret on the
+        // wrong client's connection is refused like a wrong secret.
+        if (
+          scopeOfClient !== null &&
+          scopeOfClient.get(verifiedClientFingerprint(c.env) ?? "") !== scope
+        ) {
+          throw new SignerFailure("unauthenticated");
+        }
         const signature = c.req.header(SIGNATURE_HEADER) ?? "";
         const timestampText = c.req.header(TIMESTAMP_HEADER) ?? "";
         const authentic =

@@ -1,4 +1,5 @@
 import { createConfirmClient } from "@askgina/os-protocol/signer";
+import { createSignerFetch } from "@askgina/os-protocol/signer-transport";
 import { serve } from "@hono/node-server";
 import { createApproveApp, readPageFiles } from "./app.ts";
 import { type ApproveConfig, ConfigError, loadConfig } from "./config.ts";
@@ -18,7 +19,16 @@ try {
 }
 
 const app = createApproveApp({
-  confirm: createConfirmClient({ baseUrl: config.signerUrl, secret: config.signerSecret }),
+  confirm: createConfirmClient({
+    baseUrl: config.signerUrl,
+    secret: config.signerSecret,
+    // Mutual TLS to an `https:` signer, which must present the certificate issued for the host
+    // name in SIGNER_URL; plain HTTP on one machine, as before.
+    fetch:
+      config.signerTls === null
+        ? undefined
+        : createSignerFetch(config.signerTls, new URL(config.signerUrl).hostname),
+  }),
   files: readPageFiles(),
   approveOrigin: config.approveOrigin,
   log,

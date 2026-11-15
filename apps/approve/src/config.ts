@@ -1,15 +1,37 @@
 import { readFileSync } from "node:fs";
 import { MIN_SECRET_BYTES } from "@askgina/os-protocol/signer";
+import {
+  readSignerTls,
+  type SignerTls,
+  type SignerTlsFile,
+  SignerTlsFileError,
+} from "@askgina/os-protocol/signer-transport";
 import { z } from "zod";
+
+/** Compose passes an unset variable as "": that is unset, not a value. */
+const blankIsUnset = (value: unknown) => (value === "" ? undefined : value);
+
+const TLS_VARIABLES: Record<SignerTlsFile, string> = {
+  cert: "APPROVE_TLS_CERT_FILE",
+  key: "APPROVE_TLS_KEY_FILE",
+  peerCert: "APPROVE_TLS_PEER_CERT_FILE",
+};
 
 const Environment = z.object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(8788),
   /** The exact origin people open the confirmation page on, for example `https://approve.os.example.com`. */
   APPROVE_ORIGIN: z.string().min(1),
-  /** For example `http://signer:8787`. */
+  /** For example `http://signer:8787`, or `https://signer:8787` with the signer on its own host. */
   SIGNER_URL: z.url({ protocol: /^https?$/ }),
   /** The confirm-scope secret the signer shares with this service, base64. */
   APPROVE_SIGNER_SECRET_FILE: z.string().min(1),
+  /**
+   * Mutual TLS to a signer at an `https:` SIGNER_URL: this service's certificate and key, and
+   * the one certificate it accepts from the signer (PEM, `deploy/split/make-peer-certs.sh`).
+   */
+  APPROVE_TLS_CERT_FILE: z.preprocess(blankIsUnset, z.string().optional()),
+  APPROVE_TLS_KEY_FILE: z.preprocess(blankIsUnset, z.string().optional()),
+  APPROVE_TLS_PEER_CERT_FILE: z.preprocess(blankIsUnset, z.string().optional()),
 });
 
 export interface ApproveConfig {
@@ -18,6 +40,8 @@ export interface ApproveConfig {
   signerUrl: string;
   /** Reaches the signer's two confirm routes and nothing else. This service holds no other secret. */
   signerSecret: Uint8Array;
+  /** Mutual TLS to the signer, set exactly when SIGNER_URL is `https:`. */
+  signerTls: SignerTls | null;
 }
 
 /** A configuration problem. The message names the variable, never its value. */
@@ -59,10 +83,33 @@ export function loadConfig(environment: NodeJS.ProcessEnv): ApproveConfig {
     throw new ConfigError(`APPROVE_SIGNER_SECRET_FILE: fewer than ${MIN_SECRET_BYTES} bytes`);
   }
 
+  // A half-configured split fails here, not silently in clear text: an `https:` signer needs
+  // all three files, and an `http:` one takes none.
+  const {
+    APPROVE_TLS_CERT_FILE: cert,
+    APPROVE_TLS_KEY_FILE: key,
+    APPROVE_TLS_PEER_CERT_FILE: peerCert,
+  } = env;
+  let signerTls: SignerTls | null = null;
+  if (new URL(env.SIGNER_URL).protocol === "https:") {
+    if (cert === undefined || key === undefined || peerCert === undefined) {
+      throw new ConfigError("APPROVE_TLS_*: an https SIGNER_URL needs all three");
+    }
+    try {
+      signerTls = readSignerTls({ cert, key, peerCert });
+    } catch (error) {
+      if (!(error instanceof SignerTlsFileError)) throw error;
+      throw new ConfigError(`${TLS_VARIABLES[error.file]}: ${error.message}`);
+    }
+  } else if ((cert ?? key ?? peerCert) !== undefined) {
+    throw new ConfigError("APPROVE_TLS_*: set only with an https SIGNER_URL");
+  }
+
   return {
     port: env.PORT,
     approveOrigin: env.APPROVE_ORIGIN,
     signerUrl: env.SIGNER_URL,
     signerSecret,
+    signerTls,
   };
 }

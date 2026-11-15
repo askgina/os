@@ -1,3 +1,4 @@
+import { createPrivateKey, X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AssetLabels, ChainLabels, MANDATE_MAX_SECONDS } from "@askgina/os-protocol";
@@ -9,6 +10,9 @@ import {
   DEFAULT_MIN_DESTROY_DELAY_SECONDS,
 } from "./lifecycle.ts";
 import { DEFAULT_MAX_LIVE_MANDATES_PER_WALLET, DEFAULT_MAX_MANDATE_SECONDS } from "./mandates.ts";
+
+/** Compose passes an unset variable as "": that is unset, not a value. */
+const blankIsUnset = (value: unknown) => (value === "" ? undefined : value);
 
 const Environment = z.object({
   SIGNER_PORT: z.coerce.number().int().min(1).max(65_535).default(8787),
@@ -55,14 +59,39 @@ const Environment = z.object({
   // `destroyAfter`. An empty value is unset: 0 is a valid minimum, so Compose passing an unset
   // variable as "" must not silently remove the delay.
   SIGNER_MIN_DESTROY_DELAY_SECONDS: z.preprocess(
-    (value) => (value === "" ? undefined : value),
+    blankIsUnset,
     z.coerce.number().int().min(0).max(7_776_000).default(DEFAULT_MIN_DESTROY_DELAY_SECONDS),
   ),
   SIGNER_MAX_DESTROY_DELAY_SECONDS: z.preprocess(
-    (value) => (value === "" ? undefined : value),
+    blankIsUnset,
     z.coerce.number().int().min(1).max(31_536_000).default(DEFAULT_MAX_DESTROY_DELAY_SECONDS),
   ),
+  // The address to listen on. On its own host the signer listens on the private interface only.
+  SIGNER_HOST: z.preprocess(blankIsUnset, z.string().min(1).default("0.0.0.0")),
+  // Mutual TLS, for a signer on its own host: the signer's certificate and key, and the one
+  // certificate each of its two clients presents. All four or none; none serves plain HTTP.
+  SIGNER_TLS_CERT_FILE: z.preprocess(blankIsUnset, z.string().optional()),
+  SIGNER_TLS_KEY_FILE: z.preprocess(blankIsUnset, z.string().optional()),
+  SIGNER_TLS_CONTROL_CERT_FILE: z.preprocess(blankIsUnset, z.string().optional()),
+  SIGNER_TLS_APPROVE_CERT_FILE: z.preprocess(blankIsUnset, z.string().optional()),
+  // With TLS on, the main port needs a client certificate, so the container's health check uses
+  // a plain listener on 127.0.0.1 that answers `GET /healthz` only. Not 8788: `approve` uses it.
+  SIGNER_HEALTH_PORT: z.preprocess(
+    blankIsUnset,
+    z.coerce.number().int().min(1).max(65_535).default(8789),
+  ),
 });
+
+/**
+ * The signer's side of mutual TLS, PEM. The control plane's certificate reaches control-scope
+ * routes only, the `approve` service's confirm-scope routes only.
+ */
+export interface SignerTlsConfig {
+  cert: Buffer;
+  key: Buffer;
+  control: Buffer;
+  approve: Buffer;
+}
 
 export interface SignerConfig {
   port: number;
@@ -88,6 +117,12 @@ export interface SignerConfig {
   repriceWindowSeconds: number;
   minDestroyDelaySeconds: number;
   maxDestroyDelaySeconds: number;
+  /** The address to listen on (`SIGNER_HOST`). */
+  host: string;
+  /** Mutual TLS when the signer runs on its own host; null serves plain HTTP, as on one machine. */
+  tls: SignerTlsConfig | null;
+  /** The plain loopback listener for the health check, used only with TLS. */
+  healthPort: number;
 }
 
 /** A configuration problem. The message names the variable, never its value. */
@@ -105,6 +140,79 @@ function readSecret(variable: string, path: string): Uint8Array {
   }
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(text)) throw new ConfigError(`${variable}: not base64`);
   return new Uint8Array(Buffer.from(text, "base64"));
+}
+
+function readPem(variable: string, path: string): Buffer {
+  try {
+    return readFileSync(path);
+  } catch {
+    throw new ConfigError(`${variable}: file cannot be read`);
+  }
+}
+
+function readCertificate(variable: string, path: string): { pem: Buffer; der: Buffer } {
+  const pem = readPem(variable, path);
+  try {
+    return { pem, der: new X509Certificate(pem).raw };
+  } catch {
+    throw new ConfigError(`${variable}: not a PEM certificate`);
+  }
+}
+
+const TLS_VARIABLES = {
+  cert: "SIGNER_TLS_CERT_FILE",
+  control: "SIGNER_TLS_CONTROL_CERT_FILE",
+  approve: "SIGNER_TLS_APPROVE_CERT_FILE",
+} as const;
+
+/**
+ * Read the four TLS files and check them, so a wrong file stops boot instead of every
+ * handshake: each certificate parses, the key is the signer's, and the three certificates are
+ * distinct, since the signer tells its two clients apart by their certificates alone.
+ */
+function readTls(files: Record<keyof SignerTlsConfig, string>): SignerTlsConfig {
+  const cert = readCertificate(TLS_VARIABLES.cert, files.cert);
+  const control = readCertificate(TLS_VARIABLES.control, files.control);
+  const approve = readCertificate(TLS_VARIABLES.approve, files.approve);
+  const key = readPem("SIGNER_TLS_KEY_FILE", files.key);
+  let matches: boolean;
+  try {
+    matches = new X509Certificate(cert.pem).checkPrivateKey(createPrivateKey(key));
+  } catch {
+    throw new ConfigError("SIGNER_TLS_KEY_FILE: not a PEM private key");
+  }
+  if (!matches) throw new ConfigError("SIGNER_TLS_KEY_FILE: not the key of SIGNER_TLS_CERT_FILE");
+  if (control.der.equals(cert.der)) {
+    throw new ConfigError(`${TLS_VARIABLES.control}: the signer's own certificate`);
+  }
+  if (approve.der.equals(cert.der)) {
+    throw new ConfigError(`${TLS_VARIABLES.approve}: the signer's own certificate`);
+  }
+  if (control.der.equals(approve.der)) {
+    throw new ConfigError(
+      "SIGNER_TLS_APPROVE_CERT_FILE: the same certificate as SIGNER_TLS_CONTROL_CERT_FILE",
+    );
+  }
+  return { cert: cert.pem, key, control: control.pem, approve: approve.pem };
+}
+
+export interface CertificateExpiry {
+  variable: (typeof TLS_VARIABLES)[keyof typeof TLS_VARIABLES];
+  /** Whole days until it expires; negative once it has. */
+  daysLeft: number;
+  expired: boolean;
+}
+
+/** When each of the three certificates expires, measured at `nowMs`, for the check at boot. */
+export function certificateExpiry(tls: SignerTlsConfig, nowMs: number): CertificateExpiry[] {
+  return (["cert", "control", "approve"] as const).map((name) => {
+    const left = new X509Certificate(tls[name]).validToDate.getTime() - nowMs;
+    return {
+      variable: TLS_VARIABLES[name],
+      daysLeft: Math.floor(left / 86_400_000),
+      expired: left <= 0,
+    };
+  });
 }
 
 function readJson(variable: string, path: string): unknown {
@@ -177,6 +285,22 @@ export function loadConfig(environment: NodeJS.ProcessEnv): SignerConfig {
       "SIGNER_MAX_DESTROY_DELAY_SECONDS: less than SIGNER_MIN_DESTROY_DELAY_SECONDS",
     );
   }
+  const {
+    SIGNER_TLS_CERT_FILE: cert,
+    SIGNER_TLS_KEY_FILE: key,
+    SIGNER_TLS_CONTROL_CERT_FILE: control,
+    SIGNER_TLS_APPROVE_CERT_FILE: approve,
+  } = env;
+  let tls: SignerTlsConfig | null = null;
+  if (cert !== undefined && key !== undefined && control !== undefined && approve !== undefined) {
+    if (env.SIGNER_HEALTH_PORT === env.SIGNER_PORT) {
+      throw new ConfigError("SIGNER_HEALTH_PORT: the same port as SIGNER_PORT");
+    }
+    tls = readTls({ cert, key, control, approve });
+  } else if ((cert ?? key ?? control ?? approve) !== undefined) {
+    // Half a TLS configuration would serve plain HTTP to a deployment that expects mutual TLS.
+    throw new ConfigError("SIGNER_TLS_*: set all four or none");
+  }
   const tokenKey = readSecret("SIGNER_KEY_FILE", env.SIGNER_KEY_FILE);
   if (tokenKey.byteLength !== 32) throw new ConfigError("SIGNER_KEY_FILE: not 32 bytes");
 
@@ -221,5 +345,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv): SignerConfig {
     repriceWindowSeconds: env.SIGNER_REPRICE_WINDOW_SECONDS,
     minDestroyDelaySeconds: env.SIGNER_MIN_DESTROY_DELAY_SECONDS,
     maxDestroyDelaySeconds: env.SIGNER_MAX_DESTROY_DELAY_SECONDS,
+    host: env.SIGNER_HOST,
+    tls,
+    healthPort: env.SIGNER_HEALTH_PORT,
   };
 }
