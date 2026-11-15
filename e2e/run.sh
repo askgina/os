@@ -85,7 +85,9 @@ if [ "$split" = "1" ]; then
 fi
 compose=(docker compose -p "$E2E_PROJECT" "${overlay[@]}")
 ui=(docker compose -p "${E2E_PROJECT}-ui" "${overlay[@]}")
-lifecycle=(docker compose -p "${E2E_PROJECT}-lifecycle" "${overlay[@]}")
+# The lifecycle gates' stack: the plain one with Web Push on (e2e/compose.lifecycle.yaml), so
+# erasing a person can remove a device they added. Only without TLS, split or a variant.
+lifecycle=(docker compose -p "${E2E_PROJECT}-lifecycle" -f compose.yaml -f e2e/compose.e2e.yaml -f e2e/compose.lifecycle.yaml --profile dev --profile agent)
 # The venue gates' stack: the plain one plus the fake Hyperliquid venue and the server's
 # VENUES_FILE naming it (e2e/compose.venue.yaml). Only without TLS, split or a variant.
 venue=(docker compose -p "${E2E_PROJECT}-venue" -f compose.yaml -f e2e/compose.e2e.yaml -f e2e/compose.venue.yaml --profile dev --profile agent)
@@ -207,7 +209,7 @@ if [ "$tls" != "1" ] && [ "$split" != "1" ] && [ -z "$variant" ] && [ "$status" 
   remove
   "${lifecycle[@]}" up -d --wait --wait-timeout 300 "${services[@]}" || status=$?
   if [ "$status" -eq 0 ]; then
-    (cd e2e && E2E_PROJECT="${E2E_PROJECT}-lifecycle" bunx playwright test lifecycle.spec.ts) || status=$?
+    (cd e2e && E2E_PROJECT="${E2E_PROJECT}-lifecycle" E2E_LIFECYCLE=1 bunx playwright test lifecycle.spec.ts) || status=$?
   fi
 fi
 

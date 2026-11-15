@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -35,6 +35,11 @@ const OPENBAO = process.env.E2E_OPENBAO === "1";
  * server's `VENUES_FILE` naming it, from `e2e/compose.venue.yaml`.
  */
 const VENUE = process.env.E2E_VENUE === "1";
+/**
+ * `E2E_LIFECYCLE=1` (`e2e/run.sh`, the lifecycle gates' own stack): Web Push on, from
+ * `e2e/compose.lifecycle.yaml`, so erasing a person can remove a device they added.
+ */
+const LIFECYCLE = process.env.E2E_LIFECYCLE === "1";
 
 /**
  * `E2E_SPLIT=1` (`e2e/run.sh`): the signer, its confirmation page and that page's edge run as a
@@ -125,6 +130,7 @@ function projectArgs(side: Side): string[] {
       REPLICAS ? ["-f", join(ROOT, "e2e", "compose.replicas.yaml")] : [],
       OPENBAO ? ["-f", join(ROOT, "e2e", "compose.openbao.yaml")] : [],
       VENUE ? ["-f", join(ROOT, "e2e", "compose.venue.yaml")] : [],
+      LIFECYCLE ? ["-f", join(ROOT, "e2e", "compose.lifecycle.yaml")] : [],
     ];
     return ["-p", stack.project, ...files.flat(), ...profiles];
   }
@@ -208,6 +214,39 @@ function servicesOn(side: Side): string[] {
 /** Run a command inside a running service container. */
 export function exec(service: string, ...command: string[]): Promise<string> {
   return compose("exec", "-T", service, ...command);
+}
+
+/**
+ * Run a command inside a running service container with `input` on its stdin, and report its
+ * exit code and what it printed: an operator's command answers with both, so a non-zero exit is
+ * not an error here. Docker's own messages go to stderr and are kept apart, as in
+ * {@link fromAgentsNetwork}.
+ */
+export function execWithInput(
+  service: string,
+  input: string,
+  ...command: string[]
+): Promise<{ exitCode: number; output: string; diagnostics: string }> {
+  const { promise, resolve, reject } = Promise.withResolvers<{
+    exitCode: number;
+    output: string;
+    diagnostics: string;
+  }>();
+  const child = spawn("docker", composeArgs("exec", "-T", service, ...command), { cwd: ROOT });
+  let output = "";
+  let diagnostics = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    output += chunk;
+  });
+  child.stderr.on("data", (chunk: string) => {
+    diagnostics += chunk;
+  });
+  child.on("error", reject);
+  child.on("close", (code) => resolve({ exitCode: code ?? 1, output, diagnostics }));
+  child.stdin.end(input);
+  return promise;
 }
 
 /** The setup token the server printed on its first start. */

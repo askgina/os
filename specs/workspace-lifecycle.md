@@ -66,7 +66,7 @@ Success means:
 
 - [x] (2026-11-14 21:30Z) Research: what a workspace owns, what v0.1 can do, what the signer can and cannot see. See the report.
 - [x] (2026-11-14 21:30Z) Draft this plan with recommended options; owner decisions listed under Risks and Open Questions.
-- [x] (2026-11-15) Owner decisions D1-D12 taken and recorded in the Decision Log. D3 by the owner (2026-11-14): allowlist or own treasury. D1, D2 and D4-D12 by the lead under Eric's delegation ("delegate to you on decisions like a CTO"), each the recommended option. D6 still owes counsel review, flagged for Eric.
+- [x] (2026-11-15) Owner decisions D1-D12 taken and recorded in the Decision Log. D3 by the owner (2026-11-14): allowlist or own treasury. D1, D2 and D4-D12 by the lead under Eric's delegation ("delegate to you on decisions like a CTO"), each the recommended option.
 - [x] (2026-11-14) The sweep, built ahead of the milestones as a fix to v0.1 (a wallet whose agent was removed or disabled could not be emptied): the `Sweep` structure and `sweep-wallet` envelope (protocol), `POST /v1/wallets/:walletId/sweep` (signer), the `sweep-wallet` approval kind and `requestSweep` route on the shared signing path (server, `apps/server/src/execution/sweeps.ts`, `transactions.ts`), "Empty this wallet" and the sweep approval card (web), and a release gate. Proven locally, one file at a time: `packages/protocol/test/digests.test.ts`, `schemas.test.ts`, `signer-client.test.ts`; `apps/signer/test/sweep.test.ts`; `packages/api/test/api.test.ts`; `apps/server/test/execution/sweep.test.ts` on Anvil; `apps/web/test/sweep.test.ts`. Retire, delete, export and clone are not built.
 - [ ] The sweep in CI: the release gate "a person empties a disabled agent's wallet to the treasury while paused, and the signer refuses any other destination" in `e2e/test/release-gates.spec.ts` (`stack (amd64)`, `stack (arm64)`), and the `ui` job with the new card. Written and type-checked, not run. No browser journey covers the card yet.
 - [x] (2026-11-15) Re-checked against main (`2911c20`). The sweep is proven in CI: its release gate (`e2e/test/release-gates.spec.ts:686`) passed in `stack (amd64)` of run 43710836888 on `98cc6a1`, all six jobs green, and the `ui` journey now covers the sweep card (`apps/web/test/journey.e2e.ts:445-466`). Trusted display, the v0.1 defect fixes, mandates and notifications landed since the draft; the milestones below are rewritten for them, D3 is delivered, D8-D12 are new. Nothing else of this plan is built.
@@ -140,8 +140,7 @@ Success means:
       sets `SIGNER_MIN_DESTROY_DELAY_SECONDS` to 0. Threat model, architecture, deploy guide,
       README and protocol section 8 updated. The stated backup retention in the deploy guide is
       30 days (the plan asked for a number and gave none).
-- [x] (2026-11-15) Milestone 8: erasing a person (in scope by D6; counsel review still owed,
-      flagged for Eric: whether keeping the user id satisfies GDPR Article 17). Local checks only,
+- [x] (2026-11-15) Milestone 8: erasing a person (in scope by D6). Local checks only,
       CI pending. Migration `0009_erasure.sql` (`users.erased_at`); `apps/server/src/identity/`
       `erase.ts` (`checkErasable`, `eraseOnRequest`, `eraseUser`, `ERASED_NAME`) and
       `erase-cli.ts` (`node apps/server/src/identity/erase-cli.ts --user <id>`); the route and
@@ -154,6 +153,33 @@ Success means:
       `packages/api/test/api.test.ts` (149), and unchanged in behavior
       `identity/identity.test.ts` (41, the origin check now covers `eraseMe`),
       `lifecycle/export.test.ts` (4), `lifecycle/clone.test.ts` (10). Not run: CI.
+- [ ] (2026-11-15) Release gates for export, clone, import and erasing a person: written and
+      type-checked, not run; CI pending. Six more tests at the end of
+      `e2e/test/lifecycle.spec.ts`, on the lifecycle stack, which now has Web Push on toward a
+      push service that never resolves (`e2e/compose.lifecycle.yaml`, `E2E_LIFECYCLE=1` from
+      `e2e/run.sh`) so a person's device can be added through the API: the template (settings,
+      wallets by ref, the policy, members and roles; no key, address, token, id, mandate or
+      typed text) and the operator's `export-wallet` of the same wallet deriving its address;
+      the record (owner and a passkey sign-in in the last 300 seconds; every section and its
+      count, the heads, the memo and purpose opened; no agent token, wallet key, session hash,
+      confirmation token, push endpoint, transaction signature or sealed bytes;
+      `verify-record.ts` in the server container exits 0, and 2 at the right line for one
+      changed byte of an audit detail, a cut last line and two swapped lines); a clone (new
+      wallets and addresses, a new token, the reminder threshold, an invite for the member,
+      only a `set-policy` request, `policy_missing` until it is approved, then the source's
+      policy for the new agent, `recipient_not_allowed` off the list, a payment that waits for a
+      person; the source's agent token gets `not_found` on the clone's wallet; the source's
+      settings, people, wallets, mandate and audit log unchanged; the clone's record holds
+      nothing of the source's); an import (three malformed or unhonourable templates refused
+      with nothing created, unknown members dropped, the template reproduced after approval, the
+      template digest in `workspace.cloned`); erasing a person (`sign_in_again`, then
+      `last_approver` in the app and from `erase-cli.ts`, `still_approving` with exit 3, the
+      two-call `eraseMe`, the mandate she granted ending `grantor_removed`, then no passkey,
+      session, device, setting, membership, pending notification or name anywhere in the
+      database, `unauthenticated` at sign-in, `approver_unknown` on a page she kept open, every
+      log verifying with her id kept, no invite from an older template, a second erasure
+      changing nothing); and the operator erasing a viewer as the system, once, while refusing
+      the only owner (`last_owner`).
 
 ## Surprises & Discoveries
 
@@ -438,8 +464,7 @@ Every owner decision is taken. Each names its question (D1-D12) in Risks and Ope
 
 - Decision: D1, D2 and D4-D12 are taken with the recommended option each, by the lead under the
   owner's delegation ("delegate to you on decisions like a CTO"); D3 was taken by the owner on
-  2026-11-14. Each entry below states its option. D6 is taken for engineering, and still owes the
-  counsel review it named; that review is flagged for Eric and does not block Milestones 1 to 7.
+  2026-11-14. Each entry below states its option.
   Rationale: the owner asked for the remaining epics to be completed with decisions delegated;
   the recommended options were each argued in this plan and its research report.
   Date/Author: 2026-11-15 / lead, under Eric's delegation
@@ -498,13 +523,12 @@ Every owner decision is taken. Each names its question (D1-D12) in Risks and Ope
   the keyring copies older than that rotation are destroyed.
   Rationale: a shredded key is gone only when the KEK that wrapped it is gone everywhere.
   Date/Author: 2026-11-14 / delegated agent; taken by the lead 2026-11-15
-- Decision (D6, taken 2026-11-15 for engineering; counsel review owed): erasing a person erases
+- Decision (D6, taken 2026-11-15): erasing a person erases
   their name, passkeys, sessions, push subscriptions and notification settings (preferences and
   quiet hours) and keeps their user id in audit chains, assertions, deliveries and the signer's
   history. Milestone 8 is in scope.
   Rationale: the notification data is personal and easy to delete; the audit chain stays
-  verifiable without a format change. Whether keeping the id satisfies GDPR Article 17 is for
-  counsel; the review is flagged for Eric and does not block Milestones 1 to 7.
+  verifiable without a format change. Being erased is the person's entitlement in the product.
   Date/Author: 2026-11-15 / lead, under Eric's delegation
 - Decision (D7, taken 2026-11-15): finalize waits while any transaction of the subject is
   `signed`, `broadcast` or `stuck`, and while one is `rejected` and no later transaction of its
@@ -578,12 +602,11 @@ Every owner decision is taken. Each names its question (D1-D12) in Risks and Ope
   tls; 35 release gates and 10 lifecycle gates on amd64 and arm64) for Milestones 1 to 7; run
   43732195805 at `9a7d594` (all seven jobs, 1,397 unit tests) for Milestone 8 and the export,
   clone, import and erase screens. That supersedes every "CI pending" in `Progress`.
-  Unproven: export, clone, import and erasure have unit tests and a fixture journey, no
-  release gate; the D10 push path end to end; two erasures at once; a clone that fails
+  Unproven: export, clone, import and erasure have unit tests and a fixture journey; their
+  release gates (six, at the end of `e2e/test/lifecycle.spec.ts`) are written and
+  type-checked, CI pending; the D10 push path end to end; two erasures at once; a clone that fails
   part-way leaves a partly created workspace (documented, untested); the operator export
   steps on a real host beyond the gate; a wrong signer clock.
-  Owed by the owner: counsel's view on whether keeping the user id satisfies GDPR Article 17
-  (D6); the code and documents make no legal claim.
 
 - Outcome (2026-11-14): the sweep is built and passes its unit and Anvil tests locally (see
   `Progress`). Its release gate and the UI job need CI.
@@ -596,7 +619,7 @@ Every owner decision is taken. Each names its question (D1-D12) in Risks and Ope
   `specs/approval-mandates.md`.
   Remaining: retire, delete, export, clone, the disable extension (D12), and Milestones 1 to 8 as
   rewritten below.
-- Outcome (2026-11-15): owner decisions D1-D12 are taken (D6 owes counsel review), and
+- Outcome (2026-11-15): owner decisions D1-D12 are taken, and
   Milestone 1 is built: the two envelopes, their confirmation views, the signer contract and the
   protocol document, with compile-keeping edits in the signer and the `approve` page. Local
   checks only (see `Progress`); CI has not run it.
@@ -1160,8 +1183,7 @@ Acceptance:
 
 ### Milestone 8: erasing a person (D6)
 
-Scope: installation-level. A person asks to be erased. In scope by D6; its counsel review is
-still owed and flagged for Eric, and its outcome may change what is kept, not Milestones 1 to 7.
+Scope: installation-level. A person asks to be erased; that is their entitlement. In scope by D6.
 
 Files and interfaces:
 
@@ -1385,10 +1407,10 @@ kept for the record.
   deletion, with a stated keyring backup retention in the deploy guide; the only option that ends
   the window without a keyring format change. Not chosen: document only; a KEK per workspace. The
   docs contradiction it was also about is resolved on main.
-- Question D6 (owner and counsel): erasing a person under GDPR Article 17 while the audit chain
-  keeps their user id. Answered for engineering (2026-11-15): erase names, passkeys, sessions,
+- Question D6 (owner): erasing a person while the audit chain
+  keeps their user id. Answered (2026-11-15): erase names, passkeys, sessions,
   push subscriptions and notification settings (preferences and quiet hours), and keep ids;
-  Milestone 8 is in scope. Counsel review is still owed and flagged for Eric. Not chosen: commit
+  Milestone 8 is in scope. Not chosen: commit
   the chain to `HMAC(per-person salt, userId)` and delete the salt on erasure; no erasure
   feature.
 - Question D7 (owner): finalize with an unmined transaction. Answered (2026-11-15): wait, also for
@@ -1451,7 +1473,7 @@ Evidence on main (`2911c20`). Key lines:
   `FOR NO KEY UPDATE` audit lock. Threat model, context, line references, validation and risks
   updated. D3 marked answered; D8-D12 added. Nothing of retire, delete, export or clone is built.
 - 2026-11-15: Owner decisions D1, D2 and D4-D12 taken by the lead under Eric's delegation, each
-  the recommended option (D6 owes counsel review, flagged for Eric); Decision Log, Progress and
+  the recommended option; Decision Log, Progress and
   the open questions rewritten as answered. Milestone text follows the taken options: Milestone 8
   is in scope, D7 also waits for a `rejected` transaction whose nonce is unused, D10's webhook
   gate is unconditional. Main moved: repricing landed, so the signer migration is version 7 and

@@ -2,34 +2,48 @@
  * The lifecycle gates, against a stack of their own (`e2e/run.sh`): retiring a wallet, an
  * operator's export of its key, deleting a workspace, cancelling a deletion, and what a deleted
  * workspace leaves, down to a database copy from before the deletion after the keyring is
- * rotated. The e2e overlay lets the signer take a destroy time seconds ahead
+ * rotated; then exporting a workspace's template and record, cloning it, importing a template,
+ * and erasing a person. The e2e overlay lets the signer take a destroy time seconds ahead
  * (`SIGNER_MIN_DESTROY_DELAY_SECONDS=0`); the server finishes due retirements and deletions at
- * most once a minute, so a gate that waits for one waits up to a minute and a half.
+ * most once a minute, so a gate that waits for one waits up to a minute and a half. This stack
+ * alone has Web Push on (`e2e/compose.lifecycle.yaml`, `E2E_LIFECYCLE=1`), toward a push
+ * service that never resolves, so the erasure gate can add a person's device through the API.
  *
  * The tests run in order and share state: the first claims the installation.
  */
+import { createECDH, createHash, randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   type AgentSummary,
   ApiError,
+  type AuditEvent,
   type IntentDetail,
   type MandateDraft,
   type PolicyDraft,
   type TransactionInfo,
   type WalletSummary,
   type WorkspaceDetail,
+  type WorkspaceTemplate,
 } from "@askgina/os-api";
-import type { ConfirmationView } from "@askgina/os-protocol";
+import { type ConfirmationView, canonicalJson } from "@askgina/os-protocol";
 import type { SignerDecision } from "@askgina/os-protocol/signer";
 import { scanForMarkers } from "@askgina/os-testkit";
 import { expect, test } from "@playwright/test";
 import pg from "pg";
 import { type Hash, parseEther } from "viem";
 import { mnemonicToAccount } from "viem/accounts";
-import { type AgentConnection, connectAgent, type Proposal } from "../src/agent.ts";
+import { type AgentConnection, connectAgent, type Proposal, ToolRefused } from "../src/agent.ts";
 import { chain, chainAdmin, receiptOf, withMiningHeld } from "../src/chain.ts";
 import { ConfirmationRefused, Person } from "../src/person.ts";
-import { compose, databaseUrl, exec, setupToken, stack, waitUntilHealthy } from "../src/stack.ts";
+import {
+  compose,
+  databaseUrl,
+  exec,
+  execWithInput,
+  setupToken,
+  stack,
+  waitUntilHealthy,
+} from "../src/stack.ts";
 import {
   acknowledged,
   expectSignedDelivery,
@@ -54,6 +68,38 @@ const LEDGER_NAME = `Ledger ${run}`;
 const LEDGER_MEMO = `LEDGERMEMO${run} pay the ledger invoice`;
 const STUDIO_NAME = `Studio ${run}`;
 const COURIER_NAME = `Courier ${run}`;
+/** A workspace that is exported, cloned and imported, and that Cyd is erased from. */
+const ATELIER_NAME = `Atelier ${run}`;
+const CLERK_NAME = `Clerk ${run}`;
+const STRONGBOX = "Strongbox";
+/** What people and agents typed in the atelier. A record opens it; nothing else may carry it. */
+const EXPORT_MEMO = `EXPORTMEMO${run} pay the atelier invoice`;
+const EXPORT_PURPOSE = `EXPORTPURPOSE${run} pay the framer`;
+const COPY_NAME = `Atelier copy ${run}`;
+const COPY_MEMO = `COPYMEMO${run} the copy's first payment`;
+const IMPORT_NAME = `Atelier import ${run}`;
+const FOREIGN_NAME = `Atelier from elsewhere ${run}`;
+const AFTER_ERASURE_NAME = `Atelier after erasure ${run}`;
+/** The person who is erased. Her name is a marker: afterwards no table may hold it. */
+const CYD_NAME = `Cyd Erasable ${run}`;
+/** Her device's push endpoint, under the only push service the lifecycle overlay allows. */
+const CYD_PUSH_ENDPOINT = `https://push.example.test/send/${run}-cyd`;
+/** An address the atelier's policy does not let anyone pay. */
+const STRANGER = "0x000000000000000000000000000000000000dead";
+/** A user id this installation never issued, as a template from another one names people. */
+const STRANGER_USER = "usr_00000000000000000000000000";
+/** The sections of a workspace record, in their order (`apps/server/src/lifecycle/verify-record.ts`). */
+const RECORD_SECTIONS = [
+  "audit",
+  "intent",
+  "transaction",
+  "policy-revision",
+  "mandate",
+  "mandate-use",
+  "signer-decision",
+];
+/** Where the operator keeps a record file to check it, inside the server's container. */
+const RECORD_FILE = "/tmp/workspace-record.jsonl";
 
 /** Where the signer keeps its state, inside its container (`SIGNER_DATA_DIR`). */
 const SIGNER_DATABASE = "/data/signer.sqlite";
@@ -84,6 +130,8 @@ const nowSeconds = () => Math.floor(Date.now() / 1000);
 const ada = new Person(stack.origin, "Ada");
 /** A viewer of the studio: no passkey approves anything of hers, and she may cancel. */
 const bea = new Person(stack.origin, "Bea");
+/** An approver of the atelier, who grants its mandate and then asks to be erased. */
+const cyd = new Person(stack.origin, CYD_NAME);
 
 /** A workspace with one agent, its wallet under a policy, funded, and the agent connected. */
 interface Space {
@@ -107,6 +155,18 @@ let studioDestroyAfter = 0;
 let archive: Space;
 let archiveIntentId = "";
 let ledgerIntentId = "";
+/** Exported, cloned and imported; Cyd approves in it until she is erased. */
+let atelier: Space;
+let strongbox: WalletSummary;
+let atelierTemplate: WorkspaceTemplate;
+let atelierMandateId = "";
+let atelierPaidIntentId = "";
+/** The two atelier payments of the first gate below: one a mandate covered, one Ada approved. */
+let atelierIntentIds: string[] = [];
+let adaId = "";
+let cydId = "";
+/** The atelier wallet's key as the signer's operator exports it, and its private key in hex. */
+let atelierSecrets: string[] = [];
 
 // --- people, approvals and payments -------------------------------------------------------------
 
@@ -156,14 +216,18 @@ async function setPolicy(workspaceId: string, walletId: string, draft: PolicyDra
   expect((await ada.settled(request.id)).status).toBe("executed");
 }
 
-/** A workspace named `name` with one agent, its wallet under a policy and funded. */
-async function newSpace(name: string, agentName: string): Promise<Space> {
+/** A workspace named `name` with one agent, its wallet under `policy` and funded. */
+async function newSpace(
+  name: string,
+  agentName: string,
+  policy: (requester: AgentSummary["id"]) => PolicyDraft = payerPolicy,
+): Promise<Space> {
   const workspace = await ada.api.call("createWorkspace", { body: { name } });
   const created = await ada.api.call("createAgent", {
     params: { workspaceId: workspace.id },
     body: { name: agentName },
   });
-  await setPolicy(workspace.id, created.wallet.id, payerPolicy(created.agent.id));
+  await setPolicy(workspace.id, created.wallet.id, policy(created.agent.id));
   await chainAdmin.setBalance({ address: created.wallet.address, value: parseEther("1") });
   return {
     workspace,
@@ -174,18 +238,59 @@ async function newSpace(name: string, agentName: string): Promise<Space> {
   };
 }
 
-/** Ada asks for `draft` on `walletId` and approves it on the confirmation page. */
+/**
+ * Ada asks for `draft` on `walletId`, and `approver` approves it on the confirmation page, which
+ * at the admin threshold of 1 grants it.
+ */
 async function grantMandate(
   workspaceId: string,
   walletId: string,
   draft: MandateDraft,
+  approver: Person = ada,
 ): Promise<{ mandateId: string; grantId: string }> {
   const grant = await ada.proposeMandate(workspaceId, walletId, draft);
-  await ada.confirm(grant.id);
+  await approver.confirm(grant.id);
   const granted = await ada.settled(grant.id);
   expect(granted.status).toBe("executed");
   if (granted.subject.kind !== "grant-mandate") throw new Error(`${grant.id} grants no mandate`);
   return { mandateId: granted.subject.mandate.id, grantId: grant.id };
+}
+
+/** The atelier's policy: room for every payment below, only to PAYEE and RECIPIENT. */
+function atelierPolicy(requester: AgentSummary["id"]): PolicyDraft {
+  return {
+    ...payerPolicy(requester),
+    recipients: { mode: "allowlist", addresses: [PAYEE, RECIPIENT] },
+  };
+}
+
+/**
+ * `person` joins `workspaceId` as an approver, proves on the confirmation page that the passkey
+ * is theirs, and Ada approves the change. Returns their user id.
+ */
+async function joinAsApprover(person: Person, workspaceId: string): Promise<string> {
+  const invite = await ada.api.call("createInvite", {
+    params: { workspaceId },
+    body: { role: "approver" },
+  });
+  const { user } = await person.join(invite.url);
+  if (!user) throw new Error(`${person.name} did not join`);
+  const pending = await ada.api.call("listApprovals", {
+    params: { workspaceId },
+    query: { status: "pending" },
+  });
+  let change: string | undefined;
+  for (const item of pending.items.filter((candidate) => candidate.kind === "add-approver")) {
+    const detail = await ada.api.call("getApproval", { params: { approvalId: item.id } });
+    if (detail.subject.kind === "add-approver" && detail.subject.user.id === user.id) {
+      change = item.id;
+    }
+  }
+  if (!change) throw new Error("joining as an approver opened no approver change");
+  await person.provePossession(change);
+  await ada.confirm(change);
+  expect((await ada.settled(change)).status).toBe("executed");
+  return user.id;
 }
 
 function getMandate(workspaceId: string, mandateId: string) {
@@ -282,6 +387,20 @@ async function apiRefusal(
   return { code: outcome.code, detail: outcome.detail };
 }
 
+/** The code and reason an agent's tool refused `attempt` with; fails when it was not refused. */
+async function toolRefusal(
+  attempt: Promise<unknown>,
+): Promise<{ code: string | null; detail: string | null }> {
+  const outcome = await attempt.then(
+    () => null,
+    (error: unknown) => error,
+  );
+  if (!(outcome instanceof ToolRefused)) {
+    throw new Error(`expected the tool to refuse, got ${String(outcome)}`);
+  }
+  return { code: outcome.code, detail: outcome.detail };
+}
+
 /** The code the confirmation page refused `attempt` with; fails when it was not refused. */
 async function refusalCode(attempt: Promise<unknown>): Promise<string> {
   const outcome = await attempt.then(
@@ -317,18 +436,23 @@ async function signerDecisions(workspaceId: string): Promise<SignerDecision[]> {
   }
 }
 
-/** Every action in a workspace's audit log, read across pages. */
-async function auditActions(workspaceId: string): Promise<string[]> {
-  const actions: string[] = [];
+/** Every entry of a workspace's audit log, opened, read across pages. */
+async function auditEvents(workspaceId: string): Promise<AuditEvent[]> {
+  const events: AuditEvent[] = [];
   for (let cursor: string | undefined; ; ) {
     const page = await ada.api.call("listAudit", {
       params: { workspaceId },
       query: cursor === undefined ? {} : { cursor },
     });
-    actions.push(...page.items.map((event) => event.action));
-    if (page.nextCursor === null) return actions;
+    events.push(...page.items);
+    if (page.nextCursor === null) return events;
     cursor = page.nextCursor;
   }
+}
+
+/** Every action in a workspace's audit log, read across pages. */
+async function auditActions(workspaceId: string): Promise<string[]> {
+  return (await auditEvents(workspaceId)).map((event) => event.action);
 }
 
 // --- the stack, as an operator reads it ----------------------------------------------------------
@@ -578,6 +702,140 @@ async function signerAdminRefusal(...args: string[]): Promise<string> {
 /** The last JSON line a command printed. */
 function lastLine(output: string): Record<string, unknown> {
   return JSON.parse(output.trim().split("\n").at(-1) ?? "") as Record<string, unknown>;
+}
+
+/**
+ * The exit code and last JSON line of an operator's command run with {@link execWithInput};
+ * fails with what Docker and the command printed when there is no such line.
+ */
+function operatorAnswer(ran: { exitCode: number; output: string; diagnostics: string }): {
+  exitCode: number;
+  result: Record<string, unknown>;
+} {
+  try {
+    return { exitCode: ran.exitCode, result: lastLine(ran.output) };
+  } catch {
+    throw new Error(`exit ${ran.exitCode}, no JSON answer: ${ran.output}${ran.diagnostics}`);
+  }
+}
+
+/** Writes its stdin to the file named as its argument. */
+const WRITE_STDIN_SCRIPT =
+  'process.stdin.pipe(require("node:fs").createWriteStream(process.argv[1]));';
+
+/**
+ * Check a record the way the deploy guide does: as a file, with
+ * `node apps/server/src/lifecycle/verify-record.ts <file>`, here in the server's container,
+ * which runs the same source as a checkout of the repository.
+ */
+async function verifyRecordFile(
+  record: string,
+): Promise<{ exitCode: number; result: Record<string, unknown> }> {
+  const written = await execWithInput(
+    "server",
+    record,
+    "node",
+    "-e",
+    WRITE_STDIN_SCRIPT,
+    RECORD_FILE,
+  );
+  if (written.exitCode !== 0) throw new Error(`writing the record failed: ${written.diagnostics}`);
+  return operatorAnswer(
+    await execWithInput(
+      "server",
+      "",
+      "node",
+      "apps/server/src/lifecycle/verify-record.ts",
+      RECORD_FILE,
+    ),
+  );
+}
+
+/** The operator erases a person, as the deploy guide gives it, on the server's host. */
+async function eraseByOperator(
+  userId: string,
+): Promise<{ exitCode: number; result: Record<string, unknown> }> {
+  return operatorAnswer(
+    await execWithInput(
+      "server",
+      "",
+      "node",
+      "apps/server/src/identity/erase-cli.ts",
+      "--user",
+      userId,
+    ),
+  );
+}
+
+/** A record's lines as the file holds them, one JSON document each, without the final newline. */
+function recordLines(record: string): string[] {
+  const lines = record.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  return lines;
+}
+
+/** A record's lines, parsed. */
+function parseRecord(record: string): Record<string, unknown>[] {
+  return recordLines(record).map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+/** The lines of one section of a parsed record. */
+function sectionOf(lines: Record<string, unknown>[], type: string): Record<string, unknown>[] {
+  return lines.filter((line) => line.type === type);
+}
+
+/**
+ * Make every session of `userId` look signed in ten minutes earlier than it was: a session left
+ * signed in on a shared machine, past the five minutes a record export or an erasure allows.
+ */
+async function signedInLongAgo(userId: string): Promise<void> {
+  await query(
+    "UPDATE os.sessions SET created_at = created_at - interval '10 minutes' WHERE user_id = $1",
+    [userId],
+  );
+}
+
+/** How many rows of each kind that belong to a person the control plane holds. */
+async function personRows(userId: string): Promise<Record<string, unknown>> {
+  const [row] = await query(
+    `SELECT
+       (SELECT count(*) FROM os.sessions WHERE user_id = $1)::int AS sessions,
+       (SELECT count(*) FROM os.credentials WHERE user_id = $1)::int AS passkeys,
+       (SELECT count(*) FROM os.ceremonies WHERE user_id = $1)::int AS ceremonies,
+       (SELECT count(*) FROM os.push_subscriptions WHERE user_id = $1)::int AS devices,
+       (SELECT count(*) FROM os.notification_preferences WHERE user_id = $1)::int AS settings,
+       (SELECT count(*) FROM os.approver_credentials WHERE user_id = $1)::int AS approving,
+       (SELECT count(*) FROM os.memberships WHERE user_id = $1)::int AS memberships,
+       (SELECT count(*) FROM os.notification_deliveries WHERE user_id = $1)::int AS deliveries,
+       (SELECT count(*) FROM os.notification_deliveries WHERE user_id = $1 AND state = 'pending')::int AS pending`,
+    [userId],
+  );
+  if (!row) throw new Error(`no counts for ${userId}`);
+  return row;
+}
+
+/** What of a workspace a clone of it must leave as it was. */
+function standing(detail: WorkspaceDetail) {
+  return {
+    name: detail.name,
+    adminThreshold: detail.adminThreshold,
+    notificationDetail: detail.notificationDetail,
+    paused: detail.paused,
+    lifecycle: detail.lifecycle,
+    members: detail.members.map((member) => [member.user.id, member.role, member.approver]),
+    agents: detail.agents.map((agent) => [
+      agent.id,
+      agent.status,
+      agent.walletId,
+      agent.tokenPrefix,
+    ]),
+    wallets: detail.wallets.map((wallet) => [
+      wallet.id,
+      wallet.address,
+      wallet.policyHash,
+      wallet.lifecycle.state,
+    ]),
+  };
 }
 
 test.beforeAll(async () => {
@@ -1367,4 +1625,806 @@ test("after a deletion and a keyring rotation, a database copy from before the d
     await exec("postgres", "dropdb", "--username=postgres", "--if-exists", COPY_DATABASE);
     await exec("postgres", "rm", "-f", DUMP);
   }
+});
+
+// --- exporting, cloning and importing a workspace -------------------------------------------------
+
+test("an owner's template of a workspace carries its settings, wallets, policies, members and roles, and no key, address, token, mandate or history; the operator's export of its wallet's key derives the wallet's address", async () => {
+  test.setTimeout(300_000);
+  adaId = (await ada.api.call("getSession")).user?.id ?? "";
+  atelier = await newSpace(ATELIER_NAME, CLERK_NAME, atelierPolicy);
+  const workspaceId = atelier.workspace.id;
+  const { wallet } = atelier;
+  cydId = await joinAsApprover(cyd, workspaceId);
+
+  // Cyd's device and settings, everything personal that erasing her removes later.
+  const device = await cyd.api.call("addPushSubscription", {
+    body: {
+      endpoint: CYD_PUSH_ENDPOINT,
+      keys: {
+        p256dh: createECDH("prime256v1").generateKeys().toString("base64url"),
+        auth: randomBytes(16).toString("base64url"),
+      },
+      label: "Cyd's phone",
+    },
+  });
+  expect((await cyd.api.call("listPushSubscriptions")).items.map((item) => item.id)).toEqual([
+    device.id,
+  ]);
+  await cyd.api.call("setNotificationPreferences", {
+    body: {
+      workspaces: [{ workspaceId, webPush: true, reminders: true }],
+      quietHours: { start: "22:00", end: "07:00", timeZone: "Europe/Berlin" },
+    },
+  });
+
+  // Cyd's passkey grants the mandate; it covers one payment, and Ada approves another.
+  atelierMandateId = (
+    await grantMandate(
+      workspaceId,
+      wallet.id,
+      mandateDraft(atelier.agentId, { purpose: EXPORT_PURPOSE }),
+      cyd,
+    )
+  ).mandateId;
+  expect(
+    (await getMandate(workspaceId, atelierMandateId)).grantedBy.map((person) => person.displayName),
+  ).toEqual([CYD_NAME]);
+  const covered = await propose(atelier, PAYEE, "0.001", "covered, in the atelier");
+  expect(covered).toMatchObject({ authorizedBy: "mandate", mandateId: atelierMandateId });
+  expect(await intentSettles(covered.intentId)).toBe("confirmed");
+  const paid = await propose(atelier, RECIPIENT, "0.002", EXPORT_MEMO);
+  expect(paid.authorizedBy).toBe("person");
+  await ada.confirm(approvalIdOf(paid));
+  expect(await intentSettles(paid.intentId)).toBe("confirmed");
+  atelierPaidIntentId = paid.intentId;
+  atelierIntentIds = [covered.intentId, paid.intentId];
+
+  // A treasury, a notification level other than the default, and an admin threshold of 2.
+  strongbox = await ada.api.call("createTreasury", {
+    params: { workspaceId },
+    body: { label: STRONGBOX },
+  });
+  await ada.api.call("setNotificationDetail", {
+    params: { workspaceId },
+    body: { detail: "summary" },
+  });
+  const raise = await ada.api.call("requestAdminThreshold", {
+    params: { workspaceId },
+    body: { adminThreshold: 2 },
+  });
+  await ada.confirm(raise.id);
+  expect((await ada.settled(raise.id)).status).toBe("executed");
+  expect((await ada.api.call("getWorkspace", { params: { workspaceId } })).adminThreshold).toBe(2);
+
+  // The signer's operator exports the wallet's key on its host: it derives the wallet's address.
+  const out = `/tmp/export-${wallet.id}.txt`;
+  try {
+    expect(
+      await signerAdmin(
+        "export-wallet",
+        "--workspace",
+        workspaceId,
+        "--wallet",
+        wallet.id,
+        "--out",
+        out,
+      ),
+    ).toMatchObject({ ok: true, action: "export-wallet-by-operator", walletId: wallet.id });
+    const mnemonic = (await exec("signer", "cat", out)).trim();
+    const account = mnemonicToAccount(mnemonic);
+    expect(account.address.toLowerCase()).toBe(wallet.address.toLowerCase());
+    const privateKey = account.getHdKey().privateKey;
+    if (!privateKey) throw new Error("the exported key derives no private key");
+    atelierSecrets = [mnemonic, Buffer.from(privateKey).toString("hex")];
+  } finally {
+    await exec("signer", "rm", "-f", out);
+  }
+
+  // The template: settings, wallets by ref, the policy with its requester as a ref, members.
+  atelierTemplate = await ada.api.call("exportTemplate", { params: { workspaceId } });
+  const { policy } = await walletDetail(workspaceId, wallet.id);
+  if (!policy) throw new Error("the atelier's wallet has no policy");
+  expect(atelierTemplate).toEqual({
+    format: "askgina.os/workspace-template/v1",
+    name: ATELIER_NAME,
+    adminThreshold: 2,
+    notificationDetail: "summary",
+    wallets: [
+      {
+        ref: "w1",
+        kind: "agent",
+        label: wallet.label,
+        agent: { name: CLERK_NAME },
+        policy: {
+          chains: [CHAIN],
+          requesters: ["w1"],
+          assets: policy.assets,
+          recipients: { mode: "allowlist", addresses: [PAYEE, RECIPIENT] },
+          contractCalls: { mode: "deny" },
+          fees: policy.fees,
+          approvals: { threshold: 1, ttlSeconds: 3600 },
+        },
+      },
+      { ref: "w2", kind: "treasury", label: STRONGBOX, agent: null, policy: null },
+    ],
+    members: [
+      { userId: adaId, role: "owner" },
+      { userId: cydId, role: "approver" },
+    ].sort((a, b) => (a.userId < b.userId ? -1 : 1)),
+  });
+  // Nothing in it is a key, an address, a token, an id of this workspace or what anyone typed.
+  const text = JSON.stringify(atelierTemplate).toLowerCase();
+  for (const value of [
+    atelier.token,
+    ...atelierSecrets,
+    workspaceId,
+    wallet.id,
+    wallet.address.slice(2),
+    strongbox.id,
+    strongbox.address.slice(2),
+    atelier.agentId,
+    atelierMandateId,
+    covered.intentId,
+    paid.intentId,
+    EXPORT_MEMO,
+    EXPORT_PURPOSE,
+  ]) {
+    expect(text).not.toContain(value.toLowerCase());
+  }
+});
+
+test("an owner signed in with a passkey in the last five minutes exports the record: it verifies offline, opens the workspace's history, carries no secret, and the verifier refuses it with one byte changed, its last line cut or two lines swapped", async () => {
+  const workspaceId = atelier.workspace.id;
+  // A request that waits, so its confirmation link exists while the record is written.
+  const waiting = await propose(atelier, RECIPIENT, "0.001", "waits while the record is exported");
+  expect(waiting.authorizedBy).toBe("person");
+  const link = await ada.confirmationLink(approvalIdOf(waiting));
+
+  // Owners only, and only with a recent passkey sign-in: a session left open is not enough.
+  expect((await apiRefusal(cyd.api.call("exportRecord", { params: { workspaceId } }))).code).toBe(
+    "forbidden",
+  );
+  await signedInLongAgo(adaId);
+  expect(await apiRefusal(ada.api.call("exportRecord", { params: { workspaceId } }))).toEqual({
+    code: "forbidden",
+    detail: "sign_in_again",
+  });
+  await ada.signIn();
+  const { record } = await ada.api.call("exportRecord", { params: { workspaceId } });
+  const decisions = await signerDecisions(workspaceId);
+
+  // A header, every section, an end line that counts them; the heads are the newest entries.
+  const lines = parseRecord(record);
+  const header = lines[0];
+  const end = lines.at(-1);
+  expect(header).toMatchObject({ format: "askgina.os/workspace-record/v1", workspaceId });
+  expect(end).toMatchObject({ type: "end" });
+  expect(end?.counts).toEqual(
+    Object.fromEntries(
+      RECORD_SECTIONS.map((section) => [section, sectionOf(lines, section).length]),
+    ),
+  );
+  const audit = sectionOf(lines, "audit");
+  expect(audit.map((line) => line.action)).toContain("workspace.exported");
+  expect(header?.auditHead).toEqual({ seq: audit.at(-1)?.seq, hash: audit.at(-1)?.hash });
+  expect(sectionOf(lines, "signer-decision")).toHaveLength(decisions.length);
+  expect(header?.signerDecisionHead).toEqual({
+    seq: decisions.at(-1)?.seq,
+    hash: decisions.at(-1)?.hash,
+  });
+  expect(
+    sectionOf(lines, "intent")
+      .map((line) => String(line.id))
+      .sort(),
+  ).toEqual([...atelierIntentIds, waiting.intentId].sort());
+  expect(sectionOf(lines, "transaction")).toHaveLength(2);
+  expect(sectionOf(lines, "policy-revision")).toHaveLength(1);
+  expect(sectionOf(lines, "mandate")).toEqual([
+    expect.objectContaining({ mandateId: atelierMandateId }),
+  ]);
+  expect(sectionOf(lines, "mandate-use")).toHaveLength(1);
+  // What people and agents typed is opened, the memo and the mandate's purpose.
+  expect(record).toContain(EXPORT_MEMO);
+  expect(record).toContain(EXPORT_PURPOSE);
+
+  // No secret: no token, key, session, confirmation link, device, signature or sealed value.
+  const intent = await ada.api.call("getIntent", { params: { intentId: atelierPaidIntentId } });
+  if (!intent.transaction) throw new Error("the atelier's payment has no transaction");
+  const signed = await chain.getTransaction({ hash: intent.transaction.hash as Hash });
+  const sessions = await query("SELECT id_hash FROM os.sessions WHERE user_id = ANY($1)", [
+    [adaId, cydId],
+  ]);
+  const [sealed] = await query(
+    "SELECT encode(payload, 'hex') AS hex, encode(payload, 'base64') AS base64 FROM os.intents WHERE id = $1",
+    [atelierPaidIntentId],
+  );
+  const lower = record.toLowerCase();
+  for (const secret of [
+    atelier.token,
+    ...atelierSecrets,
+    link.token,
+    CYD_PUSH_ENDPOINT,
+    signed.r.slice(2),
+    signed.s.slice(2),
+    ...sessions.map((row) => String(row.id_hash)),
+    String(sealed?.hex).slice(64, 128),
+    String(sealed?.base64).replace(/\n/g, "").slice(40, 88),
+  ]) {
+    expect(lower).not.toContain(secret.toLowerCase());
+  }
+
+  // The verifier the deploy guide gives accepts it, and refuses every change to it.
+  expect(await verifyRecordFile(record)).toEqual({
+    exitCode: 0,
+    result: { ok: true, brokenAt: null },
+  });
+  const raw = recordLines(record);
+  const file = (text: string[]) => `${text.join("\n")}\n`;
+  const exported = raw.findIndex((line) => line.includes('"action":"workspace.exported"'));
+  expect(exported).toBeGreaterThan(0);
+  const changed = [...raw];
+  changed[exported] = (raw[exported] ?? "").replace("workspace-record/v1", "workspace-record/v2");
+  expect(changed[exported]).not.toBe(raw[exported]);
+  expect(await verifyRecordFile(file(changed))).toEqual({
+    exitCode: 2,
+    result: { ok: false, brokenAt: exported + 1 },
+  });
+  expect(await verifyRecordFile(file(raw.slice(0, -1)))).toEqual({
+    exitCode: 2,
+    result: { ok: false, brokenAt: raw.length },
+  });
+  const swapped = [raw[0] ?? "", raw[2] ?? "", raw[1] ?? "", ...raw.slice(3)];
+  expect(await verifyRecordFile(file(swapped))).toEqual({
+    exitCode: 2,
+    result: { ok: false, brokenAt: 2 },
+  });
+  await ada.reject(approvalIdOf(waiting));
+  expect(await intentSettles(waiting.intentId)).toBe("rejected");
+});
+
+test("cloning a workspace makes a new one from its configuration: new wallets at new addresses, a new agent token, its policy only once people approve it, and nothing of the source's history or authority; the source is untouched and its agent's token reaches nothing of the clone", async () => {
+  test.setTimeout(300_000);
+  const sourceId = atelier.workspace.id;
+  const source = await ada.api.call("getWorkspace", { params: { workspaceId: sourceId } });
+  const sourceAudit = await auditActions(sourceId);
+  const { policy } = await walletDetail(sourceId, atelier.wallet.id);
+  if (!policy) throw new Error("the atelier's wallet has no policy");
+
+  const clone = await ada.api.call("cloneWorkspace", {
+    params: { workspaceId: sourceId },
+    body: { name: COPY_NAME, includeAgents: true, includeMembers: true },
+  });
+  const copy = clone.workspace;
+  const copyId = copy.id;
+  expect(copyId).not.toBe(sourceId);
+  // The person cloning is its only member and approver, at an admin threshold of 1; the source's
+  // threshold comes back as a reminder only.
+  expect(copy).toMatchObject({
+    name: COPY_NAME,
+    role: "owner",
+    paused: false,
+    adminThreshold: 1,
+    notificationDetail: "summary",
+    lifecycle: { state: "active", destroyAfter: null, deletedAt: null },
+  });
+  expect(copy.members.map((member) => [member.user.id, member.role, member.approver])).toEqual([
+    [adaId, "owner", "active"],
+  ]);
+  expect(clone.templateAdminThreshold).toBe(2);
+  // Each wallet again, with a new key: a new id and an address that never sent anything.
+  expect(copy.wallets.map((wallet) => [wallet.kind, wallet.label]).sort()).toEqual(
+    source.wallets.map((wallet) => [wallet.kind, wallet.label]).sort(),
+  );
+  for (const wallet of copy.wallets) {
+    expect(source.wallets.map((known) => known.id)).not.toContain(wallet.id);
+    expect(source.wallets.map((known) => known.address)).not.toContain(wallet.address);
+    expect(wallet.policy).toBeNull();
+    expect(await chain.getTransactionCount({ address: wallet.address })).toBe(0);
+  }
+  // The agent again, with a new token shown once.
+  expect(clone.agents).toHaveLength(1);
+  const [made] = clone.agents;
+  if (!made) throw new Error("the clone made no agent");
+  expect(made.agentId).not.toBe(atelier.agentId);
+  expect(made.token).not.toBe(atelier.token);
+  expect(copy.agents).toEqual([
+    expect.objectContaining({
+      id: made.agentId,
+      name: CLERK_NAME,
+      status: "active",
+      walletId: made.walletId,
+    }),
+  ]);
+  const copyWallet = copy.wallets.find((wallet) => wallet.id === made.walletId);
+  if (!copyWallet) throw new Error("the clone's agent has no wallet in it");
+  // An invite for the member this installation knows, with her role, for Ada to pass on.
+  expect(clone.invites).toEqual([
+    {
+      userId: cydId,
+      displayName: CYD_NAME,
+      role: "approver",
+      url: expect.any(String),
+      expiresAt: expect.any(Number),
+    },
+  ]);
+
+  // Nothing of the source's history or authority: one policy request, no intent, no mandate.
+  const [proposal] = clone.approvals;
+  expect(clone.approvals).toEqual([
+    expect.objectContaining({ kind: "set-policy", status: "pending", threshold: 1 }),
+  ]);
+  if (!proposal) throw new Error("the clone opened no policy request");
+  const detail = await ada.api.call("getApproval", { params: { approvalId: proposal.id } });
+  if (detail.envelope.type !== "set-policy") throw new Error("not a policy request");
+  expect(detail.envelope).toMatchObject({ walletId: made.walletId, previousPolicyHash: null });
+  const listed = await ada.api.call("listApprovals", {
+    params: { workspaceId: copyId },
+    query: { status: "all" },
+  });
+  expect(listed.items.map((item) => item.id)).toEqual([proposal.id]);
+  expect((await ada.api.call("listIntents", { params: { workspaceId: copyId } })).items).toEqual(
+    [],
+  );
+  expect((await ada.api.call("listMandates", { params: { workspaceId: copyId } })).items).toEqual(
+    [],
+  );
+
+  // Until people approve, the signer holds no policy for the new wallet: its agent proposes nothing.
+  const copyAgent = await connectAgent(`${stack.origin}/mcp`, made.token);
+  expect(await copyAgent.call("whoami")).toMatchObject({
+    agent: { id: made.agentId, name: CLERK_NAME },
+    workspaceId: copyId,
+    wallets: [expect.objectContaining({ walletId: made.walletId, policy: null })],
+    mandates: [],
+  });
+  expect(
+    await toolRefusal(
+      copyAgent.proposeTransfer({ chainId: CHAIN, to: PAYEE, amount: "0.001", memo: "too early" }),
+    ),
+  ).toEqual({ code: "policy_denied", detail: "policy_missing" });
+
+  // The source's agent token reaches nothing of the clone, and the clone's nothing of the source.
+  expect((await atelier.agent.call("whoami")).workspaceId).toBe(sourceId);
+  expect(
+    await toolRefusal(atelier.agent.call("get_balances", { walletId: made.walletId })),
+  ).toMatchObject({ code: "not_found" });
+  expect(
+    await toolRefusal(
+      atelier.agent.proposeTransfer({
+        chainId: CHAIN,
+        to: PAYEE,
+        amount: "0.001",
+        memo: "from the copy's wallet",
+        walletId: made.walletId,
+      }),
+    ),
+  ).toMatchObject({ code: "not_found" });
+  expect(
+    await toolRefusal(copyAgent.call("get_balances", { walletId: atelier.wallet.id })),
+  ).toMatchObject({ code: "not_found" });
+
+  // Approved on the confirmation page, the policy is the source's, for the new agent and wallet.
+  await ada.confirm(proposal.id);
+  expect((await ada.settled(proposal.id)).status).toBe("executed");
+  expect((await walletDetail(copyId, made.walletId)).policy).toEqual({
+    ...policy,
+    workspaceId: copyId,
+    walletId: made.walletId,
+    requesters: [made.agentId],
+  });
+  // It pays an address on the copied list and nothing off it; the source's mandate is not copied.
+  await chainAdmin.setBalance({ address: copyWallet.address, value: parseEther("1") });
+  expect(
+    await toolRefusal(
+      copyAgent.proposeTransfer({
+        chainId: CHAIN,
+        to: STRANGER,
+        amount: "0.001",
+        memo: "off the list",
+      }),
+    ),
+  ).toEqual({ code: "policy_denied", detail: "recipient_not_allowed" });
+  const paid = await copyAgent.proposeTransfer({
+    chainId: CHAIN,
+    to: PAYEE,
+    amount: "0.002",
+    memo: COPY_MEMO,
+  });
+  expect(paid).toMatchObject({ authorizedBy: "person", mandateId: null });
+  await ada.confirm(approvalIdOf(paid));
+  expect(await intentSettles(paid.intentId)).toBe("confirmed");
+  expect(await chain.getTransactionCount({ address: copyWallet.address })).toBe(1);
+  await copyAgent.close();
+
+  // The source is as it was: settings, people, agent, wallets, policy, mandate, log.
+  expect(
+    standing(await ada.api.call("getWorkspace", { params: { workspaceId: sourceId } })),
+  ).toEqual(standing(source));
+  expect(await auditActions(sourceId)).toEqual(sourceAudit);
+  expect(await getMandate(sourceId, atelierMandateId)).toMatchObject({ status: "active" });
+
+  // The clone's record holds its own history from the clone on, and nothing of the source's.
+  await ada.signIn();
+  const { record } = await ada.api.call("exportRecord", { params: { workspaceId: copyId } });
+  const lines = parseRecord(record);
+  const cloned = sectionOf(lines, "audit").find((line) => line.action === "workspace.cloned");
+  expect(cloned?.detail).toEqual({
+    source: { workspaceId: sourceId },
+    notificationDetail: "summary",
+    templateAdminThreshold: 2,
+    includeAgents: true,
+    includeMembers: true,
+  });
+  expect(sectionOf(lines, "intent").map((line) => line.id)).toEqual([paid.intentId]);
+  expect(sectionOf(lines, "mandate")).toEqual([]);
+  expect(sectionOf(lines, "mandate-use")).toEqual([]);
+  expect(record).toContain(COPY_MEMO);
+  for (const value of [
+    EXPORT_MEMO,
+    EXPORT_PURPOSE,
+    atelier.wallet.id,
+    atelier.wallet.address.slice(2),
+    atelier.agentId,
+    atelierMandateId,
+    ...atelierIntentIds,
+  ]) {
+    expect(record.toLowerCase()).not.toContain(value.toLowerCase());
+  }
+});
+
+test("a template imported on this installation reproduces the workspace's configuration once people approve its policy, invites only people known here, and a template this installation cannot honour is refused with nothing created", async () => {
+  test.setTimeout(300_000);
+  const workspaces = async () =>
+    (await ada.api.call("listWorkspaces")).items.map((item) => item.id).sort();
+  const before = await workspaces();
+  const importing = (template: WorkspaceTemplate, name: string) =>
+    ada.api.call("importTemplate", {
+      body: { template, name, includeAgents: true, includeMembers: true },
+    });
+
+  // Refused before anything is created: a chain not configured here, a field the format does
+  // not have, and a requester that is not an agent's wallet.
+  const otherChain: WorkspaceTemplate = {
+    ...atelierTemplate,
+    wallets: atelierTemplate.wallets.map((wallet) =>
+      wallet.policy === null
+        ? wallet
+        : {
+            ...wallet,
+            policy: {
+              ...wallet.policy,
+              chains: ["eip155:1"],
+              assets: wallet.policy.assets.map((limit) => ({ ...limit, chainId: "eip155:1" })),
+            },
+          },
+    ),
+  };
+  const withKeys = {
+    ...atelierTemplate,
+    keys: { [atelier.wallet.id]: "a key a template never carries" },
+  } as unknown as WorkspaceTemplate;
+  const treasuryRequester: WorkspaceTemplate = {
+    ...atelierTemplate,
+    wallets: atelierTemplate.wallets.map((wallet) =>
+      wallet.policy === null
+        ? wallet
+        : { ...wallet, policy: { ...wallet.policy, requesters: ["w2"] } },
+    ),
+  };
+  for (const template of [otherChain, withKeys, treasuryRequester]) {
+    expect((await apiRefusal(importing(template, FOREIGN_NAME))).code).toBe("invalid_request");
+  }
+  expect(await workspaces()).toEqual(before);
+
+  // From another installation: the people it names are unknown here, so nobody is invited.
+  const foreign = await ada.api.call("importTemplate", {
+    body: {
+      template: { ...atelierTemplate, members: [{ userId: STRANGER_USER, role: "approver" }] },
+      name: FOREIGN_NAME,
+      includeAgents: false,
+      includeMembers: true,
+    },
+  });
+  expect(foreign).toMatchObject({ invites: [], agents: [], approvals: [] });
+  expect(foreign.workspace.wallets.map((wallet) => [wallet.kind, wallet.label])).toEqual([
+    ["treasury", STRONGBOX],
+  ]);
+
+  // The template as exported: the same wallets, agent, policy request, and an invite for Cyd.
+  const imported = await importing(atelierTemplate, IMPORT_NAME);
+  const importedId = imported.workspace.id;
+  expect(imported.templateAdminThreshold).toBe(2);
+  expect(imported.invites.map((invite) => [invite.userId, invite.role])).toEqual([
+    [cydId, "approver"],
+  ]);
+  expect(imported.agents).toHaveLength(1);
+  const [proposal] = imported.approvals;
+  expect(imported.approvals).toEqual([
+    expect.objectContaining({ kind: "set-policy", status: "pending" }),
+  ]);
+  if (!proposal) throw new Error("the import opened no policy request");
+  const source = await ada.api.call("getWorkspace", {
+    params: { workspaceId: atelier.workspace.id },
+  });
+  expect(imported.workspace.wallets).toHaveLength(source.wallets.length);
+  for (const wallet of imported.workspace.wallets) {
+    expect(source.wallets.map((known) => known.address)).not.toContain(wallet.address);
+  }
+  await ada.confirm(proposal.id);
+  expect((await ada.settled(proposal.id)).status).toBe("executed");
+  // Exported again, it is the template it came from, but for its name, its people and its admin
+  // threshold, which start with the person importing it.
+  expect(await ada.api.call("exportTemplate", { params: { workspaceId: importedId } })).toEqual({
+    ...atelierTemplate,
+    name: IMPORT_NAME,
+    adminThreshold: 1,
+    members: [{ userId: adaId, role: "owner" }],
+  });
+  // Its log names the template by its digest.
+  const cloned = (await auditEvents(importedId)).find(
+    (event) => event.action === "workspace.cloned",
+  );
+  expect(cloned?.detail).toMatchObject({
+    source: {
+      templateDigest: createHash("sha256").update(canonicalJson(atelierTemplate)).digest("hex"),
+    },
+  });
+});
+
+// --- erasing a person -----------------------------------------------------------------------------
+
+test("erasing a person: refused while a threshold needs their passkey, then a request to stop accepting it, then erased: no passkey, session, device, setting, membership or name left, no sign-in and no approval of a waiting request, and every log still verifies with their id kept", async () => {
+  test.setTimeout(420_000);
+  const workspaceId = atelier.workspace.id;
+  // A payment that waits for a person, whose confirmation page Cyd has open.
+  const waiting = await propose(atelier, RECIPIENT, "0.001", "waits while Cyd is erased");
+  expect(waiting).toMatchObject({ authorizedBy: "person", status: "pending_approval" });
+  const waitingLink = await cyd.confirmationLink(approvalIdOf(waiting));
+  const waitingView = await cyd.readConfirmation(waitingLink);
+  expect(waitingView.state).toBe("open");
+
+  // The control: what of her the control plane holds, her name and her device included.
+  expect(await personRows(cydId)).toMatchObject({
+    passkeys: 1,
+    devices: 1,
+    settings: 1,
+    approving: 1,
+    memberships: 1,
+  });
+  expect(Number((await personRows(cydId)).deliveries)).toBeGreaterThan(0);
+  expect(
+    await query(
+      "SELECT display_name, quiet_hours IS NOT NULL AS quiet FROM os.users WHERE id = $1",
+      [cydId],
+    ),
+  ).toEqual([{ display_name: CYD_NAME, quiet: true }]);
+  const url = await databaseUrl();
+  const named = await scanForMarkers(url, [CYD_NAME, CYD_PUSH_ENDPOINT]);
+  expect(named.hits.map((hit) => hit.marker)).toEqual(
+    expect.arrayContaining([CYD_NAME, CYD_PUSH_ENDPOINT]),
+  );
+
+  // A session signed in long ago may not erase.
+  await signedInLongAgo(cydId);
+  expect(await apiRefusal(cyd.api.call("eraseMe", { body: {} }))).toEqual({
+    code: "forbidden",
+    detail: "sign_in_again",
+  });
+  // The admin threshold of 2 needs her passkey: refused, in the app and by the operator.
+  await cyd.signIn();
+  expect(await apiRefusal(cyd.api.call("eraseMe", { body: {} }))).toEqual({
+    code: "conflict",
+    detail: "last_approver",
+  });
+  expect(await eraseByOperator(cydId)).toMatchObject({
+    exitCode: 2,
+    result: { ok: false, code: "conflict", detail: "last_approver" },
+  });
+  expect(await personRows(cydId)).toMatchObject({
+    passkeys: 1,
+    devices: 1,
+    settings: 1,
+    approving: 1,
+    memberships: 1,
+  });
+
+  // People lower it, both approving; the operator's command then names where she still approves.
+  const lower = await ada.api.call("requestAdminThreshold", {
+    params: { workspaceId },
+    body: { adminThreshold: 1 },
+  });
+  expect(lower).toMatchObject({ kind: "set-admin-threshold", threshold: 2 });
+  await ada.confirm(lower.id);
+  await cyd.confirm(lower.id);
+  expect((await ada.settled(lower.id)).status).toBe("executed");
+  expect(await eraseByOperator(cydId)).toEqual({
+    exitCode: 3,
+    result: { ok: false, code: "still_approving", workspaces: [workspaceId] },
+  });
+
+  // The first call opens a request to stop accepting her passkey; asking again shows the same.
+  await cyd.signIn();
+  const first = await cyd.api.call("eraseMe", { body: {} });
+  expect(first.status).toBe("waiting");
+  expect(first.approvals.map((item) => [item.workspaceId, item.kind, item.threshold])).toEqual([
+    [workspaceId, "remove-approver", 1],
+  ]);
+  const again = await cyd.api.call("eraseMe", { body: {} });
+  expect(again).toMatchObject({ status: "waiting" });
+  expect(again.approvals.map((item) => item.id)).toEqual(first.approvals.map((item) => item.id));
+  expect((await cyd.api.call("getSession")).user?.id).toBe(cydId);
+
+  // Approved on the confirmation page, the signer drops her passkey and ends the mandate it gave.
+  const [removal] = first.approvals;
+  if (!removal) throw new Error("erasing opened no removal");
+  await ada.confirm(removal.id);
+  expect((await ada.settled(removal.id)).status).toBe("executed");
+  expect(await getMandate(workspaceId, atelierMandateId)).toMatchObject({
+    status: "revoked",
+    endedReason: "grantor_removed",
+  });
+  const decisions = await signerDecisions(workspaceId);
+  expect(decisions).toContainEqual(
+    expect.objectContaining({
+      action: "remove-approver",
+      approvalId: removal.id,
+      outcome: "allowed",
+    }),
+  );
+  expect(decisions).toContainEqual(
+    expect.objectContaining({ action: "revoke-mandate-on-grantor-removal", outcome: "allowed" }),
+  );
+  expect(
+    await signerQuery(
+      "SELECT count(*) AS approving FROM approvers WHERE workspace_id = ? AND user_id = ?",
+      workspaceId,
+      cydId,
+    ),
+  ).toEqual([{ approving: 0 }]);
+
+  // The second call erases her and signs her out; her passkey signs in nowhere.
+  await cyd.signIn();
+  expect(await cyd.api.call("eraseMe", { body: {} })).toEqual({ status: "erased", approvals: [] });
+  expect(cyd.signedIn).toBe(false);
+  expect((await cyd.api.call("getSession")).user).toBeNull();
+  expect(await apiRefusal(cyd.signIn())).toMatchObject({ code: "unauthenticated" });
+  // The page she kept open takes nothing from her passkey; Ada's still approves it.
+  expect(await refusalCode(cyd.approveOnConfirmationPage(waitingLink, waitingView))).toBe(
+    "approver_unknown",
+  );
+  await ada.confirm(approvalIdOf(waiting));
+  expect(await intentSettles(waiting.intentId)).toBe("confirmed");
+
+  // Nothing of her is left but her id: no passkey, session, device, setting, membership, pending
+  // notification or name, anywhere in the database.
+  expect(await personRows(cydId)).toMatchObject({
+    sessions: 0,
+    passkeys: 0,
+    ceremonies: 0,
+    devices: 0,
+    settings: 0,
+    approving: 0,
+    memberships: 0,
+    pending: 0,
+  });
+  expect(
+    await query(
+      "SELECT display_name, quiet_hours, erased_at IS NOT NULL AS erased FROM os.users WHERE id = $1",
+      [cydId],
+    ),
+  ).toEqual([{ display_name: "Erased person", quiet_hours: null, erased: true }]);
+  expect((await scanForMarkers(url, [CYD_NAME, CYD_PUSH_ENDPOINT])).hits).toEqual([]);
+  expect(
+    (await ada.api.call("getWorkspace", { params: { workspaceId } })).members.map(
+      (member) => member.user.id,
+    ),
+  ).not.toContain(cydId);
+
+  // Every log keeps her id and still verifies: the audit log, under the erased name, and the
+  // signer's log, which keeps her as the mandate's grantor.
+  const events = await auditEvents(workspaceId);
+  const byCyd = events.filter((event) => event.actor.id === cydId);
+  expect(byCyd.length).toBeGreaterThan(0);
+  expect(new Set(byCyd.map((event) => event.actor.name))).toEqual(new Set(["Erased person"]));
+  expect(events.filter((event) => event.action === "member.erased")).toEqual([
+    expect.objectContaining({
+      actor: expect.objectContaining({ type: "user", id: cydId }),
+      subject: { type: "user", id: cydId },
+    }),
+  ]);
+  expect(await ada.api.call("verifyAudit", { params: { workspaceId } })).toMatchObject({
+    ok: true,
+    brokenAt: null,
+  });
+  expect(await signerAdmin("verify-log", "--workspace", workspaceId)).toMatchObject({ ok: true });
+  expect(
+    await signerQuery(
+      "SELECT user_id FROM mandate_grantors WHERE mandate_id = ?",
+      atelierMandateId,
+    ),
+  ).toEqual([{ user_id: cydId }]);
+
+  // A record exported now verifies, keeps her id and never names her.
+  await ada.signIn();
+  const { record } = await ada.api.call("exportRecord", { params: { workspaceId } });
+  expect(await verifyRecordFile(record)).toEqual({
+    exitCode: 0,
+    result: { ok: true, brokenAt: null },
+  });
+  expect(record).toContain(cydId);
+  expect(record).not.toContain(CYD_NAME);
+  expect(record).not.toContain(CYD_PUSH_ENDPOINT);
+
+  // The template exported while she was a member no longer invites her.
+  const afterwards = await ada.api.call("importTemplate", {
+    body: {
+      template: atelierTemplate,
+      name: AFTER_ERASURE_NAME,
+      includeAgents: false,
+      includeMembers: true,
+    },
+  });
+  expect(afterwards.invites).toEqual([]);
+
+  // Erasing her again changes nothing.
+  expect(await eraseByOperator(cydId)).toEqual({
+    exitCode: 0,
+    result: { ok: true, userId: cydId, alreadyErased: true },
+  });
+  expect(
+    (await auditActions(workspaceId)).filter((action) => action === "member.erased"),
+  ).toHaveLength(1);
+});
+
+test("the operator erases a person whose passkeys approve nowhere, as the system and once, and changes nothing for the only owner of a workspace", async () => {
+  const workspaceId = studio.workspace.id;
+  const member = (await ada.api.call("getWorkspace", { params: { workspaceId } })).members.find(
+    (candidate) => candidate.user.displayName === bea.name,
+  );
+  if (!member) throw new Error("Bea is not a member of the studio");
+  const beaId = member.user.id;
+  expect(member.role).toBe("viewer");
+  expect((await bea.api.call("getSession")).user?.id).toBe(beaId);
+
+  expect(await eraseByOperator(beaId)).toEqual({
+    exitCode: 0,
+    result: { ok: true, userId: beaId, alreadyErased: false },
+  });
+  expect(await eraseByOperator(beaId)).toEqual({
+    exitCode: 0,
+    result: { ok: true, userId: beaId, alreadyErased: true },
+  });
+  expect((await bea.api.call("getSession")).user).toBeNull();
+  expect(await apiRefusal(bea.signIn())).toMatchObject({ code: "unauthenticated" });
+  expect(await personRows(beaId)).toMatchObject({
+    sessions: 0,
+    passkeys: 0,
+    memberships: 0,
+    pending: 0,
+  });
+  expect(
+    (await auditEvents(workspaceId)).filter((event) => event.action === "member.erased"),
+  ).toEqual([
+    expect.objectContaining({
+      actor: expect.objectContaining({ type: "system", id: null }),
+      subject: { type: "user", id: beaId },
+    }),
+  ]);
+  expect(await ada.api.call("verifyAudit", { params: { workspaceId } })).toMatchObject({
+    ok: true,
+  });
+  expect(
+    (await ada.api.call("getWorkspace", { params: { workspaceId } })).members.map(
+      (candidate) => candidate.user.id,
+    ),
+  ).not.toContain(beaId);
+
+  // Ada is the only owner of her workspaces: the command refuses and nothing of hers changes.
+  expect(await eraseByOperator(adaId)).toMatchObject({
+    exitCode: 2,
+    result: { ok: false, code: "conflict", detail: "last_owner" },
+  });
+  expect((await ada.api.call("getSession")).user?.id).toBe(adaId);
+  expect(await personRows(adaId)).toMatchObject({ passkeys: 1 });
 });
