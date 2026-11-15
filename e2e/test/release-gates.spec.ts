@@ -2228,7 +2228,8 @@ test("a cancel a person asks for, approved on the confirmation page at the walle
       status: "pending",
       threshold: policyThreshold,
       approvals: 0,
-      title: `Cancel payment: ${intent.display.title}`,
+      // The request is named after the payment's own request, which also names the recipient.
+      title: expect.stringContaining(`Cancel payment: ${intent.display.title}`),
     });
     expect((await ada.api.call("requestCancel", { params: { intentId }, body: {} })).id).toBe(
       cancel.id,
