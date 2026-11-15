@@ -592,6 +592,7 @@ describe("what attempts leave unchanged", () => {
           credential,
           state.cheat ? { ...transaction, value: (transaction.value ?? 0n) + 1n } : transaction,
         ),
+      signHyperliquid: (...args) => honest.signHyperliquid(...args),
       destroyWallet: (walletId) => honest.destroyWallet(walletId),
     };
     const world = await setUpWorld(startSigner({ vault }));

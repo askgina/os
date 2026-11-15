@@ -5,24 +5,37 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import * as ows from "@open-wallet-standard/core";
 import { keccak256, serializeTransaction, type TransactionSerializableEIP1559 } from "viem";
 import { privateKeyToAddress } from "viem/accounts";
+import {
+  eip712Json,
+  type HyperliquidPayload,
+  type HyperliquidSignature,
+  payloadDigest,
+} from "./venues/hyperliquid.ts";
 
 /** An EIP-1559 transaction the signer built itself from an approved intent. */
 export type EvmTransaction = TransactionSerializableEIP1559 & { chainId: number };
 
 /**
  * Where wallet keys live. The signer decides what to sign; a vault only holds keys and signs the
- * transactions the signer hands it. There is deliberately nothing here for messages, typed data,
- * raw hashes or EIP-7702 authorizations, so no code path in the signer can reach them.
+ * transactions the signer hands it. There is deliberately nothing here for messages, raw hashes
+ * or EIP-7702 authorizations, so no code path in the signer can reach them. The one typed-data
+ * method takes a `HyperliquidPayload`, not typed data: the vault builds the typed data from it
+ * with the signer's own builders (`venues/hyperliquid.ts`), so it can sign nothing else.
  *
- * Both methods are synchronous because the signer calls `signEvmTransaction` inside a SQLite
- * transaction that must not yield to the event loop between checking the ledger and storing the
- * signature.
+ * The signing methods are synchronous because the signer calls them inside a SQLite transaction
+ * that must not yield to the event loop between checking the ledger and storing the signature.
  */
 export interface Vault {
   /** Create a new wallet with its own key. `credential` is what later unlocks it for signing. */
   createWallet(walletId: WalletId): { address: Address; credential: string };
   /** Sign one transaction and return it serialized, ready to broadcast. */
   signEvmTransaction(walletId: WalletId, credential: string, transaction: EvmTransaction): Hex;
+  /** Sign one Hyperliquid L1 action hash or withdrawal with the wallet's own key. */
+  signHyperliquid(
+    walletId: WalletId,
+    credential: string,
+    payload: HyperliquidPayload,
+  ): HyperliquidSignature;
   /**
    * Delete the wallet's key and every credential that unlocks it. A wallet already gone counts
    * as deleted, so a repeat after a crash completes; anything else throws `VaultError("failed")`.
@@ -91,6 +104,36 @@ function splitSignature(signature: string, recoveryId: number | undefined) {
 }
 
 /**
+ * The `{ r, s, v }` form Hyperliquid's request body carries, from a 65-byte `r ‖ s ‖ v`
+ * signature. OWS 1.4.5 reports a typed-data signature's recovery as `v` (27 or 28), the same as
+ * its last byte; a recovery id that disagrees with that byte is refused.
+ */
+function hyperliquidSignature(
+  signature: string,
+  recoveryId: number | undefined,
+): HyperliquidSignature {
+  const hex = signature.replace(/^0x/, "").toLowerCase();
+  const malformed = new VaultError("failed", "the vault returned a malformed signature");
+  if (!/^[0-9a-f]{130}$/.test(hex)) throw malformed;
+  const parity = (value: number) => (value >= 27 ? value - 27 : value);
+  const yParity = parity(Number.parseInt(hex.slice(128), 16));
+  if (yParity !== 0 && yParity !== 1) throw malformed;
+  if (recoveryId !== undefined && parity(recoveryId) !== yParity) throw malformed;
+  return {
+    r: `0x${hex.slice(0, 64)}`,
+    s: `0x${hex.slice(64, 128)}`,
+    v: yParity === 0 ? 27 : 28,
+  };
+}
+
+/** Refuses anything but a scoped `ows_key_` token; anything else would be the owner passphrase. */
+function assertScopedToken(credential: string): void {
+  if (!credential.startsWith("ows_key_")) {
+    throw new VaultError("credential_rejected", "the wallet credential is not a scoped token");
+  }
+}
+
+/**
  * The Open Wallet Standard vault, used only as an encrypted key store.
  *
  * - One OWS wallet, with its own mnemonic, per wallet id: an OWS key file holds a whole mnemonic,
@@ -140,10 +183,8 @@ export class OwsVault implements Vault {
   }
 
   signEvmTransaction(walletId: WalletId, credential: string, transaction: EvmTransaction): Hex {
-    if (!credential.startsWith("ows_key_")) {
-      // Anything else would be taken as the owner passphrase, which bypasses OWS entirely.
-      throw new VaultError("credential_rejected", "the wallet credential is not a scoped token");
-    }
+    // Anything else would be taken as the owner passphrase, which bypasses OWS entirely.
+    assertScopedToken(credential);
     const unsigned = serializeTransaction({ ...transaction, type: "eip1559" });
     // The chain handed to OWS comes from the transaction itself; OWS would sign any bytes for
     // whatever chain it is told.
@@ -161,6 +202,24 @@ export class OwsVault implements Vault {
       { ...transaction, type: "eip1559" },
       splitSignature(result.signature, result.recoveryId ?? undefined),
     ) as Hex;
+  }
+
+  /**
+   * Sign the typed data built from `payload` here, never typed data from a caller. OWS checks the
+   * domain's `chainId` against the chain argument, so the argument is that same domain chain:
+   * `eip155:1337` for an L1 action, the user-signed chain for a withdrawal.
+   */
+  signHyperliquid(
+    walletId: WalletId,
+    credential: string,
+    payload: HyperliquidPayload,
+  ): HyperliquidSignature {
+    assertScopedToken(credential);
+    const { chain, json } = eip712Json(payload);
+    const result = owsCall(() =>
+      ows.signTypedData(walletId, chain, json, credential, 0, this.#vaultPath),
+    );
+    return hyperliquidSignature(result.signature, result.recoveryId ?? undefined);
   }
 
   /**
@@ -207,6 +266,24 @@ export function exportOwsWalletSecret(
  */
 export function createTestVault(): Vault {
   const wallets = new Map<string, { privateKey: Uint8Array; credential: string }>();
+  const unlock = (walletId: WalletId, credential: string) => {
+    const wallet = wallets.get(walletId);
+    if (!wallet) throw new VaultError("wallet_missing", "the vault has no such wallet");
+    const expected = Buffer.from(wallet.credential);
+    const given = Buffer.from(credential);
+    if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
+      throw new VaultError("credential_rejected", "the vault rejected the wallet credential");
+    }
+    return wallet;
+  };
+  const signDigest = (digest: Hex, privateKey: Uint8Array) =>
+    secp256k1.Signature.fromBytes(
+      secp256k1.sign(Buffer.from(digest.slice(2), "hex"), privateKey, {
+        prehash: false,
+        format: "recovered",
+      }),
+      "recovered",
+    );
   return {
     createWallet(walletId) {
       if (wallets.has(walletId)) throw new VaultError("failed", "the wallet already exists");
@@ -217,19 +294,9 @@ export function createTestVault(): Vault {
       return { address: address.toLowerCase() as Address, credential };
     },
     signEvmTransaction(walletId, credential, transaction) {
-      const wallet = wallets.get(walletId);
-      if (!wallet) throw new VaultError("wallet_missing", "the vault has no such wallet");
-      const expected = Buffer.from(wallet.credential);
-      const given = Buffer.from(credential);
-      if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
-        throw new VaultError("credential_rejected", "the vault rejected the wallet credential");
-      }
+      const wallet = unlock(walletId, credential);
       const unsigned = serializeTransaction({ ...transaction, type: "eip1559" });
-      const hash = Buffer.from(keccak256(unsigned).slice(2), "hex");
-      const signature = secp256k1.Signature.fromBytes(
-        secp256k1.sign(hash, wallet.privateKey, { prehash: false, format: "recovered" }),
-        "recovered",
-      );
+      const signature = signDigest(keccak256(unsigned), wallet.privateKey);
       return serializeTransaction(
         { ...transaction, type: "eip1559" },
         {
@@ -238,6 +305,15 @@ export function createTestVault(): Vault {
           yParity: signature.recovery ?? 0,
         },
       ) as Hex;
+    },
+    signHyperliquid(walletId, credential, payload) {
+      const wallet = unlock(walletId, credential);
+      const signature = signDigest(payloadDigest(payload), wallet.privateKey);
+      return {
+        r: `0x${signature.r.toString(16).padStart(64, "0")}`,
+        s: `0x${signature.s.toString(16).padStart(64, "0")}`,
+        v: signature.recovery === 1 ? 28 : 27,
+      };
     },
     destroyWallet(walletId) {
       wallets.delete(walletId);

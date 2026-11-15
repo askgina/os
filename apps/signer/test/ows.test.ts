@@ -3,7 +3,14 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { newId, policyHash } from "@askgina/os-protocol";
+import {
+  Address,
+  Cloid,
+  Hex32,
+  HyperliquidOrderOperation,
+  newId,
+  policyHash,
+} from "@askgina/os-protocol";
 import { createSignerClient, type SignerClient } from "@askgina/os-protocol/signer";
 import * as ows from "@open-wallet-standard/core";
 import {
@@ -16,9 +23,17 @@ import {
   parseTransaction,
   recoverTransactionAddress,
 } from "viem";
-import { mnemonicToAccount } from "viem/accounts";
+import { mnemonicToAccount, privateKeyToAddress } from "viem/accounts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createSigner, OwsVault } from "../src/index.ts";
+import { createSigner, OwsVault, VaultError } from "../src/index.ts";
+import { isTypedSignedBy } from "../src/signer.ts";
+import {
+  cancelByCloidAction,
+  type HyperliquidPayload,
+  type HyperliquidSignature,
+  l1ActionHash,
+  orderAction,
+} from "../src/venues/hyperliquid.ts";
 import {
   approveIntent,
   authorize,
@@ -40,6 +55,8 @@ import {
   useRequest,
   type World,
 } from "./harness.ts";
+import { mapFromJson } from "./hyperliquid-vectors.ts";
+import vectors from "./vectors/hyperliquid-python-sdk.json" with { type: "json" };
 
 const RPC = "http://127.0.0.1:55545";
 // Below Linux's default ephemeral range, so no "any free port" listener can take it first.
@@ -87,6 +104,116 @@ describe("destroying a wallet in the real OWS vault", () => {
     expect([...naming(gone), ...naming(goneId)]).toEqual([]);
     expect(naming(kept)).toHaveLength(2);
     vault.destroyWallet(gone);
+  });
+});
+
+describe("Hyperliquid signing in the real OWS vault", () => {
+  const dir = mkdtempSync(join(tmpdir(), "os-signer-ows-hyperliquid-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  // The SDK's test key, imported into a throwaway vault; signatures are deterministic (RFC 6979).
+  const passphrase = "a long enough owner passphrase";
+  const vaultPath = join(dir, "vault");
+  const walletId = newId("wal");
+  const privateKey = Hex32.parse(vectors.privateKey);
+  const address = privateKeyToAddress(privateKey).toLowerCase();
+  let token = "";
+  const vault = new OwsVault({ vaultPath, passphraseFile: join(dir, "no-passphrase-file") });
+
+  beforeAll(() => {
+    const wallet = ows.importWalletPrivateKey(
+      walletId,
+      privateKey.slice(2),
+      passphrase,
+      vaultPath,
+      "ethereum",
+    );
+    token = ows.createApiKey(walletId, [wallet.id], [], passphrase, null, vaultPath).token;
+  });
+
+  /** OWS signs `payload`, the signature equals the SDK's, and the signer's check accepts it. */
+  function expectVector(
+    payload: HyperliquidPayload,
+    expected: { r: string; s: string; v: number },
+  ): HyperliquidSignature {
+    const signature = vault.signHyperliquid(walletId, token, payload);
+    expect({ r: BigInt(signature.r), s: BigInt(signature.s), v: signature.v }).toEqual({
+      r: BigInt(expected.r),
+      s: BigInt(expected.s),
+      v: expected.v,
+    });
+    expect(isTypedSignedBy(signature, payload, address)).toBe(true);
+    return signature;
+  }
+
+  it("reproduces the SDK's GTC order signatures, with and without a cloid, on both networks", () => {
+    const orders = vectors.sdkTests.signatures.filter((vector) => vector.operation !== null);
+    expect(orders).toHaveLength(2);
+    for (const vector of orders) {
+      // The SDK's order without a cloid is not one the signer builds, so that one hashes the
+      // SDK's own action; the one with a cloid is built by the signer's `orderAction`.
+      const action =
+        vector.operation !== null && vector.cloid !== null
+          ? orderAction(
+              HyperliquidOrderOperation.parse(vector.operation),
+              Cloid.parse(vector.cloid),
+            )
+          : mapFromJson(vector.action);
+      const connectionId = l1ActionHash(action, vector.nonce, vector.expiresAfter);
+      expectVector({ kind: "l1", network: "hyperliquid:mainnet", connectionId }, vector.mainnet);
+      expectVector({ kind: "l1", network: "hyperliquid:testnet", connectionId }, vector.testnet);
+    }
+  });
+
+  it("reproduces the generated order and cancel signatures that carry expiresAfter", () => {
+    const { inputs, output } = vectors.generated;
+    const order = orderAction(
+      HyperliquidOrderOperation.parse(inputs.order.operation),
+      Cloid.parse(inputs.order.cloid),
+    );
+    const orderId = l1ActionHash(order, output.order.nonce, output.order.expiresAfter);
+    expectVector(
+      { kind: "l1", network: "hyperliquid:mainnet", connectionId: orderId },
+      output.order.mainnet,
+    );
+    expectVector(
+      { kind: "l1", network: "hyperliquid:testnet", connectionId: orderId },
+      output.order.testnet,
+    );
+    const cancel = cancelByCloidAction(inputs.cancel.asset, Cloid.parse(inputs.cancel.cloid));
+    const cancelId = l1ActionHash(cancel, output.cancel.nonce, output.cancel.expiresAfter);
+    expectVector(
+      { kind: "l1", network: "hyperliquid:testnet", connectionId: cancelId },
+      output.cancel.testnet,
+    );
+  });
+
+  it("reproduces the SDK's testnet withdrawal, and a mainnet one recovers to the wallet", () => {
+    const vector = vectors.sdkTests.withdraw;
+    const withdraw = {
+      kind: "withdraw",
+      destination: Address.parse(vector.destination),
+      amount: vector.amount,
+      time: vector.time,
+    } as const;
+    expectVector({ ...withdraw, network: "hyperliquid:testnet" }, vector.testnet);
+    const mainnet = { ...withdraw, network: "hyperliquid:mainnet" } as const;
+    const signature = vault.signHyperliquid(walletId, token, mainnet);
+    expect(isTypedSignedBy(signature, mainnet, address)).toBe(true);
+    expect(isTypedSignedBy(signature, { ...mainnet, amount: "2" }, address)).toBe(false);
+  });
+
+  it("refuses the owner passphrase and a token from another wallet", () => {
+    const payload: HyperliquidPayload = {
+      kind: "l1",
+      network: "hyperliquid:testnet",
+      connectionId: `0x${"ab".repeat(32)}`,
+    };
+    expect(() => vault.signHyperliquid(walletId, passphrase, payload)).toThrow(VaultError);
+    const otherId = newId("wal");
+    const other = ows.createWallet(otherId, passphrase, 24, vaultPath);
+    const otherToken = ows.createApiKey(otherId, [other.id], [], passphrase, null, vaultPath).token;
+    expect(() => vault.signHyperliquid(walletId, otherToken, payload)).toThrow(VaultError);
   });
 });
 

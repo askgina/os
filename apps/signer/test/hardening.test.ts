@@ -5,6 +5,8 @@ import { newId, policyHash, type WalletId } from "@askgina/os-protocol";
 import { parseTransaction, recoverTransactionAddress, serializeTransaction } from "viem";
 import { afterAll, describe, expect, it } from "vitest";
 import { createTestVault, OwsVault, type Vault } from "../src/index.ts";
+import { isTypedSignedBy } from "../src/signer.ts";
+import type { HyperliquidPayload } from "../src/venues/hyperliquid.ts";
 import {
   approveIntent,
   authorize,
@@ -24,6 +26,7 @@ function vaultThatSigns(
   return {
     createWallet: (walletId) => honest.createWallet(walletId),
     signEvmTransaction: (...args) => sign(honest, ...args),
+    signHyperliquid: (...args) => honest.signHyperliquid(...args),
     destroyWallet: (walletId) => honest.destroyWallet(walletId),
   };
 }
@@ -176,6 +179,66 @@ describe("limits on what the signer accepts", () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ error: { code: "invalid_request" } });
     expect(pulls).toBeLessThan(10);
+  });
+});
+
+describe("a Hyperliquid signature the vault returns", () => {
+  const SECP256K1_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+  const vault = createTestVault();
+  const walletId = newId("wal");
+  const { address, credential } = vault.createWallet(walletId);
+  const payload: HyperliquidPayload = {
+    kind: "l1",
+    network: "hyperliquid:testnet",
+    connectionId: `0x${"ab".repeat(32)}`,
+  };
+  const signature = vault.signHyperliquid(walletId, credential, payload);
+
+  it("is accepted only from the wallet's key, over the payload the signer built", () => {
+    expect(isTypedSignedBy(signature, payload, address)).toBe(true);
+
+    const other = createTestVault();
+    const otherId = newId("wal");
+    const otherWallet = other.createWallet(otherId);
+    const fromOtherKey = other.signHyperliquid(otherId, otherWallet.credential, payload);
+    expect(isTypedSignedBy(fromOtherKey, payload, address)).toBe(false);
+
+    const otherAction = { ...payload, connectionId: `0x${"cd".repeat(32)}` } as const;
+    expect(isTypedSignedBy(signature, otherAction, address)).toBe(false);
+    expect(
+      isTypedSignedBy(signature, { ...payload, network: "hyperliquid:mainnet" }, address),
+    ).toBe(false);
+    const withdraw: HyperliquidPayload = {
+      kind: "withdraw",
+      network: "hyperliquid:testnet",
+      destination: address,
+      amount: "1",
+      time: 1,
+    };
+    expect(
+      isTypedSignedBy(vault.signHyperliquid(walletId, credential, withdraw), withdraw, address),
+    ).toBe(true);
+    expect(isTypedSignedBy(signature, withdraw, address)).toBe(false);
+  });
+
+  it("is refused with a high s, though it recovers to the same key, or when malformed", () => {
+    const highS = {
+      r: signature.r,
+      s: `0x${(SECP256K1_N - BigInt(signature.s)).toString(16).padStart(64, "0")}`,
+      v: signature.v === 27 ? 28 : 27,
+    } as const;
+    expect(isTypedSignedBy(highS, payload, address)).toBe(false);
+    expect(isTypedSignedBy({ ...signature, v: 29 as 27 }, payload, address)).toBe(false);
+    expect(isTypedSignedBy({ ...signature, r: `0x${"00".repeat(32)}` }, payload, address)).toBe(
+      false,
+    );
+    expect(
+      isTypedSignedBy(
+        { ...signature, s: signature.s.toUpperCase() as `0x${string}` },
+        payload,
+        address,
+      ),
+    ).toBe(false);
   });
 });
 

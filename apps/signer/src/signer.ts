@@ -67,6 +67,11 @@ import { createLifecycleOperations, type LifecycleRefusal } from "./lifecycle.ts
 import type { Logger } from "./log.ts";
 import { createMandateOperations } from "./mandates.ts";
 import { type EvmTransaction, type Vault, VaultError } from "./vault.ts";
+import {
+  type HyperliquidPayload,
+  type HyperliquidSignature,
+  payloadDigest,
+} from "./venues/hyperliquid.ts";
 
 const DAY_SECONDS = 86_400;
 
@@ -157,6 +162,21 @@ export const envelopeDigest = (envelope: Envelope) =>
 const credentialContext = (walletId: string) => `signer.wallets.credential:${walletId}`;
 
 /**
+ * The lowercase address whose key made the signature `(r, s, yParity)` over `digest`, or `null`
+ * for a signature with a high `s`: it recovers to the right key, but nodes and venues reject it
+ * (EIP-2). Throws for a value that is not a signature at all.
+ */
+function recoverSigner(r: bigint, s: bigint, yParity: number, digest: Hex): string | null {
+  const signature = new secp256k1.Signature(r, s);
+  if (signature.hasHighS()) return null;
+  const publicKey = signature
+    .addRecoveryBit(yParity)
+    .recoverPublicKey(hexToBytes(digest))
+    .toBytes(false);
+  return `0x${keccak256(publicKey.subarray(1)).slice(-40)}`;
+}
+
+/**
  * True when `signed` is exactly `expected` plus a signature made by `address`. The vault is
  * native code behind a string interface; this check means a vault that returns a signature for
  * another key, another transaction or a malformed one is caught before anything is recorded, so
@@ -169,13 +189,34 @@ function isSignedBy(signed: Hex, expected: EvmTransaction, address: string): boo
     if (r === undefined || s === undefined || yParity === undefined) return false;
     const rebuilt = serializeTransaction({ ...unsigned, type: "eip1559" } as EvmTransaction);
     if (rebuilt !== serializeTransaction({ ...expected, type: "eip1559" })) return false;
-    const signature = new secp256k1.Signature(BigInt(r), BigInt(s));
-    if (signature.hasHighS()) return false;
-    const publicKey = signature
-      .addRecoveryBit(yParity)
-      .recoverPublicKey(hexToBytes(keccak256(rebuilt)))
-      .toBytes(false);
-    return `0x${keccak256(publicKey.subarray(1)).slice(-40)}` === address.toLowerCase();
+    return (
+      recoverSigner(BigInt(r), BigInt(s), yParity, keccak256(rebuilt)) === address.toLowerCase()
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when `signature` is the wallet at `address` signing exactly `payload`, checked over the
+ * EIP-712 digest viem computes from the typed data the signer built (`payloadDigest`), so a vault
+ * whose own encoder differs, or that signs with another key, over another connection id or with a
+ * high `s`, is caught before anything is recorded. Synchronous like `isSignedBy`, because it runs
+ * inside the SQLite transaction; viem's `recoverTypedDataAddress` is async, so the recovery is
+ * noble's, over viem's digest.
+ */
+export function isTypedSignedBy(
+  signature: HyperliquidSignature,
+  payload: HyperliquidPayload,
+  address: string,
+): boolean {
+  try {
+    const { r, s, v } = signature;
+    if (!/^0x[0-9a-f]{64}$/.test(r) || !/^0x[0-9a-f]{64}$/.test(s)) return false;
+    if (v !== 27 && v !== 28) return false;
+    return (
+      recoverSigner(BigInt(r), BigInt(s), v - 27, payloadDigest(payload)) === address.toLowerCase()
+    );
   } catch {
     return false;
   }

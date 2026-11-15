@@ -252,6 +252,7 @@ describe("retiring a wallet", () => {
     const vault: Vault = {
       createWallet: (walletId) => honest.createWallet(walletId),
       signEvmTransaction: (...args) => honest.signEvmTransaction(...args),
+      signHyperliquid: (...args) => honest.signHyperliquid(...args),
       destroyWallet: (walletId) => {
         if (faults.before > 0) {
           faults.before -= 1;

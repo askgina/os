@@ -81,8 +81,32 @@ Success means:
       `evaluate`, `mandate`, `confirmation`, `signer-client`, `lifecycle-envelopes` and
       `verify-authorization` tests, signer `confirmations`, `signing` and `mandates` tests and
       the approve `app` test pass, each file alone; Biome clean on the changed files.
-- [ ] Milestone 2: the Hyperliquid encoder in the signer, proven against the SDK vectors.
-- [ ] Milestone 3: the vault's typed-data method, proven with real OWS.
+- [x] (2026-11-15) Milestone 2: the Hyperliquid encoder in the signer, proven against the SDK
+      vectors. `apps/signer/src/venues/msgpack.ts`, `apps/signer/src/venues/hyperliquid.ts`,
+      `apps/signer/test/vectors/hyperliquid-python-sdk.json` (SDK commit `2fdb18f9`, test lines
+      21-126 and the testnet withdrawal at 202-212, plus an `expiresAfter` order and cancel
+      generated once outside the repository, command and output in the file),
+      `apps/signer/test/hyperliquid-encoding.test.ts`, `@msgpack/msgpack` 3.1.3 in
+      `packages/testkit` (see Surprises). Local checks only, CI pending: `tsc --noEmit` clean in
+      `apps/signer` and `packages/testkit`; `hyperliquid-encoding.test.ts` passes alone (35
+      tests: the connection id `0x0fcbeda5…2908`, every SDK `r`, `s`, `v` signed with viem, the
+      generated vectors byte for byte, 1,000 generated order and cancel actions and every length
+      form equal to `@msgpack/msgpack`, the refusals, the pinned cloid of
+      `apr_01jd0000000000000000000005`, `0xe5da13111af22225733abeac5ca991ba`, computed with
+      OpenSSL, and `nextNonce`); Biome clean on the changed files.
+- [x] (2026-11-15) Milestone 3: the vault's typed-data method, proven with real OWS.
+      `Vault.signHyperliquid` (OWS and test vault), `payloadDigest` and `eip712Json` in
+      `venues/hyperliquid.ts`, `isTypedSignedBy` in `apps/signer/src/signer.ts`. Local checks
+      only, CI pending: `ows.test.ts` passes alone (6 tests): OWS 1.4.5, with the SDK's key
+      imported, reproduces the GTC order signatures with and without a cloid on both networks,
+      the generated `expiresAfter` order (both networks) and cancel (testnet), and the SDK's
+      testnet withdrawal; a mainnet withdrawal recovers to the wallet; each signature passes
+      `isTypedSignedBy` over viem's digest; the owner passphrase and another wallet's token are
+      refused. `hardening.test.ts` passes alone (10 tests, including `isTypedSignedBy` refusing
+      another key, another connection id or network, a high `s` and malformed values); the
+      vault's other users, `lifecycle`, `repricing`, `signing`, `sweep` and `mandates`, pass,
+      each file alone. Not yet shown: "records nothing and answers `vault_error`" for a bad
+      venue signature, because no route calls `signHyperliquid` before Milestone 4.
 - [ ] Milestone 4: the signer's venue routes and records.
 - [ ] Milestone 5: control plane: venue client, MCP tool, approval card, follow-up.
 - [ ] Milestone 6: fake venue, release gates, documentation.
@@ -158,6 +182,36 @@ Success means:
   the push message nor the webhook body can carry an amount, a market or any order field: the
   inputs have no such field (`PushFacts`, `content.ts:34`; `WebhookBody`,
   `apps/server/src/notify/webhook.ts:19-41`). See D8.
+- Observation (Milestone 3): OWS 1.4.5 `signTypedData` reports the recovery as `v`, not as a
+  parity: `recoveryId` is 27 or 28 and equals the signature's last byte (probe output
+  `{"signature":"…1c","recoveryId":28}`), unlike `signTransaction`. The vault's existing
+  `splitSignature` would have taken 28 as the parity. `OwsVault.signHyperliquid` reads the
+  parity from the last byte, accepts 0/1 or 27/28 and refuses a recovery id that disagrees.
+  Evidence: `apps/signer/src/vault.ts` (`hyperliquidSignature`), `ows.test.ts`.
+- Observation (Milestone 3): viem's `recoverTypedDataAddress` is async, and the check must run
+  inside the synchronous SQLite transaction (like `isSignedBy`). So `isTypedSignedBy` recovers
+  with noble over viem's `hashTypedData` digest. It takes the `HyperliquidPayload` rather than
+  typed data: the signer builds the payload, and the typed data comes from it through the same
+  builders the vault uses.
+- Observation (Milestones 2 and 3): viem types a `uint64` message value, and a `chainId` in a
+  declared `EIP712Domain`, as `bigint`, which `JSON.stringify` cannot write. The builders
+  therefore return typed data in viem's form, without `EIP712Domain` (viem derives the same
+  domain type from the domain's four fields), and `eip712Json` writes `EIP712Domain` out with
+  every integer as a JSON number for OWS. That the two encoders agree is shown, not assumed:
+  OWS's signatures from that JSON equal the SDK's and recover over viem's digest, for the L1
+  domain and for the withdrawal domain.
+- Observation (Milestone 2): `@msgpack/msgpack` is in `packages/testkit`'s `dependencies`, not
+  `devDependencies` as this plan said. Bun's isolated linker lets `apps/signer` resolve a
+  package only through its own dependencies, so the signer's test reaches the reference encoder
+  through `@askgina/os-testkit/msgpack` (a devDependency of `apps/signer`), and `packages/testkit`
+  lists what its own source imports under `dependencies` (`cbor-x`, `pg`). It is still in no
+  production install: only test code depends on `packages/testkit`, and the signer image installs
+  with `--production`. Milestone 6's fake venue, also in `packages/testkit`, can import it directly.
+- Observation (Milestone 2): the SDK writes `r` and `s` with `to_hex`, which drops leading zero
+  digits (three of the vector values have 63 digits); the tests compare them as numbers. The SDK
+  signs `withdraw3` with `signatureChainId` `0x66eee` on both networks; this plan uses `0xa4b1`
+  (42161) on mainnet, which the SDK's comment allows ("can be any chain"). Only the testnet
+  withdrawal is proven by a vector; the mainnet one only by recovery.
 
 ## Decision Log
 

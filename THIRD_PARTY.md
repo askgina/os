@@ -16,6 +16,7 @@ differ from that, or whose licence could not be read from their metadata.
 | `argparse`                      | 2.0.1   | Python-2.0              | Transitive dependency of a build tool.                                              |
 | `json-schema`                   | 0.4.0   | AFL-2.1 OR BSD-3-Clause | Transitive. Used under BSD-3-Clause.                                                |
 | `@open-wallet-standard/core`    | 1.4.5   | MIT (see note)          | The signer's wallet vault. Runs in the signer.                                      |
+| `@msgpack/msgpack`              | 3.1.3   | ISC                     | Test only (`packages/testkit`): checks the signer's own msgpack encoder.            |
 
 Notes:
 
@@ -25,6 +26,11 @@ Notes:
   the package is Apache-2.0, and that file is what this table reports.
 - **`@open-wallet-standard/core`** ships a native binary built from Rust crates. The licences of
   those crates were not checked one by one.
+- **`@msgpack/msgpack`** is permissive and listed only because it is chosen on purpose as an
+  independent reference: the signer encodes msgpack itself and must not depend on it.
+- **Hyperliquid signing vectors** in `apps/signer/test/vectors/hyperliquid-python-sdk.json` are
+  copied from `hyperliquid-python-sdk` (MIT, Copyright (c) 2024 Hyperliquid Labs Pte. Ltd.) at
+  commit `2fdb18f9517675ea03695a0962bd19eece9c83f0`. The file carries the MIT notice.
 
 The container images start from `node`, `oven/bun`, `postgres`, `caddy` and
 `ghcr.io/foundry-rs/foundry`, each pinned by digest in the Dockerfiles and `compose.yaml`, and
