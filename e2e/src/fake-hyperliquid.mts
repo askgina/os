@@ -10,7 +10,8 @@
  *
  *   GET  /healthz              200 once listening
  *   POST /exchange             order, cancelByCloid, withdraw3 (testnet signatures only)
- *   POST /info                 meta, orderStatus, clearinghouseState
+ *   POST /info                 meta, orderStatus, clearinghouseState, openOrders and
+ *                              userNonFundingLedgerUpdates (the withdrawals it took)
  *   POST /control/accounts     {"address", "usdc"}: create an account or set its balance
  *   PUT  /control/meta         {"universe": [{"name", "szDecimals", "maxLeverage", "isDelisted"?}]}
  *   PUT  /control/book         {"asset", "bid", "ask"}: best prices, null for an empty side

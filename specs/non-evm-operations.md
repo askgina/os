@@ -191,6 +191,30 @@ Success means:
         plain, e2e, venue, replicas, OpenBao, TLS and both split Compose combinations parse;
         Biome clean on the changed files. Left: the replay, daily-cap, plaintext, signer-network
         and mainnet-boot gates, the webhook order gate, the withdrawal gate and the documents.
+  - [x] (2026-11-15) The remaining gates, appended to `e2e/test/venue.spec.ts` (helpers in
+        `e2e/src/venue.ts`): a signed order re-posted byte for byte is refused for its nonce and
+        the venue keeps one filled order; the daily cap (a `Closer` wallet, 25 USD an order, 30
+        a day) refuses an order over it before anyone is asked, while a reduce-only order is not
+        counted (the signer's page shows "19.5 USD of 30 USD" and says so), fills, and leaves
+        room for a 10.4 USD order; the wallet page shows the signer's count and the fake's
+        resting order by its venue order id, and no order once the agent cancels it; a
+        withdrawal to another address or under a policy without withdrawals is refused before
+        anyone is asked, and one to the wallet's own address is signed by the wallet, byte for
+        byte the signer's, taken by the venue to that address, and ends `confirmed`; an order's
+        `approval.opened` webhook body has exactly the keys of any other approval and none of
+        the order's memo, size or price (D8); the signer neither resolves nor reaches the fake
+        (by name or address) nor `https://example.com/`, which the server does reach, and from
+        the signing network `/v1/sign-typed-data`, `/v1/sign-hash` and
+        `/v1/venue/sign-action` answer 404 while `/v1/venue/sign` answers 401; a throwaway
+        server (`compose run --rm --no-deps`) with a mainnet network or the
+        `api.hyperliquid.xyz` host in its venues file exits 1 with "Hyperliquid mainnet is
+        refused", and with the testnet venue gets past its venues to the database (the
+        control); the memos and the `r` and `s` of every posted order and withdrawal are in no
+        column of Postgres (control: the workspace name is) and no `venue_orders.request` holds
+        readable JSON. `deploy/split/control.compose.yaml` passes `VENUES_FILE` through by
+        `extends` (checked with `docker compose config`). Local checks only, nothing run against
+        a stack, CI pending: `tsc --noEmit` clean in `e2e`; Biome clean; every Compose
+        combination parses. Left: the documents.
 - [ ] Manual testnet proof (D6; not CI; needs a funded testnet account; required before any
       mainnet decision under D2).
 
@@ -347,6 +371,16 @@ Success means:
   fake is on) and connect it again, so nothing the server posts in between can reach the venue.
   The venue gates run on a stack of their own rather than in `release-gates.spec.ts`, so every
   other gate keeps running as a deployment without `VENUES_FILE` does.
+- Observation (Milestone 6): the plan's replay gate re-posts the first order's body, but by then
+  the expiry and crash gates have usually run past that order's 300-second `expiresAfter`, and
+  the fake venue checks expiry before the nonce, so the copy would be refused as expired and
+  prove nothing about the nonce. The replay gate places an order of its own and re-posts it at
+  once.
+- Observation (Milestone 6): the mainnet-boot gate starts a throwaway server with an
+  unreachable `DATABASE_URL` (`database.invalid`), so that a build which stopped refusing a
+  mainnet venue would fail at the database instead of joining the running stack as a second
+  server; the testnet control run stops there, which shows the venues file was read and
+  passed.
 - Observation (Milestone 2): the SDK writes `r` and `s` with `to_hex`, which drops leading zero
   digits (three of the vector values have 63 digits); the tests compare them as numbers. The SDK
   signs `withdraw3` with `signatureChainId` `0x66eee` on both networks; this plan uses `0xa4b1`
