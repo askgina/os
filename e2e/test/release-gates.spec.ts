@@ -43,11 +43,13 @@ import {
   waitUntilHealthy,
 } from "../src/stack.ts";
 import {
+  acknowledged,
   bodyOf,
+  expectSignedDelivery,
   failFirstAttempts,
-  type ReceivedRequest,
   receivedRequests,
   signatureVerifies,
+  webhookDeliveries,
   webhookSecret,
 } from "../src/webhook.ts";
 
@@ -1547,71 +1549,6 @@ const MANDATE_EVENT_KEYS = [
   "v",
   "workspaceId",
 ];
-
-/** The recorded requests whose body `match` selects, once the receiver accepted one of them. */
-async function acknowledged(
-  match: (body: Record<string, unknown>) => boolean,
-): Promise<ReceivedRequest[]> {
-  let matching: ReceivedRequest[] = [];
-  await expect
-    .poll(
-      async () => {
-        matching = (await receivedRequests()).filter((request) => match(bodyOf(request)));
-        return matching.some((request) => request.status === 200);
-      },
-      { timeout: 120_000 },
-    )
-    .toBe(true);
-  return matching;
-}
-
-/** The webhook's outbox rows for one request or use and one event, as the server keeps them. */
-async function webhookDeliveries(
-  approvalId: string,
-  event: string,
-): Promise<{ id: string; state: string; attempts: number }[]> {
-  const db = new pg.Client({ connectionString: await databaseUrl() });
-  await db.connect();
-  try {
-    const { rows } = await db.query<{ id: string; state: string; attempts: number }>(
-      "SELECT id, state, attempts FROM os.notification_deliveries WHERE approval_id = $1 AND event = $2 AND target = 'webhook' ORDER BY id",
-      [approvalId, event],
-    );
-    return rows;
-  } finally {
-    await db.end();
-  }
-}
-
-/**
- * Check one recorded attempt the way the deploy guide tells a receiver to: a JSON POST, signed
- * with the secret from the server's volume over its exact bytes, with a timestamp within 300
- * seconds, and a body that is canonical JSON with exactly `keys` and none of `secrets`.
- */
-function expectSignedDelivery(
-  secret: string,
-  request: ReceivedRequest,
-  keys: string[],
-  secrets: string[],
-): Record<string, unknown> {
-  expect(request.method).toBe("POST");
-  expect(request.headers["content-type"]).toBe("application/json");
-  expect(signatureVerifies(secret, request)).toBe(true);
-  // One more byte and it no longer verifies: the check above is a real one.
-  expect(signatureVerifies(secret, { ...request, body: `${request.body} ` })).toBe(false);
-  const timestamp = Number(request.headers["x-os-timestamp"]);
-  expect(Number.isInteger(timestamp)).toBe(true);
-  expect(Math.abs(request.receivedAt / 1000 - timestamp)).toBeLessThanOrEqual(300);
-
-  const body = bodyOf(request);
-  expect(Object.keys(body)).toEqual(keys);
-  // Sorted keys and no white space: the exact bytes JSON.stringify gives for what it parsed.
-  expect(request.body).toBe(JSON.stringify(body));
-  expect(body).toMatchObject({ v: 1, deliveryId: request.headers["x-os-delivery"] });
-  const seen = `${JSON.stringify(request.headers)}\n${request.body}`.toLowerCase();
-  for (const value of secrets) expect(seen).not.toContain(value.toLowerCase());
-  return body;
-}
 
 test("an approval is announced once, signed, with no sealed content, even after a failed delivery", async () => {
   const secret = await webhookSecret();

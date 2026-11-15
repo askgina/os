@@ -664,9 +664,8 @@ Destroying a key is treated like signing: people approve it with passkeys at the
 destroy time, and the signer enforces a delay the control plane cannot shorten. The signer cannot
 see balances, so the delay and a free cancel are the protection against destroying a key that
 still holds assets. Six routes, all in the control scope (section 10), serve it
-([`signer/api.ts`](../packages/protocol/src/signer/api.ts)). They are part of the contract now;
-the signer serves them from Milestone 2 of
-[`specs/workspace-lifecycle.md`](../specs/workspace-lifecycle.md).
+([`signer/api.ts`](../packages/protocol/src/signer/api.ts),
+[`apps/signer/src/lifecycle.ts`](../apps/signer/src/lifecycle.ts)).
 
 | Route                                              | Body                | Answer           |
 | -------------------------------------------------- | ------------------- | ---------------- |
@@ -708,17 +707,33 @@ of the wallet, or of the workspace, with reason `requested`.
 **From then on** the signer refuses, for a workspace that is `deleting` or `deleted`
 (`workspace_deleting`, `workspace_deleted`): signing, sweeping, signing under or granting a
 mandate, setting a policy, adding or removing an approver, changing the threshold, resuming,
-creating a wallet and opening a confirmation. A `deleted` workspace answers nothing but reading
-its state and its decision log. The signer refuses to sign, sweep, sign under a mandate or grant
-a mandate for a wallet that is not `active` (`wallet_retired`). Reprices and
-`cancel-transaction` are refused only for a `destroyed` wallet, so a transaction that is stuck
-can still be cleared during the delay. A new policy for a `held` wallet makes it `active` again.
-A confirmation of another kind that is open when a retirement or deletion applies becomes
-`superseded`.
+creating a wallet, and opening a confirmation of any kind but one: while a deletion waits, a
+`cancel-transaction` confirmation can still be opened and approved, so that a transaction that
+holds the deletion back (owner decision D7) can be cleared before its key is destroyed. Revoking
+an approval and pausing stay allowed while `deleting`: they only remove authority. A `deleted`
+workspace answers nothing but reading its state and its decision log, a repeat of its finalize,
+and a repeat of its own deletion envelope; creating a workspace with its id is `conflict`.
+
+The signer refuses to sign, sweep, sign under a mandate or grant a mandate for a wallet that is
+not `active` (`wallet_retired`). Setting a policy is `wallet_retired` for a `retiring` or
+`destroyed` wallet; a new policy for a `held` wallet makes it `active` again, and is the only way
+a held wallet signs again. Retiring a wallet that is `retiring` or `destroyed` is
+`wallet_retired`. Reprices and `cancel-transaction` are refused only for a `destroyed` wallet, so
+a transaction that is stuck can still be cleared during the delay. A confirmation of another kind
+that is open when a retirement or deletion applies becomes `superseded`. A repeat of a signed
+approval (a signature, a sweep, a use of a mandate, a reprice, a cancel) still returns what was
+signed while the wallet is `retiring`; once its key is destroyed the signed bytes are emptied and
+the repeat is `wallet_retired`, and reading the approval keeps its `transactionHash` with
+`attempts: []`.
 
 **Cancelling** needs only the request signature, because it only keeps a key. It turns a
-`retiring` wallet `held`, or a `deleting` workspace `active` again with every wallet the deletion
-retired back to `active`; the workspace stays paused until `resume-workspace` is approved. A
+`retiring` wallet `held`, with no destroy time. Cancelling a retirement while the workspace is
+being deleted is `workspace_deleting`: the deletion decides for every wallet. Cancelling a
+deletion turns the `deleting` workspace `active` again, still paused until `resume-workspace` is
+approved, and puts each wallet the deletion retired back where the deletion found it: applying
+the deletion records each wallet's state (`state_before_delete`), so a wallet that was `active`
+is `active` again, one that was `held` stays `held`, and one that was already `retiring` on its
+own comes back `held`, not `retiring`. No cancel makes a wallet sign that people had stopped. A
 mandate revoked by the retirement or deletion stays revoked. Anything not `retiring` or
 `deleting` is `conflict`.
 
@@ -731,7 +746,17 @@ blanks the text of its mandates while keeping their ids, hashes, times, grantors
 uses, and marks the workspace `deleted`. Used nonces, approvals, spends, policies and the decision
 log stay, so no approval id or envelope nonce of the workspace can be used again. A repeat
 returns the state. Each step is recorded in the decision log (`retire-wallet`,
-`cancel-retire-wallet`, `destroy-wallet`, `delete-workspace`, `cancel-delete-workspace`).
+`cancel-retire-wallet`, `destroy-wallet`, `delete-workspace`, `cancel-delete-workspace`), and so
+is each mandate a retirement or deletion revoked (`revoke-mandate-on-retire`,
+`revoke-mandate-on-delete`). Applying records the approval id; cancelling, destroying a key and
+finalizing a deletion carry none. A key the vault no longer holds counts as destroyed, so a
+finalize interrupted between the vault and the database completes on its repeat.
+
+**Exporting a key** has no route: only the signer host's operator can, with
+`node src/admin.ts export-wallet --workspace <ws_id> --wallet <wal_id> --out <absolute path>`,
+which writes the wallet's mnemonic to a new file readable by that user only (`out_exists` if the
+file exists), prints one line with identifiers only, records `export-wallet-by-operator` in the
+decision log with no approval id, and refuses a destroyed wallet (`wallet_retired`).
 
 `destroyAfter` is read with the signer's own clock, as mandate windows and the restore fence
 are. A finalize needs no envelope, so the restore fence does not stop one: a backup restored

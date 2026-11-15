@@ -1,7 +1,14 @@
 # Overlay for the release gates only: lets the tests reach the database (to scan it for
 # plaintext), the local chain (to check balances and to hold back mining) and a webhook receiver
-# (to check what the server notifies). Never use it for a real deployment.
+# (to check what the server notifies), and lets a destroy time be seconds ahead. Never use it for
+# a real deployment.
 services:
+  signer:
+    environment:
+      # The lifecycle gates retire wallets and delete workspaces and then wait for the keys to be
+      # destroyed, so they need a destroy time a few seconds ahead. Every real deployment keeps a
+      # minimum delay (seven days by default, deploy/README.md).
+      SIGNER_MIN_DESTROY_DELAY_SECONDS: "0"
   postgres:
     ports:
       - "127.0.0.1:${E2E_POSTGRES_PORT:-55900}:5432"

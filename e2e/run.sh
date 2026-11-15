@@ -35,17 +35,18 @@ if [ "$tls" = "1" ]; then
 fi
 compose=(docker compose -p "$E2E_PROJECT" "${overlay[@]}")
 ui=(docker compose -p "${E2E_PROJECT}-ui" "${overlay[@]}")
+lifecycle=(docker compose -p "${E2E_PROJECT}-lifecycle" "${overlay[@]}")
 # `init` is not listed: it runs once and exits, and the others depend on it.
 services=(postgres signer approve server caddy agent-gateway anvil)
 
 remove() {
-  for project in "$E2E_PROJECT" "${E2E_PROJECT}-restore" "${E2E_PROJECT}-ui"; do
+  for project in "$E2E_PROJECT" "${E2E_PROJECT}-restore" "${E2E_PROJECT}-lifecycle" "${E2E_PROJECT}-ui"; do
     docker compose -p "$project" "${overlay[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
   done
 }
 
 logs() {
-  for project in "$E2E_PROJECT" "${E2E_PROJECT}-restore" "${E2E_PROJECT}-ui"; do
+  for project in "$E2E_PROJECT" "${E2E_PROJECT}-restore" "${E2E_PROJECT}-lifecycle" "${E2E_PROJECT}-ui"; do
     docker compose -p "$project" "${overlay[@]}" \
       logs --no-color --tail 300 server signer approve caddy agent-gateway 2>/dev/null || true
   done
@@ -68,7 +69,19 @@ if [ "$tls" != "1" ]; then
   fi
 fi
 
-# Second stack, empty: the browser gate, which claims a fresh installation through the UI.
+# Second stack, empty: the lifecycle gates, which claim a fresh installation, end workspaces and
+# wallets for good, and rotate the keyring. They cannot follow the gates above on the first
+# stack: that ends as a restored copy behind an operator's fence, and its people's passkeys live
+# only in the memory of the run above. Skipped over HTTPS, like the first stack.
+if [ "$tls" != "1" ] && [ "$status" -eq 0 ]; then
+  remove
+  "${lifecycle[@]}" up -d --wait --wait-timeout 300 "${services[@]}" || status=$?
+  if [ "$status" -eq 0 ]; then
+    (cd e2e && E2E_PROJECT="${E2E_PROJECT}-lifecycle" bunx playwright test lifecycle.spec.ts) || status=$?
+  fi
+fi
+
+# Third stack, empty: the browser gate, which claims a fresh installation through the UI.
 if [ "$status" -eq 0 ]; then
   remove
   "${ui[@]}" up -d --wait --wait-timeout 300 "${services[@]}" || status=$?
