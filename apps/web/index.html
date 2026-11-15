@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <!-- Installing the app (on an iPhone or iPad, to the Home Screen) is what lets it receive
+         notifications there; the manifest and the service worker are files under public/. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-title" content="Workspaces" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#16181c" media="(prefers-color-scheme: dark)" />
     <!-- A stylesheet link, not a CSS import: in development an import becomes an inline <style>,
          which the Content-Security-Policy (style-src 'self') refuses. -->
     <link rel="stylesheet" href="/src/styles.css" />

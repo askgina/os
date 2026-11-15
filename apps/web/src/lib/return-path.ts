@@ -20,8 +20,10 @@ function hasControlCharacter(text: string): boolean {
  * The page to open after signing in, if `value` names a page on this site; the default landing
  * page otherwise. Accepted: a path with exactly one leading `/`. Refused: `//host` and `/\host`
  * (browsers read both as another origin), any backslash, any scheme or absolute URL, control
- * characters, and a path whose dot segments resolve to `//`. The result is the resolved path,
- * search and hash, so what was checked is what is opened.
+ * characters, a path whose dot segments resolve to `//`, and a path with an encoded `/`, `\` or
+ * control character (`%2F`, `%5C`, `%09`), which no page here has and which a later decoding
+ * could turn into `//host`.
+ * The result is the resolved path, search and hash, so what was checked is what is opened.
  */
 export function safeReturnPath(value: unknown): string {
   if (typeof value !== "string" || value.length > MAX_LENGTH) return DEFAULT_LANDING;
@@ -34,6 +36,7 @@ export function safeReturnPath(value: unknown): string {
     return DEFAULT_LANDING;
   }
   if (url.origin !== BASE || url.pathname.startsWith("//")) return DEFAULT_LANDING;
+  if (/%(?:2f|5c|[01][0-9a-f]|7f)/i.test(url.pathname)) return DEFAULT_LANDING;
   return `${url.pathname}${url.search}${url.hash}`;
 }
 

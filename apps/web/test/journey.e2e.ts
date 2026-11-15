@@ -7,6 +7,7 @@ import {
   type Page,
 } from "@playwright/test";
 import { expectNoSidewaysOverflow, type LayoutOptions, widenText } from "./layout.ts";
+import { standInPushManager } from "./push-stand-in.ts";
 
 /**
  * One person's whole first day, through the UI only: set up the server, create a workspace and
@@ -30,6 +31,16 @@ import { expectNoSidewaysOverflow, type LayoutOptions, widenText } from "./layou
  * time, and it is approved on the confirmation page. The agent pays a listed recipient under it
  * with nobody asked, a payment over its cap still waits in the inbox, and revoking it asks for a
  * confirmation, not a passkey.
+ *
+ * Notifications: with Web Push off at the server the settings page says so and names the
+ * webhook instead; with it on, the owner turns notifications on for this device, which registers
+ * the real service worker at `/sw.js` under the production Content-Security-Policy. The browser's
+ * push subscription is a stand-in (`push-stand-in.ts`: headless Chromium reaches no push
+ * service), and push messages reach the worker through the DevTools protocol, unencrypted, as a
+ * push service would hand them over after decryption. The owner removes another device, turns a
+ * reminder off, sets quiet hours and lets notifications name the request; a viewer sees that
+ * choice but cannot change it. After signing out, the path of a notification the worker showed
+ * leads through sign-in back to its approval.
  */
 
 const test = baseTest.extend<LayoutOptions>({ widerText: [false, { option: true }] });
@@ -100,6 +111,79 @@ async function approveOnSignerPage(page: Page): Promise<void> {
   await expect(page).toHaveURL(request, { timeout: 15_000 });
 }
 
+/** A service worker registration, as the DevTools protocol reports it. */
+interface ServiceWorkerRegistrationInfo {
+  registrationId: string;
+  scopeURL: string;
+  isDeleted: boolean;
+}
+
+/** A notification the page's service worker shows, as the browser lists it. */
+interface ShownNotification {
+  title: string;
+  body: string;
+  tag: string;
+  path: unknown;
+}
+
+async function shownNotifications(page: Page): Promise<ShownNotification[]> {
+  return page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.getRegistration("/");
+    const shown = (await registration?.getNotifications()) ?? [];
+    return shown.map((item) => ({
+      title: item.title,
+      body: item.body,
+      tag: item.tag,
+      path: (item.data as { path?: unknown } | null)?.path ?? null,
+    }));
+  });
+}
+
+/**
+ * Hands a push message to the page's service worker as a push service would after decrypting
+ * it: through the DevTools protocol, so the worker's own `push` handler shows it. `cdp` is the
+ * page's session that holds its virtual authenticator.
+ */
+async function deliverPush(page: Page, cdp: CDPSession, message: unknown): Promise<void> {
+  const origin = new URL(page.url()).origin;
+  const registered = Promise.withResolvers<string>();
+  const timer = setTimeout(
+    () => registered.reject(new Error("no service worker registered")),
+    10_000,
+  );
+  const listener = ({ registrations }: { registrations: ServiceWorkerRegistrationInfo[] }) => {
+    const found = registrations.find((item) => !item.isDeleted && item.scopeURL === `${origin}/`);
+    if (found) registered.resolve(found.registrationId);
+  };
+  cdp.on("ServiceWorker.workerRegistrationUpdated", listener);
+  await cdp.send("ServiceWorker.enable");
+  const registrationId = await registered.promise.finally(() => clearTimeout(timer));
+  cdp.off("ServiceWorker.workerRegistrationUpdated", listener);
+  await cdp.send("ServiceWorker.deliverPushMessage", {
+    origin,
+    registrationId,
+    data: JSON.stringify(message),
+  });
+  await cdp.send("ServiceWorker.disable");
+}
+
+/** The message the server sends for a waiting request, at the `count` level. */
+function approvalMessage(link: string, pending: number) {
+  return {
+    web_push: 8030,
+    notification: {
+      title: "Approval waiting",
+      body:
+        pending === 1 ? "1 request needs your passkey" : `${pending} requests need your passkey`,
+      navigate: link,
+      tag: `approval-${link.split("/").pop()}`,
+      lang: "en",
+      silent: false,
+      app_badge: String(pending),
+    },
+  };
+}
+
 /** Acts as the agent: proposes a native transfer and returns its intent and approval ids. */
 async function proposePayment(
   request: APIRequestContext,
@@ -138,11 +222,28 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
       ? target.element.screenshot({ path })
       : on.screenshot({ path, fullPage: !target.viewport }));
   };
+  /** Another person's browser, on the same kind of screen as the owner's, with a passkey. */
+  const personPage = async (): Promise<{ person: Page; personProblems: string[] }> => {
+    const { viewport, deviceScaleFactor, isMobile, hasTouch, colorScheme } = testInfo.project.use;
+    const context = await browser.newContext({
+      baseURL,
+      viewport,
+      deviceScaleFactor,
+      isMobile,
+      hasTouch,
+      colorScheme: colorScheme ?? "light",
+    });
+    if (widerText) await widenText(context);
+    const person = await context.newPage();
+    const personProblems = watchConsole(person);
+    await addAuthenticator(person);
+    return { person, personProblems };
+  };
   const problems = watchConsole(page);
   const proposeUrl = process.env.OS_WEB_PROPOSE_URL ?? `${baseURL}/__fixture/propose`;
   if (!process.env.OS_WEB_BASE_URL) await request.post(`${baseURL}/__fixture/reset`);
   if (widerText) await widenText(page.context());
-  await addAuthenticator(page);
+  const ownerSession = await addAuthenticator(page);
 
   await test.step("setup creates the first owner with a passkey", async () => {
     await page.goto("/");
@@ -394,7 +495,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
   await test.step("the other pages render, and a second person joins as an approver", async () => {
     base = workspacePath();
     await page.goto(base);
-    await expect(page.getByText("Invoice payer")).toBeVisible();
+    await expect(page.getByText("Invoice payer", { exact: true })).toBeVisible();
     await shot("15-overview");
     await page.getByRole("link", { name: /Invoice payer/ }).click();
     await expect(page.getByText("Recent requests")).toBeVisible();
@@ -428,19 +529,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
 
     // A second person joins with their own passkey, on the same kind of screen as the owner;
     // it waits to become an approver.
-    const { viewport, deviceScaleFactor, isMobile, hasTouch, colorScheme } = testInfo.project.use;
-    const other = await browser.newContext({
-      baseURL,
-      viewport,
-      deviceScaleFactor,
-      isMobile,
-      hasTouch,
-      colorScheme: colorScheme ?? "light",
-    });
-    if (widerText) await widenText(other);
-    joiner = await other.newPage();
-    joinerProblems = watchConsole(joiner);
-    await addAuthenticator(joiner);
+    ({ person: joiner, personProblems: joinerProblems } = await personPage());
     await joiner.goto(new URL(inviteUrl).pathname);
     await joiner.getByLabel("Your name").fill("Grace Approver");
     await joiner.getByRole("button", { name: "Create passkey and join" }).click();
@@ -661,6 +750,201 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await page.goto(`${base}/members`);
   });
 
+  await test.step("notifications: off at the server, then on for this device, with quiet hours, a device removed and what they say", async () => {
+    const notifications = page.getByRole("region", { name: "Notifications" });
+    if (!process.env.OS_WEB_BASE_URL) {
+      // The operator has not turned Web Push on: the page says so and names the webhook.
+      const off = await request.post(`${baseURL}/__fixture/web-push`, { data: { enabled: false } });
+      expect(off.ok()).toBe(true);
+      await page.goto("/settings");
+      await expect(
+        notifications.getByText("This server does not send notifications to phones or browsers."),
+      ).toBeVisible();
+      await expect(notifications.getByText(/\(its webhook\)/)).toBeVisible();
+      await expect(notifications.getByRole("button")).toHaveCount(0);
+      await shot("40-settings-push-off", { element: notifications });
+      const on = await request.post(`${baseURL}/__fixture/web-push`, { data: { enabled: true } });
+      expect(on.ok()).toBe(true);
+    }
+
+    // The browser allows notifications here; its push subscription is the stand-in.
+    await page.context().grantPermissions(["notifications"]);
+    await page.context().addInitScript(standInPushManager);
+    await page.goto("/settings");
+    await expect(
+      notifications.getByText(
+        "Off. Your browser will ask whether this site may show notifications.",
+      ),
+    ).toBeVisible();
+    await notifications.getByLabel("Name for this device").fill("Ada's phone");
+    await notifications
+      .getByRole("button", { name: "Turn on notifications on this device" })
+      .click();
+    await expect(
+      notifications.getByText(
+        "On. This device gets a notification when a request waits for your passkey.",
+      ),
+    ).toBeVisible();
+    const devices = notifications.getByRole("list", { name: "Your devices" });
+    await expect(devices.getByRole("listitem")).toHaveCount(1);
+    await expect(devices.getByText("Ada's phone")).toBeVisible();
+    await expect(devices.getByText("This device", { exact: true })).toBeVisible();
+    // The real worker, served at /sw.js under the production Content-Security-Policy.
+    const worker = await page.evaluate(
+      async () => (await navigator.serviceWorker.getRegistration("/"))?.active?.scriptURL ?? null,
+    );
+    expect(worker).toBe(`${baseURL}/sw.js`);
+
+    // A message for a waiting request shows with its approval's path; one linking elsewhere
+    // shows as the generic notification, which opens the workspace list.
+    const { approvalId } = await proposePayment(request, proposeUrl, token, "3000000000000000");
+    const approvalPath = `${base}/approvals/${approvalId}`;
+    await deliverPush(page, ownerSession, approvalMessage(`${baseURL}${approvalPath}`, 2));
+    await deliverPush(
+      page,
+      ownerSession,
+      approvalMessage(`https://evil.example${approvalPath}`, 1),
+    );
+    await expect
+      .poll(() => shownNotifications(page))
+      .toEqual(
+        expect.arrayContaining([
+          {
+            title: "Approval waiting",
+            body: "2 requests need your passkey",
+            tag: `approval-${approvalId}`,
+            path: approvalPath,
+          },
+          {
+            title: "Approval waiting",
+            body: "Open the app to see what waits for you.",
+            tag: "approval",
+            path: "/",
+          },
+        ]),
+      );
+
+    // Another of Ada's browsers subscribes, as it would through this page there; she removes
+    // it here.
+    const added = await page.evaluate(async () => {
+      const encode = (bytes: Uint8Array) =>
+        btoa(String.fromCharCode(...bytes))
+          .replace(/\+/g, "-")
+          .replace(/\//g, "_")
+          .replace(/=+$/, "");
+      const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, [
+        "deriveBits",
+      ]);
+      const response = await fetch("/api/v1/me/push-subscriptions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          endpoint: "https://updates.push.services.mozilla.com/wpush/v2/stand-in-laptop",
+          keys: {
+            p256dh: encode(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey))),
+            auth: encode(crypto.getRandomValues(new Uint8Array(16))),
+          },
+          label: "Work laptop",
+        }),
+      });
+      return response.ok;
+    });
+    expect(added).toBe(true);
+    await page.reload();
+    await expect(devices.getByRole("listitem")).toHaveCount(2);
+    await notifications.getByRole("button", { name: "Remove Work laptop" }).click();
+    await expect(devices.getByRole("listitem")).toHaveCount(1);
+    await expect(devices.getByText("Ada's phone")).toBeVisible();
+
+    // No reminder before Research team's requests expire, on any device.
+    const reminder = notifications.getByRole("switch", {
+      name: "Remind me before Research team's requests expire",
+    });
+    await expect(reminder).toHaveAttribute("aria-checked", "true");
+    await reminder.click();
+    await expect(reminder).toHaveAttribute("aria-checked", "false");
+    await expect(
+      notifications.getByRole("switch", { name: "Notify me about Research team" }),
+    ).toHaveAttribute("aria-checked", "true");
+
+    // Quiet hours across midnight, in a time zone that is not the device's own; the form says
+    // what to fix before anything is sent.
+    const quiet = notifications.getByRole("form", { name: "Quiet hours" });
+    await quiet.getByLabel("Hold notifications during quiet hours").check();
+    await quiet.getByLabel("From", { exact: true }).fill("22:00");
+    await quiet.getByLabel("Until", { exact: true }).fill("22:00");
+    await quiet.getByLabel("Time zone").selectOption("Europe/London");
+    await quiet.getByRole("button", { name: "Save quiet hours" }).click();
+    await expect(quiet.getByRole("alert")).toHaveText(
+      "Quiet hours must end at another time than they start.",
+    );
+    await quiet.getByLabel("Until", { exact: true }).fill("07:00");
+    await quiet.getByRole("button", { name: "Save quiet hours" }).click();
+    await expect(quiet.getByText("Saved.")).toBeVisible();
+    await expect(
+      quiet.getByText(/^From 22:00 to 07:00 the next morning, Europe\/London time,/),
+    ).toBeVisible();
+    await page.reload();
+    await expect(quiet.getByLabel("Hold notifications during quiet hours")).toBeChecked();
+    await expect(quiet.getByLabel("Until", { exact: true })).toHaveValue("07:00");
+    await expect(quiet.getByLabel("Time zone")).toHaveValue("Europe/London");
+    await expect(reminder).toHaveAttribute("aria-checked", "false");
+    await shot("41-settings-notifications");
+
+    // The owner lets this workspace's notifications name the request; it is in the log.
+    await page.goto(base);
+    const level = page.getByRole("region", { name: "What notifications say" });
+    await expect(
+      level.getByText(/^Notifications never show amounts or recipients\./),
+    ).toBeVisible();
+    await level
+      .getByRole("radio", { name: /^Also the kind of request, who asked and this workspace/ })
+      .check();
+    await expect(level.getByText(/Payment waiting · Invoice payer in Research team/)).toBeVisible();
+    await level.getByRole("button", { name: "Save" }).click();
+    await expect(level.getByText("Saved.")).toBeVisible();
+    await shot("42-workspace-notification-level", { element: level });
+    await page.goto(`${base}/activity`);
+    await expect(page.getByText("workspace.notification_detail_set")).toBeVisible();
+
+    // A viewer sees the choice but cannot change it, here or by asking the server.
+    await page.goto(`${base}/members`);
+    await page.getByLabel("Role", { exact: true }).selectOption("viewer");
+    await page.getByRole("button", { name: "Create invite link" }).click();
+    const viewerInvite = await page.getByLabel(/Invite link/).inputValue();
+    const { person: viewer, personProblems: viewerProblems } = await personPage();
+    await viewer.goto(new URL(viewerInvite).pathname);
+    await viewer.getByLabel("Your name").fill("Lin Viewer");
+    await viewer.getByRole("button", { name: "Create passkey and join" }).click();
+    await expect(viewer.getByRole("heading", { name: "Workspaces" })).toBeVisible();
+    await viewer.goto(base);
+    const seen = viewer.getByRole("region", { name: "What notifications say" });
+    await expect(
+      seen.getByText("Also the kind of request, who asked and this workspace."),
+    ).toBeVisible();
+    await expect(seen.getByText("Only an owner of this workspace can change this.")).toBeVisible();
+    await expect(seen.getByRole("radio")).toHaveCount(0);
+    await expect(seen.getByRole("button")).toHaveCount(0);
+    await shot("43-workspace-notification-level-viewer", { element: seen }, viewer);
+    const refused = await viewer.evaluate(async (workspaceId) => {
+      const response = await fetch(`/api/v1/workspaces/${workspaceId}/notification-detail`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ detail: "count" }),
+      });
+      return { status: response.status, body: (await response.json()) as unknown };
+    }, base.split("/").pop() ?? "");
+    expect(refused).toMatchObject({ status: 403, body: { error: { code: "forbidden" } } });
+    // The browser reports the refused request twice: as a response and as a console line.
+    const forbidden = (line: string) =>
+      /^response 403 POST .*\/notification-detail$/.test(line) ||
+      /status of 403 .* at \S+\/notification-detail /.test(line);
+    expect(viewerProblems.filter(forbidden)).toHaveLength(2);
+    expect(viewerProblems.filter((line) => !forbidden(line))).toEqual([]);
+    await viewer.context().close();
+    await page.goto(`${base}/members`);
+  });
+
   await test.step("activity, settings, sign-in and the join page render", async () => {
     const openInvites = page.getByRole("list", { name: "Open invites" });
     // A fresh link for the signed-out join page below; the first one was used.
@@ -680,7 +964,13 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await page.goto(new URL(joinPageUrl).pathname);
     await expect(page.getByRole("heading", { name: "Join Research team" })).toBeVisible();
     await shot("22-join");
-    // An approval link opened while signed out comes back to that approval after sign-in.
+    // A notification pressed on this signed-out device: the worker shows it with the approval's
+    // path (pressing it opens that path), which goes through sign-in and back to the approval.
+    const pressed = `approval-${approvalUrl.split("/").pop()}`;
+    await deliverPush(page, ownerSession, approvalMessage(`${baseURL}${approvalUrl}`, 1));
+    await expect
+      .poll(async () => (await shownNotifications(page)).find((item) => item.tag === pressed)?.path)
+      .toBe(approvalUrl);
     await page.goto(approvalUrl);
     await expect(page).toHaveURL(/\/login\?next=/);
     await page.getByRole("button", { name: "Sign in with passkey" }).click();

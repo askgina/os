@@ -1,5 +1,5 @@
 import { type ErrorComponentProps, Link, Outlet, useRouter } from "@tanstack/react-router";
-import { KeyRound, ShieldCheck } from "lucide-react";
+import { Settings, ShieldCheck } from "lucide-react";
 import { type ReactNode, useEffect } from "react";
 import { EmptyState, ErrorState } from "@/components/common.tsx";
 import { useSession } from "@/lib/api.ts";
@@ -56,8 +56,8 @@ function Frame({
               to="/settings"
               className="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
             >
-              <KeyRound className="size-4" aria-hidden />
-              Passkeys
+              <Settings className="size-4" aria-hidden />
+              Settings
             </Link>
           ) : null}
         </div>

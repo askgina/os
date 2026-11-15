@@ -1,4 +1,6 @@
+import { ApiError } from "@askgina/os-api";
 import type { MandateDenyCode, MandateGrantRefusal } from "@askgina/os-protocol";
+import { PushSetupError, type PushSetupFailure } from "./push.ts";
 
 /**
  * Why an approval in advance (a mandate) did not cover a payment: the signer's `mandate_denied`
@@ -101,6 +103,53 @@ const meanings: Record<string, string> = {
   rejected: "The network never accepted the transaction, and it will not be sent again.",
   internal: "Something went wrong on the server.",
 };
+
+/**
+ * Why the server refused this browser as a device (`addPushSubscription`): the refusal's
+ * `detail`.
+ */
+const pushRefusals: Record<"push_off" | "endpoint_refused" | "bad_subscription", string> = {
+  push_off:
+    "This server does not send notifications to devices: its operator has turned Web Push off.",
+  endpoint_refused:
+    "This server does not send to your browser's push service; its operator allows only some. Try another browser, or ask the operator.",
+  bad_subscription:
+    "Your browser gave a subscription the server cannot use. Turn notifications on again; if that fails too, try another browser.",
+};
+
+/** Why this browser could not be set up for notifications, before the server was asked. */
+const pushSetupFailures: Record<PushSetupFailure, string> = {
+  permission_denied:
+    "Notifications are blocked for this site. Allow them in your browser's settings for this site, then try again.",
+  permission_dismissed:
+    "Your browser did not allow notifications. Press the button again and choose Allow.",
+  worker_failed:
+    "Your browser could not install this site's notification handler (its service worker). Reload the page and try again.",
+  subscribe_failed:
+    "Your browser could not reach its push service. Check the connection and try again.",
+};
+
+/**
+ * Plain words for a failed change to notifications, in the browser or refused by the server;
+ * null when the failure is not one of these (the API's own message then says what happened).
+ */
+export function explainNotificationError(error: unknown): string | null {
+  if (error instanceof PushSetupError) return pushSetupFailures[error.failure];
+  if (!(error instanceof ApiError)) return null;
+  if (error.detail !== undefined && Object.hasOwn(pushRefusals, error.detail)) {
+    return pushRefusals[error.detail as keyof typeof pushRefusals];
+  }
+  if (error.code === "forbidden") {
+    return "Only an owner of this workspace can change what its notifications say.";
+  }
+  if (error.code === "not_found") {
+    return "You are no longer a member of one of these workspaces. Reload the page.";
+  }
+  if (error.code === "conflict") {
+    return "Someone else just turned on notifications in this browser. Try again.";
+  }
+  return null;
+}
 
 export function explainCode(code: string): string {
   return Object.hasOwn(meanings, code)

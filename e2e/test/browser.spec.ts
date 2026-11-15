@@ -558,6 +558,39 @@ test("an owner approves payments in advance in the browser, the agent's covered 
   expect(problems).toEqual([]);
 });
 
+test("the built app serves its manifest and its service worker, and the worker activates under the Content-Security-Policy", async () => {
+  const manifest = await page.request.get("/manifest.webmanifest");
+  expect(manifest.status()).toBe(200);
+  expect(manifest.headers()["content-type"]).toContain("application/manifest+json");
+  expect((await manifest.json()) as { start_url?: string }).toMatchObject({ start_url: "/" });
+
+  const worker = await page.request.get("/sw.js");
+  expect(worker.status()).toBe(200);
+  expect(worker.headers()["content-type"]).toContain("javascript");
+  // A stale worker would outlive a fixed server, so the file is never cached.
+  expect(worker.headers()["cache-control"]).toContain("no-cache");
+  const source = await worker.text();
+  expect(source).toContain("notificationclick");
+  // No fetch handler: the worker never stands between the app and the server.
+  expect(source).not.toMatch(/addEventListener\(\s*["']fetch["']/);
+
+  // The stack's HTTPS certificate comes from a local authority the browser does not know, and a
+  // browser refuses to install a worker over such a connection, so activation is checked on the
+  // stacks served on localhost without TLS.
+  if (!HTTPS) {
+    await page.goto("/");
+    const state = await page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.register("/sw.js");
+      const ready = await navigator.serviceWorker.ready;
+      const scriptURL = ready.active?.scriptURL ?? null;
+      await registration.unregister();
+      return { scriptURL, scope: registration.scope };
+    });
+    expect(state).toEqual({ scriptURL: `${stack.origin}/sw.js`, scope: `${stack.origin}/` });
+  }
+  expect(problems).toEqual([]);
+});
+
 test("over HTTPS, plain HTTP is redirected and browsers are told to stay on HTTPS", async () => {
   test.skip(!HTTPS, "the stack under test is served without TLS");
   // These requests verify the certificate against Caddy's local authority and the host name.

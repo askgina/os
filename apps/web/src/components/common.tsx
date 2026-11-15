@@ -62,13 +62,22 @@ export function ErrorState({ error, retry }: { error: unknown; retry?: () => voi
   );
 }
 
-/** The error from a write, shown next to the button that caused it. */
-export function FormError({ error }: { error: unknown }) {
+/**
+ * The error from a write, shown next to the button that caused it. `explain` gives the words for
+ * the errors a page knows better than the API's own message; null leaves it to that message.
+ */
+export function FormError({
+  error,
+  explain,
+}: {
+  error: unknown;
+  explain?: (error: unknown) => string | null;
+}) {
   if (!error) return null;
   return (
     <p role="alert" className="flex items-start gap-1.5 text-sm text-danger">
       <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
-      {errorMessage(error)}
+      {explain?.(error) ?? errorMessage(error)}
     </p>
   );
 }

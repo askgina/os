@@ -40,10 +40,10 @@ Success means:
 - [x] (2026-11-15) Owner decisions D1 to D7 in `Decision Log`: Eric chose the recommended option of each.
 - [x] (2026-11-15) Milestones 1 and 2 are commit `371c2ce`, CI run 43705883757 green (check, test, ui, stack amd64/arm64/tls). Milestone 1: notification outbox and signed webhook (`apps/server/src/notify/`, migration `0005_notifications`). The webhook also reports `mandate.used`. First start creates `notify-webhook-secret`; Compose passes it.
 - [x] (2026-11-15) Milestone 2: Web Push sender (RFC 8291, RFC 8292), reproducing the RFC 8291 Appendix A body byte for byte. First start creates `vapid-key.pem`.
-- [x] (2026-11-15) Milestone 3: subscriptions, preferences, content levels, API (commit `e8ae6ff`, migration `0006_push_subscriptions`, seven routes). CI run 43707841094: test, ui and stack amd64/arm64/tls green; `check` red on one unformatted Markdown table, fixed in the next commit.
+- [x] (2026-11-15) Milestone 3: subscriptions, preferences, content levels, API (commit `e8ae6ff`, migration `0006_push_subscriptions`, seven routes). CI run 43707841094: test, ui and stack amd64/arm64/tls green; `check` red on one unformatted Markdown table, fixed in the next commit. All six jobs green at `3bf1a7b`, CI run 43709103267.
 - [ ] Milestone 4: web app manifest, service worker, return path after sign-in.
 - [x] (2026-11-15) Milestone 5: expiry reminders and quiet hours (same commit and run as Milestone 3). The webhook is not held by quiet hours.
-- [ ] Milestone 6: ntfy sidecar example, docs, threat model, release gates.
+- [x] (2026-11-15) Milestone 6: ntfy sidecar example (`examples/ntfy-sidecar`, its own Compose overlay), docs, threat model, two webhook release gates (commits `b03f277`, `ec28864`). CI run 43709103267 green at `3bf1a7b` on check, test, ui and stack amd64/arm64/tls. No release gate turns Web Push on: push delivery is tested against a local stand-in push service in the server tests only. The sidecar's overlay has not been started against a real ntfy server.
 - [ ] Manual staging check: a real phone receives a push and opens the approval.
 
 ## Surprises & Discoveries
@@ -56,6 +56,10 @@ Success means:
   Evidence: `apps/web/src/router.tsx:32-33` redirects to `/login` with no return path.
 - Observation: the CSP needs no change for a same-origin service worker; `worker-src` is absent and falls back to `script-src 'self'` (CSP Level 3). Not yet observed in a browser.
   Evidence: `packages/api/src/csp.ts:11-23`.
+- Observation: the open question on Declarative Web Push is answered: no standard requires `navigate` to be on the site's own origin. The WHATWG Notifications standard sets a notification's "navigation URL" to whatever `navigate` parses to, and the Push API proposal (w3c/push-api#385, closed 2025-08) links to another origin in its own example. Safari 18.4 and later shows such a message without the service worker, so the worker's same-origin check does not run there; the server only ever sends `PUBLIC_ORIGIN` links with no token.
+  Evidence: https://notifications.spec.whatwg.org/ ("If options["navigate"] exists, then parse it using baseURL"); https://github.com/w3c/push-api/pull/385 (example `"navigate": "https://email.example/message/12"`).
+- Observation: Chromium's headless shell, which Playwright uses by default, reports `Notification.permission` as `denied` and refuses `showNotification` in a service worker even after `grantPermissions(["notifications"])` (while `requestPermission()` answers `granted`). Chromium's new headless mode (`channel: "chromium"`) behaves as a headed browser, and `ServiceWorker.deliverPushMessage` then reaches the worker's `push` handler. `pushManager.subscribe` fails in both ("Registration failed - permission denied"), so the web journey stands in for the subscription only.
+  Evidence: probe with Playwright 1.65.1, Chromium 159.0.8154.6, 2026-11-15; `apps/web/playwright.config.ts`, `apps/web/test/push-stand-in.ts`.
 - Observation: the npm `web-push` package is MPL-2.0 and its 4.0.0 release is four days old.
   Evidence: `https://registry.npmjs.org/web-push` (latest 4.0.0, licence MPL-2.0, released 2026-11-10).
 

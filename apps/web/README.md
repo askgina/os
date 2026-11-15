@@ -49,11 +49,63 @@ It is a Vite, React 19 and Tailwind 4 single-page app. It talks only to `/api/v1
 `createApiClient()` from `@askgina/os-api`. Signing in and adding a passkey go through
 `@simplewebauthn/browser`.
 
-A page opened while signed out, such as an approval link sent to a phone, sends the person to
-`/login?next=<path>` and back to that page after sign-in. The same happens when a session ends
-while a page is open. `src/lib/return-path.ts` decides what `next` may be: a path on this site with
-one leading `/`. It refuses `//host`, `/\host`, any backslash, schemes, absolute URLs and control
-characters, and then lands on the workspace list instead.
+A page opened while signed out, such as an approval link sent to a phone or opened from a
+notification, sends the person to `/login?next=<path>` and back to that page after sign-in. The
+same happens when a session ends while a page is open. `src/lib/return-path.ts` decides what
+`next` may be: a path on this site with one leading `/`. It refuses `//host`, `/\host`, any
+backslash, schemes, absolute URLs, control characters, and an encoded `/`, `\` or control
+character in the path (`%2F`, `%5C`, `%09`), and then lands on the workspace list instead.
+
+## Notifications
+
+The settings page turns notifications on for the device it is opened on, lists the person's
+devices (with "This device" and a Remove button for each), has two switches per workspace
+("Notify me", and one reminder shortly before a request expires) and quiet hours: a window such as
+22:00 to 07:00, in a time zone chosen from the browser's list (the device's own to start with),
+during which notifications wait, and are dropped if their request expires first. When the server
+does not send Web Push (`PushConfig.enabled` false, the operator's default), the page says so and
+points to the other way: the operator's webhook, which can pass waiting requests on to a chat or
+an ntfy app. Every refusal has its own sentence (`explainNotificationError` in `src/lib/codes.ts`):
+the server's `push_off`, `endpoint_refused` and `bad_subscription`, a blocked or dismissed
+permission, a worker that would not install and a push service that could not be reached.
+
+Each workspace's overview has "What notifications say", with what each level shows on a locked
+screen: only that requests wait ("Approval waiting · 1 request needs your passkey", the default),
+or also the kind of request, who asked and the workspace ("Payment waiting · Invoice payer in
+Research team"). Never an amount or a recipient. Only an owner can change it, with no passkey, and
+the change is in the activity log; everyone else sees the level and that only an owner can change
+it.
+
+`src/lib/push.ts` decides whether this browser can get notifications (`pushSupport`): `available`,
+`blocked` (the person blocked them for this site), `needs-install` (an iPhone or iPad in a Safari
+or other tab: notifications come only to the app added to the Home Screen, from iOS 16.4) or
+`unsupported` (no service worker or push, a page not on HTTPS, or iOS before 16.4). Turning
+notifications on asks the browser's permission first, on the press of the button (iOS asks only
+then), installs the worker, subscribes with the server's key and sends the subscription to the
+server. The server's list of devices names no endpoint, so the page remembers in `localStorage`
+which device this browser became and for whom, and says when notifications stopped on this device:
+the browser dropped or replaced its subscription, the server's key changed, or the device was
+removed elsewhere. Turning them on again replaces it.
+
+The app is installable: `public/manifest.webmanifest` (standalone, scope `/`) and the icons in
+`public/icons/`, drawn by `node dev/icons.ts` from the shapes of `public/favicon.svg`.
+
+The service worker is `public/sw.js`, served as it is at `/sw.js` with scope `/`, by the Vite dev
+server and from the build alike. It handles `push` and `notificationclick` only: no `fetch`
+handler, no Cache Storage, no request to the API and no action buttons. It shows every message
+(Safari revokes a subscription whose messages show nothing): the server's Declarative Web Push
+JSON with plain text cut to 60 characters, and only when its link is this site's approval page or
+the workspace list; anything else as a generic "Approval waiting" that opens the workspace list.
+Pressing a notification brings a window of the app to that path, or opens one; a signed-out
+device lands on sign-in, which goes back to the approval. The CSP needs no change: a worker from
+the site's own origin falls under `script-src 'self'`, and `manifest-src 'self'` covers the
+manifest.
+
+Safari 18.4 and later shows a Declarative Web Push message itself, without the worker, so the
+worker's link check does not run there. The standard does not require that link to be on the
+site's own origin (the WHATWG Notifications "navigation URL" is any URL that parses; the Push API
+proposal, w3c/push-api#385, links to another origin in its own example). The server only ever
+sends links on its own origin, carrying no token.
 
 ## Development
 
@@ -77,6 +129,11 @@ only if the wallet's limits still allow it, a payment the agent proposes (throug
 against the wallet's limits too, and anything else goes to the inbox. It is a fixture: the real
 page is `apps/approve/public/`, and the stand-in says on screen that it checks no signature.
 
+Notification settings are kept as the server keeps them, and the fixture refuses a subscription
+as the server does (`push_off`, `endpoint_refused`, a key that is not a P-256 point). Web Push is
+on with a key made at start; `OS_WEB_FIXTURE_WEB_PUSH=0` starts it off, and `/__fixture/web-push`
+turns it off or on as the operator's `WEB_PUSH_ENABLED` would. The fixture never pushes anything.
+
 ```bash
 bun run fixture   # the fixture API on 127.0.0.1:55731, its confirmation page on :55732
 bun run dev       # the UI on http://localhost:55730, proxying /api to the fixture
@@ -93,13 +150,27 @@ the React plugin's Fast Refresh: a change reloads the page.
 - `bunx vitest run test/<file>.test.ts`: plain logic, such as the status sentences, the
   operator command, the sign-in return path and the mandate editor's helpers (whole units to
   base units, the worst case, the end-time choices, the sentences, the meaning of every mandate
-  code).
+  code). For notifications: `sw.test.ts` runs the real `public/sw.js` in a stand-in worker scope
+  (what each message shows, that only a page of this site opens, that it listens for nothing
+  else), `push.test.ts` the support matrix (desktop, Android, iPhone and iPad in a tab and from
+  the Home Screen, before and after iOS 16.4, blocked) and the state of this device, and
+  `quiet-hours.test.ts` the quiet hours form.
 - `bunx playwright test --project=<phone-light|phone-dark|desktop-light|desktop-dark|phone-wide-font>`:
   the first-day journey in Chromium with a virtual authenticator. Every approval goes through
   the confirmation page's link and back. A second person, with their own authenticator, joins as
   an approver, proves on the confirmation page that the new passkey is theirs, and the owner
   approves the change after the fingerprints match. The owner then approves payments in advance,
-  the agent pays under it with nobody asked, and the owner revokes it. Playwright starts the
+  the agent pays under it with nobody asked, and the owner revokes it. Then notifications: off at
+  the server first, then on for this device, a message shown by the worker, another device
+  removed, a reminder switched off, quiet hours set, and the workspace's notifications allowed to
+  name the request, which a viewer sees but cannot change. After signing out, a notification's
+  path leads through sign-in back to its approval. Headless Chromium reaches no push service, so
+  the browser's push subscription is a stand-in (`test/push-stand-in.ts`: real keys, a made-up
+  endpoint) and messages reach the real worker through the DevTools protocol, unencrypted; the
+  permission, the worker's registration under the production Content-Security-Policy and the
+  worker itself are the browser's own. The journey runs in Chromium's new headless mode
+  (`channel: "chromium"`): the separate headless shell reports notifications as denied whatever
+  is granted, and its service workers may not show any. Playwright starts the
   fixture and the Vite dev server itself, fails on any console error or failed request, and
   writes screenshots to `dev/screenshots/`. Set `OS_WEB_BASE_URL` to run it against a real
   server instead (and `OS_WEB_PROPOSE_URL`, `OS_WEB_SETUP_TOKEN` to match it).

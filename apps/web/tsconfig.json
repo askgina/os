@@ -8,5 +8,5 @@
     "types": ["node", "vite/client"],
     "paths": { "@/*": ["./src/*"] }
   },
-  "include": ["src", "dev", "test", "vite.config.ts", "playwright.config.ts"]
+  "include": ["src", "public", "dev", "test", "vite.config.ts", "playwright.config.ts"]
 }

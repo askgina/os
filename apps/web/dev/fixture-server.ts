@@ -17,17 +17,18 @@
  * waits for the person it adds to answer there with the new passkey ("This passkey is mine"),
  * which shows them its fingerprint; until then nobody can approve it.
  *
- * Besides the contract it has three development endpoints under `/__fixture/`: one lets a test
+ * Besides the contract it has four development endpoints under `/__fixture/`: one lets a test
  * act as an agent and propose a payment (the real server takes those over MCP), one puts a sent
- * payment into a chain outcome (stuck, or rejected by the chain), and one resets state.
+ * payment into a chain outcome (stuck, or rejected by the chain), one turns Web Push off or on
+ * as an operator would with `WEB_PUSH_ENABLED`, and one resets state.
  *
  * Approvals in advance (mandates) are held and counted here as the signer holds them: a proposed
  * transfer that one of the agent's live mandates covers is sent with no request, checked against
  * the wallet's limits too and counted for good; anything else opens a request as usual.
  *
  * Notification settings are kept as the server keeps them. Web Push reports itself on, with a
- * P-256 key made at start (`OS_WEB_FIXTURE_WEB_PUSH=0` turns it off); the fixture stores
- * subscriptions but never pushes anything.
+ * P-256 key made at start (`OS_WEB_FIXTURE_WEB_PUSH=0` starts it off, and a reset goes back to
+ * that); the fixture stores subscriptions but never pushes anything.
  */
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -111,20 +112,18 @@ const PUSH_ENDPOINT_HOSTS = [
   "push.apple.com",
   "notify.windows.com",
 ];
-/** The application server key browsers subscribe with; null while Web Push is off. */
-const PUSH_KEY =
-  process.env.OS_WEB_FIXTURE_WEB_PUSH === "0"
-    ? null
-    : (() => {
-        const jwk = generateKeyPairSync("ec", { namedCurve: "prime256v1" }).publicKey.export({
-          format: "jwk",
-        });
-        return Buffer.concat([
-          Buffer.from([0x04]),
-          Buffer.from(jwk.x ?? "", "base64url"),
-          Buffer.from(jwk.y ?? "", "base64url"),
-        ]).toString("base64url");
-      })();
+/** The application server key browsers subscribe with, while Web Push is on. */
+const PUSH_KEY = (() => {
+  const jwk = generateKeyPairSync("ec", { namedCurve: "prime256v1" }).publicKey.export({
+    format: "jwk",
+  });
+  return Buffer.concat([
+    Buffer.from([0x04]),
+    Buffer.from(jwk.x ?? "", "base64url"),
+    Buffer.from(jwk.y ?? "", "base64url"),
+  ]).toString("base64url");
+})();
+const WEB_PUSH_AT_START = process.env.OS_WEB_FIXTURE_WEB_PUSH !== "0";
 
 type RefusalCode =
   | "invalid_request"
@@ -231,6 +230,8 @@ interface State {
   /** Each person's switches per workspace, keyed `userId workspaceId`; absent means both on. */
   notificationSwitches: Map<string, { webPush: boolean; reminders: boolean }>;
   quietHours: Map<string, QuietHours>;
+  /** Whether the "operator" turned Web Push on (`/__fixture/web-push`). */
+  webPush: boolean;
 }
 
 function freshState(): State {
@@ -251,6 +252,7 @@ function freshState(): State {
     pushSubscriptions: new Map(),
     notificationSwitches: new Map(),
     quietHours: new Map(),
+    webPush: WEB_PUSH_AT_START,
   };
 }
 
@@ -1979,7 +1981,10 @@ const handlers: Record<RouteName, Handler> = {
     memberOf(workspace, id);
     return { items: workspace.decisions };
   },
-  getPushConfig: () => ({ enabled: PUSH_KEY !== null, applicationServerKey: PUSH_KEY }),
+  getPushConfig: () => ({
+    enabled: state.webPush,
+    applicationServerKey: state.webPush ? PUSH_KEY : null,
+  }),
   listPushSubscriptions: ({ userId }) => {
     const id = signedIn(userId);
     return {
@@ -1988,9 +1993,9 @@ const handlers: Record<RouteName, Handler> = {
         .map((item) => item.summary),
     };
   },
-  addPushSubscription: ({ body, userId }) => {
+  addPushSubscription: async ({ body, userId }) => {
     const id = signedIn(userId);
-    if (PUSH_KEY === null)
+    if (!state.webPush)
       throw new Refusal("conflict", "Notifications on devices are off on this server.", "push_off");
     const endpoint = String(body.endpoint);
     if (!pushEndpointAllowed(endpoint))
@@ -1999,6 +2004,24 @@ const handlers: Record<RouteName, Handler> = {
         "This push service is not one this server sends to.",
         "endpoint_refused",
       );
+    // As the server does: the browser's key must be a point on P-256.
+    const keys = body.keys as { p256dh: string };
+    const p256dh = new Uint8Array(Buffer.from(keys.p256dh.replace(/=+$/, ""), "base64url"));
+    try {
+      await crypto.subtle.importKey(
+        "raw",
+        p256dh,
+        { name: "ECDH", namedCurve: "P-256" },
+        false,
+        [],
+      );
+    } catch {
+      throw new Refusal(
+        "invalid_request",
+        "The subscription's key is not a P-256 public key.",
+        "bad_subscription",
+      );
+    }
     const label = typeof body.label === "string" ? body.label : null;
     for (const [subscriptionId, item] of state.pushSubscriptions) {
       if (item.endpoint !== endpoint) continue;
@@ -2113,6 +2136,14 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/__fixture/reset" && req.method === "POST") {
       state = freshState();
       return send(res, 200, { ok: true, setupToken: SETUP_TOKEN });
+    }
+    // Lets a test turn Web Push off or on, as the operator does with `WEB_PUSH_ENABLED`.
+    if (url.pathname === "/__fixture/web-push" && req.method === "POST") {
+      const input = (await readBody(req)) as { enabled?: unknown };
+      if (typeof input.enabled !== "boolean")
+        throw new Refusal("invalid_request", "enabled must be true or false.");
+      state.webPush = input.enabled;
+      return send(res, 200, { ok: true });
     }
     // Lets a test put a sent payment into a chain outcome the fixture never reaches by itself.
     if (url.pathname === "/__fixture/settle" && req.method === "POST") {

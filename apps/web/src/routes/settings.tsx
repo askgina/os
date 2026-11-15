@@ -11,6 +11,7 @@ import {
   linkClass,
   PageHeader,
 } from "@/components/common.tsx";
+import { NotificationSettings } from "@/components/notifications.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -43,7 +44,7 @@ export function SettingsPage() {
   return (
     <div className="grid grid-cols-1 gap-6">
       <PageHeader
-        title="Your passkeys"
+        title="Settings"
         description={
           session.data?.user ? `Signed in as ${session.data.user.displayName}` : undefined
         }
@@ -114,6 +115,7 @@ export function SettingsPage() {
           <AddPasskey onApprovals={setOpened} />
         </CardContent>
       </Card>
+      {session.data?.user ? <NotificationSettings userId={session.data.user.id} /> : null}
     </div>
   );
 }

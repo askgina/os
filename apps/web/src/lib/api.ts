@@ -75,6 +75,11 @@ export const keys = {
   audit: (workspaceId: string) => ["audit", workspaceId] as const,
   decisions: (workspaceId: string) => ["decisions", workspaceId] as const,
   passkeys: ["passkeys"] as const,
+  pushConfig: ["push", "config"] as const,
+  pushDevices: ["push", "devices"] as const,
+  /** This browser's own push subscription, read from the browser, not the API. */
+  thisBrowser: ["push", "this-browser"] as const,
+  notificationPreferences: ["notification-preferences"] as const,
   invite: (token: string) => ["invite", token] as const,
   invites: (workspaceId: string) => ["invites", workspaceId] as const,
 };
@@ -203,6 +208,19 @@ export const useSignerDecisions = (workspaceId: string) =>
 
 export const usePasskeys = () =>
   useApi<"listPasskeys">(keys.passkeys, () => api.call("listPasskeys"));
+
+/** Whether the server sends Web Push, and the key a browser subscribes with. */
+export const usePushConfig = () =>
+  useApi<"getPushConfig">(keys.pushConfig, () => api.call("getPushConfig"));
+
+/** The signed-in person's devices that get notifications. */
+export const usePushDevices = () =>
+  useApi<"listPushSubscriptions">(keys.pushDevices, () => api.call("listPushSubscriptions"));
+
+export const useNotificationPreferences = () =>
+  useApi<"getNotificationPreferences">(keys.notificationPreferences, () =>
+    api.call("getNotificationPreferences"),
+  );
 
 export const useInvites = (workspaceId: string) =>
   useApi<"listInvites">(keys.invites(workspaceId), () =>

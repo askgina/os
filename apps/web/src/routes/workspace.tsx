@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { backLinkClass, EmptyState, ErrorState, FormError, Loading } from "@/components/common.tsx";
+import { NotificationLevelCard } from "@/components/notifications.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -244,6 +245,8 @@ export function WorkspaceOverview() {
           </ul>
         </CardContent>
       </Card>
+
+      <NotificationLevelCard workspace={data} />
 
       <PauseCard workspace={data} />
     </div>

@@ -40,6 +40,13 @@ describe("safeReturnPath", () => {
     "/settings\u007f",
     "/.//evil.example",
     "/x/..//evil.example",
+    "/%2F%2Fevil.example",
+    "/%2f%2fevil.example",
+    "/%2F/evil.example",
+    "/%5Cevil.example",
+    "/%5c%5cevil.example",
+    "/w/ws_01HZY/approvals/apr_01HZY%2F..%2F..%2F%2Fevil.example",
+    "/%09/evil.example",
     "",
     `/${"a".repeat(2048)}`,
   ])("falls back to the landing page for %j", (hostile) => {
@@ -52,6 +59,17 @@ describe("safeReturnPath", () => {
       expect(safeReturnPath(value)).toBe(DEFAULT_LANDING);
     },
   );
+});
+
+describe("a notification's link opened while signed out", () => {
+  it("goes to sign-in and back to the approval, through the query string unchanged", () => {
+    // The router sends a signed-out visit of the notification's path to `signInHref(path)`;
+    // the sign-in page reads `next` back from its query string and checks it again.
+    const href = signInHref(APPROVAL);
+    expect(href).toBe(`/login?next=${encodeURIComponent(APPROVAL)}`);
+    const next = new URL(href, "https://os.example").searchParams.get("next");
+    expect(safeReturnPath(next)).toBe(APPROVAL);
+  });
 });
 
 describe("signInHref", () => {

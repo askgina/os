@@ -26,7 +26,14 @@ export default defineConfig<LayoutOptions>({
   retries: 0,
   reporter: [["list"]],
   outputDir: "test-results",
-  use: { baseURL, trace: "retain-on-failure" },
+  use: {
+    baseURL,
+    trace: "retain-on-failure",
+    // Chromium's new headless mode, not the separate headless shell: in the shell
+    // `Notification.permission` stays "denied" and a service worker may not show notifications,
+    // whatever permission is granted. `playwright install chromium` installs both.
+    channel: "chromium",
+  },
   projects: [
     { name: "phone-light", use: { ...phone, colorScheme: "light" } },
     { name: "phone-dark", use: { ...phone, colorScheme: "dark" } },
