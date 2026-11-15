@@ -220,7 +220,8 @@ can be copied, or made from a template file. The copy gets new keys, new agent t
 invite links instead of members, and an admin threshold of 1; its limits wait for its approvers
 to approve them, and no mandate is copied. A person can erase themselves: their passkeys are
 first removed through requests people approve, then their name, passkeys, sessions and
-notification settings are deleted. Their user id stays, so the audit logs still verify. These have unit tests only
+notification settings are deleted. Their user id stays, so the audit logs still verify. Release
+gates run all of these on the full stack
 ([`deploy/README.md`](deploy/README.md#exporting-and-cloning-a-workspace)).
 
 ## What this protects, and what it does not
@@ -269,8 +270,8 @@ Scope: EVM chains; native transfers, ERC-20 transfers and allowlisted contract c
 approval for one transaction, or a mandate for a bounded series of one agent's transfers; a
 stuck transaction repriced under its approval or cancelled with passkeys, tested against a local
 chain only; retiring a wallet and deleting a workspace, with keys destroyed after a delay, tested
-on the full stack; exporting, copying and importing a workspace and erasing a person, with unit
-tests only; key-encryption keys in a keyring file or in OpenBao Transit, the OpenBao provider
+on the full stack; exporting, copying and importing a workspace and erasing a person, tested on
+the full stack; key-encryption keys in a keyring file or in OpenBao Transit, the OpenBao provider
 with unit tests only; limit orders on Hyperliquid perpetual markets and withdrawals to the
 wallet's own address, on Hyperliquid's testnet only, each approved with passkeys, the encoder
 proven against the venue SDK's signed vectors, the rest unit-tested with the real-stack gate

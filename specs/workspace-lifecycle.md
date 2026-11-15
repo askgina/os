@@ -153,8 +153,9 @@ Success means:
       `packages/api/test/api.test.ts` (149), and unchanged in behavior
       `identity/identity.test.ts` (41, the origin check now covers `eraseMe`),
       `lifecycle/export.test.ts` (4), `lifecycle/clone.test.ts` (10). Not run: CI.
-- [ ] (2026-11-15) Release gates for export, clone, import and erasing a person: written and
-      type-checked, not run; CI pending. Six more tests at the end of
+- [x] (2026-11-15) Release gates for export, clone, import and erasing a person: green in CI
+      run 43758300592 at `7f5c3b4` (`stack` amd64 and arm64, lifecycle stack 16 of 16, first
+      run, no product defect found). Six more tests at the end of
       `e2e/test/lifecycle.spec.ts`, on the lifecycle stack, which now has Web Push on toward a
       push service that never resolves (`e2e/compose.lifecycle.yaml`, `E2E_LIFECYCLE=1` from
       `e2e/run.sh`) so a person's device can be added through the API: the template (settings,
@@ -602,9 +603,10 @@ Every owner decision is taken. Each names its question (D1-D12) in Risks and Ope
   tls; 35 release gates and 10 lifecycle gates on amd64 and arm64) for Milestones 1 to 7; run
   43732195805 at `9a7d594` (all seven jobs, 1,397 unit tests) for Milestone 8 and the export,
   clone, import and erase screens. That supersedes every "CI pending" in `Progress`.
-  Unproven: export, clone, import and erasure have unit tests and a fixture journey; their
-  release gates (six, at the end of `e2e/test/lifecycle.spec.ts`) are written and
-  type-checked, CI pending; the D10 push path end to end; two erasures at once; a clone that fails
+  Export, clone, import and erasure have six release gates at the end of
+  `e2e/test/lifecycle.spec.ts`, green in CI run 43758300592.
+  Unproven: import from a truly separate installation (the gate uses an unknown user id on
+  the one stack); the D10 push path end to end; two erasures at once; a clone that fails
   part-way leaves a partly created workspace (documented, untested); the operator export
   steps on a real host beyond the gate; a wrong signer clock.
 

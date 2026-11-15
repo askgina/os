@@ -933,11 +933,11 @@ composite wraps new keys under Transit and unwraps each key with the provider th
 - **Rotating the Transit key** and raising its `min_decryption_version` makes copies wrapped
   under older versions, backups included, unopenable.
 
-Export, clone, import, erasing a person and the OpenBao provider have unit tests only
+Export, clone, import and erasing a person have release gates on the real stack
+([`lifecycle.spec.ts`](../e2e/test/lifecycle.spec.ts)), beside their unit tests
 ([`export.test.ts`](../apps/server/test/lifecycle/export.test.ts),
 [`clone.test.ts`](../apps/server/test/lifecycle/clone.test.ts),
-[`erase.test.ts`](../apps/server/test/identity/erase.test.ts),
-[`packages/keys/test/`](../packages/keys/test/)). No release gate runs them on the real stack.
+[`erase.test.ts`](../apps/server/test/identity/erase.test.ts)).
 
 ## Running on more than one machine
 

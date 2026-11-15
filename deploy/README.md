@@ -618,7 +618,8 @@ the members this installation knows, and one policy change per wallet that appli
 new workspace's approvers approve it. No mandate, approval or history is copied. A template
 naming a chain that `deploy/chains.json` does not list is refused before anything is created.
 
-Exporting, cloning and importing have unit tests only; no release gate runs them on the stack.
+Exporting, cloning and importing have release gates on the full stack
+(`e2e/test/lifecycle.spec.ts`, CI run 43758300592).
 
 ## Erasing a person
 
@@ -647,7 +648,8 @@ it, then run the command again. Exit 2: refused, with the code above. Exit 1: us
 Backups taken before an erasure keep the person's name and everything else until they are
 destroyed. The user id stays everywhere, so the audit logs still verify.
 
-Erasing has unit tests only; no release gate runs it on the stack.
+Erasing has release gates on the full stack, by the person and by the operator
+(`e2e/test/lifecycle.spec.ts`, CI run 43758300592).
 
 ## When no approver is left
 
