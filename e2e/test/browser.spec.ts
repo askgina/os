@@ -459,6 +459,105 @@ test("a new approver proves on the confirmation page that the passkey is theirs,
   expect(problems).toEqual([]);
 });
 
+test("an owner approves payments in advance in the browser, the agent's covered payment confirms with nobody asked, and Revoke ends it", async () => {
+  test.setTimeout(240_000);
+  expect(agentToken, "the first gate creates the agent").toMatch(/^osa_/);
+  let mandatePath = "";
+
+  await test.step("the owner fills the editor on the wallet page and sees the worst case first", async () => {
+    await page.goto("/");
+    await page.getByRole("link", { name: /Research team/ }).click();
+    await page.getByRole("link", { name: /Invoice payer/ }).click();
+    await page.getByRole("link", { name: "Open wallet" }).click();
+    const card = page.locator("#mandates");
+    await card.getByRole("button", { name: "Approve in advance…" }).click();
+    const editor = card.getByRole("form", { name: "New approval in advance" });
+    await editor.getByLabel("Recipients, one address per line").fill(RECIPIENT);
+    await editor.getByLabel("Most per payment").fill("0.01");
+    await editor.getByLabel("Most in any 24 hours").fill("0.02");
+    await editor.getByLabel("Most in total").fill("0.03");
+    await editor.getByLabel("Payments, at most").fill("3");
+    await editor.getByRole("radio", { name: /^In 7 days/ }).check();
+    await editor
+      .getByLabel("Purpose, shown to everyone who approves")
+      .fill("Pay Northwind invoices this week");
+    await expect(editor.getByRole("region", { name: "Worst case" })).toContainText(
+      "At most 0.03 ETH can leave this wallet under this approval",
+    );
+    await editor.getByRole("button", { name: "Ask for approval" }).click();
+  });
+
+  await test.step("the grant card shows the mandate, and the passkey approves it on the signer's page", async () => {
+    await expect(
+      page.getByRole("heading", { name: /^Let Invoice payer pay from .+ without asking$/ }),
+    ).toBeVisible();
+    await expect(page.getByRole("region", { name: "Worst case" })).toContainText(
+      "At most 0.03 ETH can leave this wallet under this approval",
+    );
+    await expect(page.getByRole("list", { name: "Recipients" }).getByRole("listitem")).toHaveCount(
+      1,
+    );
+    await expect(page.getByRole("button", { name: "Approve with passkey" })).toHaveCount(0);
+    await approveOnSignersPage();
+    await expect(page.getByText("Done. The change is in effect.")).toBeVisible({
+      timeout: 60_000,
+    });
+    await page.getByRole("link", { name: "Open the approval in advance" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Approved in advance for Invoice payer" }),
+    ).toBeVisible();
+    await expect(page.getByText("0 of 3 payments used")).toBeVisible();
+    mandatePath = new URL(page.url()).pathname;
+  });
+
+  // The agent pays a listed recipient within the caps: signed and sent with no person asked.
+  const agent = await connectAgent(`${stack.origin}/mcp`, agentToken);
+  const before = await chain.getBalance({ address: RECIPIENT });
+  const covered = await agent.call("propose_transfer", {
+    chainId: "eip155:31337",
+    to: RECIPIENT,
+    amount: "0.005",
+    memo: "Invoice 4413, approved in advance",
+  });
+  expect(covered).toMatchObject({
+    authorizedBy: "mandate",
+    mandateId: mandatePath.split("/").at(-1),
+    approvalUrl: null,
+  });
+  await expect
+    .poll(async () => (await agent.call("get_intent", { intentId: covered.intentId })).status, {
+      timeout: 120_000,
+    })
+    .toBe("confirmed");
+  expect(formatEther((await chain.getBalance({ address: RECIPIENT })) - before)).toBe("0.005");
+
+  await test.step("the mandate page shows the payment and the use, and Revoke ends it without a passkey", async () => {
+    await page.goto(mandatePath);
+    await expect(page.getByText("1 of 3 payments used")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/^Send 0\.005 ETH to 0x/)).toBeVisible();
+    await expect(page.getByText("Confirmed", { exact: true })).toBeVisible({ timeout: 60_000 });
+    await page.getByRole("button", { name: "Revoke" }).click();
+    const dialog = page.getByRole("dialog", { name: "Revoke this approval in advance?" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Revoke" }).click();
+    await expect(page.getByText("Revoked", { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/Someone who can approve revoked it\./)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Revoke" })).toHaveCount(0);
+  });
+
+  // Revoked: the same payment now waits for a person.
+  const after = await agent.call("propose_transfer", {
+    chainId: "eip155:31337",
+    to: RECIPIENT,
+    amount: "0.005",
+    memo: "Invoice 4414, after the revocation",
+  });
+  expect(after).toMatchObject({ authorizedBy: "person", mandateId: null });
+  expect(String(after.approvalUrl)).toMatch(/\/approvals\/apr_/);
+  await agent.close();
+  expect(problems).toEqual([]);
+});
+
 test("over HTTPS, plain HTTP is redirected and browsers are told to stay on HTTPS", async () => {
   test.skip(!HTTPS, "the stack under test is served without TLS");
   // These requests verify the certificate against Caddy's local authority and the host name.

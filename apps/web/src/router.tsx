@@ -7,6 +7,7 @@ import { AgentPage } from "@/routes/agent.tsx";
 import { ApprovalPage } from "@/routes/approval.tsx";
 import { ApprovalsPage } from "@/routes/approvals.tsx";
 import { JoinPage, LoginPage, SetupPage } from "@/routes/auth.tsx";
+import { MandatePage } from "@/routes/mandate.tsx";
 import { MembersPage } from "@/routes/members.tsx";
 import { SettingsPage } from "@/routes/settings.tsx";
 import { WalletPage } from "@/routes/wallet.tsx";
@@ -106,6 +107,11 @@ const agent = createRoute({
   path: "/agents/$agentId",
   component: AgentPage,
 });
+const mandate = createRoute({
+  getParentRoute: () => workspace,
+  path: "/mandates/$mandateId",
+  component: MandatePage,
+});
 const members = createRoute({
   getParentRoute: () => workspace,
   path: "/members",
@@ -124,7 +130,7 @@ const routeTree = rootRoute.addChildren([
   home,
   settings,
   approval,
-  workspace.addChildren([overview, approvals, wallet, agent, members, activity]),
+  workspace.addChildren([overview, approvals, wallet, agent, mandate, members, activity]),
 ]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent" });

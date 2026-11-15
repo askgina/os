@@ -1,3 +1,5 @@
+import type { WorkspaceDetail } from "@askgina/os-api";
+import type { AgentId, WalletId } from "@askgina/os-protocol";
 import { useMutation } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import { Ban, KeyRound, RefreshCw } from "lucide-react";
@@ -15,6 +17,7 @@ import {
   PageHeader,
   useNow,
 } from "@/components/common.tsx";
+import { MandatesCard } from "@/components/mandate.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -26,10 +29,11 @@ import {
   CardTitle,
 } from "@/components/ui/card.tsx";
 import { Dialog } from "@/components/ui/dialog.tsx";
-import { api, keys, queryClient, useIntents, useWorkspace } from "@/lib/api.ts";
+import { api, keys, queryClient, useIntents, useWallet, useWorkspace } from "@/lib/api.ts";
+import { explainCode } from "@/lib/codes.ts";
 import { formatRelative } from "@/lib/format.ts";
 import { type RevealedToken, takeRevealedToken } from "@/lib/reveal.ts";
-import { intentSentence } from "@/lib/statuses.ts";
+import { intentStatusSentence } from "@/lib/statuses.ts";
 
 export function AgentPage() {
   const { workspaceId, agentId } = useParams({ from: "/w/$workspaceId/agents/$agentId" });
@@ -51,6 +55,8 @@ export function AgentPage() {
     onSuccess: async () => {
       setConfirmDisable(false);
       await queryClient.invalidateQueries({ queryKey: keys.workspace(workspaceId) });
+      // Disabling an agent revokes its approvals in advance.
+      await queryClient.invalidateQueries({ queryKey: keys.mandates(workspaceId) });
     },
   });
 
@@ -155,6 +161,13 @@ export function AgentPage() {
         </CardContent>
       </Card>
 
+      <AgentMandates
+        workspace={workspace.data}
+        agentId={agent.id}
+        walletId={agent.walletId}
+        active={agent.status === "active"}
+      />
+
       <RecentIntents workspaceId={workspaceId} agentId={agentId} />
 
       <Dialog
@@ -181,7 +194,8 @@ export function AgentPage() {
         title="Disable this agent?"
       >
         <p className="mt-2 text-sm text-muted-foreground">
-          Its token stops working and it can propose nothing more. Its wallet and history stay.
+          Its token stops working and it can propose nothing more. Its approvals in advance are
+          revoked. Its wallet and history stay.
         </p>
         <FormError error={disable.error} />
         <div className="mt-6 flex justify-end gap-2">
@@ -198,6 +212,31 @@ export function AgentPage() {
         </div>
       </Dialog>
     </div>
+  );
+}
+
+/**
+ * The agent's approvals in advance, on any wallet. An owner may ask for a new one from the
+ * agent's own wallet, while the agent is active.
+ */
+function AgentMandates({
+  workspace,
+  agentId,
+  walletId,
+  active,
+}: {
+  workspace: WorkspaceDetail;
+  agentId: AgentId;
+  walletId: WalletId;
+  active: boolean;
+}) {
+  const wallet = useWallet(workspace.id, walletId);
+  return (
+    <MandatesCard
+      workspace={workspace}
+      filter={{ agentId }}
+      editor={wallet.data && active ? { wallet: wallet.data, agentId } : null}
+    />
   );
 }
 
@@ -295,9 +334,27 @@ function RecentIntents({ workspaceId, agentId }: { workspaceId: string; agentId:
                   ) : (
                     <p className="font-medium">{intent.display.title}</p>
                   )}
+                  {intent.mandateId ? (
+                    <p className="text-xs">
+                      <Link
+                        to="/w/$workspaceId/mandates/$mandateId"
+                        params={{ workspaceId, mandateId: intent.mandateId }}
+                        className={linkClass}
+                      >
+                        Approved in advance
+                      </Link>
+                      <span className="text-muted-foreground">: nobody was asked.</span>
+                    </p>
+                  ) : null}
                   <p className="text-xs text-muted-foreground">
-                    {formatRelative(intent.createdAt, now)} · {intentSentence[intent.status]}
+                    {formatRelative(intent.createdAt, now)} ·{" "}
+                    {intentStatusSentence(intent.status, intent.mandateId !== null)}
                   </p>
+                  {intent.failureCode ? (
+                    <p className="text-xs text-muted-foreground">
+                      {explainCode(intent.failureCode)}
+                    </p>
+                  ) : null}
                 </div>
                 <IntentStatusBadge status={intent.status} />
               </li>

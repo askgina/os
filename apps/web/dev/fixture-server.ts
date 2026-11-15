@@ -20,6 +20,10 @@
  * Besides the contract it has three development endpoints under `/__fixture/`: one lets a test
  * act as an agent and propose a payment (the real server takes those over MCP), one puts a sent
  * payment into a chain outcome (stuck, or rejected by the chain), and one resets state.
+ *
+ * Approvals in advance (mandates) are held and counted here as the signer holds them: a proposed
+ * transfer that one of the agent's live mandates covers is sent with no request, checked against
+ * the wallet's limits too and counted for good; anything else opens a request as usual.
  */
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -35,6 +39,8 @@ import {
   type InviteSummary,
   type MandateAssetView,
   type MandateDraft,
+  type MandateEndedReason,
+  type MandateStatus,
   type MandateSummary,
   type Member,
   type PasskeySummary,
@@ -51,11 +57,14 @@ import {
   checkMandateAgainstPolicy,
   type Envelope,
   envelopeChallenge,
+  evaluateMandate,
   type Intent,
   intentHash,
   keyFingerprint,
   type Mandate,
+  type MandateUsage,
   mandateHash,
+  mandateTimeState,
   mandateWorstCase,
   newId,
   normalizeMandate,
@@ -167,8 +176,8 @@ interface State {
   workspaces: Map<string, Workspace>;
   approvals: Map<string, Approval>;
   intents: Map<string, IntentDetail & { workspaceId: string }>;
-  /** Granted mandates, as the server reports them. */
-  mandates: Map<string, MandateSummary>;
+  /** Granted mandates, as the signer holds and counts them. */
+  mandates: Map<string, FixtureMandate>;
   tokens: Map<string, string>;
   invites: Map<
     string,
@@ -414,10 +423,20 @@ function approverApprovals(
  */
 function signerRefuses(approval: Approval): boolean {
   const envelope = approval.envelope;
-  if (envelope.type !== "approve-intent" && envelope.type !== "set-policy") return false;
   const wallet = workspaceOf(approval.summary.workspaceId).wallets.find(
-    (item) => item.id === envelope.walletId,
+    (item) => "walletId" in envelope && item.id === envelope.walletId,
   );
+  // A grant the wallet's current limits would refuse shows as superseded at the signer.
+  if (approval.subject.kind === "grant-mandate") {
+    return (
+      !wallet?.policy ||
+      checkMandateAgainstPolicy(approval.subject.mandate, wallet.policy, {
+        now: now(),
+        maxSeconds: MANDATE_LONGEST_SECONDS,
+      }) !== null
+    );
+  }
+  if (envelope.type !== "approve-intent" && envelope.type !== "set-policy") return false;
   const current = wallet?.policyHash ?? null;
   return envelope.type === "approve-intent"
     ? envelope.policyHash !== current
@@ -468,10 +487,21 @@ function approvalDetail(approval: Approval, userId: string): ApprovalDetail {
   const workspace = workspaceOf(approval.summary.workspaceId);
   const member = workspace.members.find((item) => item.user.id === userId);
   const subject = approval.subject;
+  const granted =
+    subject.kind === "grant-mandate" ? state.mandates.get(subject.mandate.id) : undefined;
   const liveSubject: ApprovalSubject =
     subject.kind === "approve-intent"
       ? { ...subject, intent: stripIntent(state.intents.get(subject.intent.id) ?? subject.intent) }
-      : subject;
+      : subject.kind === "grant-mandate"
+        ? {
+            ...subject,
+            assets: mandateAssets(
+              subject.mandate,
+              workspace.wallets.find((item) => item.id === subject.wallet.id)?.policy ?? null,
+            ),
+            usage: granted ? mandateSummary(granted).usage : null,
+          }
+        : subject;
   return {
     ...approval.summary,
     envelope: approval.envelope,
@@ -695,11 +725,42 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
     },
     transaction: null,
   };
+  // A covering mandate signs it with no person asked, as the server routes it to the signer.
+  const covering = coveringMandate(workspace, agent.id, wallet.id, intent, body.mandateId);
   state.intents.set(intent.id, detail);
   audit(workspace, { type: "agent", id: agent.id, name: agent.name }, "intent.proposed", {
     type: "intent",
     id: intent.id,
   });
+  if (covering) {
+    detail.mandateId = covering.mandate.id;
+    const useId = newId("apr");
+    // The signer checks the wallet's policy too, and its pause; a refusal counts nothing.
+    const refused = workspace.paused
+      ? "workspace_paused"
+      : policyRefusal(wallet.policy, intent, asset, BigInt(moved), state.spent.get(spentKey) ?? 0n);
+    if (refused !== null) {
+      detail.status = "denied";
+      detail.failureCode = refused;
+      decide(workspace, useId, "sign-under-mandate", refused);
+      return stripIntent(detail);
+    }
+    covering.uses.push({ at: now(), chainId, asset, amount: BigInt(moved) });
+    state.spent.set(spentKey, (state.spent.get(spentKey) ?? 0n) + BigInt(moved));
+    const hash = `0x${randomBytes(32).toString("hex")}` as `0x${string}`;
+    const chain = CHAINS.find((item) => item.chainId === chainId);
+    detail.status = "broadcast";
+    detail.transactionHash = hash;
+    detail.transaction = {
+      hash,
+      status: "broadcast",
+      blockNumber: null,
+      explorerUrl: chain?.explorerUrl ? `${chain.explorerUrl}/tx/${hash}` : null,
+    };
+    state.sentAt.set(intent.id, now());
+    decide(workspace, useId, "sign-under-mandate", null);
+    return stripIntent(detail);
+  }
   const policyAtProposal = wallet.policyHash;
   const approval = openApproval({
     workspace,
@@ -796,6 +857,194 @@ function policyFromDraft(
     fees: draft.fees,
     approvals: draft.approvals,
   } as WalletPolicy);
+}
+
+// --- mandates (as the signer holds and counts them; the server mirrors them) -------------------
+
+/** The signer's defaults: `SIGNER_MAX_MANDATE_SECONDS`, `SIGNER_MAX_LIVE_MANDATES_PER_WALLET`. */
+const MANDATE_LONGEST_SECONDS = 604_800;
+const LIVE_MANDATES_PER_WALLET = 16;
+
+interface FixtureMandate {
+  workspaceId: string;
+  agent: { id: Mandate["agentId"]; name: string };
+  mandate: Mandate;
+  grantApprovalId: string;
+  grantedAt: number;
+  grantedBy: string[];
+  revokedAt: number | null;
+  /** The reason it was first seen ending, kept as the server's mirror keeps it. */
+  endedReason: MandateEndedReason | null;
+  /** Every payment signed under it, counted for good: nothing is ever given back. */
+  uses: { at: number; chainId: string; asset: string; amount: bigint }[];
+}
+
+function knownAsset(asset: string): { symbol: string | null; decimals: number | null } {
+  if (asset === "native") return { symbol: "ETH", decimals: 18 };
+  if (asset === TEST_USDC) return { symbol: "USDC", decimals: 6 };
+  return { symbol: null, decimals: null };
+}
+
+/** Each asset as a person reads it, next to the wallet's current limits for it. */
+function mandateAssets(mandate: Mandate, policy: WalletPolicy | null): MandateAssetView[] {
+  return mandateWorstCase(mandate).map((entry) => {
+    const limit = policy?.assets.find(
+      (item) => item.chainId === entry.chainId && item.asset === entry.asset,
+    );
+    return {
+      chainId: entry.chainId,
+      asset: entry.asset,
+      ...knownAsset(entry.asset),
+      worstCase: entry.amount.toString(),
+      policy: limit ? { maxPerTx: limit.maxPerTx, maxPerDay: limit.maxPerDay } : null,
+    };
+  });
+}
+
+/** The signer's count, as `evaluateMandate` reads it: all-time, and in the last window. */
+function mandateUsage(record: FixtureMandate): MandateUsage {
+  const sum = (chainId: string, asset: string, since: number) =>
+    record.uses
+      .filter((use) => use.chainId === chainId && use.asset === asset && use.at > since)
+      .reduce((total, use) => total + use.amount, 0n);
+  return {
+    uses: record.uses.length,
+    total: (chainId, asset) => sum(chainId, asset, Number.NEGATIVE_INFINITY),
+    inWindow: (chainId, asset) => sum(chainId, asset, now() - record.mandate.windowSeconds),
+  };
+}
+
+function mandateStatus(record: FixtureMandate): MandateStatus {
+  if (record.revokedAt !== null) return "revoked";
+  const time = mandateTimeState(record.mandate, now());
+  if (time !== "live") return time;
+  const usage = mandateUsage(record);
+  const spent =
+    usage.uses >= record.mandate.maxUses ||
+    record.mandate.assets.every(
+      (limit) => usage.total(limit.chainId, limit.asset) >= BigInt(limit.maxTotal),
+    );
+  return spent ? "exhausted" : "active";
+}
+
+/** The mandate as the server reports it; reading it records why it ended, the first time. */
+function mandateSummary(record: FixtureMandate): MandateSummary {
+  const status = mandateStatus(record);
+  if (record.endedReason === null && (status === "expired" || status === "exhausted")) {
+    record.endedReason = status;
+  }
+  const { mandate } = record;
+  const wallet = workspaceOf(record.workspaceId).wallets.find(
+    (item) => item.id === mandate.walletId,
+  );
+  const usage = mandateUsage(record);
+  return {
+    id: mandate.id,
+    workspaceId: mandate.workspaceId,
+    walletId: mandate.walletId,
+    agent: record.agent,
+    mandate,
+    mandateHash: mandateHash(mandate),
+    status,
+    endedReason: record.endedReason,
+    grantApprovalId: record.grantApprovalId as MandateSummary["grantApprovalId"],
+    grantedAt: record.grantedAt,
+    grantedBy: record.grantedBy.map(userSummary),
+    revokedAt: record.revokedAt,
+    assets: mandateAssets(mandate, wallet?.policy ?? null),
+    usage: {
+      uses: usage.uses,
+      usesLeft: Math.max(0, mandate.maxUses - usage.uses),
+      assets: mandate.assets.map((limit) => ({
+        chainId: limit.chainId,
+        asset: limit.asset,
+        usedTotal: usage.total(limit.chainId, limit.asset).toString(),
+        usedInWindow: usage.inWindow(limit.chainId, limit.asset).toString(),
+      })),
+    },
+  };
+}
+
+/** Ends a mandate at the "signer" for good. Ending an ended one changes nothing. */
+function endMandate(record: FixtureMandate, reason: "revoked" | "agent_disabled"): void {
+  if (record.revokedAt !== null) return;
+  mandateSummary(record);
+  record.revokedAt = now();
+  record.endedReason ??= reason;
+  decide(workspaceOf(record.workspaceId), record.grantApprovalId, "revoke-mandate", null);
+}
+
+/** Why this mandate does not cover the intent now, with the signer's code, or null. */
+function mandateRefusal(record: FixtureMandate, intent: Intent): string | null {
+  const status = mandateStatus(record);
+  if (status === "revoked") return "mandate_revoked";
+  if (status === "not_yet_valid") return "mandate_not_yet_valid";
+  if (status === "expired") return "mandate_expired";
+  if (record.grantedBy.length < workspaceOf(record.workspaceId).adminThreshold) {
+    return "mandate_grant_below_threshold";
+  }
+  const decision = evaluateMandate(record.mandate, intent, mandateUsage(record));
+  return decision.allowed ? null : decision.code;
+}
+
+/**
+ * The mandate that covers an agent's intent, as the server picks it: the agent's live mandates on
+ * the wallet by `notAfter`, then id, first that covers wins. A named one that does not cover is
+ * refused with its reason. No contract call is ever signed under a mandate.
+ */
+function coveringMandate(
+  workspace: Workspace,
+  agentId: string,
+  walletId: string,
+  intent: Intent,
+  pinned: string | undefined,
+): FixtureMandate | null {
+  if (pinned === undefined && intent.operation.type === "evm.call") return null;
+  const candidates = [...state.mandates.values()]
+    .filter(
+      (record) =>
+        record.workspaceId === workspace.id &&
+        record.agent.id === agentId &&
+        (pinned === undefined
+          ? record.mandate.walletId === walletId && record.endedReason === null
+          : record.mandate.id === pinned),
+    )
+    .sort(
+      (a, b) => a.mandate.notAfter - b.mandate.notAfter || (a.mandate.id < b.mandate.id ? -1 : 1),
+    );
+  if (pinned !== undefined && candidates.length === 0) {
+    throw new Refusal("not_found", "No such mandate.");
+  }
+  for (const record of candidates) {
+    const refusal = mandateRefusal(record, intent);
+    if (refusal === null) return record;
+    if (pinned !== undefined) {
+      throw new Refusal("policy_denied", "The mandate you named does not cover this.", refusal);
+    }
+  }
+  return null;
+}
+
+/** The wallet policy's own verdict on a payment, which the signer applies under a mandate too. */
+function policyRefusal(
+  policy: WalletPolicy,
+  intent: Intent,
+  asset: string,
+  amount: bigint,
+  spentToday: bigint,
+): string | null {
+  const limit = policy.assets.find(
+    (item) => item.chainId === intent.chainId && item.asset === asset,
+  );
+  if (!limit) return "asset_not_allowed";
+  const to = intent.operation.to;
+  if (policy.recipients.mode === "allowlist" && !policy.recipients.addresses.includes(to)) {
+    return "recipient_not_allowed";
+  }
+  if (amount > BigInt(limit.maxPerTx)) return "over_per_tx_cap";
+  if (spentToday + amount > BigInt(limit.maxPerDay)) return "over_daily_cap";
+  if (BigInt(intent.maxFeeWei) > BigInt(policy.fees.maxPerTxWei)) return "fee_cap_exceeded";
+  return null;
 }
 
 // --- handlers ---------------------------------------------------------------------------------
@@ -1192,6 +1441,19 @@ const handlers: Record<RouteName, Handler> = {
     const agent = workspace.agents.find((item) => item.id === params.agentId);
     if (!agent) throw new Refusal("not_found", "This agent does not exist.");
     agent.status = "disabled";
+    // Mirrors the server: its waiting grants are cancelled and its mandates revoked.
+    for (const approval of state.approvals.values()) {
+      if (
+        approval.summary.status === "pending" &&
+        approval.envelope.type === "grant-mandate" &&
+        approval.envelope.agentId === agent.id
+      ) {
+        approval.summary.status = "cancelled";
+      }
+    }
+    for (const record of state.mandates.values()) {
+      if (record.agent.id === agent.id) endMandate(record, "agent_disabled");
+    }
     return agent;
   },
   createTreasury: ({ params, body, userId }) => {
@@ -1377,6 +1639,10 @@ const handlers: Record<RouteName, Handler> = {
     const draft = body as MandateDraft;
     const agent = workspace.agents.find((item) => item.id === draft.agentId);
     if (!agent) throw new Refusal("invalid_request", "agentId: not an agent of this workspace");
+    if (agent.status !== "active") throw new Refusal("conflict", "This agent is disabled.");
+    if (wallet.id !== agent.walletId && wallet.kind !== "treasury") {
+      throw new Refusal("invalid_request", "agentId: this agent cannot propose from this wallet");
+    }
     if (!wallet.policy) {
       throw new Refusal(
         "policy_denied",
@@ -1400,7 +1666,7 @@ const handlers: Record<RouteName, Handler> = {
     // Mirrors the server: checked against the policy and the longest life (7 days) first.
     const refusal = checkMandateAgainstPolicy(mandate, wallet.policy, {
       now: now(),
-      maxSeconds: 604_800,
+      maxSeconds: MANDATE_LONGEST_SECONDS,
     });
     if (refusal !== null) {
       throw new Refusal(
@@ -1410,24 +1676,6 @@ const handlers: Record<RouteName, Handler> = {
       );
     }
     const hash = mandateHash(mandate);
-    const assets: MandateAssetView[] = mandateWorstCase(mandate).map((entry) => {
-      const limit = wallet.policy?.assets.find(
-        (item) => item.chainId === entry.chainId && item.asset === entry.asset,
-      );
-      const known =
-        entry.asset === "native"
-          ? { symbol: "ETH", decimals: 18 }
-          : entry.asset === TEST_USDC
-            ? { symbol: "USDC", decimals: 6 }
-            : { symbol: null, decimals: null };
-      return {
-        chainId: entry.chainId,
-        asset: entry.asset,
-        ...known,
-        worstCase: entry.amount.toString(),
-        policy: limit ? { maxPerTx: limit.maxPerTx, maxPerDay: limit.maxPerDay } : null,
-      };
-    });
     const payments = mandate.maxUses === 1 ? "1 payment" : `${mandate.maxUses} payments`;
     const approval = openApproval({
       workspace,
@@ -1452,36 +1700,47 @@ const handlers: Record<RouteName, Handler> = {
         agent: { id: agent.id, name: agent.name },
         mandate,
         mandateHash: hash,
-        assets,
+        assets: mandateAssets(mandate, wallet.policy),
         usage: null,
       },
       apply: () => {
+        // Mirrors the signer, which decides again with its own policy, clock and records.
+        const fail = (code: string) => {
+          approval.summary.status = "failed";
+          approval.summary.failureCode = code;
+          decide(workspace, approval.summary.id, "grant-mandate", code);
+        };
+        if (agent.status !== "active") return fail("agent_disabled");
+        if (workspace.paused) return fail("workspace_paused");
+        const policy = wallet.policy;
+        if (!policy) return fail("policy_missing");
+        const refused = checkMandateAgainstPolicy(mandate, policy, {
+          now: now(),
+          maxSeconds: MANDATE_LONGEST_SECONDS,
+        });
+        if (refused !== null) return fail(refused);
+        const live = [...state.mandates.values()].filter((record) => {
+          if (record.mandate.walletId !== wallet.id) return false;
+          const status = mandateStatus(record);
+          return status === "active" || status === "not_yet_valid";
+        });
+        if (live.length >= LIVE_MANDATES_PER_WALLET) return fail("too_many_live_mandates");
         state.mandates.set(mandate.id, {
-          id: mandate.id,
-          workspaceId: workspace.id as MandateSummary["workspaceId"],
-          walletId: wallet.id,
+          workspaceId: workspace.id,
           agent: { id: agent.id, name: agent.name },
           mandate,
-          mandateHash: hash,
-          status: "active",
-          endedReason: null,
           grantApprovalId: approval.summary.id,
           grantedAt: now(),
-          grantedBy: approval.approvedBy.map((user) => userSummary(user.id)),
+          grantedBy: approval.approvedBy.map((user) => user.id),
           revokedAt: null,
-          assets,
-          usage: {
-            uses: 0,
-            usesLeft: mandate.maxUses,
-            assets: mandate.assets.map((limit) => ({
-              chainId: limit.chainId,
-              asset: limit.asset,
-              usedTotal: "0",
-              usedInWindow: "0",
-            })),
-          },
+          endedReason: null,
+          uses: [],
         });
         decide(workspace, approval.summary.id, "grant-mandate", null);
+        audit(workspace, { type: "system", id: null, name: null }, "mandate.granted", {
+          type: "mandate",
+          id: mandate.id,
+        });
       },
     });
     return approval.summary;
@@ -1491,9 +1750,10 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     memberOf(workspace, id);
     const items = [...state.mandates.values()]
+      .filter((record) => record.workspaceId === workspace.id)
+      .map(mandateSummary)
       .filter(
         (item) =>
-          item.workspaceId === workspace.id &&
           (query.walletId === undefined || item.walletId === query.walletId) &&
           (query.agentId === undefined || item.agent.id === query.agentId) &&
           (query.status === undefined ||
@@ -1506,12 +1766,12 @@ const handlers: Record<RouteName, Handler> = {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
     memberOf(workspace, id);
-    const mandate = state.mandates.get(params.mandateId ?? "");
-    if (!mandate || mandate.workspaceId !== workspace.id) {
+    const record = state.mandates.get(params.mandateId ?? "");
+    if (!record || record.workspaceId !== workspace.id) {
       throw new Refusal("not_found", "This mandate does not exist.");
     }
     const intents = [...state.intents.values()]
-      .filter((item) => item.mandateId === mandate.id)
+      .filter((item) => item.mandateId === record.mandate.id)
       .sort((a, b) => b.createdAt - a.createdAt)
       .map((item) => {
         const {
@@ -1523,7 +1783,7 @@ const handlers: Record<RouteName, Handler> = {
         } = stripIntent(item);
         return summary;
       });
-    return { ...mandate, intents, intentsCursor: null };
+    return { ...mandateSummary(record), intents, intentsCursor: null };
   },
   revokeMandate: ({ params, userId }) => {
     const id = signedIn(userId);
@@ -1531,18 +1791,18 @@ const handlers: Record<RouteName, Handler> = {
     if (memberOf(workspace, id).role === "viewer") {
       throw new Refusal("forbidden", "Only an owner or an approver can do this.");
     }
-    const mandate = state.mandates.get(params.mandateId ?? "");
-    if (!mandate || mandate.workspaceId !== workspace.id) {
+    const record = state.mandates.get(params.mandateId ?? "");
+    if (!record || record.workspaceId !== workspace.id) {
       throw new Refusal("not_found", "This mandate does not exist.");
     }
-    if (mandate.status !== "revoked") {
-      mandate.status = "revoked";
-      mandate.revokedAt = now();
-      mandate.endedReason ??= "revoked";
-      decide(workspace, mandate.grantApprovalId, "revoke-mandate", null);
-      audit(workspace, userActor(id), "mandate.revoked", { type: "mandate", id: mandate.id });
+    if (record.revokedAt === null) {
+      endMandate(record, "revoked");
+      audit(workspace, userActor(id), "mandate.revoked", {
+        type: "mandate",
+        id: record.mandate.id,
+      });
     }
-    return mandate;
+    return mandateSummary(record);
   },
   listApprovals: ({ params, query, userId }) => {
     const id = signedIn(userId);
@@ -1592,12 +1852,16 @@ const handlers: Record<RouteName, Handler> = {
     });
     return approvalDetail(approval, id);
   },
-  listIntents: ({ params, userId }) => {
+  listIntents: ({ params, query, userId }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
     memberOf(workspace, id);
     const items = [...state.intents.values()]
-      .filter((item) => item.workspaceId === workspace.id)
+      .filter(
+        (item) =>
+          item.workspaceId === workspace.id &&
+          (query.mandateId === undefined || item.mandateId === query.mandateId),
+      )
       .sort((a, b) => b.createdAt - a.createdAt)
       .map((item) => {
         const {
@@ -1878,15 +2142,37 @@ function confirmationLines(approval: Approval): { label: string; value: string }
       ];
     case "resume-workspace":
       return [{ label: "Workspace", value: workspaceOf(approval.summary.workspaceId).name }];
-    case "grant-mandate":
+    case "grant-mandate": {
+      const { mandate } = subject;
+      const hours = mandate.windowSeconds / 3600;
+      const caps = mandate.assets.flatMap((limit) => {
+        const { symbol, decimals } = knownAsset(limit.asset);
+        const amount = (value: string) =>
+          decimals === null ? `${value} base units` : `${formatAmount(value, decimals)} ${symbol}`;
+        const worst = mandateWorstCase({ ...mandate, assets: [limit] })[0]?.amount ?? 0n;
+        return [
+          { label: "Asset", value: `${symbol ?? limit.asset} on ${limit.chainId}` },
+          { label: "Most per payment", value: amount(limit.maxPerAction) },
+          { label: `Most in any ${hours} hours`, value: amount(limit.maxPerWindow) },
+          { label: "Most in total", value: amount(limit.maxTotal) },
+          { label: "Most that can leave the wallet", value: amount(worst.toString()) },
+        ];
+      });
       return [
-        { label: "Agent", value: subject.agent.name },
+        { label: "Agent that may pay", value: subject.agent.name },
         { label: "From wallet", value: `${subject.wallet.label} ${subject.wallet.address}` },
-        { label: "Recipients", value: subject.mandate.recipients.join(", ") },
-        { label: "Payments", value: String(subject.mandate.maxUses) },
-        { label: "Until", value: new Date(subject.mandate.notAfter * 1000).toISOString() },
-        { label: "Their purpose", value: subject.mandate.purpose || "(none)" },
+        ...caps,
+        ...mandate.recipients.map((to) => ({ label: "May pay", value: to })),
+        { label: "Payments at most", value: String(mandate.maxUses) },
+        {
+          label: "Network fee ceiling per payment",
+          value: `${formatAmount(mandate.maxFeePerActionWei, 18)} of the native coin`,
+        },
+        { label: "Starts", value: new Date(mandate.notBefore * 1000).toISOString() },
+        { label: "Ends", value: new Date(mandate.notAfter * 1000).toISOString() },
+        { label: "Their purpose", value: mandate.purpose || "(none)" },
       ];
+    }
   }
 }
 

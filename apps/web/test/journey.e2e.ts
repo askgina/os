@@ -24,6 +24,12 @@ import { expectNoSidewaysOverflow, type LayoutOptions, widenText } from "./layou
  * A second person joins as an approver. Before anyone can approve the change that adds them,
  * they prove on the confirmation page that the new passkey is theirs and read its fingerprint,
  * which the owner compares before approving there.
+ *
+ * The owner then approves payments in advance (a mandate): the editor shows the worst case before
+ * submitting, the grant card shows the sentence, the worst case, every recipient and the end
+ * time, and it is approved on the confirmation page. The agent pays a listed recipient under it
+ * with nobody asked, a payment over its cap still waits in the inbox, and revoking it asks for a
+ * confirmation, not a passkey.
  */
 
 const test = baseTest.extend<LayoutOptions>({ widerText: [false, { option: true }] });
@@ -31,6 +37,8 @@ const test = baseTest.extend<LayoutOptions>({ widerText: [false, { option: true 
 const SETUP_TOKEN = process.env.OS_WEB_SETUP_TOKEN ?? "fixture-setup-token-0123456789";
 const SCREENSHOTS = new URL("../dev/screenshots/", import.meta.url).pathname;
 const RECIPIENT = "0x52908400098527886e0f7030069857d2e4169ee7";
+/** A second recipient an approval in advance lists. */
+const PAYEE = "0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae";
 /** A key fingerprint as the pages show it: four groups of four Crockford base32 letters. */
 const FINGERPRINT = /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){3}$/;
 /**
@@ -114,7 +122,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
   browser,
   widerText,
 }, testInfo) => {
-  test.setTimeout(240_000);
+  test.setTimeout(360_000);
   /**
    * Checks the screen for content wider than it, then captures the page, a part or the view. The
    * owner's page unless `on` names another person's.
@@ -516,6 +524,141 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(page.getByText("Can approve", { exact: true })).toHaveCount(2);
     expect(joinerProblems).toEqual([]);
     await grace.context().close();
+  });
+
+  await test.step("an owner approves payments in advance, the agent pays under it, and it is revoked without a passkey", async () => {
+    await page.goto(base);
+    await page.getByRole("link", { name: /Invoice payer/ }).click();
+    await page.getByRole("link", { name: "Open wallet" }).click();
+    const card = page.locator("#mandates");
+    await expect(card.getByText("Nothing is approved in advance.")).toBeVisible();
+    await card.getByRole("button", { name: "Approve in advance…" }).click();
+    const editor = card.getByRole("form", { name: "New approval in advance" });
+    await editor.getByLabel("Recipients, one address per line").fill(`${RECIPIENT}\n${PAYEE}`);
+    // Over the wallet's 0.05 ETH per transaction: the server refuses and says why, in words.
+    await editor.getByLabel("Most per payment").fill("0.06");
+    await editor.getByLabel("Most in any 24 hours").fill("0.1");
+    await editor.getByLabel("Most in total").fill("0.2");
+    await editor.getByLabel("Payments, at most").fill("3");
+    await expect(editor.getByLabel(/^Network fee per payment, at most/)).toHaveValue("0.01");
+    await editor.getByRole("radio", { name: /^In 7 days/ }).check();
+    await editor
+      .getByLabel("Purpose, shown to everyone who approves")
+      .fill("Pay Northwind invoices");
+    await editor.getByRole("button", { name: "Ask for approval" }).click();
+    await expect(editor.getByRole("alert")).toHaveText(
+      "The most per payment is more than the wallet's limit per transaction.",
+    );
+    const refused = (line: string) =>
+      /^response 400 POST .*\/mandates$/.test(line) ||
+      /status of 400 .* at \S+\/mandates /.test(line);
+    expect(problems.filter(refused)).toHaveLength(2);
+    problems.splice(0, problems.length, ...problems.filter((line) => !refused(line)));
+
+    await editor.getByLabel("Most per payment").fill("0.01");
+    await editor.getByLabel("Most in any 24 hours").fill("0.02");
+    await editor.getByLabel("Most in total").fill("0.03");
+    // The worst case shows before anything is submitted.
+    await expect(editor.getByRole("region", { name: "Worst case" })).toHaveText(
+      /At most 0\.03 ETH can leave this wallet under this approval, plus network fees of at most 0\.01 ETH per payment \(0\.03 ETH in all\)\./,
+    );
+    await shot("31-wallet-mandate-editor", { element: card });
+    await editor.getByRole("button", { name: "Ask for approval" }).click();
+
+    // The grant card: the sentence, the worst case, every recipient and the end time.
+    await expect(
+      page.getByRole("heading", {
+        name: "Let Invoice payer pay from Invoice payer's wallet without asking",
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        /^Let Invoice payer pay up to 0\.01 ETH at a time to 2 listed recipients, at most 0\.02 ETH in any 24 hours and 0\.03 ETH in total, at most 3 payments, until .+ \(your time.*\)\.$/,
+      ),
+    ).toBeVisible();
+    await expect(page.getByRole("region", { name: "Worst case" })).toContainText(
+      "At most 0.03 ETH can leave this wallet",
+    );
+    await expect(page.getByRole("list", { name: "Recipients" }).getByRole("listitem")).toHaveCount(
+      2,
+    );
+    await expect(
+      page.getByText("The wallet's limits still apply and count these payments."),
+    ).toBeVisible();
+    await expect(page.getByText("Pay Northwind invoices", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: /passkey/i })).toHaveCount(0);
+    await shot("32-approval-mandate");
+    await page.getByText("Technical details").click();
+    await expect(page.getByText("Mandate hash (SHA-256)")).toBeVisible();
+    await shot("33-approval-mandate-details");
+    await page.getByText("Technical details").click();
+    await approveOnSignerPage(page);
+    await expect(page.getByText("Done. The change is in effect.")).toBeVisible();
+    await page.getByRole("link", { name: "Open the approval in advance" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Approved in advance for Invoice payer" }),
+    ).toBeVisible();
+    await expect(page.getByText("0 of 3 payments used")).toBeVisible();
+    await expect(page.getByText("No payment was made under it yet.")).toBeVisible();
+    await shot("34-mandate-new");
+    const mandatePath = new URL(page.url()).pathname;
+
+    // The agent pays a listed recipient within the caps: signed with nobody asked.
+    const covered = await request.post(proposeUrl, {
+      headers: { authorization: `Bearer ${token}` },
+      data: { kind: "transfer", to: RECIPIENT, amount: "5000000000000000", memo: "Invoice 4413" },
+    });
+    expect(covered.ok()).toBe(true);
+    const coveredIntent = (await covered.json()) as {
+      approvalId: string | null;
+      mandateId: string | null;
+    };
+    expect(coveredIntent.approvalId).toBeNull();
+    expect(coveredIntent.mandateId).toBe(mandatePath.split("/").pop());
+    // Over its per-payment cap: that one waits for a person, as before.
+    const over = await proposePayment(request, proposeUrl, token, "20000000000000000");
+    expect(over.approvalId).toMatch(/^apr_/);
+
+    await page.reload();
+    await expect(page.getByText("1 of 3 payments used")).toBeVisible();
+    await expect(page.getByText(/^Send 0\.005 ETH to /)).toBeVisible();
+    await expect(page.getByText("Confirmed", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await shot("35-mandate-used");
+
+    // The wallet's card and the agent's page show it, with its usage.
+    await page.getByRole("link", { name: "← Invoice payer's wallet" }).click();
+    await expect(
+      card.getByRole("link", { name: /^Invoice payer: up to 0\.01 ETH per payment/ }),
+    ).toBeVisible();
+    await expect(card.getByText("1 of 3 payments used")).toBeVisible();
+    await shot("36-wallet-mandates", { element: card });
+    await page.goto(base);
+    await page.getByRole("link", { name: /Invoice payer/ }).click();
+    await expect(page.locator("#mandates").getByText("1 of 3 payments used")).toBeVisible();
+    const mandated = page.getByRole("link", { name: "Approved in advance", exact: true });
+    await expect(mandated).toHaveCount(1);
+    await shot("37-agent-mandates");
+
+    // Revoking asks for confirmation, not a passkey, and the mandate shows as ended.
+    await mandated.click();
+    await expect(page).toHaveURL(new RegExp(`${mandatePath}$`));
+    await page.getByRole("button", { name: "Revoke" }).click();
+    const dialog = page.getByRole("dialog", { name: "Revoke this approval in advance?" });
+    await expect(dialog).toBeVisible();
+    await expect(page.getByRole("button", { name: /passkey/i })).toHaveCount(0);
+    await shot("38-mandate-revoke", { viewport: true });
+    await dialog.getByRole("button", { name: "Revoke" }).click();
+    await expect(page.getByText("Revoked", { exact: true })).toBeVisible();
+    await expect(page.getByText(/Someone who can approve revoked it\./)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Revoke" })).toHaveCount(0);
+    await shot("39-mandate-revoked");
+
+    // After that, the same payment waits for a person.
+    const after = await proposePayment(request, proposeUrl, token, "4000000000000000");
+    expect(after.approvalId).toMatch(/^apr_/);
+    await page.goto(`${base}/approvals`);
+    await expect(page.getByRole("link", { name: /^Send 0\.004 ETH/ })).toBeVisible();
+    await page.goto(`${base}/members`);
   });
 
   await test.step("activity, settings, sign-in and the join page render", async () => {

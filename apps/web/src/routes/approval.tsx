@@ -23,8 +23,17 @@ import {
   FullAddress,
   IntentStatusBadge,
   Loading,
+  linkClass,
+  TechBlock,
   useNow,
 } from "@/components/common.tsx";
+import {
+  MandateLimits,
+  MandateRecipients,
+  MandateSentence,
+  MandateWorstCase,
+  mandateAssetInfos,
+} from "@/components/mandate.tsx";
 import { PolicyDiff } from "@/components/policy.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
 import { Button, buttonVariants } from "@/components/ui/button.tsx";
@@ -40,8 +49,9 @@ import {
   useWorkspace,
 } from "@/lib/api.ts";
 import { chainName } from "@/lib/assets.ts";
-import { explainCode } from "@/lib/codes.ts";
+import { explainCode, explainMandateRefusal } from "@/lib/codes.ts";
 import { formatCountdown, formatTime, formatUnits, percentOf, shortAddress } from "@/lib/format.ts";
+import { formatEndTime, formatTimeLeft, formatWindow } from "@/lib/mandate.ts";
 import { intentSentence, transactionSentence } from "@/lib/statuses.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -213,27 +223,70 @@ function Subject({
     case "sweep-wallet":
       return <SweepSubject subject={subject} workspace={workspace} />;
     case "grant-mandate":
-      return (
-        <Summary
-          title={`Let ${subject.agent.name} pay from ${subject.wallet.label} without asking`}
-        >
-          <Facts>
-            <Fact label="Agent">{subject.agent.name}</Fact>
-            <Fact label="From wallet">{subject.wallet.label}</Fact>
-            <Fact label="Payments">{subject.mandate.maxUses}</Fact>
-            <Fact label="Until">{new Date(subject.mandate.notAfter * 1000).toLocaleString()}</Fact>
-            <Fact label="Recipients" wide>
-              <code className="font-mono text-xs break-all">
-                {subject.mandate.recipients.join(", ")}
-              </code>
-            </Fact>
-          </Facts>
-          <p className="text-sm text-muted-foreground">
-            The signer's confirmation page shows every limit of this approval in advance.
-          </p>
-        </Summary>
-      );
+      return <MandateSubject approval={approval} subject={subject} workspace={workspace} />;
   }
+}
+
+/**
+ * A request to approve payments in advance: the mandate in one sentence, its worst case set
+ * apart, every recipient in full, the agent, the wallet, the window and the end time in the
+ * viewer's own time zone, the caps next to the wallet's own limits, and the purpose as the asker
+ * wrote it.
+ */
+function MandateSubject({
+  approval,
+  subject,
+  workspace,
+}: {
+  approval: ApprovalDetail;
+  subject: Extract<ApprovalSubject, { kind: "grant-mandate" }>;
+  workspace: WorkspaceDetail;
+}) {
+  const now = useNow();
+  const { mandate, wallet, agent } = subject;
+  const infos = mandateAssetInfos(mandate, workspace.chains, subject.assets);
+  const left = mandate.notAfter - now;
+  return (
+    <Summary title={`Let ${agent.name} pay from ${wallet.label} without asking`}>
+      <MandateSentence terms={mandate} agent={agent.name} infos={infos} />
+      <MandateWorstCase terms={mandate} infos={infos} chains={workspace.chains} />
+      <MandateRecipients recipients={mandate.recipients} />
+      <Facts>
+        <Fact label="Agent that may pay">{agent.name}</Fact>
+        <Fact label="From wallet">
+          {wallet.label} <span className="font-mono text-xs">{shortAddress(wallet.address)}</span>
+        </Fact>
+        <Fact label="Payments, at most">{mandate.maxUses}</Fact>
+        <Fact label="Window">Any {formatWindow(mandate.windowSeconds)}</Fact>
+        <Fact label="Ends" wide>
+          {formatEndTime(mandate.notAfter)}
+          {left > 0 ? `, in ${formatTimeLeft(left)}` : ", already passed"}
+        </Fact>
+      </Facts>
+      <MandateLimits
+        terms={mandate}
+        infos={infos}
+        chains={workspace.chains}
+        views={subject.assets}
+      />
+      <figure className="rounded-md border-l-4 border-muted-foreground/40 bg-muted px-3 py-2">
+        <figcaption className="text-xs text-muted-foreground">
+          {approval.requestedBy.name}'s purpose, in their own words:
+        </figcaption>
+        <blockquote className="text-sm whitespace-pre-wrap wrap-anywhere">
+          {mandate.purpose === "" ? (
+            <span className="text-muted-foreground">(none given)</span>
+          ) : (
+            mandate.purpose
+          )}
+        </blockquote>
+      </figure>
+      <p className="text-sm">
+        Each payment is signed without asking you again. Anything outside these limits comes to your
+        inbox as usual. Anyone who can approve can stop this at any time from the wallet page.
+      </p>
+    </Summary>
+  );
 }
 
 /**
@@ -797,6 +850,7 @@ function Outcome({ approval }: { approval: ApprovalDetail }) {
   const transaction =
     intent?.transaction ?? (subject.kind === "sweep-wallet" ? subject.transaction : null);
   const signs = subject.kind === "approve-intent" || subject.kind === "sweep-wallet";
+  const mandate = subject.kind === "grant-mandate" ? subject.mandate : null;
   switch (approval.status) {
     case "approved":
       return (
@@ -810,6 +864,15 @@ function Outcome({ approval }: { approval: ApprovalDetail }) {
           <CheckCircle2 aria-hidden />
           <div className="grid min-w-0 grid-cols-1 gap-1">
             <p className="font-medium">{signs ? "Approved." : "Done. The change is in effect."}</p>
+            {mandate ? (
+              <Link
+                to="/w/$workspaceId/mandates/$mandateId"
+                params={{ workspaceId: approval.workspaceId, mandateId: mandate.id }}
+                className={linkClass}
+              >
+                Open the approval in advance
+              </Link>
+            ) : null}
             {intent ? (
               <div className="flex flex-wrap items-center gap-2">
                 <IntentStatusBadge status={intent.status} />
@@ -859,8 +922,10 @@ function Outcome({ approval }: { approval: ApprovalDetail }) {
               .
             </p>
             <p className="text-muted-foreground">
-              {explainCode(approval.failureCode ?? "internal")} Nothing was signed with this
-              approval.
+              {mandate
+                ? explainMandateRefusal(approval.failureCode ?? "internal")
+                : explainCode(approval.failureCode ?? "internal")}{" "}
+              Nothing was signed with this approval.
             </p>
           </div>
         </Alert>
@@ -894,6 +959,7 @@ function Outcome({ approval }: { approval: ApprovalDetail }) {
 function TechnicalDetails({ approval }: { approval: ApprovalDetail }) {
   const intent = approval.subject.kind === "approve-intent" ? approval.subject.intent : null;
   const sweep = approval.subject.kind === "sweep-wallet" ? approval.subject : null;
+  const grant = approval.subject.kind === "grant-mandate" ? approval.subject : null;
   return (
     <details className="group rounded-lg border bg-card">
       <summary className="cursor-pointer px-4 py-3 text-sm font-medium select-none">
@@ -920,6 +986,16 @@ function TechnicalDetails({ approval }: { approval: ApprovalDetail }) {
             />
           </>
         ) : null}
+        {grant ? (
+          <>
+            <TechBlock label="Mandate hash (SHA-256)" value={grant.mandateHash} />
+            <TechBlock
+              label="Canonical mandate (exactly what is hashed and what the signer enforces)"
+              value={canonicalJson(grant.mandate)}
+              pre
+            />
+          </>
+        ) : null}
         <TechBlock
           label="Envelope (what your passkey signs on the signer's page)"
           value={JSON.stringify(approval.envelope, null, 2)}
@@ -931,20 +1007,5 @@ function TechnicalDetails({ approval }: { approval: ApprovalDetail }) {
         </p>
       </div>
     </details>
-  );
-}
-
-function TechBlock({ label, value, pre }: { label: string; value: string; pre?: boolean }) {
-  return (
-    <div className="grid grid-cols-1 gap-1">
-      <p className="font-medium text-muted-foreground">{label}</p>
-      {pre ? (
-        <pre className="max-h-72 overflow-auto rounded-md bg-muted p-3 font-mono whitespace-pre-wrap break-all">
-          {value}
-        </pre>
-      ) : (
-        <code className="rounded-md bg-muted p-2 font-mono break-all">{value}</code>
-      )}
-    </div>
   );
 }

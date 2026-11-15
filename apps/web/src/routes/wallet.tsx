@@ -18,6 +18,7 @@ import {
   linkClass,
   PageHeader,
 } from "@/components/common.tsx";
+import { MandatesCard } from "@/components/mandate.tsx";
 import { PolicyTable } from "@/components/policy.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
@@ -182,6 +183,8 @@ function WalletView({ wallet, workspace }: { wallet: WalletDetail; workspace: Wo
           </p>
         </Alert>
       ) : null}
+
+      <MandatesCard workspace={workspace} filter={{ walletId: wallet.id }} editor={{ wallet }} />
 
       {canAdmin ? <SweepCard wallet={wallet} workspace={workspace} /> : null}
       {canAdmin ? <PolicyEditor wallet={wallet} workspace={workspace} /> : null}

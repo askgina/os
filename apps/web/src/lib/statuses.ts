@@ -24,6 +24,21 @@ export const intentSentence: Record<IntentStatus, string> = {
   failed: "It did not go through, and nothing more will be sent for it.",
 };
 
+/**
+ * The sentence for a payment an approval in advance (a mandate) covered: nobody was asked, so the
+ * states that speak of people say what happened instead.
+ */
+export function intentStatusSentence(status: IntentStatus, mandated: boolean): string {
+  if (!mandated) return intentSentence[status];
+  if (status === "approved") {
+    return "An approval in advance covers it, so nobody was asked. The signer is signing it next.";
+  }
+  if (status === "denied") {
+    return "The approval in advance or the wallet's limits did not cover it at the signer. Nothing was signed.";
+  }
+  return intentSentence[status];
+}
+
 export const transactionSentence: Record<TransactionStatus, string> = {
   signed: "Signed and about to be sent to the network.",
   broadcast: "Sent to the network and waiting to be included in a block.",

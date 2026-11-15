@@ -25,6 +25,26 @@ who has to act when the signer's page says the proof is still missing. The contr
 does not say whether the proof is done (only the signer's page does), so the page says what to do
 either way.
 
+An owner can also approve one agent's payments in advance (a mandate): on the wallet page, or the
+agent's page for its own wallet, "Approve in advance…" opens an editor for the recipients (one
+address per line), each asset's caps in whole units (per payment, in a rolling window, in total),
+the window, the number of payments, the network fee per payment (the wallet's fee ceiling to
+start with), the end (end of today, end of Friday, in 7 days, or a date and time in the viewer's
+own time zone) and a purpose. Before anything is sent it shows the whole mandate in one sentence
+and its worst case: the most that can leave the wallet, `min(total, payments × per payment)` per
+asset, plus the fees. Submitting opens a `grant-mandate` request, approved like any other on the
+signer's page; its approval page shows the sentence, the worst case set apart, every recipient in
+full, the agent, the wallet, the window, the end time with how long that is from now, each
+asset's caps next to the wallet's own limits, and the purpose as its asker wrote it. When the
+server or the signer refuses a draft or a grant, the page says why in words (`src/lib/codes.ts`).
+
+The wallet and agent pages list live mandates with what the signer counted (payments used and
+left, each asset's total and window against its caps), and ended ones with the reason they ended.
+Each has its own page (`/w/<workspace>/mandates/<id>`) with the payments signed under it. Anyone
+who can approve can revoke one there or in the list: a confirmation, no passkey, because revoking
+only takes authority away. A payment signed under a mandate has no approval page; it says
+"Approved in advance" and links to its mandate.
+
 It is a Vite, React 19 and Tailwind 4 single-page app. It talks only to `/api/v1` through
 `createApiClient()` from `@askgina/os-api`. Signing in and adding a passkey go through
 `@simplewebauthn/browser`.
@@ -51,8 +71,11 @@ signer, it opens no confirmation for a payment or a limits change asked for unde
 have changed since; that request then cannot be approved. For an approver change it has the real
 page's "This passkey is mine" step: it takes an answer only from the new passkey, for the step's
 own challenge, shows the key's fingerprint, and refuses every approval until then
-(`possession_unproven`). It is a fixture: the real page is `apps/approve/public/`, and the
-stand-in says on screen that it checks no signature.
+(`possession_unproven`). It holds approvals in advance as the signer does: a grant takes effect
+only if the wallet's limits still allow it, a payment the agent proposes (through
+`/__fixture/propose`) that one covers is sent with no request, counted for good, and checked
+against the wallet's limits too, and anything else goes to the inbox. It is a fixture: the real
+page is `apps/approve/public/`, and the stand-in says on screen that it checks no signature.
 
 ```bash
 bun run fixture   # the fixture API on 127.0.0.1:55731, its confirmation page on :55732
@@ -68,15 +91,18 @@ the React plugin's Fast Refresh: a change reloads the page.
 ## Tests
 
 - `bunx vitest run test/<file>.test.ts`: plain logic, such as the status sentences, the
-  operator command and the sign-in return path.
+  operator command, the sign-in return path and the mandate editor's helpers (whole units to
+  base units, the worst case, the end-time choices, the sentences, the meaning of every mandate
+  code).
 - `bunx playwright test --project=<phone-light|phone-dark|desktop-light|desktop-dark|phone-wide-font>`:
   the first-day journey in Chromium with a virtual authenticator. Every approval goes through
   the confirmation page's link and back. A second person, with their own authenticator, joins as
   an approver, proves on the confirmation page that the new passkey is theirs, and the owner
-  approves the change after the fingerprints match. Playwright starts the fixture and the Vite
-  dev server itself, fails on any console error or failed request, and writes screenshots to
-  `dev/screenshots/`. Set `OS_WEB_BASE_URL` to run it against a real server instead (and
-  `OS_WEB_PROPOSE_URL`, `OS_WEB_SETUP_TOKEN` to match it).
+  approves the change after the fingerprints match. The owner then approves payments in advance,
+  the agent pays under it with nobody asked, and the owner revokes it. Playwright starts the
+  fixture and the Vite dev server itself, fails on any console error or failed request, and
+  writes screenshots to `dev/screenshots/`. Set `OS_WEB_BASE_URL` to run it against a real
+  server instead (and `OS_WEB_PROPOSE_URL`, `OS_WEB_SETUP_TOKEN` to match it).
 - Before every screenshot, the journey checks that nothing is wider than the screen
   (`expectNoSidewaysOverflow` in `test/layout.ts`). On a phone, a page wider than the screen
   slides sideways and shifts every tap. It fails with the elements that end past

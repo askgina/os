@@ -207,6 +207,22 @@ export function Field({ label, children }: { label: string; children: ReactNode 
   );
 }
 
+/** A labelled hash or canonical structure in a page's technical details. */
+export function TechBlock({ label, value, pre }: { label: string; value: string; pre?: boolean }) {
+  return (
+    <div className="grid grid-cols-1 gap-1">
+      <p className="font-medium text-muted-foreground">{label}</p>
+      {pre ? (
+        <pre className="max-h-72 overflow-auto rounded-md bg-muted p-3 font-mono whitespace-pre-wrap break-all">
+          {value}
+        </pre>
+      ) : (
+        <code className="rounded-md bg-muted p-2 font-mono break-all">{value}</code>
+      )}
+    </div>
+  );
+}
+
 /** One second ticks for countdowns. */
 export function useNow(): number {
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));

@@ -1,4 +1,5 @@
 import { ApiError, createApiClient, type RouteName, type RouteOutput } from "@askgina/os-api";
+import type { AgentId, WalletId } from "@askgina/os-protocol";
 import {
   keepPreviousData,
   QueryCache,
@@ -56,6 +57,21 @@ export const keys = {
   wallet: (workspaceId: string, walletId: string) => ["wallet", workspaceId, walletId] as const,
   intents: (workspaceId: string) => ["intents", workspaceId] as const,
   intent: (id: string) => ["intent", id] as const,
+  /** Every list and page of a workspace's mandates, to refresh them together after a change. */
+  mandates: (workspaceId: string) => ["mandates", workspaceId] as const,
+  mandateList: (workspaceId: string, filter: MandateFilter, status: "active" | "ended") =>
+    [
+      "mandates",
+      workspaceId,
+      "list",
+      filter.walletId ?? null,
+      filter.agentId ?? null,
+      status,
+    ] as const,
+  mandate: (workspaceId: string, mandateId: string) =>
+    ["mandates", workspaceId, "one", mandateId] as const,
+  mandatePayments: (workspaceId: string, mandateId: string) =>
+    ["mandates", workspaceId, "payments", mandateId] as const,
   audit: (workspaceId: string) => ["audit", workspaceId] as const,
   decisions: (workspaceId: string) => ["decisions", workspaceId] as const,
   passkeys: ["passkeys"] as const,
@@ -114,6 +130,48 @@ export const useApproval = (approvalId: string) =>
         if (status === "signed" || status === "broadcast") return 3_000;
       }
       return false;
+    },
+  });
+
+/** The wallet or the agent a list of mandates is for; neither for the whole workspace. */
+export interface MandateFilter {
+  walletId?: WalletId;
+  agentId?: AgentId;
+}
+
+/**
+ * A workspace's mandates, newest first: `active` while one can still sign, `ended` once it never
+ * will. Live lists refresh every 5 seconds, because an agent may pay under one at any time.
+ */
+export const useMandates = (
+  workspaceId: string,
+  filter: MandateFilter,
+  status: "active" | "ended",
+) =>
+  useInfiniteQuery({
+    queryKey: keys.mandateList(workspaceId, filter, status),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
+      api.call("listMandates", {
+        params: { workspaceId },
+        query: { ...filter, status, cursor: pageParam },
+      }),
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+    refetchInterval: status === "active" ? 5_000 : false,
+  });
+
+const IN_FLIGHT = new Set(["proposed", "approved", "signed", "broadcast"]);
+
+/** One mandate with its first payments, followed while it can still sign or a payment is on its way. */
+export const useMandate = (workspaceId: string, mandateId: string) =>
+  useQuery({
+    queryKey: keys.mandate(workspaceId, mandateId),
+    queryFn: () => api.call("getMandate", { params: { workspaceId, mandateId } }),
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return false;
+      const moving = data.intents.some((intent) => IN_FLIGHT.has(intent.status));
+      return data.endedReason === null || moving ? 5_000 : false;
     },
   });
 
