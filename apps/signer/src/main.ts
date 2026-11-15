@@ -39,6 +39,8 @@ try {
     maxLiveMandatesPerWallet: config.maxLiveMandatesPerWallet,
     maxTxAttempts: config.maxTxAttempts,
     repriceWindowSeconds: config.repriceWindowSeconds,
+    minDestroyDelaySeconds: config.minDestroyDelaySeconds,
+    maxDestroyDelaySeconds: config.maxDestroyDelaySeconds,
     log,
   });
 } catch (error) {

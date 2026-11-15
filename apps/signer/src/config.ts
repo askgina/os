@@ -4,6 +4,10 @@ import { AssetLabels, ChainLabels, MANDATE_MAX_SECONDS } from "@askgina/os-proto
 import { MIN_SECRET_BYTES } from "@askgina/os-protocol/signer";
 import { z } from "zod";
 import { DEFAULT_MAX_TX_ATTEMPTS, DEFAULT_REPRICE_WINDOW_SECONDS } from "./attempts.ts";
+import {
+  DEFAULT_MAX_DESTROY_DELAY_SECONDS,
+  DEFAULT_MIN_DESTROY_DELAY_SECONDS,
+} from "./lifecycle.ts";
 import { DEFAULT_MAX_LIVE_MANDATES_PER_WALLET, DEFAULT_MAX_MANDATE_SECONDS } from "./mandates.ts";
 
 const Environment = z.object({
@@ -47,6 +51,17 @@ const Environment = z.object({
     .min(0)
     .max(604_800)
     .default(DEFAULT_REPRICE_WINDOW_SECONDS),
+  // The shortest and longest delay from a retirement or deletion envelope's `issuedAt` to its
+  // `destroyAfter`. An empty value is unset: 0 is a valid minimum, so Compose passing an unset
+  // variable as "" must not silently remove the delay.
+  SIGNER_MIN_DESTROY_DELAY_SECONDS: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().int().min(0).max(7_776_000).default(DEFAULT_MIN_DESTROY_DELAY_SECONDS),
+  ),
+  SIGNER_MAX_DESTROY_DELAY_SECONDS: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().int().min(1).max(31_536_000).default(DEFAULT_MAX_DESTROY_DELAY_SECONDS),
+  ),
 });
 
 export interface SignerConfig {
@@ -71,6 +86,8 @@ export interface SignerConfig {
   maxLiveMandatesPerWallet: number;
   maxTxAttempts: number;
   repriceWindowSeconds: number;
+  minDestroyDelaySeconds: number;
+  maxDestroyDelaySeconds: number;
 }
 
 /** A configuration problem. The message names the variable, never its value. */
@@ -155,6 +172,11 @@ export function loadConfig(environment: NodeJS.ProcessEnv): SignerConfig {
   if (Buffer.from(confirmSecret).equals(Buffer.from(requestSecret))) {
     throw new ConfigError("SIGNER_CONFIRM_SECRET_FILE: the same secret as SIGNER_HMAC_SECRET_FILE");
   }
+  if (env.SIGNER_MAX_DESTROY_DELAY_SECONDS < env.SIGNER_MIN_DESTROY_DELAY_SECONDS) {
+    throw new ConfigError(
+      "SIGNER_MAX_DESTROY_DELAY_SECONDS: less than SIGNER_MIN_DESTROY_DELAY_SECONDS",
+    );
+  }
   const tokenKey = readSecret("SIGNER_KEY_FILE", env.SIGNER_KEY_FILE);
   if (tokenKey.byteLength !== 32) throw new ConfigError("SIGNER_KEY_FILE: not 32 bytes");
 
@@ -197,5 +219,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv): SignerConfig {
     maxLiveMandatesPerWallet: env.SIGNER_MAX_LIVE_MANDATES_PER_WALLET,
     maxTxAttempts: env.SIGNER_MAX_TX_ATTEMPTS,
     repriceWindowSeconds: env.SIGNER_REPRICE_WINDOW_SECONDS,
+    minDestroyDelaySeconds: env.SIGNER_MIN_DESTROY_DELAY_SECONDS,
+    maxDestroyDelaySeconds: env.SIGNER_MAX_DESTROY_DELAY_SECONDS,
   };
 }

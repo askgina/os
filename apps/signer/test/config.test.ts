@@ -91,6 +91,34 @@ describe("the signer's configuration", () => {
     }
   });
 
+  it("keeps a key at least seven days and at most 90 after a retirement or deletion unless set", () => {
+    const config = loadConfig(base);
+    expect([config.minDestroyDelaySeconds, config.maxDestroyDelaySeconds]).toEqual([
+      604_800, 7_776_000,
+    ]);
+    // Compose passes an unset variable as "": that is the default, never a zero delay.
+    const unset = loadConfig({
+      ...base,
+      SIGNER_MIN_DESTROY_DELAY_SECONDS: "",
+      SIGNER_MAX_DESTROY_DELAY_SECONDS: "",
+    });
+    expect(unset.minDestroyDelaySeconds).toBe(604_800);
+    const set = loadConfig({
+      ...base,
+      SIGNER_MIN_DESTROY_DELAY_SECONDS: "60",
+      SIGNER_MAX_DESTROY_DELAY_SECONDS: "3600",
+    });
+    expect([set.minDestroyDelaySeconds, set.maxDestroyDelaySeconds]).toEqual([60, 3600]);
+    for (const value of ["-1", "7776001", "a week"]) {
+      expect(refusal({ SIGNER_MIN_DESTROY_DELAY_SECONDS: value })).toBe(
+        "missing or invalid: SIGNER_MIN_DESTROY_DELAY_SECONDS",
+      );
+    }
+    expect(
+      refusal({ SIGNER_MIN_DESTROY_DELAY_SECONDS: "3600", SIGNER_MAX_DESTROY_DELAY_SECONDS: "60" }),
+    ).toMatch(/^SIGNER_MAX_DESTROY_DELAY_SECONDS:/);
+  });
+
   it("the signer refuses to start when the approval origin's host is not under the RP ID", () => {
     for (const origin of [
       "https://evil.example",

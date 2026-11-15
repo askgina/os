@@ -39,6 +39,7 @@ import type {
 import { verifyAuthorization, verifyPossession } from "@askgina/os-protocol/webauthn";
 import { transaction } from "./db.ts";
 import { SignerFailure } from "./errors.ts";
+import type { LifecycleRefusal } from "./lifecycle.ts";
 import type { Logger } from "./log.ts";
 import { envelopeDigest, type SignerRecords } from "./signer.ts";
 
@@ -136,15 +137,17 @@ type Rules = { required: number; maxTtlSeconds: number };
 
 /** Why the signer would refuse an envelope however many people approve it. */
 type Superseded = {
-  code: Extract<
-    SignerErrorCode,
-    | "envelope_fenced"
-    | "policy_missing"
-    | "policy_changed"
-    | "mandate_invalid"
-    | "fee_cap_exceeded"
-    | "attempts_exhausted"
-  >;
+  code:
+    | Extract<
+        SignerErrorCode,
+        | "envelope_fenced"
+        | "policy_missing"
+        | "policy_changed"
+        | "mandate_invalid"
+        | "fee_cap_exceeded"
+        | "attempts_exhausted"
+      >
+    | LifecycleRefusal;
   /** The grant-time reason, for `mandate_invalid`. */
   detail?: string;
 };
@@ -231,6 +234,10 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
    */
   function supersededBy(envelope: Envelope, subject: ConfirmationSubject): Superseded | null {
     if (records.isFenced(envelope)) return { code: "envelope_fenced" };
+    // A retirement or deletion applied since: the wallet or workspace no longer takes this kind,
+    // or a retirement's or deletion's wallets are no longer the signer's (section 8).
+    const lifecycle = records.lifecycleRefusal(envelope);
+    if (lifecycle !== null) return { code: lifecycle };
     if (envelope.type === "approve-intent") {
       const current = records.currentPolicy(envelope.walletId);
       if (!current) return { code: "policy_missing" };
@@ -309,7 +316,14 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
   ): OpenConfirmationResponse {
     const { envelope, subject } = request;
     if (envelope.approvalId !== approvalId) throw new SignerFailure("envelope_mismatch");
-    if (!records.findWorkspace(envelope.workspaceId)) throw new SignerFailure("not_found");
+    const workspace = records.findWorkspace(envelope.workspaceId);
+    if (!workspace) throw new SignerFailure("not_found");
+    // Nothing of a deleted workspace opens, and only a cancel of a stuck transaction while its
+    // deletion waits; the other lifecycle refusals are checked with `superseded` below.
+    if (workspace.state === "deleted") throw new SignerFailure("workspace_deleted");
+    if (workspace.state === "deleting" && envelope.type !== "cancel-transaction") {
+      throw new SignerFailure("workspace_deleting");
+    }
     const mismatch = checkSubject(envelope, subject);
     if (mismatch !== null) throw new SignerFailure(mismatch);
     const walletId = walletIdOf(envelope);
@@ -319,6 +333,8 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
       if (wallet.workspace_id !== envelope.workspaceId) {
         throw new SignerFailure("envelope_mismatch");
       }
+      // A destroyed key's signed transactions were emptied: nothing of it can be shown.
+      if (wallet.state === "destroyed") throw new SignerFailure("wallet_retired");
     }
     // A cancel names a signature of this signer: its wallet, chain and account nonce.
     if (envelope.type === "cancel-transaction" && records.cancelTarget(envelope) === null) {

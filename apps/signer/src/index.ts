@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import {
+  type Address,
   ApprovalId,
   type ApproverCredential,
   type AssetLabel,
@@ -22,6 +23,7 @@ import {
   MIN_SECRET_BYTES,
   OpenConfirmationRequest,
   RepriceRequest,
+  RetireWalletStepRequest,
   RevokeApprovalRequest,
   RevokeMandateRequest,
   SetPolicyRequest,
@@ -42,17 +44,27 @@ import { createConfirmations } from "./confirmations.ts";
 import { openDatabase, transaction } from "./db.ts";
 import { SignerFailure } from "./errors.ts";
 import { FENCE_BY_OPERATOR, fenceReplacedDatabase, raiseFence } from "./fence.ts";
+import {
+  DEFAULT_MAX_DESTROY_DELAY_SECONDS,
+  DEFAULT_MIN_DESTROY_DELAY_SECONDS,
+} from "./lifecycle.ts";
 import { type Logger, silentLogger } from "./log.ts";
 import { DEFAULT_MAX_LIVE_MANDATES_PER_WALLET, DEFAULT_MAX_MANDATE_SECONDS } from "./mandates.ts";
 import { createSignerCore } from "./signer.ts";
 import type { Vault } from "./vault.ts";
 
 export { SCHEMA_VERSION, SchemaTooNewError } from "./db.ts";
+export {
+  DEFAULT_MAX_DESTROY_DELAY_SECONDS,
+  DEFAULT_MIN_DESTROY_DELAY_SECONDS,
+  LIFECYCLE_ACTIONS,
+} from "./lifecycle.ts";
 export type { Logger } from "./log.ts";
 export { createLogger } from "./log.ts";
 export {
   createTestVault,
   type EvmTransaction,
+  exportOwsWalletSecret,
   OwsVault,
   type Vault,
   VaultError,
@@ -110,6 +122,13 @@ export interface SignerOptions {
    * (`SIGNER_REPRICE_WINDOW_SECONDS`). Defaults to a day; 0 refuses every reprice.
    */
   repriceWindowSeconds?: number;
+  /**
+   * The shortest `destroyAfter − issuedAt` a retirement or deletion may have
+   * (`SIGNER_MIN_DESTROY_DELAY_SECONDS`). Defaults to seven days.
+   */
+  minDestroyDelaySeconds?: number;
+  /** The longest (`SIGNER_MAX_DESTROY_DELAY_SECONDS`). Defaults to 90 days. */
+  maxDestroyDelaySeconds?: number;
   /** Seconds since the Unix epoch. Tests inject a clock. */
   now?: () => number;
   log?: Logger;
@@ -138,6 +157,15 @@ export interface Signer {
   revokeMandateByOperator(mandateId: MandateId): MandateId[];
   /** End every live mandate of a workspace with reason `operator`. Only the admin CLI calls it. */
   revokeWorkspaceMandatesByOperator(workspaceId: WorkspaceId): MandateId[];
+  /**
+   * Read a wallet's secret through `exportSecret`, recorded as `export-wallet-by-operator`, and
+   * refused for a destroyed wallet (`wallet_retired`). Only the admin CLI calls it.
+   */
+  exportWalletByOperator(
+    workspaceId: WorkspaceId,
+    walletId: WalletId,
+    exportSecret: (walletId: WalletId) => string,
+  ): Promise<{ address: Address; secret: string }>;
   close(): void;
 }
 
@@ -238,6 +266,13 @@ export function createSigner(options: SignerOptions): Signer {
   const log = options.log ?? silentLogger;
   const maxMandateSeconds = options.maxMandateSeconds ?? DEFAULT_MAX_MANDATE_SECONDS;
   const maxTxAttempts = options.maxTxAttempts ?? DEFAULT_MAX_TX_ATTEMPTS;
+  const minDestroyDelaySeconds =
+    options.minDestroyDelaySeconds ?? DEFAULT_MIN_DESTROY_DELAY_SECONDS;
+  const maxDestroyDelaySeconds =
+    options.maxDestroyDelaySeconds ?? DEFAULT_MAX_DESTROY_DELAY_SECONDS;
+  if (minDestroyDelaySeconds < 0 || maxDestroyDelaySeconds < minDestroyDelaySeconds) {
+    throw new RangeError("the destroy delay bounds must satisfy 0 <= min <= max");
+  }
   const { db, created } = openDatabase(options.sqlitePath);
   // Before anything is served: a database file that is not the one last recorded may be a
   // restored copy that forgot what it signed after the copy was made.
@@ -259,6 +294,8 @@ export function createSigner(options: SignerOptions): Signer {
       options.maxLiveMandatesPerWallet ?? DEFAULT_MAX_LIVE_MANDATES_PER_WALLET,
     maxTxAttempts,
     repriceWindowSeconds: options.repriceWindowSeconds ?? DEFAULT_REPRICE_WINDOW_SECONDS,
+    minDestroyDelaySeconds,
+    maxDestroyDelaySeconds,
     now,
     log,
   });
@@ -362,6 +399,30 @@ export function createSigner(options: SignerOptions): Signer {
         );
       case "signUnderMandate":
         return core.signUnderMandate(mandateId(), parse(SignUnderMandateRequest, parseBody(body)));
+      case "retireWallet":
+        return core.retireWallet(
+          parse(WalletId, params.walletId),
+          parse(AuthorizedRequest, parseBody(body)).authorization,
+        );
+      case "cancelRetireWallet":
+        return core.cancelRetireWallet(
+          parse(WalletId, params.walletId),
+          parse(RetireWalletStepRequest, parseBody(body)).workspaceId,
+        );
+      case "finalizeRetireWallet":
+        return core.finalizeRetireWallet(
+          parse(WalletId, params.walletId),
+          parse(RetireWalletStepRequest, parseBody(body)).workspaceId,
+        );
+      case "deleteWorkspace":
+        return core.deleteWorkspace(
+          workspaceId(),
+          parse(AuthorizedRequest, parseBody(body)).authorization,
+        );
+      case "cancelDeleteWorkspace":
+        return core.cancelDeleteWorkspace(workspaceId());
+      case "finalizeDeleteWorkspace":
+        return core.finalizeDeleteWorkspace(workspaceId());
       case "openConfirmation":
         return confirmations.openConfirmation(
           approvalId(),
@@ -454,6 +515,7 @@ export function createSigner(options: SignerOptions): Signer {
     listWorkspaceMandates: core.listWorkspaceMandates,
     revokeMandateByOperator: core.revokeMandateByOperator,
     revokeWorkspaceMandatesByOperator: core.revokeWorkspaceMandatesByOperator,
+    exportWalletByOperator: core.exportWalletByOperator,
     close: () => db.close(),
   };
 }

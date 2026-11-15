@@ -70,8 +70,21 @@ Success means:
 - [ ] The sweep in CI: the release gate "a person empties a disabled agent's wallet to the treasury while paused, and the signer refuses any other destination" in `e2e/test/release-gates.spec.ts` (`stack (amd64)`, `stack (arm64)`), and the `ui` job with the new card. Written and type-checked, not run. No browser journey covers the card yet.
 - [x] (2026-11-15) Re-checked against main (`2911c20`). The sweep is proven in CI: its release gate (`e2e/test/release-gates.spec.ts:686`) passed in `stack (amd64)` of run 43710836888 on `98cc6a1`, all six jobs green, and the `ui` journey now covers the sweep card (`apps/web/test/journey.e2e.ts:445-466`). Trusted display, the v0.1 defect fixes, mandates and notifications landed since the draft; the milestones below are rewritten for them, D3 is delivered, D8-D12 are new. Nothing else of this plan is built.
 - [x] (2026-11-15) Milestone 1: protocol. Local checks only, CI pending. `retire-wallet` and `delete-workspace` envelopes with `WalletRef` and `walletsToDestroy`; their confirmation views and the warnings `keys_destroyed`, `balances_unchecked`; six signer routes and client methods; lifecycle `state` and `destroyAfter` on `WorkspaceState` and `WalletState`, `minDestroyDelaySeconds`; six error codes; `docs/approval-protocol.md` §5, §8, §10, §11, §12. Proven locally, one file at a time: `packages/protocol` `tsc --noEmit`; `test/lifecycle-envelopes.test.ts` (23), `confirmation.test.ts` (59), `signer-client.test.ts` (23), `digests.test.ts` (150), `verify-authorization.test.ts` (35), `schemas.test.ts` (54); `tsc --noEmit` clean in `apps/signer`, `apps/approve`, `apps/server`, `apps/web`, `e2e`, `packages/api`; `apps/approve/test/app.test.ts`, `apps/signer/test/confirmations.test.ts`, `apps/signer/test/governance.test.ts` pass. Compile-keeping edits outside the protocol are listed under `Surprises & Discoveries`.
-- [ ] Milestone 2: signer.
-- [ ] Milestone 3: key store.
+- [x] (2026-11-15) Milestone 2: signer. Local checks only, CI pending. Schema version 7
+      (`apps/signer/src/db.ts`, with `secure_delete` on); `apps/signer/src/lifecycle.ts`
+      (`createLifecycleOperations`: retire, cancel and finalize of a wallet, delete, cancel and
+      finalize of a workspace, `exportWalletByOperator`, and `refusal`, the lifecycle rules shared by
+      applying and the confirmation page); `SIGNER_MIN_DESTROY_DELAY_SECONDS` (default 604800, 0 to 7776000) and `SIGNER_MAX_DESTROY_DELAY_SECONDS` (default 7776000, 1 to 31536000, at least the
+      minimum; an empty value is unset); `Vault.destroyWallet`, `exportOwsWalletSecret`;
+      `admin.ts export-wallet`; the six routes; every refusal of the plan; the Milestone 1
+      placeholders replaced. Proven locally, one file at a time: `apps/signer` and `apps/server`
+      `tsc --noEmit`; `apps/signer/test/lifecycle.test.ts` (9, the version 6 to 7 migration
+      included), `confirmations.test.ts` (17), `admin.test.ts` (5), `ows.test.ts` (2, real OWS
+      1.4.5), `config.test.ts` (8), and unchanged in behavior `fence` (10), `mandates` (16),
+      `repricing` (17), `signing` (32), `sweep` (7), `governance` (15), `hardening` (8),
+      `possession` (6). Not run: the release gates (`stack`), which start the signer image at
+      version 7.
+- [ ] Milestone 3: key store. Not started (left for the next agent).
 - [ ] Milestone 4: control plane, sweep, retire, delete, remove agent.
 - [ ] Milestone 5: export and clone.
 - [ ] Milestone 6: web UI.
@@ -162,6 +175,52 @@ Success means:
     `rulesFor` gives every kind without a policy); what it lacks is their `superseded` rule.
   - `apps/approve/public/approve.js`: text for `keys_destroyed`, `balances_unchecked` and the six
     codes (Milestone 6 may reword); `apps/approve/test/app.test.ts`: `wallets: []`.
+    Update (2026-11-15, Milestone 2): the signer's placeholders are replaced. The messages in
+    `errors.ts` stay as written; `workspaceState` and `walletState` read the version 7 columns
+    and `SIGNER_MIN_DESTROY_DELAY_SECONDS`; `RenderInput.wallets` was already the real record;
+    `supersededBy` gains the lifecycle rules through `SignerRecords.lifecycleRefusal`.
+- Observation (2026-11-15, Milestone 2): cancelling a deletion cannot put "every wallet back to
+  `active`" as drafted: a `held` wallet would then sign again after `resume-workspace` without
+  the new policy `held` requires, and no passkey approves a cancel. Version 7 therefore adds
+  `wallets.state_before_delete` (`active` or `held`): applying a deletion records what it found,
+  a wallet already `retiring` on its own recorded as `held`, and cancelling restores exactly
+  that. `docs/approval-protocol.md` §8 ("back to `active`") needs this wording.
+  Evidence: `apps/signer/src/lifecycle.ts` (`deleteWorkspace`, `cancelDeleteWorkspace`),
+  `lifecycle.test.ts` "pauses and stops every change while it waits".
+- Observation (2026-11-15, Milestone 2): every approval is made on the confirmation page, so
+  "opening a confirmation is refused while `deleting`" would also block the `cancel-transaction`
+  D7 relies on. The signer opens a `cancel-transaction` confirmation while the deletion waits,
+  and nothing else; `docs/approval-protocol.md` §8 lists opening a confirmation without that
+  exception. Revoking an approval and pausing stay allowed while `deleting` (they remove
+  authority); a `deleted` workspace answers only `getWorkspace`, `listDecisions`, a repeat of
+  its finalize and a repeat of its own deletion envelope.
+- Observation (2026-11-15, Milestone 2): details the plan left open, as built.
+  - `cancelRetireWallet` is `workspace_deleting` while the workspace is being deleted (the
+    deletion decides for every wallet); `setPolicy` is `wallet_retired` for a `retiring` or
+    `destroyed` wallet and makes a `held` one `active`; `retireWallet` on a `retiring` or
+    `destroyed` wallet is `wallet_retired` (protocol §8), and `conflict` is kept for cancel and
+    finalize in the wrong state.
+  - A repeat of a signed approval (`sign`, `sweep`, a mandate use, a reprice, a cancel) still
+    returns what was signed while the wallet is `retiring`; once its key is destroyed the signed
+    bytes are emptied and the repeat is `wallet_retired`. `getApproval` of such an approval keeps
+    `transactionHash` and reports `attempts: []`.
+  - Decision log: applying records `retire-wallet` or `delete-workspace` under the approval id;
+    `cancel-retire-wallet`, `cancel-delete-workspace`, `destroy-wallet` and
+    `export-wallet-by-operator` carry no approval id; finalizing a deletion records one
+    `destroy-wallet` per key, then `delete-workspace` with no approval id. Mandates ended by D8
+    are `revoke-mandate-on-retire` and `revoke-mandate-on-delete`, reason `requested`.
+  - Finalize deletes the key from the vault inside the write transaction, after re-reading the
+    state, then empties the rows; a vault failure rolls the rows back, and a key already gone
+    counts as deleted, so the next finalize completes (`lifecycle.test.ts`, "a key store that
+    fails or crashes mid-destroy"). `PRAGMA wal_checkpoint(TRUNCATE)` runs after the commit.
+  - OWS names its files by UUID; each API key file holds its own encrypted copy of the wallet's
+    secret, so `destroyWallet` revokes every key named after the wallet before deleting the
+    wallet (`ows.test.ts`).
+  - Tests that wind a database file back to an older version now also drop the version 7
+    columns (`DROP_VERSION_7` in `apps/signer/test/harness.ts`): `ALTER TABLE … ADD COLUMN`
+    cannot run twice.
+  - Compose and `.env.example` do not pass the two delay settings yet, so the defaults apply;
+    the signer treats an empty value as unset, so wiring them as `${VAR:-}` is safe.
 
 ## Decision Log
 

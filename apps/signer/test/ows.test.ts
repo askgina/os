@@ -1,10 +1,11 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { newId, policyHash } from "@askgina/os-protocol";
 import { createSignerClient, type SignerClient } from "@askgina/os-protocol/signer";
+import * as ows from "@open-wallet-standard/core";
 import {
   createPublicClient,
   createWalletClient,
@@ -60,6 +61,34 @@ const funder = createWalletClient({
 });
 
 const realClock = () => Math.floor(Date.now() / 1000);
+
+describe("destroying a wallet in the real OWS vault", () => {
+  const dir = mkdtempSync(join(tmpdir(), "os-signer-ows-destroy-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("leaves no wallet or key file naming the wallet, keeps the others, and a repeat succeeds", () => {
+    const passphraseFile = join(dir, "passphrase");
+    writeFileSync(passphraseFile, "a long enough owner passphrase");
+    const vaultPath = join(dir, "vault");
+    const vault = new OwsVault({ vaultPath, passphraseFile });
+    const [gone, kept] = [newId("wal"), newId("wal")];
+    vault.createWallet(gone);
+    vault.createWallet(kept);
+    const goneId = ows.getWallet(gone, vaultPath).id;
+    const naming = (name: string) =>
+      ["wallets", "keys"].flatMap((sub) =>
+        readdirSync(join(vaultPath, sub)).filter((file) =>
+          readFileSync(join(vaultPath, sub, file), "utf8").includes(name),
+        ),
+      );
+    expect(naming(gone).length).toBeGreaterThan(0);
+
+    vault.destroyWallet(gone);
+    expect([...naming(gone), ...naming(goneId)]).toEqual([]);
+    expect(naming(kept)).toHaveLength(2);
+    vault.destroyWallet(gone);
+  });
+});
 
 describe("the real OWS vault, across a restart of the signer process", () => {
   const dir = mkdtempSync(join(tmpdir(), "os-signer-ows-"));

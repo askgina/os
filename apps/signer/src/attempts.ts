@@ -119,6 +119,8 @@ export interface AttemptInternals {
     maxTtlSeconds: number,
   ): Promise<void>;
   requireWorkspace(workspaceId: string): WorkspaceRow;
+  /** A deleted workspace's signed transactions are emptied: it answers nothing about them. */
+  assertNotDeleted(workspaceId: string): WorkspaceRow;
   findWallet(walletId: string): WalletRow | undefined;
   currentPolicy(walletId: string): { policy: WalletPolicy; hash: string } | null;
   findApproval(approvalId: string): ApprovalRow | undefined;
@@ -453,7 +455,10 @@ export function createAttemptOperations(internals: AttemptInternals) {
     internals.requireWorkspace(approval.workspace_id);
     return internals.decide(approval.workspace_id, approvalId, ATTEMPT_ACTIONS.reprice, (allow) =>
       transaction(db, () => {
+        internals.assertNotDeleted(approval.workspace_id);
         const signature = boundSignature(approvalId, request);
+        // Refused for a destroyed wallet only: a retiring one still clears a stuck transaction.
+        if (walletOf(signature).state === "destroyed") throw new SignerFailure("wallet_retired");
         const records = recordsOf(signature);
         const existing = records.find((record) => record.attempt.attempt === request.attempt);
         if (existing) {
@@ -571,6 +576,8 @@ export function createAttemptOperations(internals: AttemptInternals) {
     }
     const wallet = internals.findWallet(signature.wallet_id);
     if (!wallet || wallet.workspace_id !== envelope.workspaceId) return null;
+    // A destroyed key signs nothing, and its signed transactions were emptied.
+    if (wallet.state === "destroyed") return null;
     return { signature, wallet };
   }
 
@@ -622,6 +629,15 @@ export function createAttemptOperations(internals: AttemptInternals) {
         if (envelope.type !== "cancel-transaction" || envelope.targetApprovalId !== approvalId) {
           throw new SignerFailure("envelope_mismatch");
         }
+        // Allowed while the workspace is being deleted and the wallet retiring (owner decision
+        // D7); refused once the key is destroyed.
+        const assertKeyKept = () => {
+          internals.assertNotDeleted(envelope.workspaceId);
+          if (internals.findWallet(envelope.walletId)?.state === "destroyed") {
+            throw new SignerFailure("wallet_retired");
+          }
+        };
+        assertKeyKept();
         if (internals.priorOutcome(envelope, "applied") === "replay") {
           return replayedCancel(envelope.approvalId);
         }
@@ -636,6 +652,7 @@ export function createAttemptOperations(internals: AttemptInternals) {
         );
 
         return transaction(db, () => {
+          assertKeyKept();
           if (internals.priorOutcome(envelope, "applied") === "replay") {
             return replayedCancel(envelope.approvalId);
           }
@@ -688,7 +705,9 @@ export function createAttemptOperations(internals: AttemptInternals) {
       const signature = signatureOf(approval.approval_id);
       return {
         transactionHash: (signature?.transaction_hash as Hex | undefined) ?? null,
-        attempts: attemptsOf(approval.approval_id),
+        // The signed bytes of a destroyed wallet were emptied; the first attempt's fees were
+        // only in them, so no attempt is reported.
+        attempts: signature?.signed_transaction === "" ? [] : attemptsOf(approval.approval_id),
       };
     }
     if (approval.state === "applied") {

@@ -1,15 +1,19 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { newId } from "@askgina/os-protocol";
+import { mnemonicToAccount } from "viem/accounts";
 import { afterAll, describe, expect, it } from "vitest";
+import { OwsVault } from "../src/index.ts";
 import {
   approveIntent,
+  authorize,
   confirmationEnvironment,
   grantMandate,
+  header,
   intentFor,
   newPerson,
   type Person,
@@ -204,6 +208,67 @@ describe("the admin CLI on the signer host", () => {
     );
     const { decisions } = await t.client.listDecisions(world.workspaceId);
     expect(decisions.filter((d) => d.action === "revoke-mandate-by-operator")).toHaveLength(3);
+    t.signer.close();
+  });
+
+  it("exports a wallet's mnemonic to a new 0600 file, logs it, and refuses an existing file and a destroyed wallet", async () => {
+    const vault = new OwsVault({
+      vaultPath: join(dir, "vault"),
+      passphraseFile: join(dir, "passphrase"),
+    });
+    const t = startSigner({
+      sqlitePath: join(dir, "signer.sqlite"),
+      vault,
+      minDestroyDelaySeconds: 60,
+    });
+    t.clock.value = Math.floor(Date.now() / 1000);
+    const world = await setUpWorld(t);
+    const out = join(dir, "export.txt");
+    const exportWallet = () =>
+      admin([
+        "export-wallet",
+        "--workspace",
+        world.workspaceId,
+        "--wallet",
+        world.walletId,
+        "--out",
+        out,
+      ]);
+
+    expect(await exportWallet()).toEqual({
+      code: 0,
+      line: {
+        ok: true,
+        action: "export-wallet-by-operator",
+        workspaceId: world.workspaceId,
+        walletId: world.walletId,
+        address: world.address,
+        out,
+      },
+    });
+    expect(statSync(out).mode & 0o777).toBe(0o600);
+    const mnemonic = readFileSync(out, "utf8").trim();
+    expect(mnemonicToAccount(mnemonic).address.toLowerCase()).toBe(world.address);
+    expect(await exportWallet()).toEqual({ code: 2, line: { ok: false, code: "out_exists" } });
+    const { decisions } = await t.client.listDecisions(world.workspaceId);
+    expect(decisions.filter((d) => d.action === "export-wallet-by-operator")).toHaveLength(1);
+
+    rmSync(out);
+    await t.client.retireWallet(
+      world.walletId,
+      authorize(
+        {
+          ...header(t.clock, newId("apr"), world.workspaceId),
+          type: "retire-wallet",
+          wallet: { walletId: world.walletId, address: world.address as `0x${string}` },
+          destroyAfter: t.clock.value + 60,
+        },
+        world.people,
+      ),
+    );
+    t.clock.value += 60;
+    await t.client.finalizeRetireWallet(world.walletId, world.workspaceId);
+    expect(await exportWallet()).toEqual({ code: 2, line: { ok: false, code: "wallet_retired" } });
     t.signer.close();
   });
 

@@ -24,6 +24,7 @@ function vaultThatSigns(
   return {
     createWallet: (walletId) => honest.createWallet(walletId),
     signEvmTransaction: (...args) => sign(honest, ...args),
+    destroyWallet: (walletId) => honest.destroyWallet(walletId),
   };
 }
 

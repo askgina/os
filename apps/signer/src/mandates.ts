@@ -70,6 +70,10 @@ export const MANDATE_ACTIONS = {
   revokeByOperator: "revoke-mandate-by-operator",
   /** The restore fence moved (`operator`). */
   revokeOnFence: "revoke-mandate-on-fence",
+  /** People approved retiring the mandate's wallet (`requested`). */
+  revokeOnRetire: "revoke-mandate-on-retire",
+  /** People approved deleting the mandate's workspace (`requested`). */
+  revokeOnDelete: "revoke-mandate-on-delete",
 } as const;
 
 const DAY_SECONDS = 86_400;
@@ -169,6 +173,10 @@ export interface MandateInternals {
   signAndRecord(input: SignAndRecordInput): SignResponse;
   buildTransaction(intent: Intent, params: TransactionParams): EvmTransaction;
   assertFeeWithin(params: TransactionParams, maxFeeWei: string): void;
+  /** A deleted workspace answers nothing about its mandates: their text is blanked. */
+  assertNotDeleted(workspaceId: string): WorkspaceRow;
+  /** Signing needs an active workspace and an active wallet, read again each time. */
+  assertCanSign(workspaceId: string, walletId: string): void;
 }
 
 export function createMandateOperations(internals: MandateInternals) {
@@ -293,6 +301,10 @@ export function createMandateOperations(internals: MandateInternals) {
     ) {
       throw new SignerFailure("envelope_mismatch");
     }
+    // Read again: the wallet may have been retired while this grant was being verified.
+    if (internals.findWallet(wallet.wallet_id)?.state !== "active") {
+      throw new SignerFailure("wallet_retired");
+    }
     const policy = internals.currentPolicy(wallet.wallet_id);
     if (!policy) throw new SignerFailure("policy_missing");
     const at = now();
@@ -362,12 +374,15 @@ export function createMandateOperations(internals: MandateInternals) {
   function getMandate(mandateId: MandateId): MandateState {
     const row = findMandate(mandateId);
     if (!row) throw new SignerFailure("not_found");
+    internals.assertNotDeleted(row.workspace_id);
     return stateOf(row);
   }
 
   /** Every mandate of a wallet, live or ended, by `notAfter` then id. */
   function listMandates(walletId: WalletId): ListMandatesResponse {
-    if (!internals.findWallet(walletId)) throw new SignerFailure("not_found");
+    const wallet = internals.findWallet(walletId);
+    if (!wallet) throw new SignerFailure("not_found");
+    internals.assertNotDeleted(wallet.workspace_id);
     const rows = db
       .prepare("SELECT * FROM mandates WHERE wallet_id = ? ORDER BY not_after, mandate_id")
       .all(walletId) as MandateRow[];
@@ -394,6 +409,7 @@ export function createMandateOperations(internals: MandateInternals) {
 
     return internals.decide(found.workspace_id, approvalId, MANDATE_ACTIONS.use, (allow) =>
       transaction(db, () => {
+        internals.assertNotDeleted(found.workspace_id);
         // Idempotency: a retry of a use already signed gets the same transaction, even if the
         // mandate ended or the workspace was paused since.
         const prior = internals.findApproval(approvalId);
@@ -405,6 +421,7 @@ export function createMandateOperations(internals: MandateInternals) {
           throw new SignerFailure("conflict");
         }
 
+        internals.assertCanSign(found.workspace_id, found.wallet_id);
         const workspace = internals.requireWorkspace(found.workspace_id);
         if (workspace.paused === 1) throw new SignerFailure("workspace_paused");
 
@@ -468,7 +485,7 @@ export function createMandateOperations(internals: MandateInternals) {
    * mandate of another workspace is `not_found`; revoking twice changes nothing.
    */
   function revokeMandate(mandateId: MandateId, workspaceId: WorkspaceId): Promise<MandateState> {
-    internals.requireWorkspace(workspaceId);
+    internals.assertNotDeleted(workspaceId);
     const found = findMandate(mandateId);
     if (!found || found.workspace_id !== workspaceId) throw new SignerFailure("not_found");
     return internals.decide(workspaceId, found.grant_approval_id, MANDATE_ACTIONS.revoke, (allow) =>
@@ -493,6 +510,34 @@ export function createMandateOperations(internals: MandateInternals) {
       )
       .all(workspaceId, credentialId, at) as MandateRow[];
     return revokeEach(db, rows, "grantor_removed", MANDATE_ACTIONS.revokeOnGrantorRemoval, at);
+  }
+
+  /**
+   * Every live mandate of the wallet ends with reason `requested`: people approved retiring it
+   * (owner decision D8). Runs inside the transaction that applies the retirement.
+   */
+  function revokeWalletMandates(walletId: string): MandateId[] {
+    const at = now();
+    const rows = db
+      .prepare(
+        "SELECT * FROM mandates WHERE wallet_id = ? AND revoked_at IS NULL AND not_after > ? ORDER BY mandate_id",
+      )
+      .all(walletId, at) as MandateRow[];
+    return revokeEach(db, rows, "requested", MANDATE_ACTIONS.revokeOnRetire, at);
+  }
+
+  /**
+   * Every live mandate of the workspace ends with reason `requested`: people approved deleting
+   * it (owner decision D8). Runs inside the transaction that applies the deletion.
+   */
+  function revokeWorkspaceMandates(workspaceId: string): MandateId[] {
+    const at = now();
+    const rows = db
+      .prepare(
+        "SELECT * FROM mandates WHERE workspace_id = ? AND revoked_at IS NULL AND not_after > ? ORDER BY mandate_id",
+      )
+      .all(workspaceId, at) as MandateRow[];
+    return revokeEach(db, rows, "requested", MANDATE_ACTIONS.revokeOnDelete, at);
   }
 
   /**
@@ -543,7 +588,7 @@ export function createMandateOperations(internals: MandateInternals) {
 
   /** Every mandate of a workspace, by wallet, `notAfter` and id, for the admin CLI. */
   function listWorkspaceMandates(workspaceId: WorkspaceId): MandateState[] {
-    internals.requireWorkspace(workspaceId);
+    internals.assertNotDeleted(workspaceId);
     const rows = db
       .prepare(
         "SELECT * FROM mandates WHERE workspace_id = ? ORDER BY wallet_id, not_after, mandate_id",
@@ -559,6 +604,8 @@ export function createMandateOperations(internals: MandateInternals) {
     revokeMandate,
     signUnderMandate,
     revokeMandatesOfCredential,
+    revokeWalletMandates,
+    revokeWorkspaceMandates,
     revokeMandateByOperator,
     revokeWorkspaceMandatesByOperator,
     listWorkspaceMandates,

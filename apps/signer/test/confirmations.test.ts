@@ -415,6 +415,42 @@ describe("the view", () => {
   });
 });
 
+describe("a deletion's confirmation", () => {
+  it("lists the signer's wallets with the two warnings, and is superseded once the wallet set changed", async () => {
+    const t = startSigner();
+    const world = await setUpWorld(t);
+    const envelope: Envelope = {
+      ...header(t.clock, newId("apr"), world.workspaceId),
+      type: "delete-workspace",
+      wallets: [{ walletId: world.walletId, address: world.address as Sweep["to"] }],
+      destroyAfter: t.clock.value + 604_800,
+    };
+    const token = await open(t, envelope, { kind: "envelope-only" });
+    const view = await t.confirm.getConfirmation(envelope.approvalId, token);
+    expect([view.title, view.state, view.warnings.slice(0, 2)]).toEqual([
+      "Delete this workspace",
+      "open",
+      ["keys_destroyed", "balances_unchecked"],
+    ]);
+    expect(view.lines.some((line) => line.value === world.address)).toBe(true);
+
+    await t.client.createWallet({
+      workspaceId: world.workspaceId,
+      walletId: newId("wal"),
+      kind: "treasury",
+      label: "new",
+    });
+    expect((await t.confirm.getConfirmation(envelope.approvalId, token)).state).toBe("superseded");
+    await refused(
+      t.client.openConfirmation(envelope.approvalId, {
+        envelope,
+        subject: { kind: "envelope-only" },
+      }),
+      "wallet_set_mismatch",
+    );
+  });
+});
+
 describe("a cancel's confirmation", () => {
   /** A token payment approved and signed once, and a cancel envelope for it with no assertions. */
   async function signedPayment(world: World, t: TestSigner) {

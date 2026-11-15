@@ -20,6 +20,7 @@ import {
   authorize,
   CHAIN,
   Clock,
+  DROP_VERSION_7,
   ETH,
   grantMandate,
   header,
@@ -591,6 +592,7 @@ describe("what attempts leave unchanged", () => {
           credential,
           state.cheat ? { ...transaction, value: (transaction.value ?? 0n) + 1n } : transaction,
         ),
+      destroyWallet: (walletId) => honest.destroyWallet(walletId),
     };
     const world = await setUpWorld(startSigner({ vault }));
     const payment = await pay(world);
@@ -747,7 +749,7 @@ describe("the database's schema version 6", () => {
 
     // What a signer at version 5 left behind.
     const old = new DatabaseSync(sqlitePath);
-    old.exec("DROP TABLE signature_attempts; PRAGMA user_version = 5;");
+    old.exec(`DROP TABLE signature_attempts; ${DROP_VERSION_7} PRAGMA user_version = 5;`);
     old.close();
 
     t = startSigner(host);
@@ -762,7 +764,7 @@ describe("the database's schema version 6", () => {
     const db = new DatabaseSync(sqlitePath);
     const { user_version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
     db.close();
-    expect(SCHEMA_VERSION).toBe(6);
-    expect(user_version).toBe(6);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(6);
+    expect(user_version).toBe(SCHEMA_VERSION);
   });
 });

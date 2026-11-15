@@ -37,7 +37,9 @@ import type {
   SignResponse,
   SweepRequest,
   TransactionParams,
+  WalletLifecycle,
   WalletState,
+  WorkspaceLifecycle,
   WorkspaceState,
 } from "@askgina/os-protocol/signer";
 import {
@@ -59,17 +61,12 @@ import { transaction } from "./db.ts";
 import { appendDecision, listDecisions, verifyDecisions } from "./decisions.ts";
 import { SignerFailure } from "./errors.ts";
 import { readFence } from "./fence.ts";
+import { createLifecycleOperations, type LifecycleRefusal } from "./lifecycle.ts";
 import type { Logger } from "./log.ts";
 import { createMandateOperations } from "./mandates.ts";
 import { type EvmTransaction, type Vault, VaultError } from "./vault.ts";
 
 const DAY_SECONDS = 86_400;
-/**
- * The shortest destroy delay reported in `WorkspaceState`: the 7-day default of owner decision
- * D2 (`specs/workspace-lifecycle.md`). Retiring and deleting are not served yet; the lifecycle's
- * signer milestone replaces this with `SIGNER_MIN_DESTROY_DELAY_SECONDS`.
- */
-const MIN_DESTROY_DELAY_SECONDS = 604_800;
 
 export interface SignerCoreOptions {
   db: DatabaseSync;
@@ -86,6 +83,9 @@ export interface SignerCoreOptions {
   maxTxAttempts: number;
   /** How long after the first signature a reprice is signed without a person. */
   repriceWindowSeconds: number;
+  /** The shortest and longest `destroyAfter − issuedAt` of a retirement or deletion. */
+  minDestroyDelaySeconds: number;
+  maxDestroyDelaySeconds: number;
   now: () => number;
   log: Logger;
 }
@@ -120,6 +120,8 @@ export type WorkspaceRow = {
   admin_threshold: number;
   paused: number;
   created_request: string;
+  state: WorkspaceLifecycle;
+  destroy_after: number | null;
 };
 export type WalletRow = {
   wallet_id: string;
@@ -128,6 +130,10 @@ export type WalletRow = {
   label: string;
   address: string;
   sealed_credential: Uint8Array;
+  state: WalletLifecycle;
+  destroy_after: number | null;
+  destroyed_at: number | null;
+  state_before_delete: "active" | "held" | null;
 };
 export type ApprovalRow = {
   approval_id: string;
@@ -223,11 +229,39 @@ export function createSignerCore(options: SignerCoreOptions) {
         credentialId: approver.credential_id,
         addedAt: approver.added_at,
       })),
-      // No lifecycle step is served yet, so every workspace is active.
-      state: "active",
-      destroyAfter: null,
-      minDestroyDelaySeconds: MIN_DESTROY_DELAY_SECONDS,
+      state: row.state,
+      destroyAfter: row.destroy_after,
+      minDestroyDelaySeconds: options.minDestroyDelaySeconds,
     };
+  }
+
+  // --- lifecycle guards --------------------------------------------------------------------
+
+  /** Refuses unless the workspace is `active`: not while it is being deleted, nor after. */
+  function assertWorkspaceActive(workspaceId: string): WorkspaceRow {
+    const workspace = requireWorkspace(workspaceId);
+    if (workspace.state === "deleted") throw new SignerFailure("workspace_deleted");
+    if (workspace.state === "deleting") throw new SignerFailure("workspace_deleting");
+    return workspace;
+  }
+
+  /** A deleted workspace answers nothing but its state and its decision log. */
+  function assertNotDeleted(workspaceId: string): WorkspaceRow {
+    const workspace = requireWorkspace(workspaceId);
+    if (workspace.state === "deleted") throw new SignerFailure("workspace_deleted");
+    return workspace;
+  }
+
+  /**
+   * Signing needs an `active` workspace and an `active` wallet. Read from the database each
+   * time, so a retirement or deletion applied while a request was being verified is seen inside
+   * the signing transaction.
+   */
+  function assertCanSign(workspaceId: string, walletId: string): void {
+    assertWorkspaceActive(workspaceId);
+    const wallet = findWallet(walletId);
+    if (!wallet) throw new SignerFailure("not_found");
+    if (wallet.state !== "active") throw new SignerFailure("wallet_retired");
   }
 
   function findWallet(walletId: string): WalletRow | undefined {
@@ -279,6 +313,7 @@ export function createSignerCore(options: SignerCoreOptions) {
   function walletState(walletId: string): WalletState {
     const row = findWallet(walletId);
     if (!row) throw new SignerFailure("not_found");
+    assertNotDeleted(row.workspace_id);
     const policy = currentPolicy(walletId);
     const spent = [...spentSince(walletId, options.now() - DAY_SECONDS)]
       .filter(([, amount]) => amount > 0n)
@@ -295,9 +330,8 @@ export function createSignerCore(options: SignerCoreOptions) {
       policy: policy?.policy ?? null,
       policyHash: policy?.hash ?? null,
       spent,
-      // No lifecycle step is served yet, so every wallet is active.
-      state: "active",
-      destroyAfter: null,
+      state: row.state,
+      destroyAfter: row.destroy_after,
     };
   }
 
@@ -314,6 +348,8 @@ export function createSignerCore(options: SignerCoreOptions) {
     if (!row) throw new SignerFailure("internal");
     const wallet = findWallet(row.wallet_id);
     if (!wallet) throw new SignerFailure("internal");
+    // Emptied when the wallet's key was destroyed: there is nothing left to hand back.
+    if (row.signed_transaction === "") throw new SignerFailure("wallet_retired");
     return {
       approvalId: row.approval_id as ApprovalId,
       walletId: row.wallet_id as WalletId,
@@ -454,8 +490,13 @@ export function createSignerCore(options: SignerCoreOptions) {
       if (envelope.type !== input.type || envelope.workspaceId !== input.workspaceId) {
         throw new SignerFailure("envelope_mismatch");
       }
+      // A deleted workspace answers only its state and its log; a repeat of its deletion is
+      // its state.
+      const replayAfterDeletion = input.type === "delete-workspace";
+      if (!replayAfterDeletion) assertNotDeleted(input.workspaceId);
       if (priorOutcome(envelope, "applied") === "replay") return input.state();
       assertNotFenced(envelope);
+      assertWorkspaceActive(input.workspaceId);
       input.check?.(envelope);
       const workspace = requireWorkspace(input.workspaceId);
       await verify(
@@ -465,8 +506,11 @@ export function createSignerCore(options: SignerCoreOptions) {
         options.maxAdminTtlSeconds,
       );
       return transaction(db, () => {
+        if (!replayAfterDeletion) assertNotDeleted(input.workspaceId);
         if (priorOutcome(envelope, "applied") === "replay") return input.state();
         assertNotFenced(envelope);
+        // A deletion may have applied while this request was being verified.
+        assertWorkspaceActive(input.workspaceId);
         assertApproversStillPresent(input.authorization, input.workspaceId);
         const current = requireWorkspace(input.workspaceId);
         if (input.authorization.assertions.length < current.admin_threshold) {
@@ -524,6 +568,8 @@ export function createSignerCore(options: SignerCoreOptions) {
     const identity = canonicalJson(request);
     const existing = findWorkspace(request.workspaceId);
     if (existing) {
+      // A deleted workspace's id is never handed out again, not even to its own request.
+      if (existing.state === "deleted") throw new SignerFailure("conflict");
       if (existing.created_request === identity) return workspaceState(request.workspaceId);
       throw new SignerFailure("conflict");
     }
@@ -554,6 +600,7 @@ export function createSignerCore(options: SignerCoreOptions) {
     requireWorkspace(workspaceId);
     return decide(workspaceId, null, "pause-workspace", (allow) =>
       transaction(db, () => {
+        assertNotDeleted(workspaceId);
         db.prepare("UPDATE workspaces SET paused = 1 WHERE workspace_id = ?").run(workspaceId);
         allow();
         return workspaceState(workspaceId);
@@ -690,7 +737,7 @@ export function createSignerCore(options: SignerCoreOptions) {
   }
 
   async function createWallet(request: CreateWalletRequest): Promise<WalletState> {
-    requireWorkspace(request.workspaceId);
+    assertWorkspaceActive(request.workspaceId);
     const existing = findWallet(request.walletId);
     if (existing) {
       const same =
@@ -712,6 +759,8 @@ export function createSignerCore(options: SignerCoreOptions) {
         throw new SignerFailure("vault_error");
       }
       return transaction(db, () => {
+        // A deletion applied meanwhile names every wallet it destroys; this one would be missing.
+        assertWorkspaceActive(request.workspaceId);
         db.prepare(
           "INSERT INTO wallets (wallet_id, workspace_id, kind, label, address, sealed_credential, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         ).run(
@@ -746,6 +795,11 @@ export function createSignerCore(options: SignerCoreOptions) {
         envelope.policyHash !== policyHash(policy)
       ) {
         throw new SignerFailure("envelope_mismatch");
+      }
+      // A held wallet signs again with a new policy; a retiring or destroyed one never does.
+      const state = findWallet(walletId)?.state;
+      if (state === "retiring" || state === "destroyed") {
+        throw new SignerFailure("wallet_retired");
       }
       const current = currentPolicy(walletId);
       if (envelope.previousPolicyHash !== (current?.hash ?? null)) {
@@ -786,6 +840,9 @@ export function createSignerCore(options: SignerCoreOptions) {
           envelope.approvalId,
           options.now(),
         );
+        db.prepare(
+          "UPDATE wallets SET state = 'active' WHERE wallet_id = ? AND state = 'held'",
+        ).run(walletId);
       },
       state: () => walletState(walletId),
     });
@@ -919,6 +976,7 @@ export function createSignerCore(options: SignerCoreOptions) {
     const { envelope } = authorization;
     requireWorkspace(envelope.workspaceId);
     return decide(envelope.workspaceId, envelope.approvalId, "sign", async (allow) => {
+      assertNotDeleted(envelope.workspaceId);
       // Idempotency first: a retry of an approval already signed gets the same transaction.
       if (priorOutcome(envelope, "signed") === "replay")
         return storedSignature(envelope.approvalId);
@@ -938,6 +996,7 @@ export function createSignerCore(options: SignerCoreOptions) {
       }
       if (intentHash(intent) !== envelope.intentHash) throw new SignerFailure("intent_mismatch");
 
+      assertCanSign(envelope.workspaceId, wallet.wallet_id);
       if (requireWorkspace(envelope.workspaceId).paused === 1) {
         throw new SignerFailure("workspace_paused");
       }
@@ -957,10 +1016,12 @@ export function createSignerCore(options: SignerCoreOptions) {
       // The critical section. Synchronous from here to COMMIT: no other request can see the
       // ledger between the check and the record.
       return transaction(db, () => {
+        assertNotDeleted(envelope.workspaceId);
         if (priorOutcome(envelope, "signed") === "replay") {
           return storedSignature(envelope.approvalId);
         }
         assertNotFenced(envelope);
+        assertCanSign(envelope.workspaceId, wallet.wallet_id);
         const workspace = requireWorkspace(envelope.workspaceId);
         if (workspace.paused === 1) throw new SignerFailure("workspace_paused");
         const live = currentPolicy(wallet.wallet_id);
@@ -1029,6 +1090,7 @@ export function createSignerCore(options: SignerCoreOptions) {
     const { envelope } = authorization;
     requireWorkspace(envelope.workspaceId);
     return decide(envelope.workspaceId, envelope.approvalId, "sweep", async (allow) => {
+      assertNotDeleted(envelope.workspaceId);
       if (priorOutcome(envelope, "signed") === "replay") {
         return storedSignature(envelope.approvalId);
       }
@@ -1049,6 +1111,7 @@ export function createSignerCore(options: SignerCoreOptions) {
       if (wallet.workspace_id !== envelope.workspaceId) {
         throw new SignerFailure("envelope_mismatch");
       }
+      assertCanSign(envelope.workspaceId, walletId);
       assertSweepAllowed(wallet, sweepRequest);
 
       const workspace = requireWorkspace(envelope.workspaceId);
@@ -1061,10 +1124,12 @@ export function createSignerCore(options: SignerCoreOptions) {
       assertFeeWithin(params, sweepRequest.maxFeeWei);
 
       return transaction(db, () => {
+        assertNotDeleted(envelope.workspaceId);
         if (priorOutcome(envelope, "signed") === "replay") {
           return storedSignature(envelope.approvalId);
         }
         assertNotFenced(envelope);
+        assertCanSign(envelope.workspaceId, walletId);
         if (
           authorization.assertions.length < requireWorkspace(envelope.workspaceId).admin_threshold
         ) {
@@ -1105,6 +1170,7 @@ export function createSignerCore(options: SignerCoreOptions) {
     requireWorkspace(workspaceId);
     return decide(workspaceId, approvalId, "revoke-approval", (allow) =>
       transaction(db, () => {
+        assertNotDeleted(workspaceId);
         const row = findApproval(approvalId);
         if (row && (row.state !== "revoked" || row.workspace_id !== workspaceId)) {
           throw new SignerFailure("conflict");
@@ -1122,6 +1188,7 @@ export function createSignerCore(options: SignerCoreOptions) {
 
   function getApproval(approvalId: string): ApprovalState {
     const row = findApproval(approvalId);
+    if (row) assertNotDeleted(row.workspace_id);
     if (!row) {
       return {
         approvalId: approvalId as ApprovalId,
@@ -1159,6 +1226,8 @@ export function createSignerCore(options: SignerCoreOptions) {
     signAndRecord,
     buildTransaction,
     assertFeeWithin,
+    assertNotDeleted,
+    assertCanSign,
   });
 
   const attempts = createAttemptOperations({
@@ -1171,6 +1240,7 @@ export function createSignerCore(options: SignerCoreOptions) {
     decide,
     verify,
     requireWorkspace,
+    assertNotDeleted,
     findWallet,
     currentPolicy,
     findApproval,
@@ -1184,7 +1254,28 @@ export function createSignerCore(options: SignerCoreOptions) {
     signWith,
   });
 
+  const lifecycle = createLifecycleOperations({
+    db,
+    vault,
+    now: options.now,
+    log,
+    minDestroyDelaySeconds: options.minDestroyDelaySeconds,
+    maxDestroyDelaySeconds: options.maxDestroyDelaySeconds,
+    decide,
+    authorizedChange,
+    requireWorkspace,
+    findWorkspace,
+    findWallet,
+    assertWorkspaceActive,
+    assertNotDeleted,
+    workspaceState,
+    walletState,
+    revokeWalletMandates: mandates.revokeWalletMandates,
+    revokeWorkspaceMandates: mandates.revokeWorkspaceMandates,
+  });
+
   const records: SignerRecords = {
+    lifecycleRefusal: lifecycle.refusal,
     findWorkspace,
     approvers,
     findWallet,
@@ -1221,6 +1312,13 @@ export function createSignerCore(options: SignerCoreOptions) {
     listMandates: mandates.listMandates,
     revokeMandate: mandates.revokeMandate,
     signUnderMandate: mandates.signUnderMandate,
+    retireWallet: lifecycle.retireWallet,
+    cancelRetireWallet: lifecycle.cancelRetireWallet,
+    finalizeRetireWallet: lifecycle.finalizeRetireWallet,
+    deleteWorkspace: lifecycle.deleteWorkspace,
+    cancelDeleteWorkspace: lifecycle.cancelDeleteWorkspace,
+    finalizeDeleteWorkspace: lifecycle.finalizeDeleteWorkspace,
+    exportWalletByOperator: lifecycle.exportWalletByOperator,
     listWorkspaceMandates: mandates.listWorkspaceMandates,
     revokeMandateByOperator: mandates.revokeMandateByOperator,
     revokeWorkspaceMandatesByOperator: mandates.revokeWorkspaceMandatesByOperator,
@@ -1239,6 +1337,11 @@ export function createSignerCore(options: SignerCoreOptions) {
  * (`confirmations.ts`), so a view states exactly what signing and applying would check.
  */
 export interface SignerRecords {
+  /**
+   * Why the signer refuses this envelope because of where its workspace or wallet stands in its
+   * lifecycle, whatever approvals it has; null when nothing there stops it.
+   */
+  lifecycleRefusal(envelope: Envelope): LifecycleRefusal | null;
   findWorkspace(workspaceId: string): WorkspaceRow | undefined;
   approvers(workspaceId: string): ApproverCredential[];
   findWallet(walletId: string): WalletRow | undefined;

@@ -193,6 +193,7 @@ export function startSigner(
     maxLiveMandatesPerWallet?: number;
     maxTxAttempts?: number;
     repriceWindowSeconds?: number;
+    minDestroyDelaySeconds?: number;
   } = {},
 ) {
   const clock = input.clock ?? new Clock();
@@ -217,6 +218,9 @@ export function startSigner(
     ...(input.repriceWindowSeconds === undefined
       ? {}
       : { repriceWindowSeconds: input.repriceWindowSeconds }),
+    ...(input.minDestroyDelaySeconds === undefined
+      ? {}
+      : { minDestroyDelaySeconds: input.minDestroyDelaySeconds }),
     now: clock.now,
   });
   const fetch: typeof globalThis.fetch = (url, init) =>
@@ -491,6 +495,20 @@ export function txParams(overrides: Partial<TransactionParams> = {}): Transactio
     ...overrides,
   };
 }
+
+/**
+ * Undo schema version 7 in a closed database file, to make it look as an older signer left it.
+ * Version 7 adds columns, which cannot be added twice, so a test that winds a file back to an
+ * earlier version removes them too.
+ */
+export const DROP_VERSION_7 = `
+ALTER TABLE wallets DROP COLUMN state_before_delete;
+ALTER TABLE wallets DROP COLUMN destroyed_at;
+ALTER TABLE wallets DROP COLUMN destroy_after;
+ALTER TABLE wallets DROP COLUMN state;
+ALTER TABLE workspaces DROP COLUMN destroy_after;
+ALTER TABLE workspaces DROP COLUMN state;
+`;
 
 /** Assert that a signer call is refused with exactly this code. */
 export async function refused(call: Promise<unknown>, code: string, detail?: string) {

@@ -23,6 +23,11 @@ export interface Vault {
   createWallet(walletId: WalletId): { address: Address; credential: string };
   /** Sign one transaction and return it serialized, ready to broadcast. */
   signEvmTransaction(walletId: WalletId, credential: string, transaction: EvmTransaction): Hex;
+  /**
+   * Delete the wallet's key and every credential that unlocks it. A wallet already gone counts
+   * as deleted, so a repeat after a crash completes; anything else throws `VaultError("failed")`.
+   */
+  destroyWallet(walletId: WalletId): void;
 }
 
 /** A vault failed. The message is fixed text from this module; it never carries key material. */
@@ -49,6 +54,19 @@ function classifyOwsError(error: unknown): VaultError {
     return new VaultError("wallet_missing", "the vault has no such wallet");
   }
   return new VaultError("failed", "the vault operation failed");
+}
+
+/** OWS's answer when the key or wallet a call names is not in the vault. */
+const OWS_GONE = /^(API key not found|wallet not found)/i;
+
+/** Run an OWS call that deletes something; finding nothing to delete is success. */
+function owsDelete(operation: () => void): void {
+  try {
+    operation();
+  } catch (error) {
+    if (error instanceof Error && OWS_GONE.test(error.message)) return;
+    throw new VaultError("failed", "the vault could not delete the wallet");
+  }
 }
 
 function owsCall<T>(operation: () => T): T {
@@ -144,6 +162,42 @@ export class OwsVault implements Vault {
       splitSignature(result.signature, result.recoveryId ?? undefined),
     ) as Hex;
   }
+
+  /**
+   * Revoke every token named after the wallet (an OWS key file holds its own encrypted copy of
+   * the wallet's secret), then delete the wallet file. Tokens first: a crash in between leaves a
+   * wallet file nothing can unlock but the owner passphrase, and the repeat deletes it.
+   */
+  destroyWallet(walletId: WalletId): void {
+    let keys: unknown[];
+    try {
+      keys = ows.listApiKeys(this.#vaultPath);
+    } catch {
+      throw new VaultError("failed", "the vault could not list its keys");
+    }
+    for (const key of keys) {
+      const { id, name } = (key ?? {}) as { id?: unknown; name?: unknown };
+      if (name !== walletId || typeof id !== "string") continue;
+      owsDelete(() => ows.revokeApiKey(id, this.#vaultPath));
+    }
+    owsDelete(() => ows.deleteWallet(walletId, this.#vaultPath));
+  }
+}
+
+/**
+ * The wallet's secret (its mnemonic) from the OWS vault, unlocked with the owner passphrase. A
+ * module function and not a `Vault` method, so nothing the HTTP routes reach can call it: only the
+ * admin CLI on the signer host (`export-wallet`, owner decision D4).
+ */
+export function exportOwsWalletSecret(
+  options: { vaultPath: string; passphraseFile: string },
+  walletId: WalletId,
+): string {
+  if (!existsSync(options.passphraseFile)) {
+    throw new VaultError("passphrase_missing", "the vault passphrase file is absent");
+  }
+  const passphrase = readFileSync(options.passphraseFile, "utf8").trim();
+  return owsCall(() => ows.exportWallet(walletId, passphrase, options.vaultPath));
 }
 
 /**
@@ -184,6 +238,9 @@ export function createTestVault(): Vault {
           yParity: signature.recovery ?? 0,
         },
       ) as Hex;
+    },
+    destroyWallet(walletId) {
+      wallets.delete(walletId);
     },
   };
 }

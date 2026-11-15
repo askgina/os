@@ -1,9 +1,17 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
-import { ApproverCredential, MandateId, WorkspaceId } from "@askgina/os-protocol";
+import { ApproverCredential, MandateId, WalletId, WorkspaceId } from "@askgina/os-protocol";
 import { ConfigError, loadConfig, type SignerConfig } from "./config.ts";
 import { SignerFailure } from "./errors.ts";
-import { createSigner, OwsVault, SchemaTooNewError, type Signer } from "./index.ts";
+import {
+  createSigner,
+  exportOwsWalletSecret,
+  OwsVault,
+  SchemaTooNewError,
+  type Signer,
+} from "./index.ts";
+import { LIFECYCLE_ACTIONS } from "./lifecycle.ts";
 import { MANDATE_ACTIONS } from "./mandates.ts";
 
 /**
@@ -22,6 +30,9 @@ import { MANDATE_ACTIONS } from "./mandates.ts";
  *   node src/admin.ts revoke-mandate --mandate mnd_…
  *   node src/admin.ts revoke-mandate --all --workspace ws_…
  *     end one mandate, or every live mandate of a workspace, with reason `operator`
+ *   node src/admin.ts export-wallet --workspace ws_… --wallet wal_… --out <absolute path>
+ *     write the wallet's mnemonic to a new file readable by this user only, for an operator
+ *     taking its funds out of the system; the only way a key ever leaves the signer host
  *
  * Whoever can run these on the signer host is the root of trust: `enroll-approver` adds a key
  * that can approve anything the workspace's thresholds allow. Each command prints one JSON line.
@@ -32,7 +43,8 @@ const USAGE =
   "       admin.ts fence\n" +
   "       admin.ts list-mandates --workspace <ws_id>\n" +
   "       admin.ts revoke-mandate --mandate <mnd_id>\n" +
-  "       admin.ts revoke-mandate --all --workspace <ws_id>\n";
+  "       admin.ts revoke-mandate --all --workspace <ws_id>\n" +
+  "       admin.ts export-wallet --workspace <ws_id> --wallet <wal_id> --out <absolute path>\n";
 
 function print(line: object): void {
   process.stdout.write(`${JSON.stringify(line)}\n`);
@@ -55,6 +67,8 @@ function readArgs() {
         "public-key": { type: "string" },
         mandate: { type: "string" },
         all: { type: "boolean" },
+        wallet: { type: "string" },
+        out: { type: "string" },
       },
     });
   } catch {
@@ -66,6 +80,15 @@ const { positionals, values } = readArgs();
 const command = positionals[0];
 const workspace = WorkspaceId.safeParse(values.workspace);
 const mandate = MandateId.safeParse(values.mandate);
+const wallet = WalletId.safeParse(values.wallet);
+const exportTo =
+  command === "export-wallet" &&
+  workspace.success &&
+  wallet.success &&
+  values.out !== undefined &&
+  isAbsolute(values.out)
+    ? values.out
+    : null;
 // Exactly one of the two forms: one mandate by id, or every live mandate of one workspace.
 const revokeOne =
   command === "revoke-mandate" &&
@@ -81,6 +104,7 @@ const usable =
   command === "fence" ||
   revokeOne ||
   revokeAll ||
+  exportTo !== null ||
   ((command === "enroll-approver" || command === "verify-log" || command === "list-mandates") &&
     workspace.success);
 if (!usable) {
@@ -127,6 +151,10 @@ try {
     maxAdminTtlSeconds: config.maxAdminTtlSeconds,
     maxMandateSeconds: config.maxMandateSeconds,
     maxLiveMandatesPerWallet: config.maxLiveMandatesPerWallet,
+    maxTxAttempts: config.maxTxAttempts,
+    repriceWindowSeconds: config.repriceWindowSeconds,
+    minDestroyDelaySeconds: config.minDestroyDelaySeconds,
+    maxDestroyDelaySeconds: config.maxDestroyDelaySeconds,
   });
 } catch (error) {
   fail(error instanceof SchemaTooNewError ? "schema_too_new" : "database");
@@ -134,6 +162,29 @@ try {
 try {
   if (command === "fence") {
     print({ ok: true, action: "fence-set-by-operator", fenceAt: signer.fence() });
+  } else if (exportTo !== null && workspace.success && wallet.success) {
+    // Checked before the key is read; the write below refuses a file created meanwhile.
+    if (existsSync(exportTo)) fail("out_exists");
+    const exported = await signer.exportWalletByOperator(workspace.data, wallet.data, (walletId) =>
+      exportOwsWalletSecret(
+        { vaultPath: config.vaultPath, passphraseFile: config.passphraseFile },
+        walletId,
+      ),
+    );
+    try {
+      writeFileSync(exportTo, `${exported.secret}\n`, { mode: 0o600, flag: "wx" });
+    } catch {
+      fail("out_unwritable");
+    }
+    // Identifiers only: never the secret.
+    print({
+      ok: true,
+      action: LIFECYCLE_ACTIONS.export,
+      workspaceId: workspace.data,
+      walletId: wallet.data,
+      address: exported.address,
+      out: exportTo,
+    });
   } else if (revokeOne && mandate.success) {
     print({
       ok: true,

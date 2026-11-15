@@ -19,6 +19,7 @@ import {
   authorize,
   CHAIN,
   Clock,
+  DROP_VERSION_7,
   ETH,
   grantMandate,
   grantRequest,
@@ -747,7 +748,7 @@ describe("the database's schema version 5", () => {
     // What a signer at version 4 left behind.
     const old = new DatabaseSync(sqlitePath);
     old.exec(
-      "DROP TABLE mandate_uses; DROP TABLE mandate_grantors; DROP TABLE mandates; PRAGMA user_version = 4;",
+      `DROP TABLE mandate_uses; DROP TABLE mandate_grantors; DROP TABLE mandates; ${DROP_VERSION_7} PRAGMA user_version = 4;`,
     );
     old.close();
 

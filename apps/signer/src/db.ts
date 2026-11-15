@@ -231,6 +231,29 @@ CREATE TABLE IF NOT EXISTS signature_attempts (
 CREATE INDEX IF NOT EXISTS signature_attempts_by_cancel ON signature_attempts (cancel_approval_id);
 `;
 
+/**
+ * Version 7: the lifecycle (`docs/approval-protocol.md`, section 8, "Retiring and deleting").
+ * A workspace is `active`, `deleting` (a `delete-workspace` envelope applied; `destroy_after` is
+ * when its keys may be destroyed) or `deleted`. A wallet is `active`, `retiring` (it signs
+ * nothing; `destroy_after` is when its key may be destroyed), `held` (its retirement was
+ * cancelled; it signs nothing until a new policy) or `destroyed` (`destroyed_at`; its key is
+ * gone and `destroy_after` is kept). `state_before_delete` is what a deletion found, `active` or
+ * `held`, for a wallet it set `retiring`, so cancelling the deletion puts back exactly that and
+ * never makes a held wallet sign again; a wallet already retiring then is recorded as `held`.
+ * The columns have defaults, so older code that ignores them still reads every row.
+ */
+const VERSION_7 = `
+ALTER TABLE workspaces ADD COLUMN state TEXT NOT NULL DEFAULT 'active'
+  CHECK (state IN ('active', 'deleting', 'deleted'));
+ALTER TABLE workspaces ADD COLUMN destroy_after INTEGER;
+ALTER TABLE wallets ADD COLUMN state TEXT NOT NULL DEFAULT 'active'
+  CHECK (state IN ('active', 'retiring', 'held', 'destroyed'));
+ALTER TABLE wallets ADD COLUMN destroy_after INTEGER;
+ALTER TABLE wallets ADD COLUMN destroyed_at INTEGER;
+ALTER TABLE wallets ADD COLUMN state_before_delete TEXT
+  CHECK (state_before_delete IN ('active', 'held'));
+`;
+
 /** Migration `n` (from 1) takes a database from version `n - 1` to version `n`. */
 const MIGRATIONS: readonly string[] = [
   VERSION_1,
@@ -239,6 +262,7 @@ const MIGRATIONS: readonly string[] = [
   VERSION_4,
   VERSION_5,
   VERSION_6,
+  VERSION_7,
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -259,6 +283,9 @@ export function openDatabase(path: string): OpenedDatabase {
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA synchronous = FULL");
   db.exec("PRAGMA busy_timeout = 5000");
+  // Deleted rows and blanked values are overwritten in the file, not only unlinked from it: a
+  // finalized deletion removes what people typed and the signed transactions of destroyed keys.
+  db.exec("PRAGMA secure_delete = ON");
   try {
     // One write transaction, so the signer and the admin CLI opening the file together migrate
     // it once.

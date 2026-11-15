@@ -17,6 +17,7 @@ import {
   approveIntent,
   authorize,
   Clock,
+  DROP_VERSION_7,
   header,
   intentFor,
   refused,
@@ -309,7 +310,7 @@ describe("the database's schema version", () => {
     host.stop();
     // What a v0.1 signer left behind: the same tables, no metadata, user_version 0.
     const old = new DatabaseSync(host.sqlitePath);
-    old.exec("DROP TABLE signer_meta; PRAGMA user_version = 0;");
+    old.exec(`DROP TABLE signer_meta; ${DROP_VERSION_7} PRAGMA user_version = 0;`);
     old.close();
 
     const upgraded = on(world, host.start());

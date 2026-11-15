@@ -71,6 +71,8 @@ services:
       # asked (0 turns that off), and how many signatures one approval may produce in all.
       SIGNER_REPRICE_WINDOW_SECONDS: ${SIGNER_REPRICE_WINDOW_SECONDS:-86400}
       SIGNER_MAX_TX_ATTEMPTS: ${SIGNER_MAX_TX_ATTEMPTS:-16}
+      SIGNER_MIN_DESTROY_DELAY_SECONDS: ${SIGNER_MIN_DESTROY_DELAY_SECONDS:-604800}
+      SIGNER_MAX_DESTROY_DELAY_SECONDS: ${SIGNER_MAX_DESTROY_DELAY_SECONDS:-7776000}
     volumes:
       - signer-data:/data
       - signer-secrets:/run/secrets/signer:ro
