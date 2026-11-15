@@ -1,9 +1,13 @@
-import { createHmac, randomBytes } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createHmac, generateKeyPairSync, randomBytes } from "node:crypto";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import tls from "node:tls";
+import { type Config, loadConfig } from "../../src/config.ts";
 
 /** One request a receiver got, as it arrived. */
 export interface Received {
@@ -88,15 +92,19 @@ async function hkdf(salt: Bytes, ikm: Bytes, info: Bytes, length: number): Promi
   );
 }
 
+/** What only the browser holds of its subscription: its ECDH private key, public key and secret. */
+export interface BrowserKeys {
+  privateKey: CryptoKey;
+  publicKey: Bytes;
+  authSecret: Bytes;
+}
+
 /**
  * What a user agent does with a pushed body (RFC 8291 §3, RFC 8188), written apart from the
  * sender: read the header, derive the keys with its own private key, decrypt the one record,
  * then strip the zero padding and the 0x02 delimiter. Throws when anything does not hold.
  */
-export async function decryptPush(
-  body: Bytes,
-  ua: { privateKey: CryptoKey; publicKey: Bytes; authSecret: Bytes },
-): Promise<string> {
+export async function decryptPush(body: Bytes, ua: BrowserKeys): Promise<string> {
   const salt = body.subarray(0, 16);
   const recordSize = new DataView(body.buffer, body.byteOffset + 16, 4).getUint32(0);
   const idLength = body[20] ?? 0;
@@ -125,6 +133,129 @@ export async function decryptPush(
   while (end >= 0 && padded[end] === 0) end -= 1;
   if (padded[end] !== 0x02) throw new Error("no padding delimiter");
   return new TextDecoder().decode(padded.subarray(0, end));
+}
+
+/** One message a push service got, as it arrived. */
+export interface Pushed {
+  method: string;
+  path: string;
+  headers: IncomingHttpHeaders;
+  body: Uint8Array<ArrayBuffer>;
+}
+
+/** A push service of our own, over HTTPS on `localhost` with a certificate this process trusts. */
+export interface PushService {
+  /** `https://localhost:<port>`. */
+  origin: string;
+  pushed: Pushed[];
+  /** Queue answers for the next messages, in order; once they are used up it answers 201. */
+  answer(...answers: Answer[]): void;
+  close(): Promise<void>;
+}
+
+export async function startPushService(): Promise<PushService> {
+  const dir = mkdtempSync(join(tmpdir(), "os-push-service-"));
+  execFileSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-nodes",
+      "-days",
+      "1",
+      "-subj",
+      "/CN=localhost",
+      "-addext",
+      "subjectAltName=DNS:localhost",
+      "-keyout",
+      join(dir, "tls-key.pem"),
+      "-out",
+      join(dir, "tls-cert.pem"),
+    ],
+    { stdio: "ignore" },
+  );
+  const cert = readFileSync(join(dir, "tls-cert.pem"), "utf8");
+  tls.setDefaultCACertificates([...tls.getCACertificates("default"), cert]);
+  const pushed: Pushed[] = [];
+  const queue: Answer[] = [];
+  const server = createHttpsServer(
+    { key: readFileSync(join(dir, "tls-key.pem")), cert },
+    (request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        pushed.push({
+          method: request.method ?? "",
+          path: request.url ?? "",
+          headers: request.headers,
+          body: new Uint8Array(Buffer.concat(chunks)),
+        });
+        const answer = queue.shift() ?? { status: 201 };
+        response.writeHead(answer.status, answer.headers ?? {});
+        response.end();
+      });
+    },
+  );
+  const listening = Promise.withResolvers<void>();
+  server.listen(0, listening.resolve);
+  await listening.promise;
+  const { port } = server.address() as AddressInfo;
+  return {
+    origin: `https://localhost:${port}`,
+    pushed,
+    answer: (...answers) => {
+      queue.push(...answers);
+    },
+    close: () => {
+      const closed = Promise.withResolvers<void>();
+      server.closeAllConnections();
+      server.close(() => closed.resolve());
+      return closed.promise;
+    },
+  };
+}
+
+/** A browser's subscription at `endpoint`: its own ECDH key and auth secret, as it reports them. */
+export async function browserSubscription(endpoint: string): Promise<{
+  ua: BrowserKeys;
+  keys: { endpoint: string; p256dh: string; auth: string };
+}> {
+  const keys = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, [
+    "deriveBits",
+  ]);
+  const publicKey = new Uint8Array(await crypto.subtle.exportKey("raw", keys.publicKey));
+  const authSecret = new Uint8Array(randomBytes(16));
+  return {
+    ua: { privateKey: keys.privateKey, publicKey, authSecret },
+    keys: {
+      endpoint,
+      p256dh: Buffer.from(publicKey).toString("base64url"),
+      auth: Buffer.from(authSecret).toString("base64url"),
+    },
+  };
+}
+
+/**
+ * A configuration with Web Push on, a fresh VAPID key, the subject `mailto:ops@example.com` and
+ * `localhost` as the only push service, on top of {@link baseEnv} and `extra`.
+ */
+export function pushConfig(extra: NodeJS.ProcessEnv = {}): Config {
+  const { env, dir } = baseEnv();
+  const vapidFile = join(dir, "vapid.pem");
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  writeFileSync(vapidFile, privateKey.export({ format: "pem", type: "pkcs8" }));
+  return loadConfig({
+    ...env,
+    WEB_PUSH_ENABLED: "1",
+    WEB_PUSH_VAPID_KEY_FILE: vapidFile,
+    WEB_PUSH_SUBJECT: "mailto:ops@example.com",
+    WEB_PUSH_ENDPOINT_HOSTS: "localhost",
+    ...extra,
+  });
 }
 
 /** The settings every configuration needs, with the files they name in a fresh directory. */

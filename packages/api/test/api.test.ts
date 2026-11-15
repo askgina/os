@@ -131,6 +131,21 @@ const examples: { [N in RouteName]: { body?: unknown; query?: unknown; response:
   listAudit: { query: {}, response: { items: [f.auditEvent], nextCursor: null } },
   verifyAudit: { response: { ok: true, checked: 1, brokenAt: null } },
   listSignerDecisions: { query: { after: "3" }, response: { items: [f.signerDecision] } },
+  getPushConfig: {
+    response: { enabled: true, applicationServerKey: f.pushSubscriptionInput.keys.p256dh.slice(1) },
+  },
+  listPushSubscriptions: { response: { items: [f.pushSubscription] } },
+  addPushSubscription: { body: f.pushSubscriptionInput, response: f.pushSubscription },
+  removePushSubscription: { response: {} },
+  getNotificationPreferences: { response: f.notificationPreferences },
+  setNotificationPreferences: {
+    body: { ...f.notificationPreferences, quietHours: null },
+    response: { ...f.notificationPreferences, quietHours: null },
+  },
+  setNotificationDetail: {
+    body: { detail: "summary" },
+    response: { ...f.workspace, notificationDetail: "summary" },
+  },
 };
 
 function paramNames(path: string): string[] {
@@ -188,6 +203,10 @@ describe("route contract", () => {
           label: hostile,
         }).success,
       ).toBe(false);
+      expect(
+        routes.addPushSubscription.body.safeParse({ ...f.pushSubscriptionInput, label: hostile })
+          .success,
+      ).toBe(false);
     }
     expect(names[0].safeParse({ name: "Ops — café 東京" }).success).toBe(true);
   });
@@ -229,6 +248,42 @@ describe("route contract", () => {
         false,
       );
     }
+  });
+
+  it("a push subscription is an https endpoint of at most 2048 characters with well-formed keys", () => {
+    const body = routes.addPushSubscription.body;
+    const input = f.pushSubscriptionInput;
+    const refused = [
+      { ...input, endpoint: "http://fcm.googleapis.com/fcm/send/x" },
+      { ...input, endpoint: "javascript:alert(1)" },
+      { ...input, endpoint: `https://fcm.googleapis.com/${"a".repeat(2048)}` },
+      { ...input, keys: { ...input.keys, p256dh: input.keys.p256dh.slice(0, -1) } },
+      { ...input, keys: { ...input.keys, p256dh: `A${input.keys.p256dh.slice(1)}` } },
+      { ...input, keys: { ...input.keys, auth: "AAAA" } },
+      { ...input, label: "x".repeat(41) },
+      { ...input, label: "Phone\u202e" },
+      { ...input, expirationTime: null },
+    ];
+    for (const value of refused) expect(body.safeParse(value).success).toBe(false);
+    // Some browsers pad their keys.
+    const padded = { p256dh: `${input.keys.p256dh}=`, auth: `${input.keys.auth}==` };
+    expect(body.safeParse({ ...input, keys: padded }).success).toBe(true);
+    expect(body.safeParse({ endpoint: input.endpoint, keys: input.keys }).success).toBe(true);
+  });
+
+  it("quiet hours are two different HH:MM times in a known time zone; each workspace is set once", () => {
+    const body = routes.setNotificationPreferences.body;
+    const prefs = f.notificationPreferences;
+    const quiet = (quietHours: unknown) => body.safeParse({ ...prefs, quietHours }).success;
+    expect(quiet({ start: "23:30", end: "06:15", timeZone: "America/New_York" })).toBe(true);
+    expect(quiet({ start: "00:00", end: "23:59", timeZone: "UTC" })).toBe(true);
+    expect(quiet({ start: "24:00", end: "07:00", timeZone: "UTC" })).toBe(false);
+    expect(quiet({ start: "7:00", end: "08:00", timeZone: "UTC" })).toBe(false);
+    expect(quiet({ start: "22:00", end: "22:00", timeZone: "UTC" })).toBe(false);
+    expect(quiet({ start: "22:00", end: "07:00", timeZone: "Mars/Olympus_Mons" })).toBe(false);
+    expect(quiet({ start: "22:00", end: "07:00" })).toBe(false);
+    const twice = [...prefs.workspaces, ...prefs.workspaces];
+    expect(body.safeParse({ ...prefs, workspaces: twice }).success).toBe(false);
   });
 
   it("a sweep's subject carries the exact sweep, and a sweep the protocol refuses does not parse", () => {

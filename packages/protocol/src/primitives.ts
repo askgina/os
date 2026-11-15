@@ -42,7 +42,11 @@ export type MandateId = z.infer<typeof MandateId>;
 export const NotificationDeliveryId = prefixedId("ndl");
 export type NotificationDeliveryId = z.infer<typeof NotificationDeliveryId>;
 
-const ID_PREFIXES = ["ws", "usr", "agt", "wal", "int", "apr", "mnd", "ndl"] as const;
+/** A browser's push subscription, kept by the control plane; never part of anything signed. */
+export const PushSubscriptionId = prefixedId("psb");
+export type PushSubscriptionId = z.infer<typeof PushSubscriptionId>;
+
+const ID_PREFIXES = ["ws", "usr", "agt", "wal", "int", "apr", "mnd", "ndl", "psb"] as const;
 export type IdPrefix = (typeof ID_PREFIXES)[number];
 
 /** Mint a new identifier, for example `newId("wal")` gives `wal_01k…`. */

@@ -24,8 +24,12 @@
  * Approvals in advance (mandates) are held and counted here as the signer holds them: a proposed
  * transfer that one of the agent's live mandates covers is sent with no request, checked against
  * the wallet's limits too and counted for good; anything else opens a request as usual.
+ *
+ * Notification settings are kept as the server keeps them. Web Push reports itself on, with a
+ * P-256 key made at start (`OS_WEB_FIXTURE_WEB_PUSH=0` turns it off); the fixture stores
+ * subscriptions but never pushes anything.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import {
@@ -43,8 +47,12 @@ import {
   type MandateStatus,
   type MandateSummary,
   type Member,
+  type NotificationDetail,
+  type NotificationPreferences,
   type PasskeySummary,
   type PolicyDraft,
+  type PushSubscriptionSummary,
+  type QuietHours,
   type Role,
   type RouteName,
   routes,
@@ -96,6 +104,27 @@ const CHAINS: ChainInfo[] = [
   },
 ];
 const TEST_USDC = "0x036cbd53842c5426634e7929541ec2318f3dcf7e";
+/** The push services a subscription's endpoint must be under, as the server's default. */
+const PUSH_ENDPOINT_HOSTS = [
+  "fcm.googleapis.com",
+  "updates.push.services.mozilla.com",
+  "push.apple.com",
+  "notify.windows.com",
+];
+/** The application server key browsers subscribe with; null while Web Push is off. */
+const PUSH_KEY =
+  process.env.OS_WEB_FIXTURE_WEB_PUSH === "0"
+    ? null
+    : (() => {
+        const jwk = generateKeyPairSync("ec", { namedCurve: "prime256v1" }).publicKey.export({
+          format: "jwk",
+        });
+        return Buffer.concat([
+          Buffer.from([0x04]),
+          Buffer.from(jwk.x ?? "", "base64url"),
+          Buffer.from(jwk.y ?? "", "base64url"),
+        ]).toString("base64url");
+      })();
 
 type RefusalCode =
   | "invalid_request"
@@ -139,6 +168,7 @@ interface Workspace {
   name: string;
   paused: boolean;
   adminThreshold: number;
+  notificationDetail: NotificationDetail;
   members: Member[];
   agents: WorkspaceDetail["agents"];
   wallets: WalletSummary[];
@@ -193,6 +223,14 @@ interface State {
   spent: Map<string, bigint>;
   /** When each intent's transaction was broadcast, to "mine" it shortly after. */
   sentAt: Map<string, number>;
+  /** Push subscriptions by id, with their person and endpoint. */
+  pushSubscriptions: Map<
+    string,
+    { userId: string; endpoint: string; summary: PushSubscriptionSummary }
+  >;
+  /** Each person's switches per workspace, keyed `userId workspaceId`; absent means both on. */
+  notificationSwitches: Map<string, { webPush: boolean; reminders: boolean }>;
+  quietHours: Map<string, QuietHours>;
 }
 
 function freshState(): State {
@@ -210,6 +248,9 @@ function freshState(): State {
     invites: new Map(),
     spent: new Map(),
     sentAt: new Map(),
+    pushSubscriptions: new Map(),
+    notificationSwitches: new Map(),
+    quietHours: new Map(),
   };
 }
 
@@ -535,6 +576,7 @@ function workspaceDetail(workspace: Workspace, userId: string): WorkspaceDetail 
     paused: workspace.paused,
     pendingApprovals: pending,
     adminThreshold: workspace.adminThreshold,
+    notificationDetail: workspace.notificationDetail,
     members: workspace.members.map((member) => ({
       ...member,
       // Owners see the passkeys that wait to approve, so an operator can enroll them by hand.
@@ -1063,6 +1105,31 @@ function signedIn(userId: string | null): string {
   return userId;
 }
 
+function notificationPreferences(userId: string): NotificationPreferences {
+  return {
+    workspaces: [...state.workspaces.values()]
+      .filter((workspace) => workspace.members.some((member) => member.user.id === userId))
+      .map((workspace) => ({
+        workspaceId: workspace.id as WorkspaceDetail["id"],
+        ...(state.notificationSwitches.get(`${userId} ${workspace.id}`) ?? {
+          webPush: true,
+          reminders: true,
+        }),
+      })),
+    quietHours: state.quietHours.get(userId) ?? null,
+  };
+}
+
+function pushEndpointAllowed(endpoint: string): boolean {
+  const url = new URL(endpoint);
+  const host = url.hostname.toLowerCase();
+  return (
+    url.username === "" &&
+    url.password === "" &&
+    PUSH_ENDPOINT_HOSTS.some((suffix) => host === suffix || host.endsWith(`.${suffix}`))
+  );
+}
+
 const handlers: Record<RouteName, Handler> = {
   getSession: ({ userId }) => sessionInfo(userId),
   startSetup: ({ body }) => {
@@ -1196,6 +1263,7 @@ const handlers: Record<RouteName, Handler> = {
       name: String(body.name).trim(),
       paused: false,
       adminThreshold: 1,
+      notificationDetail: "count",
       members: [
         {
           user: userSummary(id),
@@ -1910,6 +1978,81 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     memberOf(workspace, id);
     return { items: workspace.decisions };
+  },
+  getPushConfig: () => ({ enabled: PUSH_KEY !== null, applicationServerKey: PUSH_KEY }),
+  listPushSubscriptions: ({ userId }) => {
+    const id = signedIn(userId);
+    return {
+      items: [...state.pushSubscriptions.values()]
+        .filter((item) => item.userId === id)
+        .map((item) => item.summary),
+    };
+  },
+  addPushSubscription: ({ body, userId }) => {
+    const id = signedIn(userId);
+    if (PUSH_KEY === null)
+      throw new Refusal("conflict", "Notifications on devices are off on this server.", "push_off");
+    const endpoint = String(body.endpoint);
+    if (!pushEndpointAllowed(endpoint))
+      throw new Refusal(
+        "invalid_request",
+        "This push service is not one this server sends to.",
+        "endpoint_refused",
+      );
+    const label = typeof body.label === "string" ? body.label : null;
+    for (const [subscriptionId, item] of state.pushSubscriptions) {
+      if (item.endpoint !== endpoint) continue;
+      // The same browser again keeps its id; someone else's browser moves to this person.
+      if (item.userId === id) {
+        item.summary.label = label ?? item.summary.label;
+        return item.summary;
+      }
+      state.pushSubscriptions.delete(subscriptionId);
+    }
+    const summary: PushSubscriptionSummary = {
+      id: newId("psb"),
+      label,
+      createdAt: now(),
+      lastSuccessAt: null,
+    };
+    state.pushSubscriptions.set(summary.id, { userId: id, endpoint, summary });
+    return summary;
+  },
+  removePushSubscription: ({ params, userId }) => {
+    const id = signedIn(userId);
+    const item = state.pushSubscriptions.get(params.subscriptionId ?? "");
+    if (!item || item.userId !== id) throw new Refusal("not_found", "No such device.");
+    state.pushSubscriptions.delete(params.subscriptionId ?? "");
+    return {};
+  },
+  getNotificationPreferences: ({ userId }) => notificationPreferences(signedIn(userId)),
+  setNotificationPreferences: ({ body, userId }) => {
+    const id = signedIn(userId);
+    const input = body as NotificationPreferences;
+    for (const item of input.workspaces) memberOf(workspaceOf(item.workspaceId), id);
+    for (const item of input.workspaces) {
+      state.notificationSwitches.set(`${id} ${item.workspaceId}`, {
+        webPush: item.webPush,
+        reminders: item.reminders,
+      });
+    }
+    if (input.quietHours === null) state.quietHours.delete(id);
+    else state.quietHours.set(id, input.quietHours);
+    return notificationPreferences(id);
+  },
+  setNotificationDetail: ({ params, body, userId }) => {
+    const id = signedIn(userId);
+    const workspace = workspaceOf(params.workspaceId ?? "");
+    requireOwner(workspace, id);
+    const detail = body.detail as NotificationDetail;
+    if (workspace.notificationDetail !== detail) {
+      workspace.notificationDetail = detail;
+      audit(workspace, userActor(id), "workspace.notification_detail_set", {
+        type: "workspace",
+        id: workspace.id,
+      });
+    }
+    return workspaceDetail(workspace, id);
   },
 };
 

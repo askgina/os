@@ -1,10 +1,10 @@
 # Tell approvers about a waiting approval outside the inbox
 
-- Branch: none yet
-- Status: Draft
+- Branch: main
+- Status: In Progress
 - Owner(s): Eric Juta
 - Created: 2026-11-14
-- Last Updated: 2026-11-14
+- Last Updated: 2026-11-15
 - Links: [Issue #24](https://github.com/askgina/os/issues/24) | [Map #18](https://github.com/askgina/os/issues/18) | [Research report](research/approval-notifications.md)
 
 This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`,
@@ -37,9 +37,9 @@ Success means:
 
 - [x] (2026-11-14 00:00Z) Research current behavior and relevant code paths ([report](research/approval-notifications.md)).
 - [x] (2026-11-14 00:00Z) Define the implementation approach and validation plan (this draft).
-- [ ] Owner decisions D1 to D7 in `Decision Log`.
-- [ ] Milestone 1: notification outbox and signed webhook.
-- [ ] Milestone 2: Web Push sender (RFC 8291, RFC 8292).
+- [x] (2026-11-15) Owner decisions D1 to D7 in `Decision Log`: Eric chose the recommended option of each.
+- [x] (2026-11-15) Milestones 1 and 2 are commit `371c2ce`, CI run 43705883757 green (check, test, ui, stack amd64/arm64/tls). Milestone 1: notification outbox and signed webhook (`apps/server/src/notify/`, migration `0005_notifications`). The webhook also reports `mandate.used`. First start creates `notify-webhook-secret`; Compose passes it.
+- [x] (2026-11-15) Milestone 2: Web Push sender (RFC 8291, RFC 8292), reproducing the RFC 8291 Appendix A body byte for byte. First start creates `vapid-key.pem`.
 - [ ] Milestone 3: subscriptions, preferences, content levels, API.
 - [ ] Milestone 4: web app manifest, service worker, return path after sign-in.
 - [ ] Milestone 5: expiry reminders and quiet hours.

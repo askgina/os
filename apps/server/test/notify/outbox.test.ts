@@ -18,7 +18,7 @@ let t: TestContext;
 let receiver: Receiver;
 let workspaceId: WorkspaceId;
 const secret = webhookSecret();
-const NOTHING = { sent: 0, retried: 0, dropped: 0, failed: 0 };
+const NOTHING = { sent: 0, retried: 0, held: 0, dropped: 0, failed: 0 };
 
 beforeAll(async () => {
   receiver = await startReceiver();

@@ -156,6 +156,7 @@ export async function workspaceDetail(
     paused: workspace.paused,
     pendingApprovals: await pendingApprovalCount(ctx, workspaceId),
     adminThreshold: workspace.adminThreshold,
+    notificationDetail: workspace.notificationDetail,
     members: await listMembers(ctx, workspaceId, role),
     agents: agentRows.map(agentSummary),
     wallets: walletRows.map((wallet) =>

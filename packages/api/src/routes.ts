@@ -26,8 +26,13 @@ import {
   MandateDraft,
   MandateSummary,
   Member,
+  NotificationDetail,
+  NotificationPreferences,
   PasskeySummary,
   PolicyDraft,
+  PushConfig,
+  PushSubscriptionInput,
+  PushSubscriptionSummary,
   page,
   RegistrationResponse,
   Role,
@@ -335,6 +340,42 @@ export const routes = {
         .optional(),
     }),
     items(SignerDecision),
+  ),
+
+  // --- notifications --------------------------------------------------------------------------
+  /** Whether this server sends Web Push, and the key a browser subscribes with. */
+  getPushConfig: get("/api/v1/me/push", PushConfig),
+  /** The signed-in person's devices that get notifications. */
+  listPushSubscriptions: get("/api/v1/me/push-subscriptions", items(PushSubscriptionSummary)),
+  /**
+   * Add this browser's push subscription for the signed-in person, or update it when the browser
+   * sends the same endpoint again (same id). An endpoint someone else had moves to this person
+   * with a new id. Refused with `conflict` (detail `push_off`) while Web Push is off, and with
+   * `invalid_request` for an endpoint outside the allowed push services (`endpoint_refused`) or
+   * keys that are not a P-256 point and a 16-byte secret (`bad_subscription`).
+   */
+  addPushSubscription: post(
+    "/api/v1/me/push-subscriptions",
+    PushSubscriptionInput,
+    PushSubscriptionSummary,
+  ),
+  /** Only the person's own devices: any other id is `not_found`. */
+  removePushSubscription: del("/api/v1/me/push-subscriptions/:subscriptionId", NoBody),
+  getNotificationPreferences: get("/api/v1/me/notifications", NotificationPreferences),
+  /** A workspace the person is not a member of is `not_found`. Answers the settings as stored. */
+  setNotificationPreferences: post(
+    "/api/v1/me/notifications",
+    NotificationPreferences,
+    NotificationPreferences,
+  ),
+  /**
+   * Owners only. Sets what this workspace's notifications may say; recorded in the audit log as
+   * `workspace.notification_detail_set`. Needs no passkey: it never reaches the signer.
+   */
+  setNotificationDetail: post(
+    "/api/v1/workspaces/:workspaceId/notification-detail",
+    z.strictObject({ detail: NotificationDetail }),
+    WorkspaceDetail,
   ),
 } as const satisfies Record<string, RouteDefinition>;
 

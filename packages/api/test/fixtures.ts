@@ -10,7 +10,10 @@ import type {
   MandateDraft,
   MandateSummary,
   Member,
+  NotificationPreferences,
   PasskeySummary,
+  PushSubscriptionInput,
+  PushSubscriptionSummary,
   SessionInfo,
   WalletDetail,
   WalletSummary,
@@ -26,6 +29,7 @@ export const INTENT = `int_${ULID}4` as const;
 export const APPROVAL = `apr_${ULID}5` as const;
 export const USER = `usr_${ULID}6` as const;
 export const MANDATE = `mnd_${ULID}7` as const;
+export const SUBSCRIPTION = `psb_${ULID}8` as const;
 const T0 = 1_700_000_000;
 const ADDRESS = "0x1111111111111111111111111111111111111111" as const;
 const HASH = "c".repeat(64);
@@ -133,6 +137,7 @@ export const workspaceSummary = {
 export const workspace: WorkspaceDetail = {
   ...workspaceSummary,
   adminThreshold: 1,
+  notificationDetail: "count",
   members: [member],
   agents: [agent],
   wallets: [wallet],
@@ -144,6 +149,28 @@ export const workspace: WorkspaceDetail = {
       explorerUrl: "https://basescan.org",
     },
   ],
+};
+
+/** As a browser reports it: a 65-byte P-256 point and a 16-byte secret, unpadded base64url. */
+export const pushSubscriptionInput: PushSubscriptionInput = {
+  endpoint: "https://fcm.googleapis.com/fcm/send/dXNlcg:APA91b",
+  keys: {
+    p256dh: `B${"A".repeat(86)}`,
+    auth: "AAAAAAAAAAAAAAAAAAAAAA",
+  },
+  label: "Phone",
+};
+
+export const pushSubscription: PushSubscriptionSummary = {
+  id: SUBSCRIPTION,
+  label: "Phone",
+  createdAt: T0,
+  lastSuccessAt: null,
+};
+
+export const notificationPreferences: NotificationPreferences = {
+  workspaces: [{ workspaceId: WS, webPush: true, reminders: false }],
+  quietHours: { start: "22:00", end: "07:00", timeZone: "Europe/London" },
 };
 
 export const intent: Intent = {

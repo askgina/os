@@ -40,6 +40,7 @@ import { registerIdentity } from "../../src/identity/index.ts";
 import { createSessions } from "../../src/identity/sessions.ts";
 import { prepareSetup } from "../../src/identity/setup.ts";
 import type { LogFields, Logger } from "../../src/log.ts";
+import { registerNotify } from "../../src/notify/routes.ts";
 
 /** Where the test browser pretends to be. Passkeys are bound to its host. */
 export const TEST_ORIGIN = "http://localhost:55710";
@@ -239,6 +240,7 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
   installErrorHandler(app, ctx);
   registerIdentity(app, ctx);
   registerDirectory(app, ctx);
+  registerNotify(app, ctx);
   options.routes?.(app, ctx);
 
   const authenticator = new SoftAuthenticator();

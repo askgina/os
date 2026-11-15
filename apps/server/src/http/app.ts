@@ -4,6 +4,7 @@ import type { AppContext } from "../context.ts";
 import { registerDirectory } from "../directory/index.ts";
 import { mountMcp, mountWorkflowDelivery, registerExecution } from "../execution/index.ts";
 import { registerIdentity } from "../identity/index.ts";
+import { registerNotify } from "../notify/routes.ts";
 import { installErrorHandler } from "./route.ts";
 import { serveWebApp } from "./static.ts";
 
@@ -32,6 +33,7 @@ export function createPublicApp(ctx: AppContext): Hono {
   registerIdentity(app, ctx);
   registerDirectory(app, ctx);
   registerExecution(app, ctx);
+  registerNotify(app, ctx);
   mountMcp(app, ctx);
   if (ctx.config.webDistDir !== undefined) serveWebApp(app, ctx.config.webDistDir);
   return app;

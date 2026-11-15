@@ -1,4 +1,9 @@
-import type { ApprovalKind, MandateEndedReason } from "@askgina/os-api";
+import type {
+  ApprovalKind,
+  MandateEndedReason,
+  NotificationDetail,
+  QuietHours,
+} from "@askgina/os-api";
 import type {
   AgentId,
   ApprovalId,
@@ -7,6 +12,7 @@ import type {
   IntentId,
   MandateId,
   NotificationDeliveryId,
+  PushSubscriptionId,
   UserId,
   WalletId,
   WalletPolicy,
@@ -57,6 +63,8 @@ export const users = os.table("users", {
   id: text("id").$type<UserId>().primaryKey(),
   displayName: text("display_name").notNull(),
   createdAt: createdAt(),
+  /** When this person's devices stay silent; null for never. The webhook ignores it. */
+  quietHours: jsonb("quiet_hours").$type<QuietHours>(),
 });
 
 /** A passkey a person signs in with. Whether it may also approve is `approver_credentials`. */
@@ -127,6 +135,11 @@ export const workspaces = os.table("workspaces", {
   /** Mirror of the signer's flag, for display. The signer's own value is what counts. */
   paused: boolean("paused").notNull().default(false),
   adminThreshold: integer("admin_threshold").notNull().default(1),
+  /** What notifications about this workspace's requests may say. Owners change it. */
+  notificationDetail: text("notification_detail")
+    .$type<NotificationDetail>()
+    .notNull()
+    .default("count"),
   /**
    * Head of the workspace's audit chain, moved in the same transaction as every append. Without
    * it, deleting the newest entries (or all of them) would leave a chain that still verifies.
@@ -625,4 +638,55 @@ export const notificationDeliveries = os.table(
     ),
     index("notification_deliveries_due_idx").on(table.state, table.nextAttemptAt),
   ],
+);
+
+/**
+ * A browser's Web Push subscription, one per device a person turned notifications on for. The
+ * endpoint and keys are personal data: they are never logged and never shown back, not even to
+ * their owner. A subscription is bound to the operator's VAPID key, so a copy of these rows
+ * cannot send anything without that key's file.
+ */
+export const pushSubscriptions = os.table(
+  "push_subscriptions",
+  {
+    id: text("id").$type<PushSubscriptionId>().primaryKey(),
+    userId: text("user_id")
+      .$type<UserId>()
+      .notNull()
+      .references(() => users.id),
+    /** The push service's URL for this browser. One browser profile has one per origin. */
+    endpoint: text("endpoint").notNull(),
+    /** The browser's P-256 key, base64url. */
+    p256dh: text("p256dh").notNull(),
+    /** The browser's 16-byte authentication secret, base64url. */
+    auth: text("auth").notNull(),
+    /** What the person calls the device, for example "Phone". */
+    label: text("label"),
+    createdAt: createdAt(),
+    lastSuccessAt: time("last_success_at"),
+    /** Attempts that did not reach the push service since the last one that did. */
+    failureCount: integer("failure_count").notNull().default(0),
+  },
+  (table) => [
+    uniqueIndex("push_subscriptions_endpoint_idx").on(table.endpoint),
+    index("push_subscriptions_user_idx").on(table.userId),
+  ],
+);
+
+/** A person's notification switches for one workspace. No row means both are on. */
+export const notificationPreferences = os.table(
+  "notification_preferences",
+  {
+    userId: text("user_id")
+      .$type<UserId>()
+      .notNull()
+      .references(() => users.id),
+    workspaceId: text("workspace_id")
+      .$type<WorkspaceId>()
+      .notNull()
+      .references(() => workspaces.id),
+    webPush: boolean("web_push").notNull().default(true),
+    reminders: boolean("reminders").notNull().default(true),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.workspaceId] })],
 );

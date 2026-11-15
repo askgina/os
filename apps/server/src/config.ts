@@ -32,6 +32,12 @@ const DEFAULT_PUSH_ENDPOINT_HOSTS = [
   "notify.windows.com",
 ];
 
+/**
+ * The longest `PUBLIC_ORIGIN` with Web Push on: every push message carries an approval link on
+ * it and must fit 511 bytes with its text (`src/notify/content.ts`).
+ */
+const PUSH_ORIGIN_MAX_LENGTH = 128;
+
 /** A VAPID subject (RFC 8292 §2.1): how a push service reaches the operator. */
 const PushSubject = z
   .string()
@@ -148,6 +154,14 @@ const Environment = z
     path: ["WEB_PUSH_VAPID_KEY_FILE"],
     message: "is required with WEB_PUSH_ENABLED=1",
   })
+  .refine(
+    (env) =>
+      !env.WEB_PUSH_ENABLED || new URL(env.PUBLIC_ORIGIN).origin.length <= PUSH_ORIGIN_MAX_LENGTH,
+    {
+      path: ["PUBLIC_ORIGIN"],
+      message: `must be at most ${PUSH_ORIGIN_MAX_LENGTH} characters with WEB_PUSH_ENABLED=1`,
+    },
+  )
   .refine(
     (env) =>
       !env.WEB_PUSH_ENABLED ||

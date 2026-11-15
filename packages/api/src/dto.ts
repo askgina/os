@@ -17,6 +17,7 @@ import {
   MandateId,
   Memo,
   PositiveAmount,
+  PushSubscriptionId,
   Sweep,
   UserId,
   WalletId,
@@ -138,6 +139,14 @@ export const Role = z.enum(["owner", "approver", "viewer"]);
 export type Role = z.infer<typeof Role>;
 
 /**
+ * What a workspace's notifications may say. `count`: only how many requests wait. `summary`:
+ * also the kind of request, the workspace's name and who asked, never an amount, a recipient or
+ * a memo. Only an owner may change it; the change is in the workspace's audit log.
+ */
+export const NotificationDetail = z.enum(["count", "summary"]);
+export type NotificationDetail = z.infer<typeof NotificationDetail>;
+
+/**
  * Whether the signer accepts this member's passkeys. `pending` means a passkey is waiting for an
  * existing approver to authorize it; until then the member can look but not approve.
  */
@@ -228,6 +237,8 @@ export type WorkspaceSummary = z.infer<typeof WorkspaceSummary>;
 export const WorkspaceDetail = WorkspaceSummary.extend({
   /** How many people must approve changes to approvers and policies. */
   adminThreshold: z.number().int().min(1),
+  /** What notifications about this workspace's requests may say. */
+  notificationDetail: NotificationDetail,
   members: z.array(Member),
   agents: z.array(AgentSummary),
   wallets: z.array(WalletSummary),
@@ -650,3 +661,101 @@ export const AuditVerification = z.strictObject({
   brokenAt: z.number().int().nullable(),
 });
 export type AuditVerification = z.infer<typeof AuditVerification>;
+
+// --- notifications ----------------------------------------------------------------------------
+
+/**
+ * Whether this server sends Web Push, and the key a browser subscribes with
+ * (`applicationServerKey` of `pushManager.subscribe`): the VAPID public key, an uncompressed
+ * P-256 point, in unpadded base64url. Null while Web Push is off.
+ */
+export const PushConfig = z.strictObject({
+  enabled: z.boolean(),
+  applicationServerKey: Base64Url.nullable(),
+});
+export type PushConfig = z.infer<typeof PushConfig>;
+
+/** A name a person gives one of their devices, for example "Phone". */
+export const DeviceLabel = z
+  .string()
+  .trim()
+  .min(1)
+  .max(40)
+  .refine((value) => Memo.safeParse(value).success, "contains control or bidirectional characters");
+
+/**
+ * A browser's push subscription, from `PushSubscription.toJSON()` without `expirationTime`.
+ * `p256dh` is the browser's P-256 key (65 bytes) and `auth` its 16-byte secret, both base64url.
+ * The endpoint must be `https:` and under one of the push services the operator allows.
+ */
+export const PushSubscriptionInput = z.strictObject({
+  endpoint: z.url({ protocol: /^https$/ }).max(2048),
+  keys: z.strictObject({
+    p256dh: z.string().regex(/^B[A-Za-z0-9_-]{86}=?$/, "expected a 65-byte P-256 key in base64url"),
+    auth: z.string().regex(/^[A-Za-z0-9_-]{22}(?:==)?$/, "expected 16 bytes in base64url"),
+  }),
+  label: DeviceLabel.optional(),
+});
+export type PushSubscriptionInput = z.infer<typeof PushSubscriptionInput>;
+
+/** One of the signed-in person's devices that gets notifications. No endpoint, no keys. */
+export const PushSubscriptionSummary = z.strictObject({
+  id: PushSubscriptionId,
+  label: z.string().nullable(),
+  createdAt: EpochSeconds,
+  /** The last time a notification reached its push service. */
+  lastSuccessAt: EpochSeconds.nullable(),
+});
+export type PushSubscriptionSummary = z.infer<typeof PushSubscriptionSummary>;
+
+/** A time of day, `HH:MM` on a 24-hour clock. */
+export const ClockTime = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, "expected HH:MM");
+
+function isTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** An IANA time zone name, for example `Europe/London`. */
+export const TimeZone = z.string().min(1).max(64).refine(isTimeZone, "unknown time zone");
+
+/**
+ * When a person's devices stay silent: from `start` until `end`, in `timeZone`, every day. A
+ * window may cross midnight (`22:00` to `07:00`). Notifications that fall inside wait until it
+ * ends, and are dropped when their request expires first. The operator's webhook ignores it.
+ */
+export const QuietHours = z
+  .strictObject({ start: ClockTime, end: ClockTime, timeZone: TimeZone })
+  .refine((value) => value.start !== value.end, "start and end must differ");
+export type QuietHours = z.infer<typeof QuietHours>;
+
+/** One workspace's notification switches for the signed-in person. Both are on by default. */
+export const WorkspaceNotifications = z.strictObject({
+  workspaceId: WorkspaceId,
+  /** Push notifications to this person's devices about this workspace's requests. */
+  webPush: z.boolean(),
+  /** One more notification shortly before a request expires. */
+  reminders: z.boolean(),
+});
+export type WorkspaceNotifications = z.infer<typeof WorkspaceNotifications>;
+
+/**
+ * The signed-in person's notification settings. Reading lists every workspace they are a member
+ * of. Writing changes the workspaces listed, each at most once, and leaves the others as they
+ * are; `quietHours: null` turns quiet hours off.
+ */
+export const NotificationPreferences = z.strictObject({
+  workspaces: z
+    .array(WorkspaceNotifications)
+    .max(256)
+    .refine(
+      (items) => new Set(items.map((item) => item.workspaceId)).size === items.length,
+      "each workspace at most once",
+    ),
+  quietHours: QuietHours.nullable(),
+});
+export type NotificationPreferences = z.infer<typeof NotificationPreferences>;
