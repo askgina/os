@@ -450,7 +450,8 @@ From the repository root:
 The whole stack:
 
     docker compose --profile dev up --build
-    # open http://localhost:8080 and follow the setup screen; the setup token is in `docker compose logs server`
+    # open http://localhost:8080 and follow the setup screen; the setup token comes from
+    # `docker compose exec server node apps/server/src/cli.ts setup-token`
 
 ## Validation and Acceptance
 

@@ -24,7 +24,7 @@ export interface PayingAgent {
   agent: AgentConnection;
 }
 
-/** Claim the fresh installation as Ada with the setup token in the server's log. */
+/** Claim the fresh installation as Ada with a setup token from the operator's command. */
 export async function claim(): Promise<Person> {
   const ada = new Person(stack.origin, "Ada");
   const session = await ada.setUp(await setupToken());

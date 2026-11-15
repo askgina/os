@@ -200,6 +200,8 @@ test("a fresh installation is claimed once, with the setup token", async () => {
   expect(session.setupRequired).toBe(false);
 
   await expect(new Person(stack.origin, "Mallory").setUp(token)).rejects.toThrow();
+  // The token came from the operator's command; the logs a deployment ships never held it.
+  expect(await compose("logs", "--no-color")).not.toContain(token);
 });
 
 test("a workspace, an agent with its own wallet, and limits approved with a passkey", async () => {

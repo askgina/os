@@ -131,7 +131,7 @@ function del<Path extends string, Response extends z.ZodType>(
 export const routes = {
   // --- session and passkeys -------------------------------------------------------------------
   getSession: publicGet("/api/v1/session", SessionInfo),
-  /** First run only: the setup token printed by the server creates the first owner. */
+  /** First run only: a setup token from the operator's command creates the first owner. */
   startSetup: publicPost(
     "/api/v1/setup/options",
     z.strictObject({ setupToken: z.string().min(16).max(128), displayName: DisplayName }),

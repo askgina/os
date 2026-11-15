@@ -31,30 +31,13 @@ async function refusal(promise: Promise<unknown>): Promise<string> {
 }
 
 describe("first-run setup", () => {
-  it("logged the setup token once, in a line an operator can find, and stores only its hash", async () => {
-    const tokenLines = t.log.lines.filter((line) => line.includes("setup token: "));
-    expect(tokenLines).toHaveLength(1);
-    // Setup finished, so the hash is gone too.
-    expect(await t.ctx.db.select().from(installation)).toEqual([]);
-  });
-
-  it("cannot be used twice: the original token is refused once an owner exists", async () => {
-    const [line] = t.log.lines.filter((l) => l.includes("setup token: "));
-    const token = /setup token: ([A-Za-z0-9_-]+)/.exec(line ?? "")?.[1] ?? "";
-    expect(token).toHaveLength(32);
-    const code = await refusal(
-      t.browser().api.call("startSetup", { body: { setupToken: token, displayName: "Mallory" } }),
-    );
-    expect(code).toBe("forbidden");
-    // And a reboot does not mint a new one.
-    expect(await prepareSetup(t.ctx)).toBeNull();
-  });
-
-  it("refuses a wrong token on a fresh installation", async () => {
+  it("refuses a wrong token, takes the right one once, and never logs or stores it", async () => {
     let seen: { required: boolean; code: string } | undefined;
+    let issued = "";
     const fresh = await createTestContext({
       label: "identity_fresh",
       beforeOwner: async ({ token, browser }) => {
+        issued = token;
         const wrong = `${token.slice(0, -1)}${token.endsWith("A") ? "B" : "A"}`;
         seen = {
           required: (await browser.api.call("getSession")).setupRequired,
@@ -64,11 +47,22 @@ describe("first-run setup", () => {
         };
       },
     });
-    await fresh.close();
-    expect(seen).toEqual({ required: true, code: "forbidden" });
+    try {
+      expect(seen).toEqual({ required: true, code: "forbidden" });
+      expect(issued).toHaveLength(32);
+      // The owner exists now: the token that made them is refused, and its hash is gone.
+      const again = fresh.browser().api.call("startSetup", {
+        body: { setupToken: issued, displayName: "Mallory" },
+      });
+      expect(await refusal(again)).toBe("forbidden");
+      expect(await fresh.ctx.db.select().from(installation)).toEqual([]);
+      expect(fresh.log.lines.join("\n")).not.toContain(issued);
+    } finally {
+      await fresh.close();
+    }
   });
 
-  it("two boots at once mint one setup token; the command replaces it; the log can keep it out", async () => {
+  it("no boot mints or logs a setup token; of two commands at once, the later token works", async () => {
     const database = await createTestDatabase("identity_boots");
     const pools = [0, 1].map(() => new pg.Pool({ connectionString: database.url, max: 2 }));
     try {
@@ -86,34 +80,32 @@ describe("first-run setup", () => {
         log,
         config: t.ctx.config,
       }));
-      const minted = await Promise.all(replicas.map((replica) => prepareSetup(replica)));
-      const tokens = minted.filter((token) => token !== null);
-      expect(tokens).toHaveLength(1);
-      expect(lines.filter((line) => line.includes('"setup.token_issued"'))).toHaveLength(1);
-      expect(lines.filter((line) => line.includes('"setup.token_pending"'))).toHaveLength(1);
+      await Promise.all(replicas.map((replica) => prepareSetup(replica)));
       const [first] = replicas;
       if (!first) throw new Error("no replica");
-      expect(await checkSetupToken(first, tokens[0] ?? "")).toBe(true);
-      // A restart keeps the token an operator may be typing.
-      expect(await prepareSetup(first)).toBeNull();
-      expect(await checkSetupToken(first, tokens[0] ?? "")).toBe(true);
+      // Each boot says only that setup waits; nothing is stored until the operator asks.
+      expect(lines).toHaveLength(2);
+      for (const line of lines) expect(line).toContain('"setup.token_pending"');
+      expect(await first.db.select().from(installation)).toEqual([]);
 
-      // The operator's command replaces it, on stdout and not in the log.
-      const printed: object[] = [];
-      expect(await cli(["setup-token"], first, (line) => printed.push(line))).toBe(0);
-      const rotated = (printed[0] as { setupToken?: string } | undefined)?.setupToken ?? "";
-      expect(printed).toEqual([{ ok: true, setupToken: rotated }]);
-      expect(await checkSetupToken(first, rotated)).toBe(true);
-      expect(await checkSetupToken(first, tokens[0] ?? "")).toBe(false);
-      expect(lines.join("\n")).not.toContain(rotated);
+      // The operator's command, run against both replicas at once: each prints a token on
+      // stdout, and exactly one of them, the later, is the installation's token.
+      const printed: { ok?: boolean; setupToken?: string }[] = [];
+      const exits = await Promise.all(
+        replicas.map((replica) => cli(["setup-token"], replica, (line) => printed.push(line))),
+      );
+      expect(exits).toEqual([0, 0]);
+      const tokens = printed.map((line) => line.setupToken ?? "");
+      expect(new Set(tokens).size).toBe(2);
+      const valid = await Promise.all(tokens.map((token) => checkSetupToken(first, token)));
+      expect(valid.filter(Boolean)).toHaveLength(1);
 
-      // With SETUP_TOKEN_IN_LOG=false a boot logs no token and replaces none.
-      lines.length = 0;
-      const quiet = { ...first, config: { ...t.ctx.config, setupTokenInLog: false } };
-      expect(await prepareSetup(quiet)).toBeNull();
-      expect(lines).toHaveLength(1);
-      expect(lines[0]).toContain('"setup.token_pending"');
-      expect(await checkSetupToken(first, rotated)).toBe(true);
+      // A restart keeps the token an operator may be typing, and no line carries either token.
+      await prepareSetup(first);
+      expect(await Promise.all(tokens.map((token) => checkSetupToken(first, token)))).toEqual(
+        valid,
+      );
+      for (const token of tokens) expect(lines.join("\n")).not.toContain(token);
     } finally {
       await Promise.all(pools.map((pool) => pool.end()));
       await database.drop();

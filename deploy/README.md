@@ -886,7 +886,6 @@ been run with replicas.
 | ----------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DATA_KEY_CACHE_SECONDS`      | 60      | How long a replica keeps an unwrapped data key, 0 to 600. A replica caches only while it listens for shreds, and forgets its cache when that connection drops.                                                                                                                                                                |
 | `FORWARDED_HOPS`              | 1       | How many proxies append to `X-Forwarded-For` before the server, 1 to 5: a failed agent authentication is charged to the entry this many from the end. 1 behind the bundled Caddy; 2 with a load balancer in front of it. Too high lets a client pick the address it is charged to; too low charges every client to one proxy. |
-| `SETUP_TOKEN_IN_LOG`          | `true`  | `false` keeps the setup token out of the log (see "The setup token").                                                                                                                                                                                                                                                         |
 | `WORKFLOW_WORKER_CONCURRENCY` | 10      | Workflow steps one replica runs at once. `compose.yaml` does not pass it.                                                                                                                                                                                                                                                     |
 
 **Upgrading: stop every replica first.** A workflow run is not pinned to the code that started
@@ -943,7 +942,7 @@ edge, the agent gateway, the namespaces `os` and `os-agents`, and NetworkPolicie
   made by `deploy/k8s/make-secrets.sh`.
 
 The server's Deployment runs two replicas with `strategy: Recreate` (the bundle rule above), uses
-`/readyz` as its readiness probe, and sets `SETUP_TOKEN_IN_LOG=false`; get the setup token with
+`/readyz` as its readiness probe; get the setup token with
 `kubectl exec -n os deploy/server -- node apps/server/src/cli.ts setup-token`. A NetworkPolicy
 does nothing on a network plugin that does not enforce it, and kind's plugin fails open when its
 controller cannot start, so run [`k8s/isolation-probe.yaml`](k8s/isolation-probe.yaml) after
@@ -1200,18 +1199,17 @@ page, not a worker.
 
 ## The setup token
 
-Until the first owner exists, the server needs a one-time setup token. The first boot mints it,
-once per installation however many replicas start, stores only its hash, and logs it:
-`docker compose logs server | grep "setup token" | tail -1`. A later boot keeps that token and
-logs `setup.token_pending` instead. To replace it, for example when the log is gone or someone
-else may have read it:
+Until the first owner exists, the server needs a one-time setup token. No boot mints one and no
+log line carries one, because logs are shipped, kept and read by more people than may create the
+first owner; a boot before setup logs only `setup.token_pending`. The operator gets the token
+from a command run in a server container:
 
     docker compose exec server node apps/server/src/cli.ts setup-token
 
-It prints `{"ok":true,"setupToken":"…"}`, and every earlier token stops working. Once the first
-owner exists it prints `{"ok":false,"code":"setup_done"}` and exits 3. With
-`SETUP_TOKEN_IN_LOG=false` no boot logs a token, and this command is the only way to get one; the
-Kubernetes manifests set it, because shipped logs are not a place for a secret.
+It prints `{"ok":true,"setupToken":"…"}` to the terminal, stores only the token's hash, and every
+earlier token stops working; run it again whenever someone else may have seen the token. Once the
+first owner exists it prints `{"ok":false,"code":"setup_done"}` and exits 3. On Kubernetes:
+`kubectl exec -n os deploy/server -- node apps/server/src/cli.ts setup-token`.
 
 ## Stopping and removing
 

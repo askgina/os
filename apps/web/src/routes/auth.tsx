@@ -86,7 +86,7 @@ export function SetupPage() {
                 minLength={16}
               />
               <p className="text-xs text-muted-foreground">
-                The server printed it in its log when it first started.
+                Run the setup-token command on the server to get one.
               </p>
             </div>
             <div className="grid grid-cols-1 gap-2">

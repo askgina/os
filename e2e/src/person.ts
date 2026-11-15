@@ -117,7 +117,7 @@ export class Person {
     );
   }
 
-  /** Claim a fresh installation with its setup token. */
+  /** Claim a fresh installation with a setup token from the operator's command. */
   async setUp(setupToken: string): Promise<SessionInfo> {
     const { ceremonyId, options } = await this.api.call("startSetup", {
       body: { setupToken, displayName: this.name },

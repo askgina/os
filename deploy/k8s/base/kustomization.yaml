@@ -41,9 +41,6 @@ configMapGenerator:
       - WEB_PUSH_VAPID_KEY_FILE=/run/secrets/server/vapid-key.pem
       # The edge appends one X-Forwarded-For entry; 2 when a load balancer is in front of it.
       - FORWARDED_HOPS=1
-      # Logs are shipped and kept; the operator gets the setup token from
-      # `kubectl exec -n os deploy/server -- node apps/server/src/cli.ts setup-token`.
-      - SETUP_TOKEN_IN_LOG=false
   # The host the gateway presents to the server, which checks it against PUBLIC_ORIGIN.
   - name: os-agent-gateway
     namespace: os-agents

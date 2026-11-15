@@ -131,12 +131,10 @@ services:
       REPRICE_AFTER_SECONDS: ${REPRICE_AFTER_SECONDS:-180}
       REPRICE_BUMP_PERCENT: ${REPRICE_BUMP_PERCENT:-12}
       # Several replicas (specs/beyond-one-machine.md, milestone 4): how long a replica keeps an
-      # unwrapped data key (a shred is heard by every replica at once), how many proxies append
-      # to X-Forwarded-For before the server, and whether a boot before setup logs the setup
-      # token (`false`: run `node apps/server/src/cli.ts setup-token` in a server container).
+      # unwrapped data key (a shred is heard by every replica at once), and how many proxies
+      # append to X-Forwarded-For before the server.
       DATA_KEY_CACHE_SECONDS: ${DATA_KEY_CACHE_SECONDS:-60}
       FORWARDED_HOPS: ${FORWARDED_HOPS:-1}
-      SETUP_TOKEN_IN_LOG: ${SETUP_TOKEN_IN_LOG:-true}
       # Where the keys that wrap data keys live: the keyring file above (`file`), or OpenBao
       # Transit (`openbao`, packages/keys/README.md), which then needs the address, AppRole and
       # the two files below. With both set, keys wrapped under the file still read until

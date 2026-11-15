@@ -197,7 +197,7 @@ in the database.
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
 | An agent's request limit, failed authentications | Token buckets in `os.rate_limits` (UNLOGGED), one row per bucket, counted by the database's clock |
 | The finishing of retirements and deletions       | One bucket in `os.rate_limits`: once a minute across all replicas                                 |
-| The setup token                                  | Minted once per installation under an advisory lock; `cli.ts setup-token` replaces it             |
+| The setup token                                  | Never minted at boot; `cli.ts setup-token` replaces it under an advisory lock                     |
 | Account nonces, reprices and cancels             | Advisory transaction locks per wallet and chain, and per approval                                 |
 | Notifications                                    | Outbox rows claimed with `FOR UPDATE SKIP LOCKED` and leased for 60 seconds                       |
 | Workflow steps                                   | The World's queue in Postgres; each replica runs `WORKFLOW_WORKER_CONCURRENCY` workers            |

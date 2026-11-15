@@ -1011,10 +1011,10 @@ administrators.
   authentication limit charges the address `FORWARDED_HOPS` entries from the end of
   `X-Forwarded-For`; set too high, a client chooses the address it is charged to and is not
   limited.
-- **One setup token per installation.** Replicas booting together mint one token, under one
-  lock; a later boot does not replace it. Until the first owner exists, whoever reads the server's
-  log, or can run `cli.ts setup-token` in a server container, can create the first owner, as on
-  one machine. `SETUP_TOKEN_IN_LOG=false` keeps it out of the log.
+- **One setup token per installation.** No boot mints one; `cli.ts setup-token` replaces it under
+  one lock, so of two commands run at once one token works. Until the first owner exists, whoever
+  can run that command in a server container can create the first owner, as on one machine. The
+  token is never in the log, so reading the log is not enough.
 - **A shred reaches every replica.** See "What is encrypted at rest".
 
 Proven: the unit tests, with two gateways on one database, in CI run 43736178714. The real-stack

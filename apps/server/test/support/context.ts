@@ -38,7 +38,7 @@ import { workflowRuntime } from "../../src/execution/workflow-runtime.ts";
 import { installErrorHandler } from "../../src/http/route.ts";
 import { registerIdentity } from "../../src/identity/index.ts";
 import { createSessions } from "../../src/identity/sessions.ts";
-import { prepareSetup } from "../../src/identity/setup.ts";
+import { prepareSetup, rotateSetupToken } from "../../src/identity/setup.ts";
 import type { LogFields, Logger } from "../../src/log.ts";
 import { registerNotify } from "../../src/notify/routes.ts";
 
@@ -304,7 +304,8 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
   };
 
   // The first owner, through the same setup flow an operator uses.
-  const token = await prepareSetup(ctx);
+  await prepareSetup(ctx);
+  const token = await rotateSetupToken(ctx);
   if (token === null) throw new Error("a fresh database must need setup");
   await options.beforeOwner?.({ token, browser: browser() });
   const ownerBrowser = browser();

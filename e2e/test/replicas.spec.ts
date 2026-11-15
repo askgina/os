@@ -9,14 +9,8 @@ import { expect, test } from "@playwright/test";
 import pg from "pg";
 import { formatEther } from "viem";
 import { chain } from "../src/chain.ts";
-import {
-  claim,
-  intentSettles,
-  type PayingAgent,
-  payingAgent,
-  propose,
-} from "../src/installation.ts";
-import type { Person } from "../src/person.ts";
+import { intentSettles, type PayingAgent, payingAgent, propose } from "../src/installation.ts";
+import { Person } from "../src/person.ts";
 import {
   compose,
   containerLogs,
@@ -164,16 +158,38 @@ test.afterAll(async () => {
   await payer?.agent.close();
 });
 
-test("two replicas boot before setup, exactly one issues the setup token, and that token claims the installation", async () => {
+test("two replicas boot before setup and log no token; of two setup-token commands at once, one token claims the installation", async () => {
   expect(replicas).toHaveLength(2);
-  const issued = await Promise.all(replicas.map((c) => eventCount(c, "setup.token_issued")));
   const pending = await Promise.all(replicas.map((c) => eventCount(c, "setup.token_pending")));
-  expect(issued.reduce((sum, n) => sum + n, 0)).toBe(1);
-  // The other replica found the token already stored and only says that one waits.
-  const other = issued.indexOf(0);
-  expect(pending[other]).toBeGreaterThanOrEqual(1);
+  for (const n of pending) expect(n).toBeGreaterThanOrEqual(1);
 
-  ada = await claim();
+  // The operator's command in both replicas at once: two tokens printed, one stored.
+  const tokens = await Promise.all(
+    replicas.map(async (container) => {
+      const printed = await execIn(container, "node", "apps/server/src/cli.ts", "setup-token");
+      const answer = JSON.parse(printed.trim().split("\n").at(-1) ?? "{}") as {
+        setupToken?: string;
+      };
+      return answer.setupToken ?? "";
+    }),
+  );
+  expect(new Set(tokens).size).toBe(2);
+  const claimed: boolean[] = [];
+  for (const token of tokens) {
+    const person = new Person(stack.origin, "Ada");
+    const taken = await person.setUp(token).then(
+      () => true,
+      () => false,
+    );
+    claimed.push(taken);
+    if (taken) ada = person;
+  }
+  expect(claimed.filter(Boolean)).toHaveLength(1);
+  // Neither token is in either replica's log.
+  for (const container of replicas) {
+    const logs = await containerLogs(container);
+    for (const token of tokens) expect(logs).not.toContain(token);
+  }
 
   // Once the owner exists, the operator's command on either replica mints nothing.
   for (const container of replicas) {
@@ -190,8 +206,6 @@ test("two replicas boot before setup, exactly one issues the setup token, and th
       code: "setup_done",
     });
   }
-  const after = await Promise.all(replicas.map((c) => eventCount(c, "setup.token_issued")));
-  expect(after.reduce((sum, n) => sum + n, 0)).toBe(1);
 });
 
 test("both replicas answer /readyz with 200, and so does the edge", async () => {

@@ -249,13 +249,15 @@ export function execWithInput(
   return promise;
 }
 
-/** The setup token the server printed on its first start. */
+/**
+ * A new setup token from the operator's command, run in a server container as the README says.
+ * Every call replaces the token before it.
+ */
 export async function setupToken(): Promise<string> {
-  const logs = await compose("logs", "--no-color", "server");
-  // One boot of one replica mints it; a later boot logs only that it waits. Should the operator
-  // ever mint another, the last one printed is the one that works.
-  const token = [...logs.matchAll(/setup token: ([A-Za-z0-9_-]{20,})/g)].at(-1)?.[1];
-  if (!token) throw new Error("the server log has no setup token line");
+  const printed = await exec("server", "node", "apps/server/src/cli.ts", "setup-token");
+  const answer: unknown = JSON.parse(printed.trim().split("\n").at(-1) ?? "null");
+  const token = (answer as { setupToken?: unknown } | null)?.setupToken;
+  if (typeof token !== "string") throw new Error(`setup-token answered ${printed.trim()}`);
   return token;
 }
 

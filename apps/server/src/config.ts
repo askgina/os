@@ -192,13 +192,6 @@ const Environment = z
       (value) => value ?? 1,
     ),
     /**
-     * `false` (or `0`) keeps the setup token out of the server's log: boots then mint none, and
-     * the operator gets one from `node apps/server/src/cli.ts setup-token`. On unless set.
-     */
-    SETUP_TOKEN_IN_LOG: optional(z.enum(["0", "1", "false", "true"])).transform(
-      (value) => value !== "0" && value !== "false",
-    ),
-    /**
      * If set, receives a signed POST with identifiers only when an approval waits and when a
      * mandate is used, retried until it is accepted (see `src/notify/webhook.ts`).
      */
@@ -346,8 +339,6 @@ export interface Config {
   dataKeyCacheSeconds: number;
   /** Which `X-Forwarded-For` entry, counted from the end, names the client. */
   forwardedHops: number;
-  /** Whether a boot before setup mints the setup token and logs it. */
-  setupTokenInLog: boolean;
   notify: NotifyConfig;
 }
 
@@ -473,7 +464,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     workflowWorkerConcurrency: parsed.WORKFLOW_WORKER_CONCURRENCY,
     dataKeyCacheSeconds: parsed.DATA_KEY_CACHE_SECONDS,
     forwardedHops: parsed.FORWARDED_HOPS,
-    setupTokenInLog: parsed.SETUP_TOKEN_IN_LOG,
     notify: {
       webhook:
         parsed.NOTIFY_WEBHOOK_URL !== undefined && parsed.NOTIFY_WEBHOOK_SECRET_FILE !== undefined

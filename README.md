@@ -75,7 +75,7 @@ docker compose --profile dev up --build
 
 The `dev` profile adds a local test chain, so there is something to send transactions to.
 
-1. Find the setup token: `docker compose logs server | grep "setup token" | tail -1`.
+1. Get a setup token: `docker compose exec server node apps/server/src/cli.ts setup-token`.
 2. Open <http://localhost:8080>, enter the token and create your passkey.
 3. Create a workspace and add an agent. The agent gets its own wallet, and its token is shown once.
 4. Set the wallet's limits and approve them with your passkey. A wallet with no limits signs nothing.

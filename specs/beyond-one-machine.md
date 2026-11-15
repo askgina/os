@@ -416,6 +416,9 @@ Plan decisions (taken here, reopen in review if wrong):
 - Decision: the setup token is minted once per installation under the existing setup lock; a CLI rotates it; Kubernetes manifests set `SETUP_TOKEN_IN_LOG=false`.
   Rationale: replicas overwrote each other's token, and shipped logs are not a place for a secret.
   Date/Author: 2026-11-14 / research agent
+- Decision: no boot mints or logs a setup token, on any deployment; `SETUP_TOKEN_IN_LOG` is removed and `cli.ts setup-token` is the only source. Supersedes the decision above.
+  Rationale: the token appeared in kept logs twice (a staging log and a CI log); a setting that keeps a secret-in-logs mode is a mode nobody should run.
+  Date/Author: 2026-11-15 / lead, by Eric's delegation
 - Decision: the server Deployment uses `strategy: Recreate`, and a boot guard refuses to start the queue while a live replica runs a different workflow bundle.
   Rationale: runs are not pinned to a bundle (see `Surprises & Discoveries`). Zero-downtime upgrades are out of scope.
   Date/Author: 2026-11-14 / research agent
@@ -791,7 +794,7 @@ Manual or runtime validation (cannot be automated):
 Regression checks:
 
 - Every release gate still passes in `stack (amd64)`, `stack (arm64)` and `stack (tls)` with default settings (single machine, file keyring, one replica), including the mandate and notification gates.
-- The README quickstart still prints the setup token in the server log.
+- The README quickstart gets the setup token from `cli.ts setup-token` (changed 2026-11-15; it was read from the server log before).
 
 ## Threat Model After the Change
 
