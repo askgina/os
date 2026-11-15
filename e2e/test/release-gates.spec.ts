@@ -152,7 +152,6 @@ async function intentSettles(intentId: string, timeoutMs = 120_000): Promise<str
   }
 }
 
-/** The workspace's whole signer decision log, read to its end: a page holds the oldest 100. */
 /**
  * Kill the server as a crash would, and return only once its container has stopped. `kill`
  * returns before that, and an `up --wait` that still sees the container running then fails
@@ -163,6 +162,7 @@ async function killServer(): Promise<void> {
   await compose("stop", "--timeout", "0", "server");
 }
 
+/** The workspace's whole signer decision log, read to its end: a page holds the oldest 100. */
 async function signerDecisions(): Promise<SignerDecision[]> {
   const decisions: SignerDecision[] = [];
   for (let after = 0; ; ) {
