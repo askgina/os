@@ -2,6 +2,7 @@ import { and, eq, inArray, isNull, lt, or } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { AppContext } from "../context.ts";
 import { approvals } from "../db/schema.ts";
+import { type DeliveryCounts, deliverDueNotifications } from "../notify/outbox.ts";
 import { engineOf } from "./approvals.ts";
 import { registerIntentKind } from "./intents.ts";
 import { registerMandateKinds } from "./mandates.ts";
@@ -52,10 +53,16 @@ export function mountWorkflowDelivery(internal: Hono, ctx: AppContext): void {
   );
 }
 
-/** One pass of the outbox and start sweeper. Exported so tests can run it without a timer. */
-export async function sweep(
-  ctx: AppContext,
-): Promise<{ woken: number; started: number; abandoned: number }> {
+/**
+ * One pass of the sweeper: the workflow wake-up outbox, starts, and the notification outbox.
+ * Exported so tests can run it without a timer.
+ */
+export async function sweep(ctx: AppContext): Promise<{
+  woken: number;
+  started: number;
+  abandoned: number;
+  notifications: DeliveryCounts;
+}> {
   const engine = engineOf(ctx);
   const runtime = workflowRuntime(ctx);
   const now = ctx.now();
@@ -112,7 +119,11 @@ export async function sweep(
     if (outcome === "started") started += 1;
     if (outcome === "abandoned") abandoned += 1;
   }
-  return { woken, started, abandoned };
+
+  // A request recovered above was announced in the transaction that opened it, so its rows are
+  // delivered here like any other.
+  const notifications = await deliverDueNotifications(ctx);
+  return { woken, started, abandoned, notifications };
 }
 
 /**

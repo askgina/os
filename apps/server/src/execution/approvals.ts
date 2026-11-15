@@ -12,7 +12,6 @@ import {
   type Assertion,
   type AssertionResponse,
   Envelope,
-  type MandateId,
   newId,
   PROTOCOL_VERSION,
   type UserId,
@@ -46,6 +45,7 @@ import {
   users,
 } from "../db/schema.ts";
 import { HttpError } from "../http/errors.ts";
+import { enqueueApprovalNotifications, enqueueMandateUseNotification } from "../notify/outbox.ts";
 import type { SettledStatus, StepImplementations } from "./steps.ts";
 import type { WorkflowRuntime } from "./workflow-runtime.ts";
 
@@ -63,10 +63,6 @@ const confirmationLocation = (id: string) => `approvals.confirmation:${id}`;
 
 /** Why an assertion does not count, with the code the signer would give for it. */
 type Verdict = { ok: true; credentialId: string } | { ok: false; code: string };
-
-/** Where a person approves a request in the web app. Every link handed out points here. */
-export const approvalLink = (origin: string, workspaceId: string, approvalId: string) =>
-  `${origin}/w/${workspaceId}/approvals/${approvalId}`;
 
 /** A list position: the last row's creation time and id, so equal timestamps still page. */
 function encodeCursor(row: { createdAt: Date; id: string }): string {
@@ -172,9 +168,15 @@ export class Engine implements ApprovalEngine {
         },
         tx,
       );
+      await enqueueApprovalNotifications(ctx, tx, {
+        id,
+        workspaceId: input.workspaceId,
+        kind: input.kind,
+        createdAt: issuedAt,
+        expiresAt,
+      });
     });
     await this.startRun(id, input.workspaceId, expiresAt);
-    this.#notify(id, input.workspaceId, input.kind);
     const row = await this.request(id);
     // The confirmation page is ready before anyone looks. The request is already recorded, so a
     // failure here does not fail it: the first view of the request tries again.
@@ -231,9 +233,13 @@ export class Engine implements ApprovalEngine {
         },
         tx,
       );
+      await enqueueMandateUseNotification(ctx, tx, {
+        id,
+        workspaceId: input.workspaceId,
+        createdAt: seconds(at),
+      });
     });
     await this.startRun(id, input.workspaceId, seconds(at));
-    this.#notifyUse(id, input.workspaceId, input.mandateId);
     return this.row(id);
   }
 
@@ -931,29 +937,6 @@ export class Engine implements ApprovalEngine {
       .from(users)
       .where(eq(users.id, row.requestedById as never));
     return { type: "user", id: row.requestedById as never, name: user?.name ?? "" };
-  }
-
-  /** Tell the operator's webhook that something waits. Identifiers only; never blocks. */
-  #notify(approvalId: ApprovalId, workspaceId: WorkspaceId, kind: ApprovalKind): void {
-    this.#post(approvalId, { event: "approval.opened", approvalId, workspaceId, kind });
-  }
-
-  /** Tell the operator's webhook that a mandate is being used. Identifiers only; never blocks. */
-  #notifyUse(approvalId: ApprovalId, workspaceId: WorkspaceId, mandateId: MandateId): void {
-    this.#post(approvalId, { event: "mandate.used", approvalId, workspaceId, mandateId });
-  }
-
-  #post(approvalId: ApprovalId, body: Record<string, string>): void {
-    const url = this.#ctx.config.notifyWebhookUrl;
-    if (url === undefined) return;
-    fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(5_000),
-    }).catch(() => {
-      this.#ctx.log.warn("approval webhook failed", { approvalId });
-    });
   }
 }
 

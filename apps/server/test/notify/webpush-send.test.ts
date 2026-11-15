@@ -1,0 +1,291 @@
+import { execFileSync } from "node:child_process";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import type { IncomingHttpHeaders } from "node:http";
+import { createServer, type Server } from "node:https";
+import type { AddressInfo } from "node:net";
+import { join } from "node:path";
+import tls from "node:tls";
+import { newId } from "@askgina/os-protocol";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { type Config, loadConfig } from "../../src/config.ts";
+import {
+  type PushMessage,
+  pushEndpointAllowed,
+  pushTopic,
+  sendPush,
+} from "../../src/notify/webpush/send.ts";
+import { baseEnv, decryptPush } from "./support.ts";
+
+const NOW = 1_800_000_000;
+
+interface Pushed {
+  method: string;
+  path: string;
+  headers: IncomingHttpHeaders;
+  body: Uint8Array<ArrayBuffer>;
+}
+
+let server: Server;
+let port: number;
+let config: Config;
+const pushed: Pushed[] = [];
+const answers: { status: number; headers?: Record<string, string> }[] = [];
+
+beforeAll(async () => {
+  const { env, dir } = baseEnv();
+  // A push service of our own over HTTPS, with a certificate this process trusts.
+  execFileSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-nodes",
+      "-days",
+      "1",
+      "-subj",
+      "/CN=localhost",
+      "-addext",
+      "subjectAltName=DNS:localhost",
+      "-keyout",
+      join(dir, "tls-key.pem"),
+      "-out",
+      join(dir, "tls-cert.pem"),
+    ],
+    { stdio: "ignore" },
+  );
+  const cert = readFileSync(join(dir, "tls-cert.pem"), "utf8");
+  tls.setDefaultCACertificates([...tls.getCACertificates("default"), cert]);
+  server = createServer(
+    { key: readFileSync(join(dir, "tls-key.pem")), cert },
+    (request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        pushed.push({
+          method: request.method ?? "",
+          path: request.url ?? "",
+          headers: request.headers,
+          body: new Uint8Array(Buffer.concat(chunks)),
+        });
+        const answer = answers.shift() ?? { status: 201 };
+        response.writeHead(answer.status, answer.headers ?? {});
+        response.end();
+      });
+    },
+  );
+  const listening = Promise.withResolvers<void>();
+  server.listen(0, listening.resolve);
+  await listening.promise;
+  port = (server.address() as AddressInfo).port;
+
+  const vapidFile = join(dir, "vapid.pem");
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  writeFileSync(vapidFile, privateKey.export({ format: "pem", type: "pkcs8" }));
+  config = loadConfig({
+    ...env,
+    WEB_PUSH_ENABLED: "1",
+    WEB_PUSH_VAPID_KEY_FILE: vapidFile,
+    WEB_PUSH_SUBJECT: "mailto:ops@example.com",
+    WEB_PUSH_ENDPOINT_HOSTS: "localhost",
+  });
+});
+
+afterAll(async () => {
+  const closed = Promise.withResolvers<void>();
+  server?.closeAllConnections();
+  server?.close(() => closed.resolve());
+  await closed.promise;
+});
+
+/** A browser's subscription: its own ECDH key and auth secret, and an endpoint here. */
+async function subscription(path = "/push/subscription-1") {
+  const keys = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, [
+    "deriveBits",
+  ]);
+  const publicKey = new Uint8Array(await crypto.subtle.exportKey("raw", keys.publicKey));
+  const authSecret = new Uint8Array(randomBytes(16));
+  return {
+    ua: { privateKey: keys.privateKey, publicKey, authSecret },
+    keys: {
+      endpoint: `https://localhost:${port}${path}`,
+      p256dh: Buffer.from(publicKey).toString("base64url"),
+      auth: Buffer.from(authSecret).toString("base64url"),
+    },
+  };
+}
+
+const approvalId = newId("apr");
+const message: PushMessage = {
+  payload: { web_push: 8030, notification: { title: "Approval waiting", navigate: "/" } },
+  topic: pushTopic(approvalId),
+  ttlSeconds: 120,
+  urgency: "high",
+};
+const ctx = () => ({ config, now: () => NOW });
+
+describe("sending a Web Push message", () => {
+  it("POSTs one encrypted, padded, VAPID-signed message that only the subscription can read; 201 delivers", async () => {
+    const { ua, keys } = await subscription();
+    const before = pushed.length;
+    expect(await sendPush(ctx(), keys, message)).toEqual({ ok: true });
+    expect(pushed).toHaveLength(before + 1);
+    const request = pushed.at(-1);
+    if (!request) throw new Error("nothing was pushed");
+    expect(request.method).toBe("POST");
+    expect(request.path).toBe("/push/subscription-1");
+    expect(request.headers).toMatchObject({
+      "content-encoding": "aes128gcm",
+      "content-type": "application/octet-stream",
+      ttl: "120",
+      urgency: "high",
+      topic: message.topic,
+    });
+    // Every message is the same length: the 86-byte header, a 512-byte record and the tag.
+    expect(request.body.length).toBe(614);
+    expect(JSON.parse(await decryptPush(request.body, ua))).toEqual(message.payload);
+
+    const match = /^vapid t=([\w-]+)\.([\w-]+)\.([\w-]+), k=([\w-]+)$/.exec(
+      request.headers.authorization ?? "",
+    );
+    if (!match) throw new Error("no VAPID authorization");
+    const [, header = "", claims = "", signature = "", key = ""] = match;
+    expect(JSON.parse(Buffer.from(claims, "base64url").toString("utf8"))).toEqual({
+      aud: `https://localhost:${port}`,
+      exp: NOW + 43_200,
+      sub: "mailto:ops@example.com",
+    });
+    expect(Buffer.from(key, "base64url")).toEqual(
+      Buffer.from(config.notify.webPush?.vapidPublicKey ?? []),
+    );
+    const verifier = await crypto.subtle.importKey(
+      "raw",
+      new Uint8Array(Buffer.from(key, "base64url")),
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["verify"],
+    );
+    expect(
+      await crypto.subtle.verify(
+        { name: "ECDSA", hash: "SHA-256" },
+        verifier,
+        new Uint8Array(Buffer.from(signature, "base64url")),
+        new TextEncoder().encode(`${header}.${claims}`),
+      ),
+    ).toBe(true);
+  });
+
+  it("maps the push service's answers: 404 and 410 gone, 408, 429 and 5xx retry with Retry-After, other answers rejected", async () => {
+    const { keys } = await subscription();
+    answers.push(
+      { status: 410 },
+      { status: 404 },
+      { status: 429, headers: { "retry-after": "30" } },
+      { status: 503 },
+      { status: 408 },
+      { status: 400 },
+      { status: 413 },
+      { status: 302, headers: { location: "https://elsewhere.example/" } },
+    );
+    const results = [];
+    for (let i = 0; i < 8; i += 1) results.push(await sendPush(ctx(), keys, message));
+    expect(results).toEqual([
+      { ok: false, code: "gone", reason: "http_410" },
+      { ok: false, code: "gone", reason: "http_404" },
+      { ok: false, code: "retry", reason: "http_429", retryAfter: 30 },
+      { ok: false, code: "retry", reason: "http_503" },
+      { ok: false, code: "retry", reason: "http_408" },
+      { ok: false, code: "rejected", reason: "http_400" },
+      { ok: false, code: "rejected", reason: "http_413" },
+      { ok: false, code: "rejected", reason: "http_302" },
+    ]);
+  });
+
+  it("is a retry when the push service does not answer", async () => {
+    const { keys } = await subscription();
+    const closedServer = createServer();
+    const listening = Promise.withResolvers<void>();
+    closedServer.listen(0, listening.resolve);
+    await listening.promise;
+    const closedPort = (closedServer.address() as AddressInfo).port;
+    const closed = Promise.withResolvers<void>();
+    closedServer.close(() => closed.resolve());
+    await closed.promise;
+    expect(
+      await sendPush(
+        ctx(),
+        { ...keys, endpoint: `https://localhost:${closedPort}/push/x` },
+        message,
+      ),
+    ).toEqual({ ok: false, code: "retry", reason: "network" });
+  });
+
+  it("refuses, without any request, an endpoint that is not https: or not under an allowed host", async () => {
+    const { keys } = await subscription();
+    const before = pushed.length;
+    for (const endpoint of [
+      `http://localhost:${port}/push/x`,
+      `https://127.0.0.1:${port}/push/x`,
+      `https://notlocalhost:${port}/push/x`,
+      `https://localhost.evil.example:${port}/push/x`,
+      `https://user:secret@localhost:${port}/push/x`,
+      "not a url",
+    ]) {
+      expect(await sendPush(ctx(), { ...keys, endpoint }, message)).toEqual({
+        ok: false,
+        code: "rejected",
+        reason: "endpoint_refused",
+      });
+    }
+    expect(pushed).toHaveLength(before);
+
+    const browsers = ["fcm.googleapis.com", "push.apple.com", "notify.windows.com"];
+    expect(pushEndpointAllowed("https://web.push.apple.com/QGuQ", browsers)).toBe(true);
+    expect(pushEndpointAllowed("https://wns2-by3p.notify.windows.com/w/?token=x", browsers)).toBe(
+      true,
+    );
+    expect(pushEndpointAllowed("https://fcm.googleapis.com:443/fcm/send/x", browsers)).toBe(true);
+    expect(pushEndpointAllowed("https://xfcm.googleapis.com/fcm/send/x", browsers)).toBe(false);
+    expect(pushEndpointAllowed("https://fcm.googleapis.com.evil.example/x", browsers)).toBe(false);
+    expect(pushEndpointAllowed("https://evilpush.apple.com.example/x", browsers)).toBe(false);
+  });
+
+  it("refuses, without any request, a subscription with bad keys, a bad topic and a message too long to pad", async () => {
+    const { keys } = await subscription();
+    const before = pushed.length;
+    const refused = (result: unknown, reason: string) =>
+      expect(result).toEqual({ ok: false, code: "rejected", reason });
+    refused(await sendPush(ctx(), { ...keys, p256dh: "not+base64" }, message), "bad_subscription");
+    refused(
+      await sendPush(ctx(), { ...keys, p256dh: keys.p256dh.slice(0, -2) }, message),
+      "bad_subscription",
+    );
+    refused(await sendPush(ctx(), { ...keys, auth: "AAAA" }, message), "bad_subscription");
+    refused(await sendPush(ctx(), keys, { ...message, topic: "a/b" }), "bad_topic");
+    refused(
+      await sendPush(ctx(), keys, { ...message, payload: { title: "x".repeat(600) } }),
+      "payload_too_large",
+    );
+    refused(
+      await sendPush(
+        { config: { ...config, notify: { ...config.notify, webPush: null } }, now: () => NOW },
+        keys,
+        message,
+      ),
+      "push_off",
+    );
+    expect(pushed).toHaveLength(before);
+  });
+
+  it("gives each approval one topic of 32 base64url characters that does not reveal its id", () => {
+    const other = newId("apr");
+    expect(pushTopic(approvalId)).toMatch(/^[A-Za-z0-9_-]{32}$/);
+    expect(pushTopic(approvalId)).toBe(pushTopic(approvalId));
+    expect(pushTopic(other)).not.toBe(pushTopic(approvalId));
+    expect(pushTopic(approvalId)).not.toContain(approvalId.slice(4, 14));
+  });
+});

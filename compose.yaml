@@ -106,6 +106,11 @@ services:
       CHAINS_FILE: /etc/os/chains.json
       WEB_DIST_DIR: /app/apps/web/dist
       NOTIFY_WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
+      NOTIFY_WEBHOOK_SECRET_FILE: /run/secrets/server/notify-webhook-secret
+      WEB_PUSH_ENABLED: ${WEB_PUSH_ENABLED:-}
+      WEB_PUSH_VAPID_KEY_FILE: /run/secrets/server/vapid-key.pem
+      WEB_PUSH_SUBJECT: ${WEB_PUSH_SUBJECT:-}
+      WEB_PUSH_ENDPOINT_HOSTS: ${WEB_PUSH_ENDPOINT_HOSTS:-}
       # The same value as the signer's SIGNER_MAX_MANDATE_SECONDS, from the same .env setting:
       # the server checks a draft against it early, and the signer's check decides.
       MANDATE_MAX_SECONDS: ${MANDATE_MAX_SECONDS:-604800}

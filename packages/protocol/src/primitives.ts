@@ -38,7 +38,11 @@ export type ApprovalId = z.infer<typeof ApprovalId>;
 export const MandateId = prefixedId("mnd");
 export type MandateId = z.infer<typeof MandateId>;
 
-const ID_PREFIXES = ["ws", "usr", "agt", "wal", "int", "apr", "mnd"] as const;
+/** A delivery of a notification by the control plane; never part of anything the signer reads. */
+export const NotificationDeliveryId = prefixedId("ndl");
+export type NotificationDeliveryId = z.infer<typeof NotificationDeliveryId>;
+
+const ID_PREFIXES = ["ws", "usr", "agt", "wal", "int", "apr", "mnd", "ndl"] as const;
 export type IdPrefix = (typeof ID_PREFIXES)[number];
 
 /** Mint a new identifier, for example `newId("wal")` gives `wal_01k…`. */

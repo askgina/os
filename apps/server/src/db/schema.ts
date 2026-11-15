@@ -6,6 +6,7 @@ import type {
   Envelope,
   IntentId,
   MandateId,
+  NotificationDeliveryId,
   UserId,
   WalletId,
   WalletPolicy,
@@ -568,4 +569,60 @@ export const nonceReservations = os.table(
     createdAt: createdAt(),
   },
   (table) => [index("nonce_reservations_wallet_chain_idx").on(table.walletId, table.chainId)],
+);
+
+// --- notifications ----------------------------------------------------------------------------
+
+/**
+ * What a notification reports: an approval waits (`approval.opened`), it is about to expire
+ * (`approval.reminder`), or a mandate was used (`mandate.used`, for the webhook only).
+ */
+export type NotificationEvent = "approval.opened" | "approval.reminder" | "mandate.used";
+
+export type NotificationState = "pending" | "sent" | "dropped" | "failed";
+
+/**
+ * Outbox of notifications: one row per event and target, written in the transaction that opens
+ * the approval or records the use, and delivered at least once by the sweeper. Identifiers,
+ * times and short codes only; what a notification says is built from them when it is sent.
+ */
+export const notificationDeliveries = os.table(
+  "notification_deliveries",
+  {
+    id: text("id").$type<NotificationDeliveryId>().primaryKey(),
+    workspaceId: text("workspace_id")
+      .$type<WorkspaceId>()
+      .notNull()
+      .references(() => workspaces.id),
+    approvalId: text("approval_id")
+      .$type<ApprovalId>()
+      .notNull()
+      .references(() => approvals.id),
+    event: text("event").$type<NotificationEvent>().notNull(),
+    /** `webhook`, or `push:` and a push subscription's id. */
+    target: text("target").notNull(),
+    /** Whose device a push target is; null for the webhook. */
+    userId: text("user_id")
+      .$type<UserId>()
+      .references(() => users.id),
+    state: text("state").$type<NotificationState>().notNull().default("pending"),
+    /** Failed attempts so far. */
+    attempts: integer("attempts").notNull().default(0),
+    /** When the notification is meant to go out. */
+    dueAt: time("due_at").notNull(),
+    /** When it may next be tried; moved ahead while a sender holds it, and after a failure. */
+    nextAttemptAt: time("next_attempt_at").notNull(),
+    /** Why the last attempt did not deliver, for example `http_503` or `approval_ended`. */
+    lastCode: text("last_code"),
+    createdAt: createdAt(),
+    sentAt: time("sent_at"),
+  },
+  (table) => [
+    uniqueIndex("notification_deliveries_event_idx").on(
+      table.approvalId,
+      table.event,
+      table.target,
+    ),
+    index("notification_deliveries_due_idx").on(table.state, table.nextAttemptAt),
+  ],
 );

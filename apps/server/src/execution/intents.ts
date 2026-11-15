@@ -42,7 +42,8 @@ import { appendAudit } from "../audit.ts";
 import type { AppContext, Executor } from "../context.ts";
 import { agents, intents, wallets, workspaces } from "../db/schema.ts";
 import { HttpError } from "../http/errors.ts";
-import { approvalLink, engineOf } from "./approvals.ts";
+import { approvalLink } from "../notify/content.ts";
+import { engineOf } from "./approvals.ts";
 import { ChainError, chainAccess } from "./chains.ts";
 import { findCoveringMandate } from "./mandates.ts";
 import {

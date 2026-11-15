@@ -2,7 +2,7 @@
 // domain gets its own volume, so the server cannot read the signer's key and the signer cannot
 // read the keyring. The `approve` service's volume holds only a copy of one signer secret, which
 // follows the signer's. Nothing is printed except file names and whether they were written.
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import {
   chmodSync,
   chownSync,
@@ -44,6 +44,17 @@ function ensure(dir, name, uid, make) {
 
 ensure(SERVER, "keyring.json", NODE_UID, () =>
   JSON.stringify({ active: "k1", keys: { k1: b64() } }),
+);
+// The key the server signs its notification webhook with. The operator copies it to the
+// receiver; it is used only when NOTIFY_WEBHOOK_URL is set.
+ensure(SERVER, "notify-webhook-secret", NODE_UID, () => randomBytes(32).toString("base64url"));
+// The key that identifies this server to browsers' push services. Subscriptions are bound to
+// it, so it is never replaced; it is used only when WEB_PUSH_ENABLED=1.
+ensure(SERVER, "vapid-key.pem", NODE_UID, () =>
+  generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey.export({
+    type: "pkcs8",
+    format: "pem",
+  }),
 );
 // The request secret is shared: generate it once and copy it, so both sides always agree.
 // If only one volume was lost, the surviving copy is reused rather than replaced.
