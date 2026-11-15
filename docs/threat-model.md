@@ -49,7 +49,7 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
    link's token is in its fragment, so it reaches the service only in a request header
    ([`specs/trusted-display.md`](../specs/trusted-display.md)).
 6. **`approve` service → signer.** Requests carry an HMAC request signature under a second
-   secret, which the signer accepts on its two confirmation routes and nowhere else
+   secret, which the signer accepts on its four confirmation routes and nowhere else
    ([`signer/api.ts`](../packages/protocol/src/signer/api.ts), `scope`).
 
 ## Attacker positions
@@ -134,22 +134,28 @@ This covers code execution in the server and a script injected into a page on `P
   workspace's admin threshold, and the signer sends it only to an address already on the
   wallet's recipient allowlist or to a treasury wallet of the same workspace, read from its own
   records ([`signer.ts`](../apps/signer/src/signer.ts), `assertSweepAllowed`). It cannot set or
-  move the restore fence: that happens only on the signer host.
+  move the restore fence: that happens only on the signer host. It cannot have an approver
+  change applied before someone proved on the confirmation page that they hold the new key: the
+  signer refuses it with `possession_unproven`, and the named person's own passkey fails that
+  proof for a key that is not theirs.
 - **Not stopped:** a person who approves a true but harmful request because the control plane or
   an agent talked them into it; a person who approves without reading the confirmation page;
-  denial of service; a genuine `add-approver` request whose key is not the named person's (see
-  "Limits"). The release gate "an approval made on the control plane's page is refused" and the
-  browser gate "a script on the control plane's page cannot get an approval" test the refusal
-  against the real stack.
+  denial of service; an `add-approver` request that carries a key the attacker holds under the
+  named person's credential id, when nobody compares the fingerprint (see "Limits"). The release
+  gate "an approval made on the control plane's page is refused" and the browser gate "a script
+  on the control plane's page cannot get an approval" test the refusal against the real stack;
+  the release gate "an approver change whose key the new person does not hold cannot be
+  approved" tests the possession step.
 
 ### A compromised `approve` service, or Caddy, DNS or the certificate for `APPROVE_ORIGIN`
 
 - **Can:** show a false view on the confirmation page and relay assertions over other digests,
   which is the display gap again; read the details of any request whose link it sees; send up
   to 64 submissions per confirmation.
-- **Stopped by:** it holds no key. Its secret reaches only the signer's two confirmation routes,
-  which read a view and store an assertion; it cannot sign, apply, open a confirmation or list
-  assertions ([`apps/signer/src/index.ts`](../apps/signer/src/index.ts)). Every assertion it
+- **Stopped by:** it holds no key. Its secret reaches only the signer's four confirmation routes,
+  which read a view, store an assertion, and issue and check a new approver's possession
+  challenge; it cannot sign, apply, open a confirmation or list assertions
+  ([`apps/signer/src/index.ts`](../apps/signer/src/index.ts)). Every assertion it
   relays is verified by the signer as one approver's, at `APPROVE_ORIGIN`, over the envelope's
   digest, and again when the signer acts. It reaches only the signer, on its own internal
   network.
@@ -317,14 +323,24 @@ signer's page. What remains:
 - **Phishing with a lookalike host.** It cannot obtain an assertion the signer accepts, but it
   can deceive a person who does not check the address bar, which is why the page tells people
   to check it.
-- **A new approver's key.** The page shows the key an `add-approver` request would enroll, but
-  nothing yet proves that the key belongs to the person named. A request with a swapped key
-  looks genuine. Proof of possession and a fingerprint the people compare are milestone 4 of
-  the plan, not built.
+- **A new approver's key.** Before anyone can approve an `add-approver` request, the person being
+  added must answer on the confirmation page, with the passkey the request carries, a challenge
+  only that key can sign; the signer refuses the change otherwise (`possession_unproven`). So no
+  approver change is applied with a key that nobody has shown they hold, and a person being
+  added whose passkey was swapped sees their own answer fail. It does not close a key swap: a
+  WebAuthn signature does not cover the credential id, so whoever holds a key that a compromised
+  control plane put in the request under the named person's credential id can pass the step,
+  while the named person's own passkey fails it. Only the fingerprint comparison catches that,
+  and only when people do it. After their answer the page shows the person being added the
+  key's fingerprint; they read it to the approvers over a call or in person, and the approvers
+  approve only if it matches the "Key fingerprint" line on their page. The comparison works only
+  when that person did the step themselves: one who found the step already done, or whose
+  answer failed, has no fingerprint of their own to read, and the approvers must not approve.
 
 A workspace starts with an admin threshold of 1, where one misled approval of a policy or
 approver change is enough for lasting control of its wallets. Raise the admin threshold to 2 as
-soon as a second approver is enrolled.
+soon as a second approver is enrolled: a swapped approver key then needs two people to skip the
+fingerprint comparison.
 
 **On the port layout the browser sends the control plane's cookies to the confirmation page.**
 Cookies do not separate ports, so with `APPROVE_ORIGIN` on another port of the same host the
@@ -346,8 +362,9 @@ without their passkeys (`CreateWorkspaceRequest` in
 [`signer/api.ts`](../packages/protocol/src/signer/api.ts)). The operator can also enroll a new
 approver directly from the signer's admin command line (`enroll-approver`, recorded as
 `enroll-approver-by-operator` in the decision log); there is no HTTP route for it, so the control
-plane cannot choose the enrolled key. Host access is the root of trust: whoever controls the
-signer host controls recovery.
+plane cannot choose the enrolled key, and it has no possession step, because the operator types
+the key on the host. Host access is the root of trust: whoever controls the signer host
+controls recovery.
 
 **The signer's decision log detects damage, not a determined writer.** Each workspace's log is a
 hash chain whose head (`seq` and `hash`) is kept on the workspace row and updated in the same
@@ -391,8 +408,6 @@ means the signer host's operator can always add an approver.
 From the map's "Not yet specified" list ([askgina/os#1](https://github.com/askgina/os/issues/1)):
 
 - Approvals wider than one action: session delegation and strategy mandates.
-- Proof that a new approver's key belongs to the person named (milestone 4 of
-  [`specs/trusted-display.md`](../specs/trusted-display.md)).
 - Operations that are not EVM transactions: other chains, and off-chain venues.
 - Shipping agent runtimes or sandboxes.
 - Operating beyond one machine: KMS or OpenBao key providers, HA Postgres, Kubernetes.

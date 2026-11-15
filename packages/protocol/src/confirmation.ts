@@ -870,7 +870,10 @@ const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
  * SHA-256 over the key's bytes in Crockford base32, as `XXXX-XXXX-XXXX-XXXX`.
  */
 export function keyFingerprint(publicKey: Base64Url): string {
-  const bytes = sha256(new Uint8Array(Buffer.from(publicKey, "base64url"))).subarray(0, 10);
+  const key = Uint8Array.from(atob(publicKey.replaceAll("-", "+").replaceAll("_", "/")), (c) =>
+    c.charCodeAt(0),
+  );
+  const bytes = sha256(key).subarray(0, 10);
   let bits = 0n;
   for (const byte of bytes) bits = (bits << 8n) | BigInt(byte);
   let symbols = "";

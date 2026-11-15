@@ -36,6 +36,21 @@ h1 {
   line-height: 1.25;
 }
 
+h2 {
+  margin: 0;
+  font-size: 1.125rem;
+}
+
+section {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.fingerprint {
+  font-family: ui-monospace, monospace;
+  white-space: nowrap;
+}
+
 dl {
   margin: 0;
   display: grid;

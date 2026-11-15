@@ -218,43 +218,75 @@ Success means:
       release gates drive its two routes through the `approve` service. No test reaches the
       step on a `complete` request (approvals collected before this milestone), because no route
       can collect them any more. Left for others: the two open items below.
-  - [ ] `apps/web`: the approval page shows the confirmation link only to people who can decide,
-        so the person being added never sees it there (see Surprises). It must show them the link
-        on an `add-approver` request whose `subject.user` is the signed-in person, with a line
-        saying to open it and press "This passkey is mine"; `apps/web/src/lib/codes.ts` needs a
-        meaning for `possession_unproven`.
-  - [ ] Documents for milestone 4, for the docs pass (none written yet):
-        `docs/approval-protocol.md` section 10, "The confirmation routes": six routes, not four,
-        with `GET /v1/confirm/:approvalId/possession` (confirm, header `x-confirm-token` →
-        `{ rpId, challenge, allowCredentials: [the envelope's credentialId], userVerification,
-    timeoutMs }`) and `POST /v1/confirm/:approvalId/possession` (confirm, header,
-        `{ response }` → `{ fingerprint }`), and the rules: only `add-approver` has the step
-        (`not_found` otherwise); the step is open while the request is `open` or `complete`
-        (`confirmation_closed` otherwise); one random nonce per request, kept until an answer uses
-        it; the answer must come from the envelope's credential, verified against the envelope's
-        `publicKey` under section 6's checks; a used or absent challenge is `assertion_invalid`;
-        answers count toward the 64 submissions; an approval of an unproven `add-approver` is
-        `possession_unproven` (409). Section 8 or the `add-approver` row of section 5: the signer
-        applies an `add-approver` only when the confirmation of that exact envelope records the
-        proof, else `possession_unproven`; the operator's `enroll-approver` has no such step.
-        Section 11: the vector `possessionChallenge({ approvalId: "apr_01jd0000000000000000000005",
-    credentialId: "Y3JlZC1h", nonce: "AAAAAAAAAAAAAAAAAAAAAA" })` =
-        `7voVoMiWeZwDat_WCB8R-xOqaIfjygPAYO7xmCsm8ec` (JSON in `digests.test.ts`). Section 12: a
-        new tag for a new structure, no version change. `docs/threat-model.md`: line 140 ("a
-        genuine `add-approver` request whose key is not the named person's") and "Limits" (line
-        320, "A new approver's key ... milestone 4") and "Out of scope" (proof of possession): say
-        what is built and what remains, as in this plan's Surprises (the holder of a swapped key can
-        prove it; only the fingerprint comparison over another channel catches the swap), and keep
-        the admin threshold of 2 recommendation. `docs/architecture.md` (around line 156): the
-        person being added opens the request's link and presses "This passkey is mine" before
-        anyone can approve; the `approve` service relays four routes. `README.md` and `SECURITY.md`
-        where they state the approver-key limit. `apps/approve/README.md`: the two new routes in
-        its route table (`GET` and `POST /api/approvals/:approvalId/possession`, relayed to
-        `/v1/confirm/:approvalId/possession`), "two confirmation routes" becomes four, and the
-        page's step. `apps/signer/README.md`: the two routes beside `GET /v1/confirm/:approvalId`,
-        the table `possession_challenges` in its SQLite list, and `possession_unproven`.
-        `deploy/README.md` (line 206, migrations): schema version 4 adds `possession_challenges`;
-        an older signer image refuses the file (`schema_too_new`).
+  - [x] (2026-11-15) `apps/web` and a browser gate for the possession step. The approval page
+        (`apps/web/src/routes/approval.tsx`) shows every reader of an `add-approver` request the
+        key fingerprint, `keyFingerprint` of the envelope's `publicKey`. To the person being added
+        (`subject.user` is the signed-in person) it shows the confirmation link even though they
+        cannot decide (`ProvePasskey`): open it, press "This passkey is mine" with the new passkey,
+        then read the fingerprint to an approver over a call or in person. To the approvers it
+        says to compare that fingerprint with the new person before approving, and that the new
+        person has to act first when the signer's page says the proof is missing
+        (`CompareFingerprint`). `apps/web/src/lib/codes.ts` explains `possession_unproven`; the
+        members page and the settings page say the new person proves first. `keyFingerprint`
+        now decodes base64url with `atob` instead of Node's `Buffer`, so it runs in the browser
+        (same output; the pinned vector holds, and a case with `-`, `_` and no padding is added).
+        The dev fixture and its stand-in page (`apps/web/dev/`) have the step: the change waits
+        for an answer from the new passkey to the step's own challenge, the page shows the
+        fingerprint, and approving is refused with `possession_unproven` until then. The UI
+        journey has a second person join as an approver, see the link on their approval page,
+        prove on the stand-in page, while the owner sees the same fingerprint, finds approving
+        disabled before the proof, approves after it, and the person can approve. The
+        one-screen height rule now holds only on `phone-light` and `phone-dark`; `phone-wide-font`
+        keeps the sideways check on every screen. The new browser gate in
+        `e2e/test/browser.spec.ts` ("a new approver proves on the confirmation page that the
+        passkey is theirs, then the owner approves") does the same against the real stack: a
+        second person in their own browser context with their own virtual authenticator joins,
+        opens the link from their approval page, presses "This passkey is mine" on the real
+        page and sees the fingerprint; the owner sees the same fingerprint on the control plane
+        and on the real page, finds "Approve with passkey" disabled before the proof, approves
+        after it, and the members page shows two people who can approve. Proven locally: the
+        journey on `phone-light`, `phone-dark`, `desktop-light`, `desktop-dark` and
+        `phone-wide-font`; `apps/web` vitest files `operator` (5), `return-path` (36),
+        `statuses` (21), `sweep` (3), one at a time; `packages/protocol/test/confirmation.test.ts`
+        (39) and `digests.test.ts` (91); `tsc --noEmit` in `apps/web`, `e2e` and
+        `packages/protocol`; `biome check` on the touched files. Still to prove in CI: the `ui`
+        job on all five projects with CI's fonts, and the new browser gate on `stack (amd64)`,
+        `stack (arm64)` and `stack (tls)`, which is the first run of the real page's "This
+        passkey is mine" step in a browser. Not available to the page: the control plane's API
+        does not say whether the proof is done (`ApprovalDetail` has no `possessionProven`; only
+        the signer's `ConfirmationView` does), so the approval page says what to do either way.
+  - [x] (2026-11-15) Documents for milestone 4. `docs/approval-protocol.md`: section 8 (the
+        signer applies an `add-approver` only when the confirmation of that exact envelope
+        records the proof, else `possession_unproven`; the operator's `enroll-approver` has no
+        such step), section 10 (the confirm scope's four routes; six confirmation routes; "The
+        possession step" with its rules and the swapped-key residual), section 11 (the
+        possession vector from `digests.test.ts`, reproduced with OpenSSL), section 12 (a new
+        tag for a new structure, no version change). `docs/threat-model.md`: trust boundary 6
+        and the `approve` service's position (four routes), code execution in the control plane
+        (what the step stops, the swapped key as not stopped, the new release gate), "Limits"
+        (what the step closes, the swapped-key residual, how the fingerprint comparison works and
+        when it fails, the admin threshold of 2 kept with its reason), the operator enrollment
+        without the step, and proof of possession removed from "Out of scope".
+        `docs/architecture.md` (the `approve` service relays four routes, the flowchart's
+        edge label, the possession step after the sequence diagram, the state table).
+        `README.md` (the trust table and the first limit), `SECURITY.md` (the possession step in
+        scope, its secret's four routes, the known limit). `apps/approve/README.md` (the two
+        relayed routes, "Adding an approver", four routes). `apps/signer/README.md` (the
+        SQLite list with `possession_challenges` and schema version 4, four confirm routes, the
+        two possession routes and the refusals, `confirmation.possession` in the logs,
+        `possession_unproven` in the table). `deploy/README.md` (the `approve` service and its
+        four routes, a new section "Adding an approver" with the fingerprint comparison, schema
+        version 4 under "Upgrading" with `schema_too_new` and fixing forward). The `ui` job's
+        comment in `ci.yml` names the wide-font phone project. A revision note in
+        `specs/agent-workspaces-v0.1.md`. No document says a new approver's key is unproven
+        until milestone 4. Checked: `biome check --write` on the touched files (it realigned
+        four files' tables); the one Mermaid line changed (an edge label in
+        `docs/architecture.md`) keeps the label syntax of the line it replaced, read, not
+        parsed. Found while writing, from the code and not run: an `add-approver` request that
+        was `complete` before the upgrade is applied when the control plane next collects it;
+        the signer refuses it with `possession_unproven`, `directory/kinds.ts` turns that into
+        an `ApprovalFailure`, and the request ends `failed`. So the step's `complete` window
+        rarely helps; `deploy/README.md` says such a request must be proposed again.
 - [ ] Run validation and record evidence (CI run URLs, one manual phone run).
 - [ ] Update this spec with the final outcome and residual risks.
 
@@ -651,9 +683,11 @@ and the research agent's rationale.
   over a call or in person. What remains: whoever holds a key a compromised control plane
   swapped in can pass the step; only the fingerprint comparison catches that.
   Evidence: the single-file runs listed under Progress (2026-11-15 00:45Z).
+  The documents now describe the step, the fingerprint comparison, the residual, and schema
+  version 4 with its fix-forward rollback.
   Remaining: CI (`check`, `test` with `workflow.test.ts`, the new and the changed release gates
   on all `stack` jobs); a browser or manual run of the page's possession step; the `apps/web`
-  link for the person being added; the documents listed under Progress.
+  link for the person being added.
 
 ## Context and Orientation
 
@@ -1432,3 +1466,6 @@ Regression checks:
   reason in the Decision Log or "Surprises & Discoveries". Added the observation that the holder
   of a swapped key can pass the step, and that the web page does not yet show the person being
   added their link.
+- 2026-11-15: Milestone 4's documents written (see the Progress item "Documents for milestone
+  4"); proof of possession is no longer listed as out of scope. Added the finding that an
+  approver change completed before the upgrade ends `failed` when the control plane applies it.

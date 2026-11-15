@@ -5,6 +5,10 @@
  * answer to the fixture, which holds the approval as the signer would, and goes back to the
  * request. The real page is `apps/approve/public/approve.js`.
  *
+ * Like the real page, an approver change has one more step, for the person being added: they
+ * answer with the new passkey ("This passkey is mine"), and the page shows them its fingerprint.
+ * Approving waits until then.
+ *
  * Built with createElement and textContent only, under a Content-Security-Policy that refuses
  * inline code.
  */
@@ -16,15 +20,20 @@
  *   lines: { label: string; value: string }[];
  *   state: "open" | "complete" | "closed";
  *   approvals: { collected: number; required: number };
- *   webauthn: {
- *     challenge: string;
- *     rpId: string;
- *     allowCredentials: string[];
- *     userVerification: UserVerificationRequirement;
- *     timeoutMs: number;
- *   };
+ *   possession: "none" | "unproven" | "proven";
+ *   webauthn: PasskeyRequest;
  *   returnUrl: string;
  * }} View
+ */
+
+/**
+ * @typedef {{
+ *   challenge: string;
+ *   rpId: string;
+ *   allowCredentials: string[];
+ *   userVerification: UserVerificationRequirement;
+ *   timeoutMs: number;
+ * }} PasskeyRequest
  */
 
 const TOKEN_HEADER = "x-confirm-token";
@@ -86,27 +95,29 @@ function errorMessage(body) {
 }
 
 /**
- * Ask the passkey, send its answer, and go back to the request.
- * @param {View} view
+ * Ask the passkey for an answer to `webauthn`, and send it to `path` on this page's API. Null
+ * after saying so in `result` when there is no answer; otherwise the fixture's reply.
+ * @param {PasskeyRequest} webauthn
+ * @param {string} path
  * @param {string} token
- * @param {HTMLButtonElement} button
  * @param {HTMLElement} result
+ * @param {string} nothing what did not happen
+ * @returns {Promise<{ ok: boolean; body: unknown } | null>}
  */
-async function approve(view, token, button, result) {
-  button.disabled = true;
+async function answerWithPasskey(webauthn, path, token, result, nothing) {
   result.className = "";
   result.textContent = "Waiting for your passkey…";
   const credential = await navigator.credentials
     .get({
       publicKey: {
-        challenge: fromBase64Url(view.webauthn.challenge),
-        rpId: view.webauthn.rpId,
-        allowCredentials: view.webauthn.allowCredentials.map((id) => ({
+        challenge: fromBase64Url(webauthn.challenge),
+        rpId: webauthn.rpId,
+        allowCredentials: webauthn.allowCredentials.map((id) => ({
           type: "public-key",
           id: fromBase64Url(id),
         })),
-        userVerification: view.webauthn.userVerification,
-        timeout: view.webauthn.timeoutMs,
+        userVerification: webauthn.userVerification,
+        timeout: webauthn.timeoutMs,
       },
     })
     .catch(() => null);
@@ -115,12 +126,11 @@ async function approve(view, token, button, result) {
     !(credential.response instanceof AuthenticatorAssertionResponse)
   ) {
     result.className = "refusal";
-    result.textContent = "Your passkey did not answer. Nothing was approved. Try again.";
-    button.disabled = false;
-    return;
+    result.textContent = `Your passkey did not answer. ${nothing} Try again.`;
+    return null;
   }
   const { response } = credential;
-  const answer = await fetch(`/api/approvals/${encodeURIComponent(view.approvalId)}/assertions`, {
+  const answer = await fetch(path, {
     method: "POST",
     headers: { "content-type": "application/json", [TOKEN_HEADER]: token },
     body: JSON.stringify({
@@ -140,14 +150,37 @@ async function approve(view, token, button, result) {
     cache: "no-store",
     credentials: "omit",
   });
-  const body = await answer.json().catch(() => null);
-  if (!answer.ok) {
-    result.className = "refusal";
-    result.textContent = errorMessage(body);
+  return { ok: answer.ok, body: await answer.json().catch(() => null) };
+}
+
+/**
+ * Ask the passkey, send its answer, and go back to the request.
+ * @param {View} view
+ * @param {string} token
+ * @param {HTMLButtonElement} button
+ * @param {HTMLElement} result
+ */
+async function approve(view, token, button, result) {
+  button.disabled = true;
+  const answer = await answerWithPasskey(
+    view.webauthn,
+    `/api/approvals/${encodeURIComponent(view.approvalId)}/assertions`,
+    token,
+    result,
+    "Nothing was approved.",
+  );
+  if (answer === null) {
+    button.disabled = false;
     return;
   }
+  if (!answer.ok) {
+    result.className = "refusal";
+    result.textContent = errorMessage(answer.body);
+    return;
+  }
+  const held = /** @type {{ collected: number; required: number }} */ (answer.body);
   button.hidden = true;
-  result.textContent = `The fixture holds your approval: ${body.collected} of ${body.required}. Taking you back to the request…`;
+  result.textContent = `The fixture holds your approval: ${held.collected} of ${held.required}. Taking you back to the request…`;
   setTimeout(() => location.assign(view.returnUrl), RETURN_DELAY_MS);
 }
 
@@ -179,6 +212,28 @@ function render(main, view, token) {
     const result = element("p");
     result.setAttribute("role", "status");
     button.addEventListener("click", () => void approve(view, token, button, result));
+    if (view.possession !== "none") {
+      decide.append(
+        element(
+          "p",
+          "Before you approve, ask the person being added to read you the fingerprint their page showed them, over a call or in person. Approve only if it matches the key fingerprint above.",
+        ),
+      );
+    }
+    if (view.possession === "unproven") {
+      const waiting = element(
+        "p",
+        "Approving opens once the person being added has proven on this page that the passkey is theirs. Reload this page after they have.",
+      );
+      button.disabled = true;
+      decide.append(waiting);
+      parts.push(
+        possessionStep(view, token, () => {
+          button.disabled = false;
+          waiting.remove();
+        }),
+      );
+    }
     decide.append(button, result);
     parts.push(decide);
   }
@@ -188,6 +243,78 @@ function render(main, view, token) {
   back.append(link);
   parts.push(back);
   main.replaceChildren(...parts);
+}
+
+/**
+ * The possession step, for the person being added: the challenge only the new passkey may
+ * answer is fetched when the step is shown; after the answer, the page shows the key's
+ * fingerprint to read out.
+ * @param {View} view
+ * @param {string} token
+ * @param {() => void} proven
+ * @returns {HTMLElement}
+ */
+function possessionStep(view, token, proven) {
+  const section = element("section");
+  section.setAttribute("aria-label", "The new passkey");
+  const button = element("button", "This passkey is mine");
+  button.type = "button";
+  button.disabled = true;
+  const result = element("p");
+  result.setAttribute("role", "status");
+  const path = `/api/approvals/${encodeURIComponent(view.approvalId)}/possession`;
+  /** @type {PasskeyRequest | null} */
+  let challenge = null;
+  void fetch(path, { headers: { [TOKEN_HEADER]: token }, cache: "no-store", credentials: "omit" })
+    .then(async (answer) => {
+      const body = await answer.json().catch(() => null);
+      if (!answer.ok) {
+        result.className = "refusal";
+        result.textContent = errorMessage(body);
+        return;
+      }
+      challenge = /** @type {PasskeyRequest} */ (body);
+      button.disabled = false;
+    })
+    .catch(() => {
+      result.className = "refusal";
+      result.textContent = "The fixture did not answer.";
+    });
+  button.addEventListener("click", async () => {
+    if (challenge === null) return;
+    button.disabled = true;
+    const answer = await answerWithPasskey(challenge, path, token, result, "Nothing was proven.");
+    if (answer === null) {
+      button.disabled = false;
+      return;
+    }
+    if (!answer.ok) {
+      result.className = "refusal";
+      result.textContent = errorMessage(answer.body);
+      return;
+    }
+    const { fingerprint } = /** @type {{ fingerprint: string }} */ (answer.body);
+    button.hidden = true;
+    const shown = element("strong", fingerprint);
+    shown.className = "fingerprint";
+    result.className = "";
+    result.replaceChildren(
+      "The signer checked that this passkey is yours. Its fingerprint is ",
+      shown,
+      ". Read it to the people who approve over a call or in person, not through this site or a message it sent. They approve only if it matches the fingerprint their page shows.",
+    );
+    proven();
+  });
+  section.append(
+    element("h2", "Are you the person being added?"),
+    element(
+      "p",
+      "Prove that the new passkey is yours, on the device where you just made it. Only you do this step. The people who approve wait for it, then compare the fingerprint with you.",
+    ),
+    button,
+    result,
+  );
+  return section;
 }
 
 async function start() {

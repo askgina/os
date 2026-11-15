@@ -20,6 +20,8 @@ const meanings: Record<string, string> = {
   policy_invalid: "The proposed limits are not valid.",
   fee_cap_exceeded: "The network fee would be higher than the approved ceiling.",
   insufficient_approvals: "Not enough people approved.",
+  possession_unproven:
+    "The person being added has not yet proven on the signer's page that the new passkey is theirs. They have to open the request's link and press \"This passkey is mine\" before anyone can approve it.",
   assertion_invalid: "A passkey approval could not be verified.",
   approver_unknown: "A passkey that approved is not one the signer knows for this workspace.",
   threshold_unreachable: "There would be fewer approvers than approvals required.",

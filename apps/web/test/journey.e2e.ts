@@ -20,6 +20,10 @@ import { expectNoSidewaysOverflow, type LayoutOptions, widenText } from "./layou
  * equivalent helper that proposes over MCP with the agent's token.
  *
  * Every captured screen is checked for content wider than the screen (`shot`).
+ *
+ * A second person joins as an approver. Before anyone can approve the change that adds them,
+ * they prove on the confirmation page that the new passkey is theirs and read its fingerprint,
+ * which the owner compares before approving there.
  */
 
 const test = baseTest.extend<LayoutOptions>({ widerText: [false, { option: true }] });
@@ -27,6 +31,15 @@ const test = baseTest.extend<LayoutOptions>({ widerText: [false, { option: true 
 const SETUP_TOKEN = process.env.OS_WEB_SETUP_TOKEN ?? "fixture-setup-token-0123456789";
 const SCREENSHOTS = new URL("../dev/screenshots/", import.meta.url).pathname;
 const RECIPIENT = "0x52908400098527886e0f7030069857d2e4169ee7";
+/** A key fingerprint as the pages show it: four groups of four Crockford base32 letters. */
+const FINGERPRINT = /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){3}$/;
+/**
+ * The projects whose phone screen height means something: real fonts at a real size. The
+ * `phone-wide-font` project widens every letter beyond any real font to find sideways overflow
+ * and wrapping, so its text runs taller than on any phone; it skips the one-screen height rule
+ * and keeps the sideways check on every screen.
+ */
+const ONE_SCREEN_PROJECTS = new Set(["phone-light", "phone-dark"]);
 
 async function addAuthenticator(page: Page): Promise<CDPSession> {
   const cdp = await page.context().newCDPSession(page);
@@ -102,13 +115,20 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
   widerText,
 }, testInfo) => {
   test.setTimeout(240_000);
-  /** Checks the screen for content wider than it, then captures the page, a part or the view. */
-  const shot = async (name: string, target: { element?: Locator; viewport?: true } = {}) => {
-    await expectNoSidewaysOverflow(page, name);
+  /**
+   * Checks the screen for content wider than it, then captures the page, a part or the view. The
+   * owner's page unless `on` names another person's.
+   */
+  const shot = async (
+    name: string,
+    target: { element?: Locator; viewport?: true } = {},
+    on: Page = page,
+  ) => {
+    await expectNoSidewaysOverflow(on, name);
     const path = `${SCREENSHOTS}${testInfo.project.name}-${name}.png`;
     await (target.element
       ? target.element.screenshot({ path })
-      : page.screenshot({ path, fullPage: !target.viewport }));
+      : on.screenshot({ path, fullPage: !target.viewport }));
   };
   const problems = watchConsole(page);
   const proposeUrl = process.env.OS_WEB_PROPOSE_URL ?? `${baseURL}/__fixture/propose`;
@@ -231,10 +251,11 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(page.getByRole("button", { name: "Reject" })).toBeVisible();
     // Approving happens only on the signer's page: nothing here asks for a passkey.
     await expect(page.getByRole("button", { name: /passkey/i })).toHaveCount(0);
-    // On a phone, the decision fits on the first screen, without scrolling.
+    // On a phone, the decision fits on the first screen, without scrolling. Only with real fonts:
+    // see ONE_SCREEN_PROJECTS.
     const viewport = page.viewportSize();
     const decision = await confirm.boundingBox();
-    if (testInfo.project.name.startsWith("phone") && viewport && decision) {
+    if (ONE_SCREEN_PROJECTS.has(testInfo.project.name) && viewport && decision) {
       expect(decision.y + decision.height).toBeLessThanOrEqual(viewport.height);
     }
     await shot("10-approval-payment-viewport", { viewport: true });
@@ -359,8 +380,11 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(page.getByText("This request was rejected. Nothing was signed.")).toBeVisible();
   });
 
-  await test.step("the other pages render", async () => {
-    const base = workspacePath();
+  let base = "";
+  let joiner: Page | undefined;
+  let joinerProblems: string[] = [];
+  await test.step("the other pages render, and a second person joins as an approver", async () => {
+    base = workspacePath();
     await page.goto(base);
     await expect(page.getByText("Invoice payer")).toBeVisible();
     await shot("15-overview");
@@ -394,13 +418,20 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     expect(new URL(inviteUrl).pathname).toMatch(/^\/join\/[A-Za-z0-9_-]+$/);
     await expect(openInvites.getByRole("listitem")).toHaveCount(1);
 
-    // A second person joins with their own passkey; it waits to become an approver.
+    // A second person joins with their own passkey, on the same kind of screen as the owner;
+    // it waits to become an approver.
+    const { viewport, deviceScaleFactor, isMobile, hasTouch, colorScheme } = testInfo.project.use;
     const other = await browser.newContext({
       baseURL,
-      colorScheme: testInfo.project.use.colorScheme ?? "light",
+      viewport,
+      deviceScaleFactor,
+      isMobile,
+      hasTouch,
+      colorScheme: colorScheme ?? "light",
     });
-    const joiner = await other.newPage();
-    const joinerProblems = watchConsole(joiner);
+    if (widerText) await widenText(other);
+    joiner = await other.newPage();
+    joinerProblems = watchConsole(joiner);
     await addAuthenticator(joiner);
     await joiner.goto(new URL(inviteUrl).pathname);
     await joiner.getByLabel("Your name").fill("Grace Approver");
@@ -408,7 +439,6 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(joiner.getByRole("heading", { name: "Workspaces" })).toBeVisible();
     await expect(joiner.getByText("Research team")).toBeVisible();
     expect(joinerProblems).toEqual([]);
-    await other.close();
 
     await page.reload();
     await expect(page.getByText("No open invites.")).toBeVisible();
@@ -424,6 +454,72 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
       `${base}/approvals`,
     );
     await shot("18-members");
+  });
+
+  await test.step("the new person proves the passkey is theirs, then the owner compares and approves", async () => {
+    if (!joiner) throw new Error("the second person never joined");
+    const grace = joiner;
+    // Grace finds the change that would let her approve in her own inbox. She cannot approve it,
+    // but she is the one who has to act first.
+    await grace.goto(`${base}/approvals`);
+    await grace.getByRole("link", { name: /^Let Grace Approver/ }).click();
+    await expect(
+      grace.getByRole("heading", { name: "Let Grace Approver approve with a new passkey" }),
+    ).toBeVisible();
+    const approvalPath = new URL(grace.url()).pathname;
+    const fingerprint =
+      (await grace.locator("dd code", { hasText: FINGERPRINT }).textContent()) ?? "";
+    expect(fingerprint).toMatch(FINGERPRINT);
+    await expect(grace.getByText("Prove that this passkey is yours")).toBeVisible();
+    await expect(
+      grace.getByRole("link", { name: "Review and approve on the signer's page" }),
+    ).toHaveCount(0);
+    const prove = grace.getByRole("link", {
+      name: "Prove the passkey is yours on the signer's page",
+    });
+    const proveUrl = new URL((await prove.getAttribute("href")) ?? "");
+    expect(proveUrl.origin).not.toBe(new URL(grace.url()).origin);
+    expect(proveUrl.pathname).toBe(`/a/${approvalPath.split("/").pop()}`);
+    await shot("29-approval-new-approver", {}, grace);
+
+    // The owner sees the same fingerprint and is told to compare it; the signer's page will not
+    // take an approval before Grace's proof.
+    await page.goto(approvalPath);
+    await expect(page.locator("dd code", { hasText: FINGERPRINT })).toHaveText(fingerprint);
+    await expect(
+      page.getByText("Compare the fingerprint with Grace Approver before you approve"),
+    ).toBeVisible();
+    await expect(page.getByText("Prove that this passkey is yours")).toHaveCount(0);
+    await shot("30-approval-add-approver");
+    const review = page.getByRole("link", { name: "Review and approve on the signer's page" });
+    expect(await review.getAttribute("href")).toBe(proveUrl.href);
+    await review.click();
+    await expect(page).toHaveURL((url) => url.origin === proveUrl.origin);
+    await expect(page.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
+    await expect(page.getByText(fingerprint, { exact: true })).toBeVisible();
+
+    // Grace proves it with the new passkey; the page shows her the same fingerprint.
+    await prove.click();
+    await expect(grace).toHaveURL((url) => url.origin === proveUrl.origin);
+    await grace.getByRole("button", { name: "This passkey is mine" }).click();
+    await expect(grace.locator(".fingerprint")).toHaveText(fingerprint);
+    await expect(grace.getByRole("button", { name: "This passkey is mine" })).toHaveCount(0);
+
+    // Now the owner can approve, and Grace can approve from then on.
+    await page.reload();
+    await expect(page.getByText(fingerprint, { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Approve with passkey" }).click();
+    await expect(page).toHaveURL(`${baseURL}${approvalPath}`, { timeout: 15_000 });
+    await expect(page.getByText("Done. The change is in effect.")).toBeVisible();
+    await page.goto(`${base}/members`);
+    await expect(page.getByText(/is waiting to become an approver/)).toHaveCount(0);
+    await expect(page.getByText("Can approve", { exact: true })).toHaveCount(2);
+    expect(joinerProblems).toEqual([]);
+    await grace.context().close();
+  });
+
+  await test.step("activity, settings, sign-in and the join page render", async () => {
+    const openInvites = page.getByRole("list", { name: "Open invites" });
     // A fresh link for the signed-out join page below; the first one was used.
     await page.getByRole("button", { name: "Create invite link" }).click();
     await expect(openInvites.getByRole("listitem")).toHaveCount(1);

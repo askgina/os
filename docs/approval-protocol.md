@@ -350,7 +350,11 @@ sent to the token contract. The sweep is recorded as a spend of the wallet.
 The other envelope kinds (`set-policy`, `add-approver`, `remove-approver`,
 `set-admin-threshold`, `resume-workspace`) follow the same shape, including the fence, verified
 with the workspace's `adminThreshold` instead of the policy's threshold. Pausing a workspace and
-revoking an approval need only the request signature, because they only remove authority. A
+revoking an approval need only the request signature, because they only remove authority.
+`add-approver` has one more check: the signer applies it only when the confirmation of that
+exact envelope (same approval id, same envelope digest) records that the person being added
+proved on the confirmation page that they hold the new key (section 10, "The possession step").
+Otherwise it refuses with `possession_unproven`, even when every assertion is valid. A
 revocation (`POST /v1/approvals/:id/revoke` with `{ workspaceId }`) is recorded in that
 workspace's decision log. `GET /v1/approvals/:id` reports `unknown`, `revoked`, `signed` (with
 the transaction hash, for an intent or a sweep) or `applied`.
@@ -358,7 +362,8 @@ the transaction hash, for an intent or a sweep) or `applied`.
 There is no HTTP route that adds an approver without assertions from existing approvers. When
 every passkey of a workspace is lost, the operator enrolls a new one with the signer's admin
 command line on the signer host, which records `enroll-approver-by-operator` in the decision log.
-Host access is the root of trust.
+Host access is the root of trust. That command has no possession step: the operator enrolls the
+exact key typed on the host.
 
 ## 9. What may vary after approval
 
@@ -408,11 +413,11 @@ Each signer route belongs to one scope (`scope` in `signerRoutes`,
 [`signer/api.ts`](../packages/protocol/src/signer/api.ts)), and a request is authentic only
 under its own scope's secret:
 
-| Scope     | Secret                                      | Held by               | Routes                                                                   |
-| --------- | ------------------------------------------- | --------------------- | ------------------------------------------------------------------------ |
-| `control` | `signer-request-secret`                     | the server            | every route except the two below and `GET /healthz`                      |
-| `confirm` | `confirm-request-secret`, at least 32 bytes | the `approve` service | `GET /v1/confirm/:approvalId`, `POST /v1/confirm/:approvalId/assertions` |
-| unsigned  | none                                        | anyone on the network | `GET /healthz`                                                           |
+| Scope     | Secret                                      | Held by               | Routes                                                                                                                                                        |
+| --------- | ------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `control` | `signer-request-secret`                     | the server            | every route except the four below and `GET /healthz`                                                                                                          |
+| `confirm` | `confirm-request-secret`, at least 32 bytes | the `approve` service | `GET /v1/confirm/:approvalId`, `POST /v1/confirm/:approvalId/assertions`, `GET /v1/confirm/:approvalId/possession`, `POST /v1/confirm/:approvalId/possession` |
+| unsigned  | none                                        | anyone on the network | `GET /healthz`                                                                                                                                                |
 
 A request signed with the other scope's secret is `unauthenticated` (401). The two secrets must
 differ; the signer refuses to start when they do not.
@@ -420,14 +425,17 @@ differ; the signer refuses to start when they do not.
 ### The confirmation routes
 
 The confirmation page ([`apps/approve`](../apps/approve)) shows one approval as the signer holds
-it and collects passkey assertions over its envelope. Four signer routes serve it:
+it and collects passkey assertions over its envelope. For an approver change it also takes the
+possession step of the person being added. Six signer routes serve it:
 
-| Route                                         | Scope   | Body and answer                                                                                    |
-| --------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------- |
-| `POST /v1/approvals/:approvalId/confirmation` | control | `{ envelope, subject }` → `{ path: "/a/<approvalId>#<token>" }`                                    |
-| `GET /v1/approvals/:approvalId/assertions`    | control | → `{ assertions: Assertion[] }`, each with the signer's own `userId`                               |
-| `GET /v1/confirm/:approvalId`                 | confirm | header `x-confirm-token` → `ConfirmationView`                                                      |
-| `POST /v1/confirm/:approvalId/assertions`     | confirm | header `x-confirm-token`, `{ response: AssertionResponse }` → `{ collected, required, returnUrl }` |
+| Route                                         | Scope   | Body and answer                                                                                                                |
+| --------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `POST /v1/approvals/:approvalId/confirmation` | control | `{ envelope, subject }` → `{ path: "/a/<approvalId>#<token>" }`                                                                |
+| `GET /v1/approvals/:approvalId/assertions`    | control | → `{ assertions: Assertion[] }`, each with the signer's own `userId`                                                           |
+| `GET /v1/confirm/:approvalId`                 | confirm | header `x-confirm-token` → `ConfirmationView`                                                                                  |
+| `POST /v1/confirm/:approvalId/assertions`     | confirm | header `x-confirm-token`, `{ response: AssertionResponse }` → `{ collected, required, returnUrl }`                             |
+| `GET /v1/confirm/:approvalId/possession`      | confirm | header `x-confirm-token` → `{ rpId, challenge, allowCredentials: [the envelope's credentialId], userVerification, timeoutMs }` |
+| `POST /v1/confirm/:approvalId/possession`     | confirm | header `x-confirm-token`, `{ response: AssertionResponse }` → `{ fingerprint }`                                                |
 
 Rules:
 
@@ -452,6 +460,37 @@ Rules:
   again, and sends it in an authorization, which the signer verifies again when it acts
   (section 6). This page is the only place an approval is made: the control plane has no route
   that takes one.
+
+**The possession step.** Before anyone may approve an `add-approver` request, the person being
+added proves on the confirmation page that they hold the key the envelope carries. Rules:
+
+- Only `add-approver` has the step. For any other kind both possession routes answer
+  `not_found`.
+- The step is open while the request is `open` or `complete`; in any other state it is
+  `confirmation_closed`. `complete` covers approvals collected before the step existed: the
+  signer still refuses to apply them until the step is done.
+- The challenge is `possessionChallenge({ approvalId, credentialId, nonce })` (section 2), where
+  `credentialId` is the envelope's and `nonce` is 16 random bytes. The signer makes one nonce per
+  request when the page first asks for it, keeps it unchanged until an answer uses it, then
+  deletes it. An answer to a used or absent challenge is `assertion_invalid`.
+- The answer must come from the envelope's credential (its `id` equal to the envelope's
+  `credentialId`) and verify against the envelope's `publicKey` under section 6's checks: made
+  top-level at `APPROVE_ORIGIN`, as a `webauthn.get`, with user verification. Otherwise it is
+  `assertion_invalid`.
+- Answers count toward the same 64 submissions as approvals (`rate_limited`).
+- A proven answer sets the confirmation's proof once and returns `keyFingerprint(publicKey)`:
+  the first 80 bits of SHA-256 over the key's bytes in Crockford base32, as
+  `XXXX-XXXX-XXXX-XXXX`. The view of the request shows the same fingerprint as its "Key
+  fingerprint" line, so the person being added can read theirs to the approvers over a call or
+  in person, and the approvers compare it.
+- Until the proof, the view carries the warning `possession_unproven`, and an approval submitted
+  on `POST /v1/confirm/:approvalId/assertions` is `possession_unproven` (409). The signer checks
+  the proof again when it applies the change (section 8).
+
+The step proves that whoever answered holds the key. It does not prove that the key belongs to
+the person named: a WebAuthn signature does not cover the credential id, so whoever holds a key
+that was put in the envelope under the named person's credential id can answer. Only the
+fingerprint comparison catches that ([`threat-model.md`](./threat-model.md#limits)).
 
 ## 11. Test vectors
 
@@ -575,6 +614,20 @@ Sweep JSON (canonical), under the tag `askgina.os/v1/sweep`:
 
 Challenge (base64url) = `lgZRKMxucwdO2AFLyWBfmAc4oANInAkJObl_azLac0Q`
 
+Possession challenge input JSON (canonical), under the tag `askgina.os/v1/possession`, for
+`possessionChallenge({ approvalId: "apr_01jd0000000000000000000005", credentialId: "Y3JlZC1h", nonce: "AAAAAAAAAAAAAAAAAAAAAA" })`:
+
+```json
+{
+  "approvalId": "apr_01jd0000000000000000000005",
+  "credentialId": "Y3JlZC1h",
+  "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+  "v": 1
+}
+```
+
+Challenge (base64url) = `7voVoMiWeZwDat_WCB8R-xOqaIfjygPAYO7xmCsm8ec`
+
 ## 12. Versioning
 
 `v` is `1` in every hashed structure, and the domain tags carry `v1`. Any change to the shape or
@@ -585,4 +638,7 @@ meaning. A version 1 verifier never accepts a structure of another version, beca
 requires `v` to be exactly `1`. Changes that hash nothing, such as a new signer error code, are
 not version changes. Neither is a new kind of envelope with its own structure under its own tag,
 as `sweep-wallet` was: every existing digest and test vector keeps its value, and a verifier that
-does not know the kind refuses it as an invalid envelope.
+does not know the kind refuses it as an invalid envelope. Nor is a new structure under a new
+tag, as the possession challenge (`askgina.os/v1/possession`) was: it changes no existing
+digest, and its tag keeps a possession challenge from ever standing in for an envelope's
+challenge, or an envelope's for it.

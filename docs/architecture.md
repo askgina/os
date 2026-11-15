@@ -70,7 +70,7 @@ flowchart LR
   C -->|confirmation site| AP
   S --> P
   S -->|control secret: sign, apply, open and list confirmations| G
-  AP -->|confirm secret, approve-signer network: view, submit assertion| G
+  AP -->|confirm secret, approve-signer network: view, submit assertion, possession step| G
   G --> V
   S -->|JSON-RPC| R
 ```
@@ -84,10 +84,11 @@ The diagram is the network layout the plan fixes. The rules it encodes:
   way to `approve`.
 - **`approve` service.** The signer's confirmation page on its own origin
   ([`apps/approve`](../apps/approve)). It holds no key. It serves one hand-written page and
-  relays two kinds of request to the signer: the view of one approval and one passkey
-  assertion, each with the token from the link. Its secret reaches those two signer routes and
-  no other. Only Caddy reaches it, on the internal `approve-edge` network, and it reaches only
-  the signer, on the internal `approve-signer` network.
+  relays four routes to the signer, each with the token from the link: the view of one
+  approval, one passkey assertion, and for an approver change the possession challenge and the
+  answer to it. Its secret reaches those four signer routes and no other. Only Caddy reaches it,
+  on the internal `approve-edge` network, and it reaches only the signer, on the internal
+  `approve-signer` network.
 - **Server (control plane).** A Hono server on Node. It serves the UI, the REST API under
   `/api/v1` ([`packages/api/src/routes.ts`](../packages/api/src/routes.ts)), the MCP gateway at
   `/mcp`, and runs the Workflow SDK runtime. It lists and explains approval requests and links
@@ -159,6 +160,15 @@ the signer to apply it instead of signing. The signer's checks, in order, are in
 [the approval protocol](./approval-protocol.md#the-signing-rule). The design of the
 confirmation page is in [`specs/trusted-display.md`](../specs/trusted-display.md).
 
+An approver change has one step first. The person being added opens the request's link on the
+device that holds the new passkey and presses "This passkey is mine". The page asks that passkey
+to sign a challenge the signer issued, and the signer checks the answer against the key in the
+request. Only then can anyone approve. The page shows the person being added the key's
+fingerprint; they read it to the approvers over a call or in person, and the approvers compare
+it with the fingerprint their page shows. The signer applies the change only when that proof is
+recorded for that exact request
+([the approval protocol, section 10](./approval-protocol.md#the-confirmation-routes)).
+
 ## Where state lives
 
 | State                                                                                                                                                                | Where                                                                                                        | Who can change it                                                                                              |
@@ -171,7 +181,7 @@ confirmation page is in [`specs/trusted-display.md`](../specs/trusted-display.md
 | Wrapped data keys and shred tombstones                                                                                                                               | Postgres, schema `os_keys` ([`packages/keys/src/data-key-store.ts`](../packages/keys/src/data-key-store.ts)) | The server                                                                                                     |
 | Key-encryption keys                                                                                                                                                  | Keyring JSON file outside Postgres ([`packages/keys/src/keyring.ts`](../packages/keys/src/keyring.ts))       | The operator                                                                                                   |
 | Shared request-signing secret                                                                                                                                        | A file read by both server and signer                                                                        | The operator                                                                                                   |
-| Confirmation records, the hash of each link's token, assertions made on the confirmation page                                                                        | Signer's SQLite                                                                                              | Only the signer                                                                                                |
+| Confirmation records, the hash of each link's token, assertions made on the confirmation page, possession challenges and proofs of new approver keys                 | Signer's SQLite                                                                                              | Only the signer                                                                                                |
 | Confirmation request secret                                                                                                                                          | A file read by the signer and, as a copy, by the `approve` service                                           | The operator                                                                                                   |
 
 Some rows in Postgres mirror the signer's state for display (the policy on `wallets`, the paused

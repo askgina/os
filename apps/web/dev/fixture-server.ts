@@ -13,7 +13,9 @@
  * stands in for that page too, on a second port (55732, so `http://localhost:55732`): it shows
  * the request, asks the passkey there, and holds the approval as the signer would, until reading
  * the request counts it here (`collect`). The page itself is `dev/confirm/`. It is a fixture, not
- * the real page, which is `apps/approve/public/`.
+ * the real page, which is `apps/approve/public/`. As on the real page, an approver change first
+ * waits for the person it adds to answer there with the new passkey ("This passkey is mine"),
+ * which shows them its fingerprint; until then nobody can approve it.
  *
  * Besides the contract it has three development endpoints under `/__fixture/`: one lets a test
  * act as an agent and propose a payment (the real server takes those over MCP), one puts a sent
@@ -47,6 +49,7 @@ import {
   envelopeChallenge,
   type Intent,
   intentHash,
+  keyFingerprint,
   newId,
   normalizePolicy,
   policyHash,
@@ -83,6 +86,7 @@ type RefusalCode =
   | "forbidden"
   | "not_found"
   | "conflict"
+  | "possession_unproven"
   | "policy_denied";
 
 class Refusal extends Error {
@@ -101,6 +105,7 @@ const status: Record<RefusalCode, number> = {
   forbidden: 403,
   not_found: 404,
   conflict: 409,
+  possession_unproven: 409,
   policy_denied: 422,
 };
 
@@ -138,6 +143,10 @@ interface Approval {
   confirmToken: string | null;
   /** The people whose approval the confirmation page holds, counted here by `collect`. */
   atSigner: string[];
+  /** The challenge of an approver change's possession step, kept until an answer uses it. */
+  possessionChallenge: string | null;
+  /** Whether the person an approver change adds answered there with the new passkey. */
+  possessionProven: boolean;
   /** The effect applied when enough people approve. */
   apply: () => void;
 }
@@ -331,6 +340,8 @@ function openApproval(input: {
     subject: input.subject,
     confirmToken: null,
     atSigner: [],
+    possessionChallenge: null,
+    possessionProven: false,
     apply: input.apply,
   };
   state.approvals.set(id, approval);
@@ -368,7 +379,7 @@ function approverApprovals(
         ttl: 3600,
         envelope:
           kind === "add-approver"
-            ? { userId, credentialId, publicKey: randomToken(32) }
+            ? { userId, credentialId, publicKey: credential.publicKey }
             : { userId, credentialId },
         subject: {
           kind,
@@ -1652,7 +1663,21 @@ function confirmationLines(approval: Approval): { label: string; value: string }
         { label: "Policy revision", value: String(subject.proposed.revision) },
         { label: "Approvals per payment", value: String(subject.proposed.approvals.threshold) },
       ];
-    case "add-approver":
+    case "add-approver": {
+      const envelope = approval.envelope;
+      return [
+        { label: "Person", value: subject.user.displayName },
+        { label: "Passkey", value: subject.passkeyLabel },
+        {
+          label: "Key fingerprint",
+          value: envelope.type === "add-approver" ? keyFingerprint(envelope.publicKey) : "",
+        },
+        {
+          label: "The new person proved they hold this passkey",
+          value: approval.possessionProven ? "yes" : "no",
+        },
+      ];
+    }
     case "remove-approver":
       return [
         { label: "Person", value: subject.user.displayName },
@@ -1687,6 +1712,12 @@ function confirmationView(approval: Approval) {
     state:
       status !== "pending" ? "closed" : approval.atSigner.length >= threshold ? "complete" : "open",
     approvals: { collected: approval.atSigner.length, required: threshold },
+    possession:
+      approval.envelope.type !== "add-approver"
+        ? "none"
+        : approval.possessionProven
+          ? "proven"
+          : "unproven",
     webauthn: {
       challenge: approval.challenge,
       rpId: "localhost",
@@ -1709,25 +1740,89 @@ function confirmationFor(approvalId: string, token: string | string[] | undefine
   return approval;
 }
 
-/**
- * Holds one person's approval, as the signer does: made on this origin, top level, for this
- * request's challenge, with a passkey of an active approver who has not approved it yet.
- */
-function holdApproval(approval: Approval, body: unknown) {
+/** Whether a passkey answer was made on this page, top level, for `challenge`. */
+function madeHere(response: AssertionResponse, challenge: string | null): boolean {
+  const data = clientData(response);
+  return (
+    challenge !== null &&
+    data.type === "webauthn.get" &&
+    data.challenge === challenge &&
+    data.origin === CONFIRM_ORIGIN &&
+    data.crossOrigin !== true
+  );
+}
+
+function passkeyAnswer(body: unknown): AssertionResponse {
   const parsed = z.strictObject({ response: AssertionResponse }).safeParse(body);
   if (!parsed.success) throw new Refusal("invalid_request", "The passkey response is not valid.");
-  const response = parsed.data.response;
+  return parsed.data.response;
+}
+
+/** The approver change behind a possession step, while it still waits for approval. */
+function possessionOf(approval: Approval) {
+  const envelope = approval.envelope;
+  if (envelope.type !== "add-approver") {
+    throw new Refusal("not_found", "Only an approver change has this step.");
+  }
+  if (approval.summary.status !== "pending") {
+    throw new Refusal("conflict", "This request no longer waits for approval.");
+  }
+  return envelope;
+}
+
+/**
+ * The possession step's challenge, which only the new passkey may answer: one per request, kept
+ * until an answer uses it, as the signer keeps it.
+ */
+function possessionRequest(approval: Approval) {
+  const envelope = possessionOf(approval);
+  approval.possessionChallenge ??= randomToken(32);
+  return {
+    rpId: "localhost",
+    challenge: approval.possessionChallenge,
+    allowCredentials: [envelope.credentialId],
+    userVerification: "required",
+    timeoutMs: 60_000,
+  };
+}
+
+/**
+ * Records that the person being added holds the new passkey: an answer made on this page, top
+ * level, to the step's challenge, by the envelope's own credential. The fixture checks no
+ * signature. Returns the key's fingerprint for that person to read out.
+ */
+function provePossession(approval: Approval, body: unknown) {
+  const envelope = possessionOf(approval);
+  const response = passkeyAnswer(body);
+  if (!madeHere(response, approval.possessionChallenge) || response.id !== envelope.credentialId) {
+    throw new Refusal(
+      "invalid_request",
+      "This answer was not made on this page with the new passkey.",
+    );
+  }
+  approval.possessionChallenge = null;
+  approval.possessionProven = true;
+  return { fingerprint: keyFingerprint(envelope.publicKey) };
+}
+
+/**
+ * Holds one person's approval, as the signer does: made on this origin, top level, for this
+ * request's challenge, with a passkey of an active approver who has not approved it yet. An
+ * approver change also waits for its possession step.
+ */
+function holdApproval(approval: Approval, body: unknown) {
+  const response = passkeyAnswer(body);
   const { threshold } = approval.summary;
   if (approval.summary.status !== "pending" || approval.atSigner.length >= threshold) {
     throw new Refusal("conflict", "This request no longer waits for approval.");
   }
-  const data = clientData(response);
-  if (
-    data.type !== "webauthn.get" ||
-    data.challenge !== approval.challenge ||
-    data.origin !== CONFIRM_ORIGIN ||
-    data.crossOrigin === true
-  ) {
+  if (approval.envelope.type === "add-approver" && !approval.possessionProven) {
+    throw new Refusal(
+      "possession_unproven",
+      "The person being added has not yet proven on this page that the new passkey is theirs.",
+    );
+  }
+  if (!madeHere(response, approval.challenge)) {
     throw new Refusal(
       "invalid_request",
       "This approval was not made on this page for this request.",
@@ -1769,7 +1864,7 @@ const confirmServer = createServer(async (req, res) => {
     if (req.method === "GET" && /^\/a\/apr_[A-Za-z0-9_-]+$/.test(url.pathname)) {
       return reply(200, "text/html; charset=utf-8", confirmHtml);
     }
-    const match = /^\/api\/approvals\/([^/]+)(\/assertions)?$/.exec(url.pathname);
+    const match = /^\/api\/approvals\/([^/]+)(\/assertions|\/possession)?$/.exec(url.pathname);
     if (match) {
       const approval = confirmationFor(
         decodeURIComponent(match[1] ?? ""),
@@ -1778,8 +1873,14 @@ const confirmServer = createServer(async (req, res) => {
       if (req.method === "GET" && !match[2]) {
         return reply(200, json, JSON.stringify(confirmationView(approval)));
       }
-      if (req.method === "POST" && match[2]) {
+      if (req.method === "POST" && match[2] === "/assertions") {
         return reply(200, json, JSON.stringify(holdApproval(approval, await readBody(req))));
+      }
+      if (req.method === "GET" && match[2] === "/possession") {
+        return reply(200, json, JSON.stringify(possessionRequest(approval)));
+      }
+      if (req.method === "POST" && match[2] === "/possession") {
+        return reply(200, json, JSON.stringify(provePossession(approval, await readBody(req))));
       }
     }
     throw new Refusal("not_found", "Nothing is here.");

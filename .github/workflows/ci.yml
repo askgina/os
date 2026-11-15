@@ -86,8 +86,9 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bunx playwright install --with-deps chromium
         working-directory: apps/web
-      # The first-day journey on a phone and a desktop, light and dark, against the fixture API
-      # under the production Content-Security-Policy.
+      # The first-day journey on a phone and a desktop, light and dark, and on a phone with wider
+      # letters than any installed font, against the fixture API under the production
+      # Content-Security-Policy.
       - run: bunx playwright test
         working-directory: apps/web
       - run: bun run build

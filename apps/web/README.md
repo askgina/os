@@ -15,6 +15,16 @@ has collected the approvals. Reject stays on this page and needs no passkey. Whe
 refuses to open a confirmation page, for example because the wallet's limits changed after the
 request was made, the page says the request cannot be approved and offers only Reject.
 
+A request that adds an approver's passkey has one more step, on the signer's page, for the person
+it adds: they open the same link, press "This passkey is mine" and answer with the new passkey,
+and that page shows them the key's fingerprint. Nobody can approve the change before that. So the
+approval page gives that person the link too, with what to do, although they cannot decide. It
+shows everyone the key fingerprint, computed from the request's envelope, and tells the people
+who approve to compare it with the new person over a call or in person before they approve, and
+who has to act when the signer's page says the proof is still missing. The control plane's API
+does not say whether the proof is done (only the signer's page does), so the page says what to do
+either way.
+
 It is a Vite, React 19 and Tailwind 4 single-page app. It talks only to `/api/v1` through
 `createApiClient()` from `@askgina/os-api`. Signing in and adding a passkey go through
 `@simplewebauthn/browser`.
@@ -38,8 +48,11 @@ and checks only that the browser answered for this request's challenge, on that 
 top level, with a passkey of one of the workspace's approvers. It holds the approval as the
 signer would and goes back to the approval page, whose next read counts it. Like the real
 signer, it opens no confirmation for a payment or a limits change asked for under limits that
-have changed since; that request then cannot be approved. It is a fixture: the real page is
-`apps/approve/public/`, and the stand-in says on screen that it checks no signature.
+have changed since; that request then cannot be approved. For an approver change it has the real
+page's "This passkey is mine" step: it takes an answer only from the new passkey, for the step's
+own challenge, shows the key's fingerprint, and refuses every approval until then
+(`possession_unproven`). It is a fixture: the real page is `apps/approve/public/`, and the
+stand-in says on screen that it checks no signature.
 
 ```bash
 bun run fixture   # the fixture API on 127.0.0.1:55731, its confirmation page on :55732
@@ -58,8 +71,10 @@ the React plugin's Fast Refresh: a change reloads the page.
   operator command and the sign-in return path.
 - `bunx playwright test --project=<phone-light|phone-dark|desktop-light|desktop-dark|phone-wide-font>`:
   the first-day journey in Chromium with a virtual authenticator. Every approval goes through
-  the confirmation page's link and back. Playwright starts the fixture and the Vite dev server
-  itself, fails on any console error or failed request, and writes screenshots to
+  the confirmation page's link and back. A second person, with their own authenticator, joins as
+  an approver, proves on the confirmation page that the new passkey is theirs, and the owner
+  approves the change after the fingerprints match. Playwright starts the fixture and the Vite
+  dev server itself, fails on any console error or failed request, and writes screenshots to
   `dev/screenshots/`. Set `OS_WEB_BASE_URL` to run it against a real server instead (and
   `OS_WEB_PROPOSE_URL`, `OS_WEB_SETUP_TOKEN` to match it).
 - Before every screenshot, the journey checks that nothing is wider than the screen
@@ -72,7 +87,9 @@ the React plugin's Fast Refresh: a change reloads the page.
   so a screen can fit here and overflow there. The `phone-wide-font` project runs the phone
   journey with every letter 0.08em wider (appended to each stylesheet as it loads, so the
   Content-Security-Policy stays as it is), more than the difference between those fonts. Run it
-  after any layout change.
+  after any layout change. It is a stress run for sideways overflow and wrapping only: its text
+  runs taller than with any real font, so it skips the rule that a payment's decision fits on the
+  first phone screen. That rule holds on `phone-light` and `phone-dark`.
 - `bunx tsc --noEmit` checks the types.
 
 ## Production

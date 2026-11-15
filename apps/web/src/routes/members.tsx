@@ -249,11 +249,12 @@ function PendingPasskeyHelp({
       <p className="text-muted-foreground">There are two ways it can start approving:</p>
       <ol className="grid list-decimal grid-cols-1 gap-2 pl-5">
         <li>
-          Someone who can already approve accepts the request in the{" "}
+          {member.user.displayName} opens the request in the{" "}
           <Link to="/w/$workspaceId/approvals" params={{ workspaceId }} className={linkClass}>
             approval inbox
-          </Link>
-          .
+          </Link>{" "}
+          and proves on the signer's page that the passkey is theirs. Then someone who can already
+          approve accepts it, after comparing its fingerprint with them over a call or in person.
         </li>
         <li className="grid grid-cols-1 gap-2">
           <span>

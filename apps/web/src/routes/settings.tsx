@@ -72,6 +72,12 @@ export function SettingsPage() {
                 </li>
               ))}
             </ul>
+            {opened.some((approval) => approval.kind === "add-approver") ? (
+              <p>
+                Open each request and prove there, with the new passkey, that it is yours. Nobody
+                can approve it before you do.
+              </p>
+            ) : null}
           </div>
         </Alert>
       ) : null}

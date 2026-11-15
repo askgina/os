@@ -6,7 +6,8 @@
  * authenticator, so registration and every approval go through the browser's WebAuthn API.
  *
  * The tests share one tab and its authenticator, in order: the passkey the first test registers
- * on the control plane's origin is the one the confirmation page asks for.
+ * on the control plane's origin is the one the confirmation page asks for. The gate for a new
+ * approver adds a second person in a context of their own, with an authenticator of their own.
  *
  * `e2e/run.sh` starts a second, empty stack for this file, because setting up a server can be
  * done only once.
@@ -25,6 +26,8 @@ test.describe.configure({ mode: "serial" });
 
 const RECIPIENT = "0x00000000000000000000000000000000000b0b0b";
 const HTTPS = stack.origin.startsWith("https:");
+/** A key fingerprint as the pages show it: four groups of four Crockford base32 letters. */
+const FINGERPRINT = /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){3}$/;
 
 const chain = createPublicClient({
   chain: foundry,
@@ -329,6 +332,130 @@ test("a script on the control plane's page cannot get an approval", async () => 
   await expect(page.getByText("Waiting for approvals. 0 of 1 so far.")).toBeVisible();
   await page.goto(approvalPath);
   await expect(page.getByText("0 of 1 approvals")).toBeVisible();
+  expect(problems).toEqual([]);
+});
+
+test("a new approver proves on the confirmation page that the passkey is theirs, then the owner approves", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  let workspacePath = "";
+  let inviteUrl = "";
+
+  await test.step("the owner invites a second person as an approver", async () => {
+    await page.goto("/");
+    await page.getByRole("link", { name: /Research team/ }).click();
+    await expect(page).toHaveURL(/\/w\/ws_[A-Za-z0-9]+$/);
+    workspacePath = new URL(page.url()).pathname;
+    await page.goto(`${workspacePath}/members`);
+    await page.getByLabel("Role", { exact: true }).selectOption("approver");
+    await page.getByRole("button", { name: "Create invite link" }).click();
+    inviteUrl = await page.getByLabel(/Invite link/).inputValue();
+    expect(new URL(inviteUrl).pathname).toMatch(/^\/join\/[A-Za-z0-9_-]+$/);
+  });
+
+  // The second person, in a browser of their own with a passkey of their own.
+  const graceContext = await browser.newContext({
+    baseURL: stack.origin,
+    ignoreHTTPSErrors: HTTPS,
+  });
+  const grace = await graceContext.newPage();
+  const graceProblems: string[] = [];
+  grace.on("console", (message) => {
+    if (message.type() === "error")
+      graceProblems.push(`console: ${message.text()} (${grace.url()})`);
+  });
+  grace.on("pageerror", (error) => graceProblems.push(`pageerror: ${error.message}`));
+  await addAuthenticator(grace);
+  let approvalPath = "";
+  let fingerprint = "";
+  let proveUrl = "";
+
+  await test.step("joining as an approver proposes the new passkey, and its page sends the person to the signer's page", async () => {
+    await grace.goto(new URL(inviteUrl).pathname);
+    await grace.getByLabel("Your name").fill("Grace Approver");
+    await grace.getByRole("button", { name: "Create passkey and join" }).click();
+    await expect(grace.getByRole("heading", { name: "Workspaces" })).toBeVisible();
+    await grace.goto(`${workspacePath}/approvals`);
+    await grace.getByRole("link", { name: /^Let Grace Approver approve/ }).click();
+    await expect(
+      grace.getByRole("heading", { name: "Let Grace Approver approve with a new passkey" }),
+    ).toBeVisible();
+    approvalPath = new URL(grace.url()).pathname;
+    fingerprint = (await grace.locator("dd code", { hasText: FINGERPRINT }).textContent()) ?? "";
+    expect(fingerprint).toMatch(FINGERPRINT);
+    // She cannot approve her own change; she can prove the passkey is hers.
+    await expect(
+      grace.getByRole("link", { name: "Review and approve on the signer's page" }),
+    ).toHaveCount(0);
+    const prove = grace.getByRole("link", {
+      name: "Prove the passkey is yours on the signer's page",
+    });
+    proveUrl = (await prove.getAttribute("href")) ?? "";
+    expect(new URL(proveUrl).origin).toBe(stack.approveOrigin);
+    expect(new URL(proveUrl).pathname).toBe(`/a/${approvalPath.split("/").at(-1)}`);
+  });
+
+  await test.step("before the proof, the owner sees the fingerprint and cannot approve on the signer's page", async () => {
+    await page.goto(approvalPath);
+    await expect(page.locator("dd code", { hasText: FINGERPRINT })).toHaveText(fingerprint);
+    await expect(
+      page.getByText("Compare the fingerprint with Grace Approver before you approve"),
+    ).toBeVisible();
+    const review = page.getByRole("link", { name: "Review and approve on the signer's page" });
+    expect(await review.getAttribute("href")).toBe(proveUrl);
+    await review.click();
+    await expect(page.locator("#origin")).toHaveText(stack.approveOrigin);
+    await expect(page.locator(".line", { hasText: "Key fingerprint" }).locator("dd")).toHaveText(
+      fingerprint,
+    );
+    await expect(
+      page
+        .locator(".line", { hasText: "The new person proved they hold this passkey" })
+        .locator("dd"),
+    ).toHaveText("no");
+    await expect(page.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
+  });
+
+  await test.step('the new person presses "This passkey is mine" on the signer\'s page and sees the fingerprint', async () => {
+    await grace
+      .getByRole("link", { name: "Prove the passkey is yours on the signer's page" })
+      .click();
+    await expect(grace.locator("#origin")).toHaveText(stack.approveOrigin);
+    await grace.getByRole("button", { name: "This passkey is mine" }).click();
+    await expect(grace.locator(".fingerprint")).toHaveText(fingerprint, { timeout: 30_000 });
+    await expect(grace.getByRole("button", { name: "This passkey is mine" })).toHaveCount(0);
+  });
+
+  await test.step("the owner sees the same fingerprint on the signer's page and approves", async () => {
+    await page.reload();
+    await expect(page.locator("#origin")).toHaveText(stack.approveOrigin);
+    await expect(page.locator(".line", { hasText: "Key fingerprint" }).locator("dd")).toHaveText(
+      fingerprint,
+    );
+    await expect(
+      page
+        .locator(".line", { hasText: "The new person proved they hold this passkey" })
+        .locator("dd"),
+    ).toHaveText("yes");
+    await page.getByRole("button", { name: "Approve with passkey" }).click();
+    await expect(page.getByText(/^The signer recorded your approval: 1 of 1\./)).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page).toHaveURL(`${stack.origin}${approvalPath}`, { timeout: 15_000 });
+    await expect(page.getByText("Done. The change is in effect.")).toBeVisible({
+      timeout: 60_000,
+    });
+  });
+
+  await test.step("the new person is an approver", async () => {
+    await page.goto(`${workspacePath}/members`);
+    await expect(page.getByText("Can approve", { exact: true })).toHaveCount(2);
+    await expect(page.getByText(/is waiting to become an approver/)).toHaveCount(0);
+  });
+
+  await graceContext.close();
+  expect(graceProblems).toEqual([]);
   expect(problems).toEqual([]);
 });
 

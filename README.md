@@ -123,7 +123,7 @@ database.
 | An agent or its token        | Propose operations                              | Approve, sign, change limits, reach the signer                                                     |
 | The control plane's database | Read names, ids, statuses, addresses, limits    | Read sealed content; forge an approval                                                             |
 | The control plane itself     | Ask the signer; show a person a misleading card | Get an approval the signer accepts; change the confirmation page; exceed limits; reuse an approval |
-| The confirmation service     | Show a person a misleading page                 | Sign or read a key; reach a signer route but its two; approve unaided                              |
+| The confirmation service     | Show a person a misleading page                 | Sign or read a key; reach a signer route but its four; approve unaided                             |
 | The signer's machine         | Everything for the wallets on it                |                                                                                                    |
 
 Two limits are worth knowing before you rely on this:
@@ -133,10 +133,11 @@ Two limits are worth knowing before you rely on this:
   serve, so a compromised control plane can no longer get an approval for an operation the
   person did not see there. A compromised confirmation service, or the proxy in front of it,
   could still show one operation and collect an approval for another. For a payment the signer's
-  limits bound that damage; for a change of limits or approvers they do not, and a new
-  approver's key is not yet proven to belong to the person named
-  ([`specs/trusted-display.md`](specs/trusted-display.md), milestone 4). Add a second approver
-  and raise the admin threshold to 2.
+  limits bound that damage; for a change of limits or approvers they do not. A new approver
+  must prove on the confirmation page that they hold the passkey being added before anyone can
+  approve, but whoever holds a key a compromised control plane swapped in can pass that step
+  too. Only comparing the key's fingerprint with the new person, over a call or in person,
+  catches that. Add a second approver and raise the admin threshold to 2.
 - Running every service on one machine gives no protection against that machine.
 
 The full list is in [`docs/threat-model.md`](docs/threat-model.md).

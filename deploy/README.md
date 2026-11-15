@@ -56,17 +56,17 @@ The proxy must pass the `Host` header through unchanged. With Tailscale:
 
 ## Services
 
-| Service          | Purpose                                                                                                                                                        |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `init`           | Runs once at start; creates any missing secret in the secret volumes and never changes an existing one.                                                        |
-| `postgres`       | Control-plane data and the encrypted Workflow history.                                                                                                         |
-| `signer`         | Holds the wallets; verifies passkey approvals itself and signs at most once per approval. No outside access.                                                   |
-| `approve`        | The confirmation page at `APPROVE_ORIGIN`, where every approval is made. Holds no key; relays a view and an assertion to the signer's two confirmation routes. |
-| `server`         | UI, API, MCP gateway and the Workflow runtime.                                                                                                                 |
-| `caddy`          | The only public entry point, with two sites: the UI and the confirmation page. Refuses `/.well-known/workflow/*` as a second lock.                             |
-| `agent-gateway`  | The only thing agent containers can reach. Forwards `/mcp` and nothing else.                                                                                   |
-| `anvil`          | `dev` profile: a local chain (id 31337).                                                                                                                       |
-| `scripted-agent` | An example agent, not started by `up`. `docker compose --profile dev run --rm -e AGENT_TOKEN=… -e TRANSFER_TO=0x… scripted-agent`.                             |
+| Service          | Purpose                                                                                                                                                                                           |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `init`           | Runs once at start; creates any missing secret in the secret volumes and never changes an existing one.                                                                                           |
+| `postgres`       | Control-plane data and the encrypted Workflow history.                                                                                                                                            |
+| `signer`         | Holds the wallets; verifies passkey approvals itself and signs at most once per approval. No outside access.                                                                                      |
+| `approve`        | The confirmation page at `APPROVE_ORIGIN`, where every approval is made. Holds no key; relays a view, an assertion and a new approver's possession step to the signer's four confirmation routes. |
+| `server`         | UI, API, MCP gateway and the Workflow runtime.                                                                                                                                                    |
+| `caddy`          | The only public entry point, with two sites: the UI and the confirmation page. Refuses `/.well-known/workflow/*` as a second lock.                                                                |
+| `agent-gateway`  | The only thing agent containers can reach. Forwards `/mcp` and nothing else.                                                                                                                      |
+| `anvil`          | `dev` profile: a local chain (id 31337).                                                                                                                                                          |
+| `scripted-agent` | An example agent, not started by `up`. `docker compose --profile dev run --rm -e AGENT_TOKEN=… -e TRANSFER_TO=0x… scripted-agent`.                                                                |
 
 ## Networks
 
@@ -81,8 +81,8 @@ The proxy must pass the `Host` header through unchanged. With Tailscale:
 | `agents`         | agent-gateway, agent containers (internal) | Agents reach `http://agent-gateway/mcp` and nothing else, not the internet. |
 
 Only the server and the `approve` service reach the signer, each on its own network, and each
-with its own request secret. The `approve` service's secret opens the signer's two confirmation
-routes and no other; the server's opens every route except those two.
+with its own request secret. The `approve` service's secret opens the signer's four confirmation
+routes and no other; the server's opens every route except those four.
 
 ```mermaid
 flowchart LR
@@ -178,6 +178,28 @@ re-wraps the data keys; it does not re-encrypt the data.
 Do not prune if rewrap reported failures: a data key still wrapped under a removed key can never
 be read again. Back up `server-secrets` before and after.
 
+## Adding an approver
+
+A person becomes an approver of a workspace when they join it as an approver or owner, or when
+their role changes from viewer; an approver who registers another passkey adds that passkey.
+Each opens one approver change per passkey. The signer applies it only after the person being
+added has proven that the passkey is theirs, and only with the workspace's admin threshold of
+approvals:
+
+1. The person being added opens the request's link to the confirmation page, on the device that
+   holds the new passkey, and presses "This passkey is mine". The page shows them the key's
+   fingerprint, four groups of four characters.
+2. They read the fingerprint to the people who approve, over a call or in person, not through
+   this site or a message it sent.
+3. Each approver opens the same request on the confirmation page and approves only if the
+   fingerprint they heard matches its "Key fingerprint" line. Until step 1 is done the page
+   keeps the approve button disabled, and the signer refuses an approval with
+   `possession_unproven`.
+
+Skip the comparison and the step proves only that someone holds the key: a compromised control
+plane could have put in a key it holds (`docs/threat-model.md`, "Limits"). The operator's
+`enroll-approver` command below has no such step, because the operator types the key.
+
 ## When no approver is left
 
 Who may approve for a workspace is recorded in the signer, and normally changes only with a
@@ -208,6 +230,14 @@ signer with the restore fence on a v0.1 database fences it once, because nothing
 file was not restored: approvals waiting at that moment must be proposed again. A signer refuses
 to start on a database written by a newer signer (`schema_too_new`). Do not go back to a v0.1
 signer image after upgrading: it does not know the fence and would ignore it.
+
+The signer's schema is now version 4: version 4 adds the table `possession_challenges` for a new
+approver's possession step. The migration only creates that table. A signer image from before
+it refuses to start on the migrated file with `schema_too_new`, so after this upgrade a rollback
+of the signer means fixing forward, not going back to the older image. An approver change that
+was waiting at the upgrade needs the possession step before anyone can approve it. One that had
+all its approvals but was not yet applied is refused by the signer with `possession_unproven`
+when the control plane applies it, ends `failed`, and must be proposed again.
 
 Upgrading from a release in which the control plane's own page could approve (it had the
 signer setting `WEBAUTHN_ORIGINS`): the signer now accepts approvals made on the confirmation

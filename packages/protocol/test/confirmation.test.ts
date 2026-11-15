@@ -870,6 +870,11 @@ describe("approvers and the workspace", () => {
     );
   });
 
+  it("keyFingerprint decodes base64url with '-' and '_' and without padding", () => {
+    // The bytes fb ff bf fe 01; the expected value was computed outside this code.
+    expect(keyFingerprint("-_-__gE")).toBe("EP59-P7JR-J6CS-HH38");
+  });
+
   it("adding an approver shows the person, credential, key fingerprint and threshold", () => {
     const envelope = addApprover({ publicKey: COSE_KEY });
     const unproven = render(envelope, envelopeOnly, { adminThreshold: 2, wallet: null });

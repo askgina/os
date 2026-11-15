@@ -1,5 +1,5 @@
 import type { ApprovalDetail, ApprovalSubject, WorkspaceDetail } from "@askgina/os-api";
-import { canonicalJson } from "@askgina/os-protocol";
+import { canonicalJson, keyFingerprint } from "@askgina/os-protocol";
 import { useMutation } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import {
@@ -150,13 +150,19 @@ function Subject({
       return <IntentSubject subject={subject} workspace={workspace} />;
     case "set-policy":
       return <PolicySubject subject={subject} workspace={workspace} />;
-    case "add-approver":
+    case "add-approver": {
+      const fingerprint = newKeyFingerprint(approval);
       return (
         <Summary title={`Let ${subject.user.displayName} approve with a new passkey`}>
           <Facts>
             <Fact label="Person">{subject.user.displayName}</Fact>
             <Fact label="Passkey">{subject.passkeyLabel}</Fact>
-            <Fact label="Passkey id">
+            {fingerprint ? (
+              <Fact label="Key fingerprint" wide>
+                <code className="font-mono font-semibold">{fingerprint}</code>
+              </Fact>
+            ) : null}
+            <Fact label="Passkey id" wide>
               <code className="font-mono text-xs break-all">{subject.credentialId}</code>
             </Fact>
           </Facts>
@@ -166,6 +172,7 @@ function Subject({
           </p>
         </Summary>
       );
+    }
     case "remove-approver":
       return (
         <Summary title={`Stop ${subject.user.displayName}'s passkey from approving`}>
@@ -206,6 +213,16 @@ function Subject({
     case "sweep-wallet":
       return <SweepSubject subject={subject} workspace={workspace} />;
   }
+}
+
+/**
+ * The fingerprint of the key an approver change adds, from the envelope a passkey would sign. The
+ * signer's page shows the same one, read from its own copy of the envelope.
+ */
+function newKeyFingerprint(approval: ApprovalDetail): string | null {
+  return approval.envelope.type === "add-approver"
+    ? keyFingerprint(approval.envelope.publicKey)
+    : null;
 }
 
 /** Where a sweep goes, in words: the signer refuses any destination other than these two. */
@@ -486,10 +503,15 @@ function PolicySubject({
  * page, on another origin, which shows the request as the signer holds it; an approval made there
  * names that origin, which this page cannot fake. This page links there and keeps reading the
  * request, so the count and the outcome appear here once the signer has collected them.
+ *
+ * An approver change has one more step on the signer's page, for the person it adds, so they get
+ * the link too, even though they cannot decide.
  */
 function Decide({ approval, expired }: { approval: ApprovalDetail; expired: boolean }) {
   const session = useSession();
   const userId = session.data?.user?.id;
+  const subject = approval.subject;
+  const beingAdded = subject.kind === "add-approver" && subject.user.id === userId ? subject : null;
 
   if (approval.approvedBy.some((user) => user.id === userId)) {
     const missing = approval.threshold - approval.approvals;
@@ -505,6 +527,9 @@ function Decide({ approval, expired }: { approval: ApprovalDetail; expired: bool
     );
   }
   if (!approval.canDecide) {
+    if (beingAdded) {
+      return <ProvePasskey approval={approval} subject={beingAdded} expired={expired} />;
+    }
     return (
       <Alert>
         <KeyRound aria-hidden />
@@ -537,34 +562,157 @@ function Decide({ approval, expired }: { approval: ApprovalDetail; expired: bool
   }
   const host = new URL(approval.confirmUrl).host;
   return (
-    <section className="grid grid-cols-1 gap-2" aria-label="Decision">
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-        {expired ? (
-          <Button size="lg" disabled className={wrappingButton}>
-            <ShieldCheck aria-hidden />
-            Review and approve on the signer's page
-          </Button>
-        ) : (
-          <a
-            href={approval.confirmUrl}
-            rel="noopener noreferrer"
-            className={cn(buttonVariants({ size: "lg" }), wrappingButton)}
-          >
-            <ShieldCheck aria-hidden />
-            Review and approve on the signer's page
-          </a>
-        )}
-        <RejectButton approval={approval} disabled={expired} />
-      </div>
+    <>
+      {beingAdded ? (
+        <ProvePasskey approval={approval} subject={beingAdded} expired={expired} />
+      ) : null}
+      <section className="grid grid-cols-1 gap-2" aria-label="Decision">
+        {subject.kind === "add-approver" && !beingAdded ? (
+          <CompareFingerprint approval={approval} subject={subject} />
+        ) : null}
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+          {expired ? (
+            <Button size="lg" disabled className={wrappingButton}>
+              <ShieldCheck aria-hidden />
+              Review and approve on the signer's page
+            </Button>
+          ) : (
+            <a
+              href={approval.confirmUrl}
+              rel="noopener noreferrer"
+              className={cn(buttonVariants({ size: "lg" }), wrappingButton)}
+            >
+              <ShieldCheck aria-hidden />
+              Review and approve on the signer's page
+            </a>
+          )}
+          <RejectButton approval={approval} disabled={expired} />
+        </div>
+        <div className="flex items-start gap-2">
+          <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+            It opens <span className="font-mono break-all text-foreground">{host}</span>. Check that
+            your address bar shows exactly this before you approve. To approve on another device,
+            copy the link.
+          </p>
+          <CopyButton value={approval.confirmUrl} label="Copy link" />
+        </div>
+      </section>
+    </>
+  );
+}
+
+type AddApproverSubject = Extract<ApprovalSubject, { kind: "add-approver" }>;
+
+/**
+ * For the person an approver change adds. Nobody can approve the change until they prove on the
+ * signer's page, with the new passkey, that it is theirs; that page then shows them the key's
+ * fingerprint to read to an approver over another channel. Whether they did it already is known
+ * only to the signer, so this page says what to do either way.
+ */
+function ProvePasskey({
+  approval,
+  subject,
+  expired,
+}: {
+  approval: ApprovalDetail;
+  subject: AddApproverSubject;
+  expired: boolean;
+}) {
+  if (!approval.confirmUrl) {
+    return (
+      <Alert tone="warning" className="items-start">
+        <TriangleAlert aria-hidden />
+        <div className="grid grid-cols-1 gap-1">
+          <p className="font-medium">You cannot prove that this passkey is yours right now.</p>
+          <p>
+            The signer would not open its page for this request. This page keeps checking. If
+            nothing changes, ask an owner to ask for the change again.
+          </p>
+        </div>
+      </Alert>
+    );
+  }
+  const host = new URL(approval.confirmUrl).host;
+  return (
+    <section className="grid grid-cols-1 gap-2" aria-label="Your new passkey">
+      <Alert tone="accent" className="items-start">
+        <KeyRound aria-hidden />
+        <div className="grid min-w-0 grid-cols-1 gap-1">
+          <p className="font-medium">Prove that this passkey is yours</p>
+          <p>
+            Nobody can approve this request before you do. Open the signer's page on the device that
+            holds your passkey “{subject.passkeyLabel}”, press “This passkey is mine” and answer
+            with that passkey.
+          </p>
+          <p>
+            The page then shows the passkey's fingerprint. Read it to someone who already approves
+            here, over a call or in person, not in a message. They approve only if it matches what
+            their page shows. If you did this already, nothing more is needed from you.
+          </p>
+        </div>
+      </Alert>
+      {expired ? (
+        <Button size="lg" disabled className={wrappingButton}>
+          <KeyRound aria-hidden />
+          Prove the passkey is yours on the signer's page
+        </Button>
+      ) : (
+        <a
+          href={approval.confirmUrl}
+          rel="noopener noreferrer"
+          className={cn(buttonVariants({ size: "lg" }), wrappingButton)}
+        >
+          <KeyRound aria-hidden />
+          Prove the passkey is yours on the signer's page
+        </a>
+      )}
       <div className="flex items-start gap-2">
         <p className="min-w-0 flex-1 text-xs text-muted-foreground">
           It opens <span className="font-mono break-all text-foreground">{host}</span>. Check that
-          your address bar shows exactly this before you approve. To approve on another device, copy
-          the link.
+          your address bar shows exactly this. To do this on another device, copy the link.
         </p>
         <CopyButton value={approval.confirmUrl} label="Copy link" />
       </div>
     </section>
+  );
+}
+
+/**
+ * For the people who approve an approver change: the key is the new person's only if the
+ * fingerprint they read out matches. The signer's page refuses an approval until that person has
+ * proven there that the passkey is theirs, so this says who acts when it does.
+ */
+function CompareFingerprint({
+  approval,
+  subject,
+}: {
+  approval: ApprovalDetail;
+  subject: AddApproverSubject;
+}) {
+  const fingerprint = newKeyFingerprint(approval);
+  const name = subject.user.displayName;
+  return (
+    <Alert className="items-start">
+      <KeyRound aria-hidden />
+      <div className="grid min-w-0 grid-cols-1 gap-1">
+        <p className="font-medium">Compare the fingerprint with {name} before you approve</p>
+        <p>
+          Ask {name} to read you the fingerprint the signer's page showed them, over a call or in
+          person, not in a message. Approve only if it matches{" "}
+          {fingerprint ? (
+            <code className="font-mono font-semibold whitespace-nowrap">{fingerprint}</code>
+          ) : (
+            "the key fingerprint"
+          )}{" "}
+          on the signer's page. If it does not, reject.
+        </p>
+        <p>
+          The signer's page takes your approval only after {name} has proven there that the passkey
+          is theirs. If it says that has not happened yet, {name} has to open this request and press
+          “This passkey is mine” first.
+        </p>
+      </div>
+    </Alert>
   );
 }
 
