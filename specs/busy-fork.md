@@ -88,7 +88,12 @@ Success means:
       `e919310`: `Ultracite` green (run 43723302469, Desktop job off), `fork-notice` green on
       push, `upstream-rebase` green against `3dd91e1` (run 43723344720). The notice check compares
       the upstream base tree with the working tree, not `base...HEAD`.
-- [ ] Milestone 2: platform seams in the Hub, Vercel behavior unchanged.
+- [x] (2026-11-15) Milestone 2: platform seams in the Hub, Vercel behavior unchanged.
+      `askgina/busy` `aa587af`, `Ultracite` green (run 43725123381, full hub suite unchanged),
+      `fork-notice` green (run 43725123368). `BUSY_PLATFORM` unset or `vercel` selects upstream's
+      code; `selfhosted` refuses each seam by name until its milestone adds an implementation.
+      As built: the deploy seam is `deployPlatform()` and also covers deletion and promotion;
+      computers are a bot-scoped handle; `SchedulesClient` is structural and includes `list`.
 - [ ] Milestone 3: OpenAI-compatible model connection.
 - [ ] Milestone 4: bot runner, bot identity, bots on the encrypting World.
 - [ ] Milestone 5: computers on gVisor with per-bot volumes.
