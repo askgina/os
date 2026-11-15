@@ -110,6 +110,11 @@ services:
       SIGNER_HMAC_SECRET_FILE: /run/secrets/server/signer-request-secret
       APPROVE_ORIGIN: ${APPROVE_ORIGIN:-http://localhost:8081}
       CHAINS_FILE: /etc/os/chains.json
+      # Venues the server posts signed orders to (specs/non-evm-operations.md): the path, inside
+      # this container, of a JSON array of { network, apiUrl }; mount the file with an override
+      # (deploy/README.md). Empty: no venue, and every venue proposal is refused. Hyperliquid
+      # testnet only: a mainnet entry stops the server until the owner decides D2.
+      VENUES_FILE: ${VENUES_FILE:-}
       WEB_DIST_DIR: /app/apps/web/dist
       NOTIFY_WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
       NOTIFY_WEBHOOK_SECRET_FILE: /run/secrets/server/notify-webhook-secret

@@ -33,6 +33,8 @@ export E2E_SPLIT="$split"
 export E2E_REPLICAS="${E2E_REPLICAS:-0}"
 export E2E_OPENBAO="${E2E_OPENBAO:-0}"
 export E2E_OPENBAO_PORT="${E2E_OPENBAO_PORT:-55905}"
+# The fake Hyperliquid venue of the venue gates' stack (e2e/compose.venue.yaml), on the loopback.
+export E2E_VENUE_PORT="${E2E_VENUE_PORT:-55906}"
 # A variant whose own gates run on a stack of their own before the release gates: `replicas` or
 # `openbao`, or none.
 variant=""
@@ -84,6 +86,9 @@ fi
 compose=(docker compose -p "$E2E_PROJECT" "${overlay[@]}")
 ui=(docker compose -p "${E2E_PROJECT}-ui" "${overlay[@]}")
 lifecycle=(docker compose -p "${E2E_PROJECT}-lifecycle" "${overlay[@]}")
+# The venue gates' stack: the plain one plus the fake Hyperliquid venue and the server's
+# VENUES_FILE naming it (e2e/compose.venue.yaml). Only without TLS, split or a variant.
+venue=(docker compose -p "${E2E_PROJECT}-venue" -f compose.yaml -f e2e/compose.e2e.yaml -f e2e/compose.venue.yaml --profile dev --profile agent)
 # `init` is not listed: it runs once and exits, and the others depend on it; so do
 # `openbao-bootstrap` and the server.
 services=(postgres signer approve server caddy agent-gateway anvil)
@@ -92,7 +97,7 @@ if [ "$E2E_OPENBAO" = "1" ]; then
   services+=(openbao)
   logged+=(openbao openbao-bootstrap)
 fi
-projects=("$E2E_PROJECT" "${E2E_PROJECT}-restore" "${E2E_PROJECT}-lifecycle" "${E2E_PROJECT}-ui")
+projects=("$E2E_PROJECT" "${E2E_PROJECT}-restore" "${E2E_PROJECT}-lifecycle" "${E2E_PROJECT}-venue" "${E2E_PROJECT}-ui")
 if [ -n "$variant" ]; then
   projects+=("${E2E_PROJECT}-${variant}")
 fi
@@ -116,6 +121,9 @@ logs() {
         logs --no-color --tail 300 init server caddy agent-gateway 2>/dev/null || true
       docker compose -p "${project}-signer" "${signer_overlay[@]}" \
         logs --no-color --tail 300 init signer approve caddy 2>/dev/null || true
+    elif [ "$project" = "${E2E_PROJECT}-venue" ]; then
+      # With the fake venue's own log; the venue gates print what it took when one fails.
+      "${venue[@]}" logs --no-color --tail 300 "${logged[@]}" fake-hyperliquid 2>/dev/null || true
     else
       # Every container of each service: with two replicas, both servers.
       docker compose -p "$project" "${overlay[@]}" \
@@ -203,7 +211,20 @@ if [ "$tls" != "1" ] && [ "$split" != "1" ] && [ -z "$variant" ] && [ "$status" 
   fi
 fi
 
-# Third stack, empty: the browser gate, which claims a fresh installation through the UI.
+# Third stack, empty: the venue gates (specs/non-evm-operations.md), with a fake Hyperliquid
+# testnet venue that checks every signature itself (e2e/compose.venue.yaml). Only this stack
+# names a venue, so every other gate runs as a deployment without VENUES_FILE does. Skipped over
+# HTTPS, split and for a variant, like the lifecycle gates: those change how the stack is laid
+# out, not what an order proves.
+if [ "$tls" != "1" ] && [ "$split" != "1" ] && [ -z "$variant" ] && [ "$status" -eq 0 ]; then
+  remove
+  "${venue[@]}" up -d --wait --wait-timeout 300 "${services[@]}" fake-hyperliquid || status=$?
+  if [ "$status" -eq 0 ]; then
+    (cd e2e && E2E_PROJECT="${E2E_PROJECT}-venue" E2E_VENUE=1 bunx playwright test venue.spec.ts) || status=$?
+  fi
+fi
+
+# Fourth stack, empty: the browser gate, which claims a fresh installation through the UI.
 # Skipped split: the release gates already approve on the signer project's confirmation page.
 # Skipped for a variant: the browser drives the same API through the same edge.
 if [ "$split" != "1" ] && [ -z "$variant" ] && [ "$status" -eq 0 ]; then

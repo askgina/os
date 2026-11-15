@@ -19,12 +19,22 @@ export const stack = {
   webhookReceiverUrl: `http://127.0.0.1:${Number(process.env.E2E_WEBHOOK_PORT ?? 55904)}`,
   /** OpenBao, with `E2E_OPENBAO=1`, through the port `e2e/compose.openbao.yaml` publishes. */
   openBaoUrl: `http://127.0.0.1:${Number(process.env.E2E_OPENBAO_PORT ?? 55905)}`,
+  /**
+   * The fake Hyperliquid venue, with `E2E_VENUE=1`, through the port `e2e/compose.venue.yaml`
+   * publishes on the host's loopback.
+   */
+  venueUrl: `http://127.0.0.1:${Number(process.env.E2E_VENUE_PORT ?? 55906)}`,
 };
 
 /** `E2E_REPLICAS=1` (`e2e/run.sh`): two server replicas, from `e2e/compose.replicas.yaml`. */
 const REPLICAS = process.env.E2E_REPLICAS === "1";
 /** `E2E_OPENBAO=1` (`e2e/run.sh`): keys in OpenBao Transit, from `e2e/compose.openbao.yaml`. */
 const OPENBAO = process.env.E2E_OPENBAO === "1";
+/**
+ * `E2E_VENUE=1` (`e2e/run.sh`, the venue gates' own stack): the fake Hyperliquid venue and the
+ * server's `VENUES_FILE` naming it, from `e2e/compose.venue.yaml`.
+ */
+const VENUE = process.env.E2E_VENUE === "1";
 
 /**
  * `E2E_SPLIT=1` (`e2e/run.sh`): the signer, its confirmation page and that page's edge run as a
@@ -49,6 +59,7 @@ export const SERVICES = [
   "agent-gateway",
   "anvil",
   ...(OPENBAO ? ["openbao"] : []),
+  ...(VENUE ? ["fake-hyperliquid"] : []),
 ];
 
 type Side = "control" | "signer";
@@ -72,6 +83,7 @@ const SERVICE_NAMES = new Set([
   "scripted-agent",
   "openbao",
   "openbao-bootstrap",
+  "fake-hyperliquid",
 ]);
 /** The state volumes of {@link VOLUMES} that live in the signer project of a split stack. */
 const SIGNER_VOLUMES = ["signer-data", "signer-secrets"];
@@ -112,6 +124,7 @@ function projectArgs(side: Side): string[] {
       ["-f", join(ROOT, "e2e", "compose.e2e.yaml")],
       REPLICAS ? ["-f", join(ROOT, "e2e", "compose.replicas.yaml")] : [],
       OPENBAO ? ["-f", join(ROOT, "e2e", "compose.openbao.yaml")] : [],
+      VENUE ? ["-f", join(ROOT, "e2e", "compose.venue.yaml")] : [],
     ];
     return ["-p", stack.project, ...files.flat(), ...profiles];
   }
