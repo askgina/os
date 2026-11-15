@@ -2,6 +2,7 @@ import type {
   ApprovalDetail,
   ApprovalSubject,
   TransactionInfo,
+  WalletSummary,
   WorkspaceDetail,
 } from "@askgina/os-api";
 import { canonicalJson, keyFingerprint } from "@askgina/os-protocol";
@@ -31,6 +32,7 @@ import {
   TechBlock,
   useNow,
 } from "@/components/common.tsx";
+import { BALANCES_NOTE, WalletAtRisk } from "@/components/lifecycle.tsx";
 import {
   MandateLimits,
   MandateRecipients,
@@ -133,6 +135,8 @@ function ApprovalView({
 
       <SentTransaction approval={approval} workspace={workspace} />
 
+      <WalletsToDestroy approval={approval} workspace={workspace} />
+
       {approval.approvedBy.length > 0 || approval.rejectedBy ? (
         <section className="grid grid-cols-1 gap-1 text-sm">
           {approval.approvedBy.length > 0 ? (
@@ -234,7 +238,110 @@ function Subject({
       return <MandateSubject approval={approval} subject={subject} workspace={workspace} />;
     case "cancel-transaction":
       return <CancelSubject approval={approval} subject={subject} workspace={workspace} />;
+    case "retire-wallet":
+    case "delete-workspace":
+      return <DestroySubject approval={approval} subject={subject} />;
   }
+}
+
+type DestroySubjectData = Extract<ApprovalSubject, { kind: "retire-wallet" | "delete-workspace" }>;
+
+/**
+ * A request to retire a wallet or delete the workspace: what is destroyed, and when. Short, so
+ * the link to the signer's page stays on a phone's first screen; the wallets and what the server
+ * reads in them follow below the decision.
+ */
+function DestroySubject({
+  approval,
+  subject,
+}: {
+  approval: ApprovalDetail;
+  subject: DestroySubjectData;
+}) {
+  const wallets = subject.kind === "retire-wallet" ? [subject.wallet] : subject.wallets;
+  const retire = subject.kind === "retire-wallet";
+  return (
+    <Summary title={approval.title}>
+      <Alert tone="danger" className="py-2.5">
+        <OctagonAlert aria-hidden />
+        <p>
+          <strong>
+            {retire ? "Its key is destroyed" : "Every key is destroyed"} after the delay.
+          </strong>{" "}
+          Whatever is still in {retire ? "the wallet" : "the wallets"} then is lost for good, and
+          the signer cannot see balances. Until then it can be cancelled.
+        </p>
+      </Alert>
+      <Facts>
+        <Fact label={retire ? "Wallet" : "Wallet keys"}>
+          {retire ? (
+            <>
+              {subject.wallet.label}{" "}
+              <span className="font-mono text-xs">{shortAddress(subject.wallet.address)}</span>
+            </>
+          ) : (
+            wallets.length
+          )}
+        </Fact>
+        <Fact label="Time to cancel">
+          {/* Rounded down: the request adds a few minutes to the delay picked. */}
+          {formatTimeLeft(subject.destroyAfter - approval.createdAt)} from the request
+        </Fact>
+        <Fact label={retire ? "Key destroyed after" : "Keys destroyed after"} wide>
+          {formatEndTime(subject.destroyAfter)}
+        </Fact>
+      </Facts>
+    </Summary>
+  );
+}
+
+/** The wallets a retirement or deletion destroys the keys of, with what the server reads in them. */
+function WalletsToDestroy({
+  approval,
+  workspace,
+}: {
+  approval: ApprovalDetail;
+  workspace: WorkspaceDetail;
+}) {
+  const subject = approval.subject;
+  if (subject.kind !== "retire-wallet" && subject.kind !== "delete-workspace") return null;
+  const wallets = subject.kind === "retire-wallet" ? [subject.wallet] : subject.wallets;
+  return (
+    <section className="grid grid-cols-1 gap-2" aria-labelledby="wallets-to-destroy">
+      <h2 id="wallets-to-destroy" className="text-sm font-medium">
+        {wallets.length === 1 ? "Still in the wallet" : "Still in the wallets"}
+      </h2>
+      {wallets.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          The workspace has no wallet keys: only its data is lost.
+        </p>
+      ) : (
+        <ul className="divide-y rounded-md border">
+          {wallets.map((wallet) => (
+            <WalletBalances key={wallet.id} workspace={workspace} wallet={wallet} />
+          ))}
+        </ul>
+      )}
+      <p className="text-xs text-muted-foreground">{BALANCES_NOTE}</p>
+    </section>
+  );
+}
+
+function WalletBalances({
+  workspace,
+  wallet,
+}: {
+  workspace: WorkspaceDetail;
+  wallet: WalletSummary;
+}) {
+  const detail = useWallet(workspace.id, wallet.id);
+  return (
+    <WalletAtRisk
+      wallet={wallet}
+      balances={detail.isError ? null : detail.data?.balances}
+      chains={workspace.chains}
+    />
+  );
 }
 
 type CancelTransactionSubject = Extract<ApprovalSubject, { kind: "cancel-transaction" }>;
@@ -1031,6 +1138,8 @@ function Outcome({ approval }: { approval: ApprovalDetail }) {
     subject.kind === "sweep-wallet" ||
     subject.kind === "cancel-transaction";
   const mandate = subject.kind === "grant-mandate" ? subject.mandate : null;
+  const destroy =
+    subject.kind === "retire-wallet" || subject.kind === "delete-workspace" ? subject : null;
   switch (approval.status) {
     case "approved":
       return (
@@ -1043,7 +1152,39 @@ function Outcome({ approval }: { approval: ApprovalDetail }) {
         <Alert tone="success" className="items-start">
           <CheckCircle2 aria-hidden />
           <div className="grid min-w-0 grid-cols-1 gap-1">
-            <p className="font-medium">{signs ? "Approved." : "Done. The change is in effect."}</p>
+            <p className="font-medium">
+              {signs || destroy ? "Approved." : "Done. The change is in effect."}
+            </p>
+            {destroy?.kind === "retire-wallet" ? (
+              <>
+                <p>
+                  The wallet signs nothing more. Its key is destroyed after{" "}
+                  {formatEndTime(destroy.destroyAfter)} unless an owner or approver cancels first.
+                </p>
+                <Link
+                  to="/w/$workspaceId/wallets/$walletId"
+                  params={{ workspaceId: approval.workspaceId, walletId: destroy.wallet.id }}
+                  className={linkClass}
+                >
+                  Open the wallet
+                </Link>
+              </>
+            ) : null}
+            {destroy?.kind === "delete-workspace" ? (
+              <>
+                <p>
+                  The workspace is being deleted. Its keys are destroyed after{" "}
+                  {formatEndTime(destroy.destroyAfter)} unless a member cancels first.
+                </p>
+                <Link
+                  to="/w/$workspaceId"
+                  params={{ workspaceId: approval.workspaceId }}
+                  className={linkClass}
+                >
+                  Open the workspace
+                </Link>
+              </>
+            ) : null}
             {mandate ? (
               <Link
                 to="/w/$workspaceId/mandates/$mandateId"

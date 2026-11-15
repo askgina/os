@@ -220,7 +220,7 @@ export const endedReasonSentence: Record<MandateEndedReason, string> = {
     "The operator ended it on the signer's host, or the signer was restored from a backup that does not hold it.",
   expired: "Its end time passed.",
   exhausted: "Its payments, or every amount it allowed, are used up.",
-  agent_disabled: "Its agent was disabled.",
+  agent_disabled: "Its agent was removed.",
 };
 
 // --- the editor's draft -------------------------------------------------------------------------

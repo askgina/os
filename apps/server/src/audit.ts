@@ -21,13 +21,14 @@ export interface AuditInput {
  * confirming a guess about the sealed detail: without it, anyone who reads the database could
  * hash a candidate memo and compare.
  */
-const SealedDetail = z.strictObject({
+export const SealedDetail = z.strictObject({
   salt: z.string(),
   detail: z.record(z.string(), z.unknown()),
 });
-type SealedDetail = z.infer<typeof SealedDetail>;
+export type SealedDetail = z.infer<typeof SealedDetail>;
 
-interface ChainedFields {
+/** What an entry's hash covers. An exported record carries these fields, so it verifies offline. */
+export interface ChainedFields {
   workspaceId: string;
   seq: number;
   at: number;
@@ -40,7 +41,9 @@ interface ChainedFields {
   previousHash: string | null;
 }
 
-const entryHash = (fields: ChainedFields) => digestHex(DomainTag.audit, { entry: fields });
+export const entryHash = (fields: ChainedFields) => digestHex(DomainTag.audit, { entry: fields });
+/** The digest of a sealed detail that the chain carries in `detailDigest`. */
+export const sealedDetailDigest = (sealed: SealedDetail) => digestHex(DomainTag.audit, sealed);
 const sealContext = (workspaceId: string, seq: number) =>
   `audit_events.detail:${workspaceId}:${seq}`;
 
@@ -84,7 +87,7 @@ export async function appendAudit(
       action: input.action,
       subjectType: input.subject?.type ?? null,
       subjectId: input.subject?.id ?? null,
-      detailDigest: digestHex(DomainTag.audit, sealed),
+      detailDigest: sealedDetailDigest(sealed),
       previousHash: head.hash,
     };
     const hash = entryHash(fields);
@@ -110,17 +113,25 @@ export async function appendAudit(
   await (tx ? write(tx) : ctx.db.transaction(write));
 }
 
-/** Open one event's sealed detail. */
-export async function openAuditDetail(
+/** Open one event's sealed detail with its salt, from which `detailDigest` was computed. */
+export async function openAuditSealed(
   ctx: Pick<AppContext, "sealer">,
   row: { workspaceId: WorkspaceId; seq: number; detail: Buffer },
-): Promise<Record<string, unknown>> {
+): Promise<SealedDetail> {
   const opened = await ctx.sealer.open(
     row.workspaceId,
     sealContext(row.workspaceId, row.seq),
     row.detail,
   );
-  return SealedDetail.parse(opened).detail;
+  return SealedDetail.parse(opened);
+}
+
+/** Open one event's sealed detail. */
+export async function openAuditDetail(
+  ctx: Pick<AppContext, "sealer">,
+  row: { workspaceId: WorkspaceId; seq: number; detail: Buffer },
+): Promise<Record<string, unknown>> {
+  return (await openAuditSealed(ctx, row)).detail;
 }
 
 /**

@@ -610,6 +610,31 @@ export async function revokeAgentMandates(
   return revoked;
 }
 
+/**
+ * End the mirror of every live mandate of one wallet, or of the whole workspace when `walletId`
+ * is null, once a retirement or deletion was applied: the signer revoked them in that same step
+ * (reason `requested`, shown as `revoked`, D8). Returns how many this call ended.
+ */
+export async function endMandateMirrors(
+  ctx: AppContext,
+  workspaceId: WorkspaceId,
+  walletId: WalletId | null,
+): Promise<number> {
+  const rows = await ctx.db
+    .select({ id: mandates.id, workspaceId: mandates.workspaceId })
+    .from(mandates)
+    .where(
+      and(
+        eq(mandates.workspaceId, workspaceId),
+        eq(mandates.status, "active"),
+        walletId === null ? undefined : eq(mandates.walletId, walletId),
+      ),
+    );
+  let ended = 0;
+  for (const row of rows) if (await endMirror(ctx, row, "revoked")) ended += 1;
+  return ended;
+}
+
 // --- reading ----------------------------------------------------------------------------------
 
 /** A mandate of the workspace, as the signer holds it now, or `not_found`. */
@@ -624,6 +649,16 @@ export async function loadMandate(
     .where(and(eq(mandates.id, mandateId as MandateId), eq(mandates.workspaceId, workspaceId)));
   if (!row) throw new HttpError("not_found", "no such mandate");
   return refresh(ctx, row);
+}
+
+/** The mandate as people granted it, opened from this control plane's mirror. */
+export async function openMandate(
+  ctx: Pick<AppContext, "sealer">,
+  row: MandateRow,
+): Promise<Mandate> {
+  return Mandate.parse(
+    await ctx.sealer.open(row.workspaceId, mandateLocation(row.id), row.mandate),
+  );
 }
 
 /** A mandate as a person reads it. `row` and `state` come from {@link loadMandate}. */

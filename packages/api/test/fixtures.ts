@@ -4,6 +4,8 @@ import type {
   ApprovalDetail,
   ApprovalSummary,
   AuditEvent,
+  CloneResult,
+  DeletionPreflight,
   IntentDetail,
   IntentSummary,
   MandateDetail,
@@ -19,6 +21,7 @@ import type {
   WalletDetail,
   WalletSummary,
   WorkspaceDetail,
+  WorkspaceTemplate,
 } from "../src/index.ts";
 
 // Realistic values as the server would send them; one per DTO.
@@ -120,6 +123,7 @@ export const wallet: WalletSummary = {
   agentId: AGENT,
   policy,
   policyHash: HASH,
+  lifecycle: { state: "active", destroyAfter: null },
 };
 
 export const walletDetail: WalletDetail = {
@@ -135,6 +139,7 @@ export const workspaceSummary = {
   role: "owner" as const,
   paused: false,
   pendingApprovals: 1,
+  lifecycle: { state: "active" as const, destroyAfter: null, deletedAt: null },
 };
 
 export const workspace: WorkspaceDetail = {
@@ -348,6 +353,40 @@ export const sweepApprovalDetail: ApprovalDetail = {
   confirmUrl: null,
 };
 
+/** What deleting the workspace above would lose: the agent wallet still holds some ETH. */
+export const deletionPreflight: DeletionPreflight = {
+  workspaceId: WS,
+  source: "control-plane",
+  wallets: [{ wallet, balances: walletDetail.balances }],
+  blockers: ["nonzero_balance"],
+  minDestroyDelaySeconds: 604_800,
+  earliestDestroyAfter: T0 + 604_800,
+};
+
+/** A request to delete the workspace above, destroying its one wallet's key in a week. */
+export const deleteApprovalDetail: ApprovalDetail = {
+  ...approvalSummary,
+  kind: "delete-workspace",
+  title: "Delete this workspace and destroy 1 wallet key",
+  requestedBy: { type: "user", id: USER, name: "Ada" },
+  envelope: {
+    v: 1,
+    type: "delete-workspace",
+    approvalId: APPROVAL,
+    workspaceId: WS,
+    nonce: "AAAAAAAAAAAAAAAAAAAAAA",
+    issuedAt: T0,
+    expiresAt: T0 + 600,
+    wallets: [{ walletId: WALLET, address: ADDRESS }],
+    destroyAfter: T0 + 604_800,
+  },
+  approvedBy: [],
+  rejectedBy: null,
+  canDecide: true,
+  subject: { kind: "delete-workspace", wallets: [wallet], destroyAfter: T0 + 604_800 },
+  confirmUrl: null,
+};
+
 /** A request to cancel the stuck payment above, waiting for its one approval. */
 export const cancelApprovalDetail: ApprovalDetail = {
   ...approvalSummary,
@@ -528,4 +567,48 @@ export const policyDraft = {
   contractCalls: policy.contractCalls,
   fees: policy.fees,
   approvals: policy.approvals,
+};
+
+export const workspaceTemplate: WorkspaceTemplate = {
+  format: "askgina.os/workspace-template/v1",
+  name: "Acme",
+  adminThreshold: 2,
+  notificationDetail: "summary",
+  wallets: [
+    {
+      ref: "w1",
+      kind: "agent",
+      label: "billing bot",
+      agent: { name: "billing bot" },
+      policy: {
+        chains: policy.chains,
+        requesters: ["w1"],
+        assets: policy.assets,
+        recipients: { mode: "allowlist", addresses: [ADDRESS] },
+        contractCalls: policy.contractCalls,
+        fees: policy.fees,
+        approvals: policy.approvals,
+      },
+    },
+    { ref: "w2", kind: "treasury", label: "Treasury", agent: null, policy: null },
+  ],
+  members: [{ userId: USER, role: "owner" }],
+};
+
+export const cloneResult: CloneResult = {
+  workspace,
+  approvals: [approvalSummary],
+  agents: [
+    { agentId: AGENT, walletId: WALLET, token: "osa_secret", mcpUrl: "https://os.example.com/mcp" },
+  ],
+  invites: [
+    {
+      userId: USER,
+      displayName: "Ada",
+      role: "approver",
+      url: "https://os.example.com/join/tok",
+      expiresAt: 1_700_000_600,
+    },
+  ],
+  templateAdminThreshold: 2,
 };

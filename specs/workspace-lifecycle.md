@@ -85,8 +85,43 @@ Success means:
       `possession` (6). Not run: the release gates (`stack`), which start the signer image at
       version 7.
 - [ ] Milestone 3: key store. Not started (left for the next agent).
-- [ ] Milestone 4: control plane, sweep, retire, delete, remove agent.
-- [ ] Milestone 5: export and clone.
+- [x] (2026-11-15) Milestone 4: control plane, retire, delete, remove agent. Local checks only,
+      CI pending. Migration `0008_lifecycle.sql` (`workspaces.lifecycle`, `destroy_after`,
+      `deleted_at`; `wallets.lifecycle`, `destroy_after`); `apps/server/src/lifecycle/`
+      (`kinds.ts` `registerLifecycleKinds`, `state.ts`, `preflight.ts` `deletionPreflight`,
+      `finalize.ts` `finalizeDue` and the once-a-minute `finalizeIfDue` in the sweeper,
+      `routes.ts`); the five routes and DTOs in `packages/api` (`getDeletionPreflight`,
+      `requestDeleteWorkspace`, `cancelDeleteWorkspace`, `requestRetireWallet`,
+      `cancelRetireWallet`; `WalletLifecycle`, `WorkspaceLifecycle`, `DeletionPreflight`,
+      `DeletionBlocker`, the two `ApprovalKind`s and subjects); the workspace guard in
+      `apps/server/src/http/route.ts` and the MCP gateway; D10 notices
+      (`enqueueLifecycleNotifications`, `lifecycleMessage`, webhook body); D12 in `disableAgent`.
+      Proven locally, one file at a time: `apps/server` and `packages/api` `tsc --noEmit`;
+      `apps/server/test/lifecycle/delete.test.ts` (3), `retire.test.ts` (3),
+      `packages/api/test/api.test.ts` (138), and unchanged in behavior
+      `apps/server/test/directory/directory.test.ts` (32), `execution/mcp.test.ts` (9),
+      `mandates.test.ts` (14), `sweep.test.ts` (4), `notify/outbox.test.ts` (11),
+      `webhook.test.ts` (3), `push.test.ts` (14), `content.test.ts` (6). Not run: the release
+      gates. `apps/web` no longer type-checks against the new DTOs until Milestone 6 adds them
+      (see `Surprises & Discoveries`).
+- [x] (2026-11-15) Milestone 5: export and clone. Local checks only, CI pending. D11 as taken:
+      the template carries the notification content level and no mandate; the record carries
+      every mandate and use, opened; authority is never cloned. `apps/server/src/lifecycle/`
+      `template.ts` (`toTemplate`, `instantiatePolicy`), `export.ts` (`writeRecord`,
+      `requireRecentSignIn`), `verify-record.ts` (`verifyRecord`, the line schemas and the CLI
+      `node apps/server/src/lifecycle/verify-record.ts <file>`, exit 0 valid, 2 broken),
+      `clone.ts` (`cloneWorkspace`); `audit.ts` exports `entryHash`, `sealedDetailDigest`,
+      `SealedDetail`, `openAuditSealed`; the directory's creation paths are exported functions
+      the clone shares (`createWorkspaceFor`, `createAgentIn`, `createTreasuryIn`,
+      `createInviteIn`, `openPolicyRequest`). Routes and DTOs in `packages/api` (additive):
+      `exportTemplate`, `exportRecord`, `cloneWorkspace`, `importTemplate`; `WorkspaceTemplate`,
+      `PolicyTemplate`, `TemplateWalletRef`, `WorkspaceRecordExport`, `CloneOptions`,
+      `CloneResult`; fixture handlers in `apps/web/dev/fixture-server.ts`. Proven locally, one
+      file at a time: `tsc --noEmit` clean in `apps/server`, `packages/api` and `apps/web`;
+      `apps/server/test/lifecycle/export.test.ts` (4), `clone.test.ts` (10, the origin check of
+      the six lifecycle writes included), `packages/api/test/api.test.ts` (147), and unchanged in
+      behavior `directory/directory.test.ts` (32), `identity/identity.test.ts` (40),
+      `execution/mandates.test.ts` (14), `lifecycle/delete.test.ts` (3). Not run: CI.
 - [ ] Milestone 6: web UI.
 - [ ] Milestone 7: release gates and documentation.
 - [ ] Milestone 8: erasing a person (in scope by D6; counsel review still owed).
@@ -221,6 +256,108 @@ Success means:
     cannot run twice.
   - Compose and `.env.example` do not pass the two delay settings yet, so the defaults apply;
     the signer treats an empty value as unset, so wiring them as `${VAR:-}` is safe.
+- Observation (2026-11-15, Milestone 4): details the plan left open, as built.
+  - Finalize checks the D7 transaction blocker before it cancels waiting requests, not after:
+    otherwise every round would cancel the `cancel-transaction` request people opened to clear
+    that very blocker. For the same reason, applying a retirement or deletion cancels every
+    waiting request of the wallet or workspace except `cancel-transaction` (the plan named only
+    `grant-mandate` and `sweep-wallet` for a retirement; the signer refuses the others anyway).
+  - After the workspace key is shredded nothing of the workspace can be sealed, so
+    `workspace.deleted` is appended before the signer's finalize (step 4, once per subject), and
+    the tombstone transaction appends nothing: it takes the workspace row first with its
+    conditional `UPDATE … WHERE lifecycle = 'deleting'` (the `FOR NO KEY UPDATE` an audit append
+    takes). The agents' rename and token-hash replacement runs in its own transaction before it:
+    replacing a value under a unique index takes `FOR UPDATE` on the agent row, which waits for
+    a proposal holding `FOR KEY SHARE` on it while that proposal waits for the workspace row; in
+    one transaction the two deadlock. `delete.test.ts` holds those locks and proves the order.
+  - A run counts as unfinished while its request is `pending` or `approved` (a mandate's use
+    included), or ended without effect with `resume_state = 'needed'`. A run woken just before
+    the next round may still be in its abandon step; the once-a-minute finalize leaves it that
+    minute. World run status is not read.
+  - Every workflow run the server starts passes the workspace id as its tenant (one call site:
+    `startRun` in `apps/server/src/execution/workflow-runtime.ts`, through `Engine.startRun`),
+    so `shredTenant("run", workspaceId)` reaches every run key. Other processes keep a cached
+    data key for the key store's cache lifetime (one minute) after it is shredded.
+  - Once deleted, the signer answers `getWallet` with `workspace_deleted`; finalize reads only
+    `getWorkspace` after the signer's step, and a round that finds the signer `deleted` goes
+    straight to shredding and the tombstone (the crash case of step 5 to 6).
+  - The tombstone removes memberships, so former members no longer see the workspace:
+    `listWorkspaces` omits it and `getWorkspace` is `not_found`.
+  - Writes to a workspace that is not `active` are refused in `handle` (`conflict`, detail
+    `workspace_deleting` or `workspace_deleted`, members only) except `pauseWorkspace`,
+    `cancelDeleteWorkspace`, `cancelRetireWallet`, `revokeMandate` and
+    `setNotificationDetail`. Routes keyed by an approval or intent (`collectApproval`, `reject`,
+    `speedUp`, `requestCancel`, `requestSweepCancel`) carry no workspace id and stay open, which
+    D7's way out needs.
+  - D10 notices go to the webhook and to each device of each person who can approve;
+    `lifecycle.due_soon` only when 24 hours before the destroy time is still ahead, and to push
+    only where reminders are on. A notice whose retirement or deletion was cancelled or
+    finished is dropped with `lifecycle_ended`. Push messages say "Keys scheduled for
+    destruction" at `count`, and the kind, the UTC destroy time and the workspace name at
+    `summary`, tagged per request so the second replaces the first.
+  - `set-policy` now also mirrors the signer's wallet lifecycle (one more `getWallet`), so a
+    `held` wallet shows `active` once its new policy applies.
+  - The D12 test is in `apps/server/test/lifecycle/retire.test.ts` ("removing an agent"), not
+    `directory.test.ts`: the directory test context has no MCP gateway to propose a payment.
+  - The new DTO fields are required (`WalletSummary.lifecycle`, `WorkspaceSummary.lifecycle`),
+    and `ApprovalKind`, `ApprovalSubject` and the route table grew, so `apps/web` needs, in
+    Milestone 6: `lifecycle` in the fixture server's workspace and wallet objects
+    (`dev/fixture-server.ts:840`, `:1722`, `:1788`) and in `test/sweep.test.ts:39`; handlers
+    for the five routes in its `handlers` record (`:1388`); and cases for `retire-wallet` and
+    `delete-workspace` in `confirmationLines` (`:2639`) and in `approval.tsx`'s subject switch.
+- Observation (2026-11-15, Milestone 5): details the plan left open, as built.
+  - `WorkspaceTemplate` and `PolicyTemplate` live in `packages/api/src/dto.ts` (the route
+    contract), not in `template.ts`, which imports them. Wallet refs are `w1`, `w2`, … in
+    creation order. The schema refuses a requester that is not the ref of a template wallet with
+    an agent, a second treasury, an agent wallet without its agent, and any extra field.
+  - A template leaves out wallets that are `retiring` or `destroyed` and the wallets of disabled
+    agents, whose ids drop out of every requester list. Policies come from the control plane's
+    mirror (`wallets.policy`); the clone's people approve them again on the signer's page.
+  - `instantiatePolicy` returns a `PolicyDraft`, not a revision: the clone opens each request
+    through the same `openPolicyRequest` as `requestPolicy`, which assigns the new ids, revision
+    1 and no previous hash. A requester ref with no agent in the clone (agents not included) is
+    dropped. The draft's approval threshold is lowered to the clone's admin threshold (1), which
+    a policy may not exceed, as the template's admin threshold is returned as
+    `templateAdminThreshold` and not applied.
+  - A clone's members are invite links in `CloneResult.invites` for the person cloning to pass
+    on (an invite is not bound to a person). "Same installation" is decided per member: a user
+    id this installation knows gets an invite, any other is dropped. The person cloning is the
+    clone's owner, so the source's owner is invited back when someone else imports.
+  - `importTemplate` and `cloneWorkspace` refuse a policy naming a chain not configured here
+    with `invalid_request` before anything is created. A failure after the workspace exists (the
+    signer down mid-clone) leaves the part already made, as doing it by hand would.
+  - `workspace.cloned` records the notification content level, the template's admin threshold
+    and the two options with the source; the level is set in the same transaction, without a
+    separate `workspace.notification_detail_set`. `cloneWorkspace` is a write to the source's
+    path, so `handle` refuses it while the source is being deleted; exporting the template
+    (a read) and importing it still works then.
+  - The record is one JSON response, `WorkspaceRecordExport` `{ record }` holding the JSON Lines,
+    because every `/api/v1` route answers JSON through `handle`; `writeRecord(ctx, session,
+    workspaceId, sink)` writes line by line (the session names the actor of
+    `workspace.exported`). `workspace.exported` is appended first, so the record holds its own
+    export. Rows are read in one `repeatable read` snapshot; signer decisions are paged through
+    `listDecisions`.
+  - The record adds to the drafted lines: every line but the header has a `type`; sections come
+    in a fixed order, each sorted by its key (seq, or id); a final `end` line counts each
+    section, so a cut or reordered record fails. The verifier also checks every intent hash,
+    policy hash (against the hash people's passkeys signed in the `set-policy` envelope) and
+    mandate hash. A `mandate` line holds the mirror's status and the signer's state and usage
+    (`signer: null` when the signer no longer answers for the wallet); `mandate-use` lines name
+    each use's approval, mandate and intent. Transactions carry hashes and fees, never signed
+    bytes.
+  - The signer's decision hash is computed again in `verify-record.ts` (`signerDecisionHash`),
+    as `apps/signer/src/decisions.ts` computes it: the server cannot import the signer, and
+    `packages/protocol` does not hold it. The tests run the real signer in process, so a change
+    on either side fails `export.test.ts`.
+  - The recent sign-in check reads `sessions.created_at`, which used the database clock;
+    `issueSession` now sets it on the app's clock, as `expires_at` is. Refused with `forbidden`,
+    detail `sign_in_again`.
+  - `identity.test.ts`'s origin check covers every write on its test app; the six lifecycle
+    writes (Milestone 4's four and the two of this milestone) are not on it, so they are listed
+    there as elsewhere and checked in `clone.test.ts`.
+  - `apps/web/dev/fixture-server.ts` serves the four routes (written with Milestone 6, aligned
+    here): the template and a record of the fixture's audit and decisions, and clone and import
+    through the fixture's own creation handlers. The fixture asks for no recent sign-in.
 
 ## Decision Log
 

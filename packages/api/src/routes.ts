@@ -4,6 +4,7 @@ import {
   AssertionResponse,
   AssetRef,
   ChainId,
+  EpochSeconds,
   MandateId,
   SignerDecision,
   WalletId,
@@ -17,7 +18,10 @@ import {
   AuditVerification,
   CeremonyId,
   CeremonyStart,
+  CloneOptions,
+  CloneResult,
   Cursor,
+  DeletionPreflight,
   DisplayName,
   IntentDetail,
   IntentSummary,
@@ -40,7 +44,9 @@ import {
   WalletDetail,
   WalletSummary,
   WorkspaceDetail,
+  WorkspaceRecordExport,
   WorkspaceSummary,
+  WorkspaceTemplate,
 } from "./dto.ts";
 
 export type HttpMethod = "GET" | "POST" | "DELETE";
@@ -177,6 +183,62 @@ export const routes = {
     z.strictObject({ adminThreshold: z.number().int().min(1).max(16) }),
     ApprovalSummary,
   ),
+  /**
+   * Owners only. Advisory: each wallet's balances as the server reads them, and what would
+   * make the deletion lose something or wait (see `DeletionBlocker`). The signer cannot check
+   * balances.
+   */
+  getDeletionPreflight: get("/api/v1/workspaces/:workspaceId/delete/preflight", DeletionPreflight),
+  /**
+   * Owners only. Opens a `delete-workspace` request at the admin threshold naming every wallet
+   * whose key the signer holds, as the signer reports them, and `destroyAfter`. Once people
+   * approve it on the signer's confirmation page, the workspace stays paused, its wallets and
+   * mandates sign nothing more, and at `destroyAfter` the keys are destroyed and its data made
+   * unreadable, unless a member cancels first. Refused with `conflict` unless the workspace is
+   * paused, or while another deletion waits; with `invalid_request` and the detail
+   * `destroy_delay_out_of_range` for a `destroyAfter` sooner than the signer's minimum delay.
+   */
+  requestDeleteWorkspace: post(
+    "/api/v1/workspaces/:workspaceId/delete",
+    z.strictObject({ destroyAfter: EpochSeconds }),
+    ApprovalSummary,
+  ),
+  /**
+   * Any member. Cancels a deletion: the waiting `delete-workspace` request, or once applied, the
+   * scheduled destruction (the workspace stays paused; its keys are kept; its mandates stay
+   * ended). Refused with `conflict` when there is nothing to cancel or the keys are already gone.
+   */
+  cancelDeleteWorkspace: post(
+    "/api/v1/workspaces/:workspaceId/delete/cancel",
+    NoBody,
+    WorkspaceDetail,
+  ),
+
+  // --- export and clone -----------------------------------------------------------------------
+  /** Owners only. The workspace's configuration, without secrets, history or mandates. */
+  exportTemplate: get("/api/v1/workspaces/:workspaceId/export/template", WorkspaceTemplate),
+  /**
+   * Owners only, signed in with a passkey in the last 300 seconds, else `forbidden` with the
+   * detail `sign_in_again`. The workspace's history, opened, as JSON Lines that verify offline.
+   * Recorded in the audit log as `workspace.exported`, which the record itself includes.
+   */
+  exportRecord: get("/api/v1/workspaces/:workspaceId/export/record", WorkspaceRecordExport),
+  /**
+   * Owners only. A new workspace from this one's template, with the signed-in person as its only
+   * member and approver: new wallets with new keys, new agent tokens, and one `set-policy`
+   * request per wallet that had a policy. Nothing of the source's history, keys or mandates.
+   */
+  cloneWorkspace: post("/api/v1/workspaces/:workspaceId/clone", CloneOptions, CloneResult),
+  /**
+   * Any signed-in person. A new workspace from a template file, as `cloneWorkspace` makes one.
+   * Members this installation does not know are dropped. Refused with `invalid_request` for a
+   * template naming a chain that is not configured here.
+   */
+  importTemplate: post(
+    "/api/v1/workspaces/import",
+    CloneOptions.extend({ template: WorkspaceTemplate }),
+    CloneResult,
+  ),
 
   // --- members --------------------------------------------------------------------------------
   createInvite: post(
@@ -266,6 +328,30 @@ export const routes = {
     "/api/v1/workspaces/:workspaceId/wallets/:walletId/sweep",
     z.strictObject({ chainId: ChainId, asset: AssetRef, to: Address }),
     ApprovalSummary,
+  ),
+  /**
+   * Owners only. Opens a `retire-wallet` request at the admin threshold: once people approve it
+   * on the signer's confirmation page, the wallet signs nothing more, its mandates end, and its
+   * key is destroyed at `destroyAfter` unless someone cancels first. Refused with `conflict`
+   * for a wallet that is already retiring or destroyed, or while another retirement of it
+   * waits; with `invalid_request` and the detail `destroy_delay_out_of_range` for a
+   * `destroyAfter` sooner than the signer's minimum delay.
+   */
+  requestRetireWallet: post(
+    "/api/v1/workspaces/:workspaceId/wallets/:walletId/retire",
+    z.strictObject({ destroyAfter: EpochSeconds }),
+    ApprovalSummary,
+  ),
+  /**
+   * Owners and approvers. Cancels a retirement: the waiting `retire-wallet` request, or once
+   * applied, the scheduled destruction. A cancelled retirement leaves the wallet `held`: it
+   * signs nothing until a new policy is approved. Refused with `conflict` when there is nothing
+   * to cancel, the key is already gone, or the workspace is being deleted.
+   */
+  cancelRetireWallet: post(
+    "/api/v1/workspaces/:workspaceId/wallets/:walletId/retire/cancel",
+    NoBody,
+    WalletSummary,
   ),
 
   // --- mandates -------------------------------------------------------------------------------

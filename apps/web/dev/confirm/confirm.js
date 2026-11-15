@@ -17,6 +17,7 @@
  * @typedef {{
  *   approvalId: string;
  *   title: string;
+ *   warnings: string[];
  *   lines: { label: string; value: string }[];
  *   state: "open" | "complete" | "closed";
  *   approvals: { collected: number; required: number };
@@ -202,8 +203,16 @@ function render(main, view, token) {
         ? `${STATE_TEXT.open} ${collected} of ${required} so far.`
         : STATE_TEXT[view.state],
     ),
-    lines,
   ];
+  // Shown before the lines, as the real page shows the signer's warnings.
+  if (view.warnings.length > 0) {
+    const warnings = element("ul");
+    warnings.className = "warnings";
+    warnings.setAttribute("aria-label", "Warnings");
+    for (const warning of view.warnings) warnings.append(element("li", warning));
+    parts.push(warnings);
+  }
+  parts.push(lines);
   if (view.state === "open") {
     const decide = element("section");
     decide.setAttribute("aria-label", "Decision");

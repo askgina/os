@@ -146,7 +146,26 @@ export const workspaces = os.table("workspaces", {
    */
   auditSeq: integer("audit_seq").notNull().default(0),
   auditHead: text("audit_head"),
+  /**
+   * Mirror of the signer's lifecycle state. `deleting` from the moment people's deletion is
+   * applied at the signer until the finalize step, which leaves `deleted`: a tombstone.
+   */
+  lifecycle: text("lifecycle").$type<WorkspaceLifecycleColumn>().notNull().default("active"),
+  /** When the signer destroys the workspace's keys; null exactly while `active`. */
+  destroyAfter: time("destroy_after"),
+  /** When this control plane finished the deletion. */
+  deletedAt: time("deleted_at"),
 });
+
+/** A workspace's lifecycle, as the signer holds it. */
+export type WorkspaceLifecycleColumn = "active" | "deleting" | "deleted";
+
+/**
+ * A wallet's lifecycle, as the signer holds it: `retiring` signs nothing until its key is
+ * destroyed (`destroyed`) or the retirement is cancelled (`held`, signing nothing until a new
+ * policy is approved).
+ */
+export type WalletLifecycleColumn = "active" | "retiring" | "held" | "destroyed";
 
 export const memberships = os.table(
   "memberships",
@@ -239,6 +258,10 @@ export const wallets = os.table(
     policy: jsonb("policy").$type<WalletPolicy>(),
     policyHash: text("policy_hash"),
     createdAt: createdAt(),
+    /** Mirror of the signer's lifecycle state of the wallet. */
+    lifecycle: text("lifecycle").$type<WalletLifecycleColumn>().notNull().default("active"),
+    /** When the signer destroys, or destroyed, the key; null while `active` or `held`. */
+    destroyAfter: time("destroy_after"),
   },
   (table) => [
     index("wallets_workspace_idx").on(table.workspaceId),
@@ -670,9 +693,17 @@ export const nonceReservations = os.table(
 
 /**
  * What a notification reports: an approval waits (`approval.opened`), it is about to expire
- * (`approval.reminder`), or a mandate was used (`mandate.used`, for the webhook only).
+ * (`approval.reminder`), a mandate was used (`mandate.used`, for the webhook only), a wallet's
+ * retirement or the workspace's deletion was applied and will destroy keys
+ * (`lifecycle.scheduled`), or will in 24 hours (`lifecycle.due_soon`). The two lifecycle events
+ * are keyed to the `retire-wallet` or `delete-workspace` request people approved.
  */
-export type NotificationEvent = "approval.opened" | "approval.reminder" | "mandate.used";
+export type NotificationEvent =
+  | "approval.opened"
+  | "approval.reminder"
+  | "mandate.used"
+  | "lifecycle.scheduled"
+  | "lifecycle.due_soon";
 
 export type NotificationState = "pending" | "sent" | "dropped" | "failed";
 

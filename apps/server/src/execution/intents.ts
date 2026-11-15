@@ -42,6 +42,7 @@ import {
 import { appendAudit } from "../audit.ts";
 import type { AppContext, Executor } from "../context.ts";
 import { agents, intents, wallets, workspaces } from "../db/schema.ts";
+import { walletLifecycle } from "../directory/views.ts";
 import { HttpError } from "../http/errors.ts";
 import { approvalLink } from "../notify/content.ts";
 import { engineOf } from "./approvals.ts";
@@ -651,6 +652,7 @@ async function walletSummary(ctx: AppContext, walletId: WalletId): Promise<Walle
     agentId: wallet.kind === "agent" ? (owner?.id ?? null) : null,
     policy: wallet.policy,
     policyHash: wallet.policyHash,
+    lifecycle: walletLifecycle(wallet),
   };
 }
 

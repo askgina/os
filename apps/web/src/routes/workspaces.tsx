@@ -1,6 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Building2, ChevronRight, Pause, Plus } from "lucide-react";
+import { Building2, ChevronRight, Pause, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { EmptyState, ErrorState, FormError, Loading, PageHeader } from "@/components/common.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
@@ -44,7 +44,12 @@ export function WorkspacesPage() {
                       <p className="truncate font-medium">{workspace.name}</p>
                       <p className="text-sm text-muted-foreground">{ROLE_NAMES[workspace.role]}</p>
                     </div>
-                    {workspace.paused ? (
+                    {workspace.lifecycle.state === "deleting" ? (
+                      <Badge tone="danger">
+                        <Trash2 aria-hidden />
+                        Being deleted
+                      </Badge>
+                    ) : workspace.paused ? (
                       <Badge tone="danger">
                         <Pause aria-hidden />
                         Paused

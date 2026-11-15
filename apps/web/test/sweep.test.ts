@@ -36,7 +36,10 @@ const wallet = (
   policy: recipients ? policy(recipients) : null,
 });
 
-const summary = (id: typeof AGENT_WALLET | typeof TREASURY): WalletSummary => ({
+const summary = (
+  id: typeof AGENT_WALLET | typeof TREASURY,
+  lifecycle: WalletSummary["lifecycle"] = { state: "active", destroyAfter: null },
+): WalletSummary => ({
   id,
   kind: id === TREASURY ? "treasury" : "agent",
   label: id === TREASURY ? "Reserve" : "Agent wallet",
@@ -44,6 +47,7 @@ const summary = (id: typeof AGENT_WALLET | typeof TREASURY): WalletSummary => ({
   agentId: null,
   policy: null,
   policyHash: null,
+  lifecycle,
 });
 
 describe("where the wallet page offers to sweep", () => {
@@ -67,6 +71,26 @@ describe("where the wallet page offers to sweep", () => {
     expect(
       sweepDestinations(wallet(AGENT_WALLET, null), { wallets: [summary(AGENT_WALLET)] }),
     ).toEqual([]);
+  });
+
+  it("never offers a treasury whose key is about to be or was destroyed", () => {
+    const allowAny = wallet(AGENT_WALLET, { mode: "any" });
+    for (const lifecycle of [
+      { state: "retiring", destroyAfter: 1 },
+      { state: "destroyed", destroyAfter: 1 },
+    ] as const) {
+      expect(
+        sweepDestinations(allowAny, {
+          wallets: [summary(AGENT_WALLET), summary(TREASURY, lifecycle)],
+        }),
+      ).toEqual([]);
+    }
+    // Stopped after a cancelled retirement, it keeps its key and can still receive.
+    expect(
+      sweepDestinations(allowAny, {
+        wallets: [summary(TREASURY, { state: "held", destroyAfter: null })],
+      }).map((destination) => destination.reason),
+    ).toEqual(["treasury"]);
   });
 
   it("never offers the swept wallet itself, so the treasury cannot be swept to itself", () => {

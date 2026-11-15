@@ -2,6 +2,9 @@ import { and, eq, inArray, isNull, lt, or } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { AppContext } from "../context.ts";
 import { approvals } from "../db/schema.ts";
+import { finalizeIfDue } from "../lifecycle/finalize.ts";
+import { registerLifecycleKinds } from "../lifecycle/kinds.ts";
+import { registerLifecycleRoutes } from "../lifecycle/routes.ts";
 import { type DeliveryCounts, deliverDueNotifications } from "../notify/outbox.ts";
 import { engineOf } from "./approvals.ts";
 import { registerCancelKind } from "./cancel.ts";
@@ -26,8 +29,9 @@ const SWEEP_INTERVAL_MS = 3_000;
 const DEFAULT_OPTIONS: ExecutionOptions = { pollSeconds: 5 };
 
 /**
- * The approval, intent, sweep and mandate routes, and the kinds that sign or grant:
- * `approve-intent`, `mandate-use`, `sweep-wallet`, `grant-mandate` and `cancel-transaction`.
+ * The approval, intent, sweep, mandate and lifecycle routes, and the kinds that sign, grant or
+ * end: `approve-intent`, `mandate-use`, `sweep-wallet`, `grant-mandate`, `cancel-transaction`,
+ * `retire-wallet` and `delete-workspace`.
  */
 export function registerExecution(
   app: Hono,
@@ -38,7 +42,9 @@ export function registerExecution(
   registerSweepKind(ctx, options);
   registerMandateKinds(ctx);
   registerCancelKind(ctx);
+  registerLifecycleKinds(ctx);
   registerApprovalAndIntentRoutes(app, ctx);
+  registerLifecycleRoutes(app, ctx);
 }
 
 /**
@@ -57,14 +63,16 @@ export function mountWorkflowDelivery(internal: Hono, ctx: AppContext): void {
 }
 
 /**
- * One pass of the sweeper: the workflow wake-up outbox, starts, and the notification outbox.
- * Exported so tests can run it without a timer.
+ * One pass of the sweeper: the workflow wake-up outbox, starts, the notification outbox, and at
+ * most once a minute the retirements and deletions that are due (`lifecycle`, null in passes
+ * that did not look). Exported so tests can run it without a timer.
  */
 export async function sweep(ctx: AppContext): Promise<{
   woken: number;
   started: number;
   abandoned: number;
   notifications: DeliveryCounts;
+  lifecycle: { finalized: number; skipped: number } | null;
 }> {
   const engine = engineOf(ctx);
   const runtime = workflowRuntime(ctx);
@@ -126,7 +134,10 @@ export async function sweep(ctx: AppContext): Promise<{
   // A request recovered above was announced in the transaction that opened it, so its rows are
   // delivered here like any other.
   const notifications = await deliverDueNotifications(ctx);
-  return { woken, started, abandoned, notifications };
+  // Last: a request it cancels is recovered by the next pass above, and a deletion finishes
+  // only once every run of the workspace has.
+  const lifecycle = await finalizeIfDue(ctx);
+  return { woken, started, abandoned, notifications, lifecycle };
 }
 
 /**

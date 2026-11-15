@@ -5,6 +5,7 @@ import {
   expect,
   type Locator,
   type Page,
+  type TestInfo,
 } from "@playwright/test";
 import { expectNoSidewaysOverflow, type LayoutOptions, widenText } from "./layout.ts";
 import { standInPushManager } from "./push-stand-in.ts";
@@ -189,6 +190,45 @@ function approvalMessage(link: string, pending: number) {
   };
 }
 
+/**
+ * Checks the screen for content wider than it, then captures the page, a part or the view, under
+ * the project's name.
+ */
+async function capture(
+  on: Page,
+  testInfo: TestInfo,
+  name: string,
+  target: { element?: Locator; viewport?: true } = {},
+): Promise<void> {
+  await expectNoSidewaysOverflow(on, name);
+  const path = `${SCREENSHOTS}${testInfo.project.name}-${name}.png`;
+  await (target.element
+    ? target.element.screenshot({ path })
+    : on.screenshot({ path, fullPage: !target.viewport }));
+}
+
+/**
+ * On a phone, a request's decision fits on the first screen, without scrolling. Only with real
+ * fonts: see ONE_SCREEN_PROJECTS.
+ */
+async function expectOnFirstScreen(page: Page, testInfo: TestInfo, decision: Locator) {
+  const viewport = page.viewportSize();
+  const box = await decision.boundingBox();
+  if (ONE_SCREEN_PROJECTS.has(testInfo.project.name) && viewport && box) {
+    expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+  }
+}
+
+/** Sets up the server through the UI: its first owner, with this page's passkey. */
+async function setUpServer(page: Page, name: string): Promise<void> {
+  await page.goto("/");
+  await expect(page).toHaveURL(/\/setup$/);
+  await page.getByLabel("Setup token").fill(SETUP_TOKEN);
+  await page.getByLabel("Your name").fill(name);
+  await page.getByRole("button", { name: "Create owner passkey" }).click();
+  await expect(page.getByRole("heading", { name: "Workspaces" })).toBeVisible();
+}
+
 /** Acts as the agent: proposes a native transfer and returns its intent and approval ids. */
 async function proposePayment(
   request: APIRequestContext,
@@ -212,32 +252,14 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
   widerText,
 }, testInfo) => {
   test.setTimeout(360_000);
-  /**
-   * Checks the screen for content wider than it, then captures the page, a part or the view. The
-   * owner's page unless `on` names another person's.
-   */
-  const shot = async (
+  /** `capture` on the owner's page unless `on` names another person's. */
+  const shot = (
     name: string,
     target: { element?: Locator; viewport?: true } = {},
     on: Page = page,
-  ) => {
-    await expectNoSidewaysOverflow(on, name);
-    const path = `${SCREENSHOTS}${testInfo.project.name}-${name}.png`;
-    await (target.element
-      ? target.element.screenshot({ path })
-      : on.screenshot({ path, fullPage: !target.viewport }));
-  };
-  /**
-   * On a phone, a request's decision fits on the first screen, without scrolling. Only with real
-   * fonts: see ONE_SCREEN_PROJECTS.
-   */
-  const expectDecisionOnFirstScreen = async (decision: Locator) => {
-    const viewport = page.viewportSize();
-    const box = await decision.boundingBox();
-    if (ONE_SCREEN_PROJECTS.has(testInfo.project.name) && viewport && box) {
-      expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
-    }
-  };
+  ) => capture(on, testInfo, name, target);
+  const expectDecisionOnFirstScreen = (decision: Locator) =>
+    expectOnFirstScreen(page, testInfo, decision);
   /** Another person's browser, on the same kind of screen as the owner's, with a passkey. */
   const personPage = async (): Promise<{ person: Page; personProblems: string[] }> => {
     const { viewport, deviceScaleFactor, isMobile, hasTouch, colorScheme } = testInfo.project.use;
@@ -1078,6 +1100,210 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Workspaces" })).toBeVisible();
     await expect(page.getByText("Research team")).toBeVisible();
+  });
+
+  expect(problems).toEqual([]);
+});
+
+/**
+ * The end of an agent, a wallet and a workspace, on a fresh server. Removing the agent says its
+ * waiting payment requests end too. Retiring a wallet shows what the server reads is still in
+ * it and when the key goes; it is approved on the signer's page, which warns that the key is
+ * destroyed and that it cannot see balances; the retirement is cancelled during the delay, which
+ * leaves the wallet stopped. A second wallet is retired to the end and shows its key destroyed.
+ * Deleting the workspace needs it paused, shows what would be lost, waits with a countdown, is
+ * cancelled, asked again, and finishes: the page then says the workspace was deleted.
+ *
+ * The 7-day delay is skipped with the fixture's `/__fixture/due`, so this runs against the
+ * fixture only.
+ */
+test("the end of a wallet and of a workspace: retire, cancel, destroy, delete", async ({
+  page,
+  request,
+  baseURL,
+  widerText,
+}, testInfo) => {
+  test.skip(Boolean(process.env.OS_WEB_BASE_URL), "the delay is skipped with the fixture only");
+  test.setTimeout(240_000);
+  const shot = (name: string, target: { element?: Locator; viewport?: true } = {}) =>
+    capture(page, testInfo, `lifecycle-${name}`, target);
+  const problems = watchConsole(page);
+  await request.post(`${baseURL}/__fixture/reset`);
+  if (widerText) await widenText(page.context());
+  await addAuthenticator(page);
+  const due = async (data: { workspaceId: string; walletId?: string }) => {
+    const response = await request.post(`${baseURL}/__fixture/due`, { data });
+    expect(response.ok()).toBe(true);
+  };
+
+  /** Approves on the signer's page after checking its title and both warnings. */
+  const approveDestruction = async (title: string) => {
+    const review = page.getByRole("link", { name: "Review and approve on the signer's page" });
+    await expect(review).toBeVisible();
+    const back = page.url();
+    await review.click();
+    await expect(page.getByRole("heading", { name: title })).toBeVisible();
+    const warnings = page.getByRole("list", { name: "Warnings" });
+    await expect(warnings.getByRole("listitem")).toHaveText([
+      /destroys the keys of the wallets listed.*lost for good/,
+      /^The signer cannot see balances/,
+    ]);
+    await page.getByRole("button", { name: "Approve with passkey" }).click();
+    await expect(page).toHaveURL(back, { timeout: 15_000 });
+  };
+
+  let workspaceId = "";
+  let overview = "";
+  await test.step("removing an agent says its waiting payment requests end with it", async () => {
+    await setUpServer(page, "Ada Owner");
+    await page.getByLabel("New workspace").fill("Wind-down team");
+    await page.getByRole("button", { name: "Create workspace" }).click();
+    await expect(page.getByText("Next: add an agent")).toBeVisible();
+    overview = new URL(page.url()).pathname;
+    workspaceId = overview.split("/").pop() ?? "";
+    await page.getByLabel("Agent name").fill("Invoice payer");
+    await page.getByRole("button", { name: "Add an agent" }).click();
+    await expect(page.getByRole("heading", { name: "Invoice payer" })).toBeVisible();
+    await page.getByRole("button", { name: "Remove", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Remove this agent?" });
+    await expect(
+      dialog.getByText(/Payments it asked for that still wait for approval are cancelled/),
+    ).toBeVisible();
+    await expect(dialog.getByText(/A removed agent cannot be added back/)).toBeVisible();
+    await shot("01-remove-agent", { viewport: true });
+    await dialog.getByRole("button", { name: "Remove agent" }).click();
+    await expect(page.getByText("Removed", { exact: true })).toBeVisible();
+  });
+
+  await test.step("a wallet is retired, approved on the signer's page, and the retirement cancelled", async () => {
+    await page.getByRole("link", { name: "Set this wallet's policy" }).click();
+    await expect(page.getByRole("heading", { name: "Invoice payer's wallet" })).toBeVisible();
+    await page.getByRole("button", { name: "Retire this wallet…" }).click();
+    const card = page.locator("#retire");
+    await expect(card.getByText("1.25 ETH")).toBeVisible();
+    await expect(
+      card.getByText(/^Read by the server; the signer cannot check balances/),
+    ).toBeVisible();
+    await expect(
+      card.getByRole("radio", { name: /^In 7 days, the shortest the signer allows/ }),
+    ).toBeChecked();
+    await shot("02-retire-form", { element: card });
+    await card.getByRole("button", { name: "Ask for approval to retire" }).click();
+
+    await expect(
+      page.getByRole("heading", { name: "Retire Invoice payer's wallet and destroy its key" }),
+    ).toBeVisible();
+    await expect(page.getByText("7 days from the request")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Still in the wallet" })).toBeVisible();
+    await expect(page.getByText("1.25 ETH")).toBeVisible();
+    await expectOnFirstScreen(page, testInfo, page.getByRole("region", { name: "Decision" }));
+    await shot("03-approval-retire");
+    await approveDestruction("Retire a wallet");
+    await expect(page.getByText("The wallet signs nothing more.", { exact: false })).toBeVisible();
+    await page.getByRole("link", { name: "Open the wallet" }).click();
+
+    await expect(page.getByText("This wallet is being retired")).toBeVisible();
+    await expect(page.getByText(/left to cancel$/)).toBeVisible();
+    await expect(page.getByText(/^Do not send anything here/)).toBeVisible();
+    await shot("04-wallet-retiring");
+    await page.getByRole("button", { name: "Cancel retirement" }).click();
+    await page
+      .getByRole("dialog", { name: "Cancel the retirement?" })
+      .getByRole("button", { name: "Cancel retirement" })
+      .click();
+    await expect(page.getByText("Stopped: its retirement was cancelled")).toBeVisible();
+    await expect(page.getByText("This wallet is being retired")).toHaveCount(0);
+    await shot("05-wallet-stopped");
+  });
+
+  await test.step("a second wallet is retired to the end, and its key is destroyed", async () => {
+    await page.goto(overview);
+    await page.getByLabel("Treasury name").fill("Reserve");
+    await page.getByRole("button", { name: "Create treasury" }).click();
+    await page.getByRole("link", { name: /Reserve/ }).click();
+    const walletId = new URL(page.url()).pathname.split("/").pop() ?? "";
+    await page.getByRole("button", { name: "Retire this wallet…" }).click();
+    await page.getByRole("button", { name: "Ask for approval to retire" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Retire Reserve and destroy its key" }),
+    ).toBeVisible();
+    await approveDestruction("Retire a wallet");
+    await page.getByRole("link", { name: "Open the wallet" }).click();
+    await expect(page.getByText("This wallet is being retired")).toBeVisible();
+    await due({ workspaceId, walletId });
+    await page.reload();
+    await expect(page.getByText("Its key was destroyed")).toBeVisible();
+    // Nothing is offered for a wallet without its key.
+    await expect(page.getByRole("button", { name: "Retire this wallet…" })).toHaveCount(0);
+    await shot("06-wallet-destroyed");
+    await page.goto(overview);
+    await expect(page.getByText("Key destroyed", { exact: true })).toBeVisible();
+    await expect(page.getByText("Stopped", { exact: true })).toBeVisible();
+  });
+
+  await test.step("deleting waits for a pause, shows what is lost, counts down and is cancelled", async () => {
+    await page.getByRole("button", { name: "Delete this workspace…" }).click();
+    const card = page.locator("#delete");
+    await expect(card.getByText(/^Pause the workspace first/)).toBeVisible();
+    await expect(card.getByRole("button", { name: "Ask for approval to delete" })).toBeDisabled();
+    await page.getByRole("switch", { name: "Pause all signing" }).click();
+    await expect(card.getByText(/^Pause the workspace first/)).toHaveCount(0);
+    // The destroyed treasury is gone already; the stopped wallet still holds what the server reads.
+    await expect(card.getByText("Invoice payer's wallet")).toBeVisible();
+    await expect(card.getByText("Reserve")).toHaveCount(0);
+    await expect(card.getByText("1.25 ETH")).toBeVisible();
+    await expect(
+      card.getByText(/^A wallet still holds something the server can see/),
+    ).toBeVisible();
+    await shot("07-delete-form", { element: card });
+    await card.getByRole("button", { name: "Ask for approval to delete" }).click();
+
+    await expect(
+      page.getByRole("heading", { name: "Delete this workspace and destroy 1 wallet key" }),
+    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Still in the wallet" })).toBeVisible();
+    await expectOnFirstScreen(page, testInfo, page.getByRole("region", { name: "Decision" }));
+    await shot("08-approval-delete");
+    await approveDestruction("Delete this workspace");
+    await page.getByRole("link", { name: "Open the workspace" }).click();
+
+    await expect(page.getByText("This workspace is being deleted")).toBeVisible();
+    await expect(page.getByText(/left to cancel$/)).toBeVisible();
+    await expect(page.getByText("Being deleted", { exact: true })).toBeVisible();
+    // Nothing can be added while it waits, and resuming waits for the cancel.
+    await expect(page.getByRole("button", { name: "Add an agent" })).toHaveCount(0);
+    await expect(page.getByRole("switch", { name: "Pause all signing" })).toBeDisabled();
+    await shot("09-deleting");
+    await page.getByRole("button", { name: "Cancel deletion" }).click();
+    await page
+      .getByRole("dialog", { name: "Cancel the deletion?" })
+      .getByRole("button", { name: "Cancel deletion" })
+      .click();
+    await expect(page.getByText("This workspace is being deleted")).toHaveCount(0);
+    // The keys stay, and so does the pause: resuming needs its own approval.
+    await expect(page.getByText(/^This workspace is paused/)).toBeVisible();
+    await expect(page.getByRole("switch", { name: "Pause all signing" })).toBeEnabled();
+    await shot("10-deletion-cancelled");
+  });
+
+  await test.step("asked again and left to finish, the workspace is gone", async () => {
+    await page.getByRole("button", { name: "Delete this workspace…" }).click();
+    await page.getByRole("button", { name: "Ask for approval to delete" }).click();
+    await approveDestruction("Delete this workspace");
+    await page.getByRole("link", { name: "Open the workspace" }).click();
+    await expect(page.getByText("This workspace is being deleted")).toBeVisible();
+    await due({ workspaceId });
+    // The page reads the workspace again on its own and finds it gone.
+    await expect(page.getByRole("heading", { name: "Wind-down team was deleted" })).toBeVisible({
+      timeout: 15_000,
+    });
+    await shot("11-deleted");
+    // That read was refused as the server refuses its former members: the one expected failure.
+    const gone = (line: string) =>
+      line.includes(`/api/v1/workspaces/${workspaceId}`) && /404|Not Found/.test(line);
+    problems.splice(0, problems.length, ...problems.filter((line) => !gone(line)));
+    await page.getByRole("link", { name: "← All workspaces" }).click();
+    await expect(page.getByText("No workspaces yet")).toBeVisible();
   });
 
   expect(problems).toEqual([]);

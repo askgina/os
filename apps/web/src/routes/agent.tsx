@@ -33,6 +33,7 @@ import { Dialog } from "@/components/ui/dialog.tsx";
 import { api, keys, queryClient, useIntents, useWallet, useWorkspace } from "@/lib/api.ts";
 import { explainCode } from "@/lib/codes.ts";
 import { formatRelative } from "@/lib/format.ts";
+import { walletLifecycleLabel } from "@/lib/lifecycle.ts";
 import { type RevealedToken, takeRevealedToken } from "@/lib/reveal.ts";
 import { intentStatusSentence } from "@/lib/statuses.ts";
 
@@ -56,8 +57,9 @@ export function AgentPage() {
     onSuccess: async () => {
       setConfirmDisable(false);
       await queryClient.invalidateQueries({ queryKey: keys.workspace(workspaceId) });
-      // Disabling an agent revokes its approvals in advance.
+      // Removing an agent revokes its approvals in advance and cancels its waiting requests.
       await queryClient.invalidateQueries({ queryKey: keys.mandates(workspaceId) });
+      await queryClient.invalidateQueries({ queryKey: ["approvals", workspaceId] });
     },
   });
 
@@ -79,7 +81,7 @@ export function AgentPage() {
             {agent.status === "active" ? (
               <Badge tone="success">Active</Badge>
             ) : (
-              <Badge>Disabled</Badge>
+              <Badge>Removed</Badge>
             )}
             {canAdmin && agent.status === "active" ? (
               <>
@@ -89,7 +91,7 @@ export function AgentPage() {
                 </Button>
                 <Button variant="outline" size="sm" onClick={() => setConfirmDisable(true)}>
                   <Ban aria-hidden />
-                  Disable
+                  Remove
                 </Button>
               </>
             ) : null}
@@ -118,7 +120,11 @@ export function AgentPage() {
           </CardHeader>
           <CardContent>
             <FullAddress address={wallet.address} />
-            {wallet.policy === null ? (
+            {wallet.lifecycle.state !== "active" ? (
+              <p className="mt-2 text-sm text-warning">
+                {walletLifecycleLabel(wallet.lifecycle)}: it signs nothing.
+              </p>
+            ) : wallet.policy === null ? (
               <p className="mt-2 text-sm text-warning">No limits yet: it can sign nothing.</p>
             ) : null}
           </CardContent>
@@ -192,11 +198,16 @@ export function AgentPage() {
       <Dialog
         open={confirmDisable}
         onClose={() => setConfirmDisable(false)}
-        title="Disable this agent?"
+        title="Remove this agent?"
       >
         <p className="mt-2 text-sm text-muted-foreground">
-          Its token stops working and it can propose nothing more. Its approvals in advance are
-          revoked. Its wallet and history stay.
+          Its token stops working at once and it can propose nothing more. Payments it asked for
+          that still wait for approval are cancelled, and its approvals in advance end. A removed
+          agent cannot be added back.
+        </p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Its wallet, with whatever is in it, and its history stay. To end the wallet too, empty it
+          and retire it on its own page.
         </p>
         <FormError error={disable.error} />
         <div className="mt-6 flex justify-end gap-2">
@@ -208,7 +219,7 @@ export function AgentPage() {
             onClick={() => disable.mutate()}
             disabled={disable.isPending}
           >
-            {disable.isPending ? "Disabling…" : "Disable agent"}
+            {disable.isPending ? "Removing…" : "Remove agent"}
           </Button>
         </div>
       </Dialog>
@@ -236,7 +247,11 @@ function AgentMandates({
     <MandatesCard
       workspace={workspace}
       filter={{ agentId }}
-      editor={wallet.data && active ? { wallet: wallet.data, agentId } : null}
+      editor={
+        wallet.data && active && wallet.data.lifecycle.state === "active"
+          ? { wallet: wallet.data, agentId }
+          : null
+      }
     />
   );
 }

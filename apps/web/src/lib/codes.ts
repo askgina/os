@@ -50,7 +50,7 @@ const mandateRefusals: Record<MandateGrantRefusal | "agent_disabled", string> = 
     "It would last longer than the signer allows (7 days unless the operator chose otherwise). Choose an earlier end.",
   too_many_live_mandates:
     "This wallet already has as many live approvals in advance as the signer allows. Revoke one first.",
-  agent_disabled: "The agent was disabled, so it cannot be approved in advance.",
+  agent_disabled: "The agent was removed, so it cannot be approved in advance.",
 };
 
 /**
@@ -100,6 +100,15 @@ const cancelRefusals: Record<
 };
 
 /**
+ * Why the server refused to open a request to retire a wallet or delete the workspace: the
+ * refusal's `detail`.
+ */
+const lifecycleRefusals: Record<"destroy_delay_out_of_range", string> = {
+  destroy_delay_out_of_range:
+    "The signer does not allow a delay that short or that long before keys are destroyed. Pick another.",
+};
+
+/**
  * Plain-language meanings for the failure codes the signer, the wallet policy and the chain
  * report. An unknown code is shown as it is, with a generic sentence, never hidden.
  */
@@ -111,7 +120,7 @@ const meanings: Record<string, string> = {
   mandate_denied: "The approval in advance does not cover this payment.",
   mandate_invalid: "The signer refused to grant this approval in advance.",
   too_many_live_mandates: mandateRefusals.too_many_live_mandates,
-  agent_disabled: "The agent was disabled.",
+  agent_disabled: "The agent was removed.",
   workspace_paused: "The workspace is paused, so the signer signs nothing until it is resumed.",
   approval_revoked: "This approval was withdrawn before the signer acted on it.",
   envelope_mismatch: "What was approved does not match what was sent to the signer, so it refused.",
@@ -154,6 +163,16 @@ const meanings: Record<string, string> = {
     "A cancel was signed, but the network included the payment first, so it went through as sent.",
   nonce_used_elsewhere:
     "Another transaction from this wallet took its place in line, so it can never be included. Nothing moved.",
+  workspace_deleting:
+    "The workspace is being deleted, so the signer signs nothing for it except cancelling a stuck transaction. Cancel the deletion first.",
+  workspace_deleted:
+    "The workspace was deleted and its keys destroyed, so the signer signs nothing.",
+  wallet_retired:
+    "The wallet is retired: the signer signs nothing for it, and its key is destroyed or soon will be.",
+  wallet_set_mismatch:
+    "The request does not name exactly the workspace's wallets as the signer holds them; one was added or its key destroyed since. Ask again.",
+  destroy_delay_out_of_range: lifecycleRefusals.destroy_delay_out_of_range,
+  destroy_not_due: "It is not yet time to destroy the keys.",
   not_sent: cancelRefusals.not_sent,
   transaction_final: cancelRefusals.transaction_final,
   attempts_exhausted: cancelRefusals.attempts_exhausted,
@@ -222,6 +241,11 @@ export function explainSpeedUpError(error: unknown): string | null {
 /** Plain words for a refused request to cancel; null leaves it to the API's own message. */
 export function explainCancelError(error: unknown): string | null {
   return refusalDetail(error, cancelRefusals);
+}
+
+/** Plain words for a refused retirement or deletion; null leaves it to the API's own message. */
+export function explainLifecycleError(error: unknown): string | null {
+  return refusalDetail(error, lifecycleRefusals);
 }
 
 export function explainCode(code: string): string {

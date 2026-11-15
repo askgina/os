@@ -70,6 +70,8 @@ const KIND_LABEL: Record<ApprovalKind, string> = {
   "sweep-wallet": "Wallet sweep",
   "grant-mandate": "Approval in advance",
   "cancel-transaction": "Cancel request",
+  "retire-wallet": "Wallet retirement",
+  "delete-workspace": "Workspace deletion",
 };
 
 /** One line of at most {@link TEXT_MAX_CHARACTERS}: control, format and separator characters out. */
@@ -84,6 +86,65 @@ function line(text: string): string {
 }
 
 const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
+
+/** Shorten a body, then a title, that is too long in bytes; throw when even that is not enough. */
+function fit(message: DeclarativePush): DeclarativePush {
+  const { notification } = message;
+  for (const field of ["body", "title"] as const) {
+    while (bytes(message) > PUSH_PAYLOAD_MAX_BYTES && notification[field].length > 1) {
+      notification[field] = `${Array.from(notification[field]).slice(0, -2).join("")}…`;
+    }
+  }
+  if (bytes(message) > PUSH_PAYLOAD_MAX_BYTES) {
+    throw new Error("the approval link leaves no room for a push message");
+  }
+  return message;
+}
+
+/**
+ * What a person's device shows when a retirement or deletion people approved was applied, and
+ * again 24 hours before its keys are destroyed (`dueSoon`), so someone who did not mean it can
+ * still cancel. `count`: only that keys are scheduled for destruction. `summary`: also which
+ * workspace, whether one wallet or the whole workspace, and when. Nothing anyone typed beyond
+ * the workspace's name, and no address or amount. Tagged with the request, so the second
+ * notice replaces the first.
+ */
+export function lifecycleMessage(input: {
+  level: NotificationDetail;
+  approvalId: ApprovalId;
+  kind: "retire-wallet" | "delete-workspace";
+  workspaceName: string;
+  destroyAfter: number;
+  /** Requests waiting for this person's passkey, for the badge. */
+  pendingCount: number;
+  link: string;
+  dueSoon: boolean;
+}): DeclarativePush {
+  let title: string;
+  let body: string;
+  if (input.level === "summary") {
+    // `2026-11-22 14:05 UTC`: the same for every reader, whatever their time zone.
+    const when = new Date(input.destroyAfter * 1000).toISOString().slice(0, 16).replace("T", " ");
+    title = `${KIND_LABEL[input.kind]} scheduled`;
+    // The time first: a long workspace name is what gets cut.
+    body = `Keys destroyed ${when} UTC in ${input.workspaceName}`;
+  } else {
+    title = "Keys scheduled for destruction";
+    body = "Open to review or cancel";
+  }
+  return fit({
+    web_push: 8030,
+    notification: {
+      title: line(input.dueSoon ? `In 24 hours: ${title}` : title),
+      body: line(body),
+      navigate: input.link,
+      tag: `lifecycle-${ApprovalId.parse(input.approvalId)}`,
+      lang: "en",
+      silent: false,
+      app_badge: String(Math.min(Math.max(0, input.pendingCount), BADGE_MAX)),
+    },
+  });
+}
 
 /**
  * What a person's device shows for a waiting request, at the workspace's level. `count`: only
@@ -110,7 +171,7 @@ export function pushMessage(input: {
     title = "Approval waiting";
     body = count === 1 ? "1 request needs your passkey" : `${many} requests need your passkey`;
   }
-  const message: DeclarativePush = {
+  return fit({
     web_push: 8030,
     notification: {
       title: line(input.reminder ? `Expiring soon: ${title}` : title),
@@ -121,15 +182,5 @@ export function pushMessage(input: {
       silent: false,
       app_badge: String(count),
     },
-  };
-  const { notification } = message;
-  for (const field of ["body", "title"] as const) {
-    while (bytes(message) > PUSH_PAYLOAD_MAX_BYTES && notification[field].length > 1) {
-      notification[field] = `${Array.from(notification[field]).slice(0, -2).join("")}…`;
-    }
-  }
-  if (bytes(message) > PUSH_PAYLOAD_MAX_BYTES) {
-    throw new Error("the approval link leaves no room for a push message");
-  }
-  return message;
+  });
 }

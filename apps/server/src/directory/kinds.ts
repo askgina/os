@@ -21,6 +21,7 @@ import {
   workspaces,
 } from "../db/schema.ts";
 import { revokePasskey } from "../identity/passkeys.ts";
+import { mirrorWallet } from "../lifecycle/state.ts";
 import type { AddApproverDetail, RemoveApproverDetail } from "./approvers.ts";
 import { anotherOwnerRemains, dropInvitesOf } from "./members.ts";
 import { loadWallet, walletSummary } from "./views.ts";
@@ -34,7 +35,7 @@ export interface SetPolicyDetail {
  * assertion, a used nonce, a threshold that cannot be met) ends the request as failed with the
  * signer's code; transport errors and the signer's own internal errors are retried.
  */
-async function atSigner<T>(call: () => Promise<T>): Promise<T> {
+export async function atSigner<T>(call: () => Promise<T>): Promise<T> {
   try {
     return await call();
   } catch (error) {
@@ -49,7 +50,7 @@ async function atSigner<T>(call: () => Promise<T>): Promise<T> {
  * Whether the signer already applied this approval. A workflow step can run again after a
  * crash; the signer would refuse the reused nonce, so a second run only updates our mirror.
  */
-async function alreadyApplied(ctx: AppContext, approvalId: ApprovalId): Promise<boolean> {
+export async function alreadyApplied(ctx: AppContext, approvalId: ApprovalId): Promise<boolean> {
   return (await ctx.signer.getApproval(approvalId)).state === "applied";
 }
 
@@ -66,7 +67,7 @@ async function personAndPasskey(ctx: AppContext, detail: AddApproverDetail) {
 const systemActor = { type: "system", id: null } as const;
 
 /** For kinds whose envelope carries everything the confirmation page shows. */
-const envelopeOnly = async (): Promise<ConfirmationSubject> => ({ kind: "envelope-only" });
+export const envelopeOnly = async (): Promise<ConfirmationSubject> => ({ kind: "envelope-only" });
 
 /**
  * End sign-in for a passkey its owner removed, once no workspace still lists it as an approver.
@@ -309,10 +310,12 @@ const setPolicy: ApprovalKindHandler<"set-policy"> = {
       );
       return true;
     });
+    const state = await atSigner(() => ctx.signer.getWallet(policy.walletId));
+    // A new policy makes a held wallet (its retirement cancelled) active again.
+    await mirrorWallet(ctx.db, state);
     if (applied) return;
     // The mirror had moved on (or was never this policy's predecessor): copy what the signer
     // enforces now.
-    const state = await atSigner(() => ctx.signer.getWallet(policy.walletId));
     await ctx.db
       .update(wallets)
       .set({ policy: state.policy, policyHash: state.policyHash })

@@ -32,6 +32,26 @@ export type WebhookBody =
   | {
       v: 1;
       deliveryId: NotificationDeliveryId;
+      /**
+       * People approved retiring one wallet or deleting the workspace, and the signer destroys
+       * the keys at `destroyAfter` unless someone cancels first (`lifecycle.scheduled`), or will
+       * in 24 hours (`lifecycle.due_soon`).
+       */
+      event: "lifecycle.scheduled" | "lifecycle.due_soon";
+      /** The `retire-wallet` or `delete-workspace` request people approved. */
+      approvalId: string;
+      workspaceId: string;
+      kind: "retire-wallet" | "delete-workspace";
+      /** The retiring wallet; null for a deletion, which destroys every wallet's key. */
+      walletId: string | null;
+      /** Unix seconds. */
+      destroyAfter: number;
+      /** The request's page in the web app. */
+      link: string;
+    }
+  | {
+      v: 1;
+      deliveryId: NotificationDeliveryId;
       event: "mandate.used";
       /** The use's row, not shown to people; the mandate's page lists the use. */
       approvalId: string;
@@ -64,6 +84,23 @@ function webhookBody(
     };
   }
   if (approval.kind === "mandate-use") throw new Error("a mandate use is no approval to announce");
+  if (delivery.event === "lifecycle.scheduled" || delivery.event === "lifecycle.due_soon") {
+    const envelope = approval.envelope;
+    if (envelope?.type !== "retire-wallet" && envelope?.type !== "delete-workspace") {
+      throw new Error("a lifecycle notice without a retirement or deletion");
+    }
+    return {
+      v: 1,
+      deliveryId: delivery.id,
+      event: delivery.event,
+      approvalId: approval.id,
+      workspaceId: approval.workspaceId,
+      kind: envelope.type,
+      walletId: envelope.type === "retire-wallet" ? envelope.wallet.walletId : null,
+      destroyAfter: envelope.destroyAfter,
+      link: approvalLink(origin, approval.workspaceId, approval.id),
+    };
+  }
   return {
     v: 1,
     deliveryId: delivery.id,

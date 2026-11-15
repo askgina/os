@@ -83,6 +83,7 @@ export const keys = {
   notificationPreferences: ["notification-preferences"] as const,
   invite: (token: string) => ["invite", token] as const,
   invites: (workspaceId: string) => ["invites", workspaceId] as const,
+  deletionPreflight: (workspaceId: string) => ["deletion-preflight", workspaceId] as const,
 };
 
 function useApi<N extends RouteName>(
@@ -98,10 +99,31 @@ export const useSession = () => useApi<"getSession">(keys.session, () => api.cal
 export const useWorkspaces = () =>
   useApi<"listWorkspaces">(keys.workspaces, () => api.call("listWorkspaces"));
 
+/**
+ * One workspace. While it is being deleted it is read every 10 seconds, so a cancel by someone
+ * else shows, and so does the end: once deleted it is gone for its members (`not_found`), and
+ * reading stops.
+ */
 export const useWorkspace = (workspaceId: string) =>
-  useApi<"getWorkspace">(keys.workspace(workspaceId), () =>
-    api.call("getWorkspace", { params: { workspaceId } }),
-  );
+  useQuery({
+    queryKey: keys.workspace(workspaceId),
+    queryFn: () => api.call("getWorkspace", { params: { workspaceId } }),
+    refetchInterval: (query) =>
+      query.state.status !== "error" && query.state.data?.lifecycle.state === "deleting"
+        ? 10_000
+        : false,
+  });
+
+/**
+ * What deleting the workspace would lose or wait for, and the signer's shortest delay. Owners
+ * only. Read fresh each time a form opens: balances change.
+ */
+export const useDeletionPreflight = (workspaceId: string) =>
+  useQuery({
+    queryKey: keys.deletionPreflight(workspaceId),
+    queryFn: () => api.call("getDeletionPreflight", { params: { workspaceId } }),
+    staleTime: 0,
+  });
 
 /**
  * Approval lists stay live: every 3 seconds while the tab is visible. TanStack Query pauses

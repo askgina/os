@@ -1,4 +1,4 @@
-import type { ApprovalSummary, AssetBalance, AuditEvent, Role } from "@askgina/os-api";
+import type { ApprovalSummary, AssetBalance, AuditEvent, PolicyDraft, Role } from "@askgina/os-api";
 import {
   type AgentId,
   type AssetRef,
@@ -13,7 +13,7 @@ import {
   type WorkspaceId,
 } from "@askgina/os-protocol";
 import { SignerError } from "@askgina/os-protocol/signer";
-import { and, asc, desc, eq, gt, inArray, isNull, lt } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import { requireMember } from "../access.ts";
 import { appendAudit, openAuditDetail, verifyAudit } from "../audit.ts";
@@ -37,6 +37,7 @@ import { finishRegistration, insertPasskey, startRegistration } from "../identit
 import { sessionInfo } from "../identity/routes.ts";
 import { randomToken, sha256Hex } from "../identity/secrets.ts";
 import { issueSession } from "../identity/sessions.ts";
+import { cancelRequests } from "../lifecycle/state.ts";
 import { openAddApprover, reconcileApprovers, withdrawApprover } from "./approvers.ts";
 import type { SetPolicyDetail } from "./kinds.ts";
 import { anotherOwnerRemains, dropInvitesOf, isOwner } from "./members.ts";
@@ -47,6 +48,7 @@ import {
   pendingApprovalCount,
   walletSummary,
   workspaceDetail,
+  workspaceLifecycle,
 } from "./views.ts";
 
 const INVITE_TTL_SECONDS = 7 * 24 * 3600;
@@ -207,6 +209,258 @@ async function createWallet(
   return row;
 }
 
+/** Create a workspace whose only member, owner and approver is the signed-in person. */
+export async function createWorkspaceFor(
+  ctx: AppContext,
+  session: Session,
+  name: string,
+): Promise<WorkspaceId> {
+  const workspaceId = newId("ws");
+  const passkeys = await ctx.db
+    .select({ id: credentials.id, publicKey: credentials.publicKey })
+    .from(credentials)
+    .where(and(eq(credentials.userId, session.user.id), isNull(credentials.revokedAt)));
+  // Trust on first use: the signer learns the creator's passkeys here and from then on only
+  // changes the set with their assertions.
+  await signerCall(() =>
+    ctx.signer.createWorkspace({
+      workspaceId,
+      adminThreshold: 1,
+      approvers: passkeys.map((passkey) => ({
+        userId: session.user.id,
+        credentialId: passkey.id,
+        publicKey: passkey.publicKey.toString("base64url"),
+      })),
+    }),
+  );
+  await ctx.db.transaction(async (tx) => {
+    await tx.insert(workspaces).values({
+      id: workspaceId,
+      name,
+      createdBy: session.user.id,
+      adminThreshold: 1,
+    });
+    await tx.insert(memberships).values({ workspaceId, userId: session.user.id, role: "owner" });
+    if (passkeys.length > 0) {
+      await tx.insert(approverCredentials).values(
+        passkeys.map((passkey) => ({
+          workspaceId,
+          credentialId: passkey.id,
+          userId: session.user.id,
+          state: "active" as const,
+        })),
+      );
+    }
+    await appendAudit(
+      ctx,
+      {
+        workspaceId,
+        actor: actorOf(session),
+        action: "workspace.created",
+        subject: { type: "workspace", id: workspaceId },
+        detail: { name, approvers: passkeys.length },
+      },
+      tx,
+    );
+  });
+  return workspaceId;
+}
+
+/** Create an agent with its own new wallet and token. The token exists only in the result. */
+export async function createAgentIn(
+  ctx: AppContext,
+  session: Session,
+  workspaceId: WorkspaceId,
+  name: string,
+) {
+  // A wallet left behind by an earlier attempt whose agent insert failed is reused, so a retry
+  // does not leave an orphan key at the signer.
+  const [orphan] = await ctx.db
+    .select({ id: wallets.id })
+    .from(wallets)
+    .leftJoin(agents, eq(agents.walletId, wallets.id))
+    .where(
+      and(
+        eq(wallets.workspaceId, workspaceId),
+        eq(wallets.kind, "agent"),
+        eq(wallets.label, name),
+        isNull(agents.id),
+      ),
+    );
+  const wallet = await createWallet(ctx, {
+    workspaceId,
+    walletId: orphan?.id ?? newId("wal"),
+    kind: "agent",
+    label: name,
+  });
+  const agentId = newId("agt");
+  const minted = mintAgentToken(agentId);
+  const agent = await ctx.db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(agents)
+      .values({
+        id: agentId,
+        workspaceId,
+        name,
+        tokenHash: minted.hash,
+        tokenPrefix: minted.prefix,
+        walletId: wallet.id,
+      })
+      .returning();
+    await appendAudit(
+      ctx,
+      {
+        workspaceId,
+        actor: actorOf(session),
+        action: "agent.created",
+        subject: { type: "agent", id: agentId },
+        detail: { name, walletId: wallet.id, address: wallet.address },
+      },
+      tx,
+    );
+    return row;
+  });
+  if (!agent) throw new HttpError("internal", "the agent was not stored");
+  ctx.log.info("agent created", { event: "agent.created", workspaceId, agentId });
+  return { agent, wallet, token: minted.token, mcpUrl: `${ctx.config.publicOrigin}/mcp` };
+}
+
+/** Create the workspace's treasury wallet; `conflict` when it has one. */
+export async function createTreasuryIn(
+  ctx: AppContext,
+  session: Session,
+  workspaceId: WorkspaceId,
+  label: string,
+) {
+  const [existing] = await ctx.db
+    .select({ id: wallets.id })
+    .from(wallets)
+    .where(and(eq(wallets.workspaceId, workspaceId), eq(wallets.kind, "treasury")));
+  if (existing) throw new HttpError("conflict", "this workspace already has a treasury");
+  const wallet = await createWallet(ctx, {
+    workspaceId,
+    walletId: newId("wal"),
+    kind: "treasury",
+    label,
+  });
+  await appendAudit(ctx, {
+    workspaceId,
+    actor: actorOf(session),
+    action: "treasury.created",
+    subject: { type: "wallet", id: wallet.id },
+    detail: { label, address: wallet.address },
+  });
+  return wallet;
+}
+
+/** A single-use link that lets one person join the workspace with `role`. */
+export async function createInviteIn(
+  ctx: AppContext,
+  session: Session,
+  workspaceId: WorkspaceId,
+  role: Role,
+): Promise<{ id: string; url: string; expiresAt: number }> {
+  const token = randomToken(32);
+  const expiresAt = ctx.now() + INVITE_TTL_SECONDS;
+  const inviteId = `inv_${randomToken(16)}`;
+  await ctx.db.transaction(async (tx) => {
+    await tx.insert(invites).values({
+      tokenHash: sha256Hex(token),
+      id: inviteId,
+      workspaceId,
+      role,
+      createdBy: session.user.id,
+      expiresAt: new Date(expiresAt * 1000),
+    });
+    await appendAudit(
+      ctx,
+      {
+        workspaceId,
+        actor: actorOf(session),
+        action: "invite.created",
+        detail: { inviteId, role, expiresAt },
+      },
+      tx,
+    );
+  });
+  // `/join/<token>` is the web app's route for accepting an invite.
+  return { id: inviteId, url: `${ctx.config.publicOrigin}/join/${token}`, expiresAt };
+}
+
+/**
+ * Open a `set-policy` request for a wallet, replacing one still waiting. Refused with
+ * `invalid_request` for an approval threshold above the workspace's admin threshold, a chain not
+ * configured here, or a requester that is not an agent of the workspace.
+ */
+export async function openPolicyRequest(
+  ctx: AppContext,
+  session: Session,
+  workspaceId: WorkspaceId,
+  walletId: string,
+  draft: PolicyDraft,
+): Promise<ApprovalSummary> {
+  const { wallet } = await loadWallet(ctx, workspaceId, walletId);
+  const [workspace] = await ctx.db.select().from(workspaces).where(eq(workspaces.id, workspaceId));
+  if (!workspace) throw new HttpError("not_found", "no such workspace");
+  if (draft.approvals.threshold > workspace.adminThreshold) {
+    throw new HttpError(
+      "invalid_request",
+      `draft.approvals.threshold: may not exceed the workspace's admin threshold (${workspace.adminThreshold}); raise that first`,
+    );
+  }
+  const configured = new Set<string>(ctx.chains.list().map((chain) => chain.chainId));
+  const unknownChain = draft.chains.find((chainId) => !configured.has(chainId));
+  if (unknownChain !== undefined) {
+    throw new HttpError("invalid_request", "draft.chains: a chain is not configured here");
+  }
+  if (draft.requesters.length > 0) {
+    const found = await ctx.db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.workspaceId, workspaceId), inArray(agents.id, draft.requesters)));
+    if (found.length !== new Set(draft.requesters).size) {
+      throw new HttpError("invalid_request", "draft.requesters: not an agent of this workspace");
+    }
+  }
+  const current = await signerCall(() => ctx.signer.getWallet(wallet.id));
+  const policy: WalletPolicy = normalizePolicy({
+    ...draft,
+    v: PROTOCOL_VERSION,
+    workspaceId,
+    walletId: wallet.id,
+    revision: (current.policy?.revision ?? 0) + 1,
+    previousHash: current.policyHash,
+  } as WalletPolicy);
+  // One draft at a time per wallet: a newer draft replaces the one still waiting.
+  const waiting = await ctx.db
+    .select({ id: approvals.id })
+    .from(approvals)
+    .where(
+      and(
+        eq(approvals.workspaceId, workspaceId),
+        eq(approvals.kind, "set-policy"),
+        eq(approvals.subjectId, wallet.id),
+        eq(approvals.status, "pending"),
+      ),
+    );
+  for (const approval of waiting) await ctx.approvals.cancel(approval.id);
+  const detail: SetPolicyDetail = { policy };
+  return ctx.approvals.open({
+    workspaceId,
+    kind: "set-policy",
+    subjectId: wallet.id,
+    envelope: {
+      walletId: wallet.id,
+      policyHash: policyHash(policy),
+      previousPolicyHash: current.policyHash,
+    },
+    threshold: workspace.adminThreshold,
+    ttlSeconds: ctx.config.adminApprovalTtlSeconds,
+    detail,
+    requestedBy: actorOf(session),
+  });
+}
+
 export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   // --- workspaces -----------------------------------------------------------------------------
 
@@ -225,60 +479,14 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
         role,
         paused: workspace.paused,
         pendingApprovals: await pendingApprovalCount(ctx, workspace.id),
+        lifecycle: workspaceLifecycle(workspace),
       });
     }
     return { items };
   });
 
   handle(app, ctx, "createWorkspace", async ({ session, body }) => {
-    const workspaceId = newId("ws");
-    const passkeys = await ctx.db
-      .select({ id: credentials.id, publicKey: credentials.publicKey })
-      .from(credentials)
-      .where(and(eq(credentials.userId, session.user.id), isNull(credentials.revokedAt)));
-    // Trust on first use: the signer learns the creator's passkeys here and from then on only
-    // changes the set with their assertions.
-    await signerCall(() =>
-      ctx.signer.createWorkspace({
-        workspaceId,
-        adminThreshold: 1,
-        approvers: passkeys.map((passkey) => ({
-          userId: session.user.id,
-          credentialId: passkey.id,
-          publicKey: passkey.publicKey.toString("base64url"),
-        })),
-      }),
-    );
-    await ctx.db.transaction(async (tx) => {
-      await tx.insert(workspaces).values({
-        id: workspaceId,
-        name: body.name,
-        createdBy: session.user.id,
-        adminThreshold: 1,
-      });
-      await tx.insert(memberships).values({ workspaceId, userId: session.user.id, role: "owner" });
-      if (passkeys.length > 0) {
-        await tx.insert(approverCredentials).values(
-          passkeys.map((passkey) => ({
-            workspaceId,
-            credentialId: passkey.id,
-            userId: session.user.id,
-            state: "active" as const,
-          })),
-        );
-      }
-      await appendAudit(
-        ctx,
-        {
-          workspaceId,
-          actor: actorOf(session),
-          action: "workspace.created",
-          subject: { type: "workspace", id: workspaceId },
-          detail: { name: body.name, approvers: passkeys.length },
-        },
-        tx,
-      );
-    });
+    const workspaceId = await createWorkspaceFor(ctx, session, body.name);
     return workspaceDetail(ctx, workspaceId, "owner");
   });
 
@@ -381,31 +589,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   handle(app, ctx, "createInvite", async ({ session, params, body }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "owner");
-    const token = randomToken(32);
-    const expiresAt = ctx.now() + INVITE_TTL_SECONDS;
-    const inviteId = `inv_${randomToken(16)}`;
-    await ctx.db.transaction(async (tx) => {
-      await tx.insert(invites).values({
-        tokenHash: sha256Hex(token),
-        id: inviteId,
-        workspaceId,
-        role: body.role,
-        createdBy: session.user.id,
-        expiresAt: new Date(expiresAt * 1000),
-      });
-      await appendAudit(
-        ctx,
-        {
-          workspaceId,
-          actor: actorOf(session),
-          action: "invite.created",
-          detail: { inviteId, role: body.role, expiresAt },
-        },
-        tx,
-      );
-    });
-    // `/join/<token>` is the web app's route for accepting an invite.
-    return { id: inviteId, url: `${ctx.config.publicOrigin}/join/${token}`, expiresAt };
+    return createInviteIn(ctx, session, workspaceId, body.role);
   });
 
   handle(app, ctx, "listInvites", async ({ session, params }) => {
@@ -616,60 +800,12 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   handle(app, ctx, "createAgent", async ({ session, params, body }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "owner");
-    // A wallet left behind by an earlier attempt whose agent insert failed is reused, so a retry
-    // does not leave an orphan key at the signer.
-    const [orphan] = await ctx.db
-      .select({ id: wallets.id })
-      .from(wallets)
-      .leftJoin(agents, eq(agents.walletId, wallets.id))
-      .where(
-        and(
-          eq(wallets.workspaceId, workspaceId),
-          eq(wallets.kind, "agent"),
-          eq(wallets.label, body.name),
-          isNull(agents.id),
-        ),
-      );
-    const wallet = await createWallet(ctx, {
-      workspaceId,
-      walletId: orphan?.id ?? newId("wal"),
-      kind: "agent",
-      label: body.name,
-    });
-    const agentId = newId("agt");
-    const minted = mintAgentToken(agentId);
-    const agent = await ctx.db.transaction(async (tx) => {
-      const [row] = await tx
-        .insert(agents)
-        .values({
-          id: agentId,
-          workspaceId,
-          name: body.name,
-          tokenHash: minted.hash,
-          tokenPrefix: minted.prefix,
-          walletId: wallet.id,
-        })
-        .returning();
-      await appendAudit(
-        ctx,
-        {
-          workspaceId,
-          actor: actorOf(session),
-          action: "agent.created",
-          subject: { type: "agent", id: agentId },
-          detail: { name: body.name, walletId: wallet.id, address: wallet.address },
-        },
-        tx,
-      );
-      return row;
-    });
-    if (!agent) throw new HttpError("internal", "the agent was not stored");
-    ctx.log.info("agent created", { event: "agent.created", workspaceId, agentId });
+    const created = await createAgentIn(ctx, session, workspaceId, body.name);
     return {
-      agent: agentSummary(agent),
-      wallet: walletSummary(wallet, agentId),
-      token: minted.token,
-      mcpUrl: `${ctx.config.publicOrigin}/mcp`,
+      agent: agentSummary(created.agent),
+      wallet: walletSummary(created.wallet, created.agent.id),
+      token: created.token,
+      mcpUrl: created.mcpUrl,
     };
   });
 
@@ -741,31 +877,41 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
           code: error instanceof SignerError ? error.code : "unreachable",
         }),
     );
+    // Disabling is removal (D12): the agent's payments still waiting for people end too, and
+    // the signer is told at once, so none of them can be approved and signed later.
+    const payments = await ctx.db
+      .select({ id: approvals.id, workspaceId: approvals.workspaceId })
+      .from(approvals)
+      .where(
+        and(
+          eq(approvals.workspaceId, workspaceId),
+          eq(approvals.kind, "approve-intent"),
+          eq(approvals.status, "pending"),
+          sql`${approvals.envelope}->>'agentId' = ${agent.id}`,
+        ),
+      );
+    await cancelRequests(ctx, payments).then(
+      (cancelled) =>
+        ctx.log.info("agent payments cancelled", {
+          event: "agent.payments_cancelled",
+          workspaceId,
+          agentId: agent.id,
+          count: cancelled,
+        }),
+      (error: unknown) =>
+        ctx.log.warn("cancelling an agent's payments failed", {
+          workspaceId,
+          agentId: agent.id,
+          error: error instanceof Error ? error.name : "unknown",
+        }),
+    );
     return agentSummary(updated);
   });
 
   handle(app, ctx, "createTreasury", async ({ session, params, body }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "owner");
-    const [existing] = await ctx.db
-      .select({ id: wallets.id })
-      .from(wallets)
-      .where(and(eq(wallets.workspaceId, workspaceId), eq(wallets.kind, "treasury")));
-    if (existing) throw new HttpError("conflict", "this workspace already has a treasury");
-    const wallet = await createWallet(ctx, {
-      workspaceId,
-      walletId: newId("wal"),
-      kind: "treasury",
-      label: body.label,
-    });
-    await appendAudit(ctx, {
-      workspaceId,
-      actor: actorOf(session),
-      action: "treasury.created",
-      subject: { type: "wallet", id: wallet.id },
-      detail: { label: body.label, address: wallet.address },
-    });
-    return walletSummary(wallet, null);
+    return walletSummary(await createTreasuryIn(ctx, session, workspaceId, body.label), null);
   });
 
   handle(app, ctx, "getWallet", async ({ session, params }) => {
@@ -806,70 +952,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   handle(app, ctx, "requestPolicy", async ({ session, params, body }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "owner");
-    const { wallet } = await loadWallet(ctx, workspaceId, params.walletId);
-    const [workspace] = await ctx.db
-      .select()
-      .from(workspaces)
-      .where(eq(workspaces.id, workspaceId));
-    if (!workspace) throw new HttpError("not_found", "no such workspace");
-    const draft = body.draft;
-    if (draft.approvals.threshold > workspace.adminThreshold) {
-      throw new HttpError(
-        "invalid_request",
-        `draft.approvals.threshold: may not exceed the workspace's admin threshold (${workspace.adminThreshold}); raise that first`,
-      );
-    }
-    const configured = new Set<string>(ctx.chains.list().map((chain) => chain.chainId));
-    const unknownChain = draft.chains.find((chainId) => !configured.has(chainId));
-    if (unknownChain !== undefined) {
-      throw new HttpError("invalid_request", "draft.chains: a chain is not configured here");
-    }
-    if (draft.requesters.length > 0) {
-      const found = await ctx.db
-        .select({ id: agents.id })
-        .from(agents)
-        .where(and(eq(agents.workspaceId, workspaceId), inArray(agents.id, draft.requesters)));
-      if (found.length !== new Set(draft.requesters).size) {
-        throw new HttpError("invalid_request", "draft.requesters: not an agent of this workspace");
-      }
-    }
-    const current = await signerCall(() => ctx.signer.getWallet(wallet.id));
-    const policy: WalletPolicy = normalizePolicy({
-      ...draft,
-      v: PROTOCOL_VERSION,
-      workspaceId,
-      walletId: wallet.id,
-      revision: (current.policy?.revision ?? 0) + 1,
-      previousHash: current.policyHash,
-    } as WalletPolicy);
-    // One draft at a time per wallet: a newer draft replaces the one still waiting.
-    const waiting = await ctx.db
-      .select({ id: approvals.id })
-      .from(approvals)
-      .where(
-        and(
-          eq(approvals.workspaceId, workspaceId),
-          eq(approvals.kind, "set-policy"),
-          eq(approvals.subjectId, wallet.id),
-          eq(approvals.status, "pending"),
-        ),
-      );
-    for (const approval of waiting) await ctx.approvals.cancel(approval.id);
-    const detail: SetPolicyDetail = { policy };
-    return ctx.approvals.open({
-      workspaceId,
-      kind: "set-policy",
-      subjectId: wallet.id,
-      envelope: {
-        walletId: wallet.id,
-        policyHash: policyHash(policy),
-        previousPolicyHash: current.policyHash,
-      },
-      threshold: workspace.adminThreshold,
-      ttlSeconds: ctx.config.adminApprovalTtlSeconds,
-      detail,
-      requestedBy: actorOf(session),
-    });
+    return openPolicyRequest(ctx, session, workspaceId, params.walletId, body.draft);
   });
 
   // --- audit ----------------------------------------------------------------------------------

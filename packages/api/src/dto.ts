@@ -194,6 +194,51 @@ export const AgentSummary = z.strictObject({
 });
 export type AgentSummary = z.infer<typeof AgentSummary>;
 
+/**
+ * Where a wallet is in its life, as the signer last reported it.
+ * - `active`: signs within its policy.
+ * - `retiring`: people approved retiring it; it signs nothing, and its key is destroyed at
+ *   `destroyAfter` unless someone cancels first.
+ * - `held`: its retirement was cancelled; it signs nothing until a new policy is approved.
+ * - `destroyed`: its key is gone; `destroyAfter` is when that was due.
+ */
+export const WalletLifecycle = z
+  .strictObject({
+    state: z.enum(["active", "retiring", "held", "destroyed"]),
+    destroyAfter: EpochSeconds.nullable(),
+  })
+  .refine(
+    (wallet) =>
+      (wallet.state === "retiring" || wallet.state === "destroyed") ===
+      (wallet.destroyAfter !== null),
+    { path: ["destroyAfter"], message: "only a retiring or destroyed wallet has a destroy time" },
+  );
+export type WalletLifecycle = z.infer<typeof WalletLifecycle>;
+
+/**
+ * Where a workspace is in its life.
+ * - `active`: as usual.
+ * - `deleting`: people approved deleting it; it is paused, its wallets sign nothing, and at
+ *   `destroyAfter` their keys are destroyed and its data made unreadable, unless a member
+ *   cancels first. Only pausing, cancelling, notification settings and reading still work.
+ * - `deleted`: a tombstone; `deletedAt` is when the deletion finished.
+ */
+export const WorkspaceLifecycle = z
+  .strictObject({
+    state: z.enum(["active", "deleting", "deleted"]),
+    destroyAfter: EpochSeconds.nullable(),
+    deletedAt: EpochSeconds.nullable(),
+  })
+  .refine((workspace) => (workspace.state === "active") === (workspace.destroyAfter === null), {
+    path: ["destroyAfter"],
+    message: "only a workspace being deleted or deleted has a destroy time",
+  })
+  .refine((workspace) => (workspace.state === "deleted") === (workspace.deletedAt !== null), {
+    path: ["deletedAt"],
+    message: "only a deleted workspace has a deletion time",
+  });
+export type WorkspaceLifecycle = z.infer<typeof WorkspaceLifecycle>;
+
 export const WalletSummary = z.strictObject({
   id: WalletId,
   kind: z.enum(["agent", "treasury"]),
@@ -204,6 +249,7 @@ export const WalletSummary = z.strictObject({
   /** Null until the first policy is approved. A wallet without a policy can sign nothing. */
   policy: WalletPolicy.nullable(),
   policyHash: Digest.nullable(),
+  lifecycle: WalletLifecycle,
 });
 export type WalletSummary = z.infer<typeof WalletSummary>;
 
@@ -231,6 +277,7 @@ export const WorkspaceSummary = z.strictObject({
   role: Role,
   paused: z.boolean(),
   pendingApprovals: z.number().int().min(0),
+  lifecycle: WorkspaceLifecycle,
 });
 export type WorkspaceSummary = z.infer<typeof WorkspaceSummary>;
 
@@ -245,6 +292,48 @@ export const WorkspaceDetail = WorkspaceSummary.extend({
   chains: z.array(ChainInfo),
 });
 export type WorkspaceDetail = z.infer<typeof WorkspaceDetail>;
+
+/**
+ * Why deleting a workspace now would lose something or wait, as the control plane sees it.
+ * - `pending_approvals`: requests still wait for people; the deletion cancels them.
+ * - `unfinished_runs`: an approved request, or a payment under a mandate, is still being
+ *   carried out; the deletion finishes after it.
+ * - `unmined_transactions`: a signed transaction is not mined yet (or was given up on while its
+ *   nonce is still unused, so it can still be mined); the deletion waits for it. Cancel it with
+ *   a cancel request if it is stuck.
+ * - `nonzero_balance`: a wallet still holds an asset the server read; it is lost when the key
+ *   is destroyed. Empty the wallet first.
+ */
+export const DeletionBlocker = z.enum([
+  "pending_approvals",
+  "unfinished_runs",
+  "unmined_transactions",
+  "nonzero_balance",
+]);
+export type DeletionBlocker = z.infer<typeof DeletionBlocker>;
+
+/**
+ * Advisory. What deleting the workspace would lose, read by the control plane: the signer
+ * cannot see balances, and the server reads only the native coin of each configured chain and
+ * the assets each wallet's policy lists. A wallet's `balances` is null when they could not be
+ * read.
+ */
+export const DeletionPreflight = z.strictObject({
+  workspaceId: WorkspaceId,
+  source: z.literal("control-plane"),
+  wallets: z.array(
+    z.strictObject({
+      wallet: WalletSummary,
+      balances: z.array(AssetBalance).nullable(),
+    }),
+  ),
+  blockers: z.array(DeletionBlocker),
+  /** The shortest delay the signer accepts between asking and destroying, in seconds. */
+  minDestroyDelaySeconds: z.number().int().min(0),
+  /** The earliest `destroyAfter` a request opened now may name. */
+  earliestDestroyAfter: EpochSeconds,
+});
+export type DeletionPreflight = z.infer<typeof DeletionPreflight>;
 
 /** The parts of a wallet policy a person edits. The server fills in ids, revision and hash chain. */
 export const PolicyDraft = z.strictObject({
@@ -604,6 +693,8 @@ export const ApprovalKind = z.enum([
   "sweep-wallet",
   "grant-mandate",
   "cancel-transaction",
+  "retire-wallet",
+  "delete-workspace",
 ]);
 export type ApprovalKind = z.infer<typeof ApprovalKind>;
 
@@ -706,6 +797,20 @@ export const ApprovalSubject = z.discriminatedUnion("kind", [
      * transaction when it was requested. Nothing else leaves the wallet.
      */
     maxFeeWei: Amount,
+  }),
+  z.strictObject({
+    kind: z.literal("retire-wallet"),
+    /** The wallet as this control plane mirrors it; the envelope names it as the signer holds it. */
+    wallet: WalletSummary,
+    /** When the signer destroys its key, unless someone cancels first. */
+    destroyAfter: EpochSeconds,
+  }),
+  z.strictObject({
+    kind: z.literal("delete-workspace"),
+    /** Every wallet whose key the deletion destroys, in the envelope's order. */
+    wallets: z.array(WalletSummary),
+    /** When the signer destroys the keys, unless a member cancels first. */
+    destroyAfter: EpochSeconds,
   }),
 ]);
 export type ApprovalSubject = z.infer<typeof ApprovalSubject>;
@@ -869,3 +974,127 @@ export const NotificationPreferences = z.strictObject({
   quietHours: QuietHours.nullable(),
 });
 export type NotificationPreferences = z.infer<typeof NotificationPreferences>;
+
+// --- export and clone -------------------------------------------------------------------------
+
+/** A wallet's name inside a template: `requesters` point at agents through their wallets' refs. */
+export const TemplateWalletRef = z.string().regex(/^w[1-9][0-9]{0,3}$/, "a wallet ref: w1, w2, …");
+export type TemplateWalletRef = z.infer<typeof TemplateWalletRef>;
+
+/**
+ * A wallet policy without its ids, revision and hash chain, as a template carries it. Each of
+ * `requesters` is the ref of a template wallet that has an agent.
+ */
+export const PolicyTemplate = PolicyDraft.extend({
+  requesters: z.array(TemplateWalletRef).max(64),
+});
+export type PolicyTemplate = z.infer<typeof PolicyTemplate>;
+
+/**
+ * A workspace's configuration and nothing of its history: no key, address, token, intent,
+ * approval, mandate, transaction or audit entry. Mandates are authority and are granted again by
+ * the new workspace's people; per-person notification settings stay with each person.
+ */
+export const WorkspaceTemplate = z
+  .strictObject({
+    format: z.literal("askgina.os/workspace-template/v1"),
+    name: DisplayName,
+    /** A reminder only: a new workspace starts with one approver, and so at threshold 1. */
+    adminThreshold: z.number().int().min(1).max(16),
+    notificationDetail: NotificationDetail,
+    wallets: z
+      .array(
+        z.strictObject({
+          ref: TemplateWalletRef,
+          kind: z.enum(["agent", "treasury"]),
+          label: DisplayName,
+          /** The agent this wallet is for; null exactly for the treasury. */
+          agent: z.strictObject({ name: DisplayName }).nullable(),
+          policy: PolicyTemplate.nullable(),
+        }),
+      )
+      .max(256),
+    /** The source's members. Only an installation that knows these people invites them. */
+    members: z.array(z.strictObject({ userId: UserId, role: Role })).max(256),
+  })
+  .superRefine((template, issue) => {
+    const refs = new Set(template.wallets.map((wallet) => wallet.ref));
+    if (refs.size !== template.wallets.length) {
+      issue.addIssue({ code: "custom", path: ["wallets"], message: "each ref at most once" });
+    }
+    if (template.wallets.filter((wallet) => wallet.kind === "treasury").length > 1) {
+      issue.addIssue({ code: "custom", path: ["wallets"], message: "at most one treasury" });
+    }
+    const agentRefs = new Set(
+      template.wallets.filter((wallet) => wallet.agent !== null).map((wallet) => wallet.ref),
+    );
+    template.wallets.forEach((wallet, index) => {
+      if ((wallet.kind === "agent") !== (wallet.agent !== null)) {
+        issue.addIssue({
+          code: "custom",
+          path: ["wallets", index, "agent"],
+          message: "an agent wallet names its agent, a treasury none",
+        });
+      }
+      for (const ref of wallet.policy?.requesters ?? []) {
+        if (!agentRefs.has(ref)) {
+          issue.addIssue({
+            code: "custom",
+            path: ["wallets", index, "policy", "requesters"],
+            message: "a requester is the ref of a template wallet with an agent",
+          });
+        }
+      }
+    });
+    if (new Set(template.members.map((member) => member.userId)).size !== template.members.length) {
+      issue.addIssue({ code: "custom", path: ["members"], message: "each person at most once" });
+    }
+  });
+export type WorkspaceTemplate = z.infer<typeof WorkspaceTemplate>;
+
+/**
+ * A workspace's history as JSON Lines (`askgina.os/workspace-record/v1`): a header, then the
+ * opened audit log with its hash chain, intents, transactions, policy revisions, mandates and
+ * their uses, the signer's decision log, and an `end` line with the count of each. It verifies
+ * offline with `node apps/server/src/lifecycle/verify-record.ts <file>`. It carries no token,
+ * session, sealed value, confirmation link, push endpoint or signed transaction.
+ */
+export const WorkspaceRecordExport = z.strictObject({ record: z.string() });
+export type WorkspaceRecordExport = z.infer<typeof WorkspaceRecordExport>;
+
+/** What a clone takes from its source besides the wallets' configuration. */
+export const CloneOptions = z.strictObject({
+  name: DisplayName,
+  /** Create the template's agents (new tokens, new wallets) and keep their requester entries. */
+  includeAgents: z.boolean(),
+  /** Create an invite for each member this installation knows, with the member's role. */
+  includeMembers: z.boolean(),
+});
+export type CloneOptions = z.infer<typeof CloneOptions>;
+
+/**
+ * A new workspace made from a template. The person cloning is its only member and approver; each
+ * wallet is new, with a new address, and signs nothing until people approve its policy in the
+ * `set-policy` request listed in `approvals`.
+ */
+export const CloneResult = z.strictObject({
+  workspace: WorkspaceDetail,
+  approvals: z.array(ApprovalSummary),
+  /** The new agents' tokens, shown only here. */
+  agents: z.array(
+    z.strictObject({ agentId: AgentId, walletId: WalletId, token: z.string(), mcpUrl: z.string() }),
+  ),
+  /** One link per member to invite, for the person cloning to pass on. */
+  invites: z.array(
+    z.strictObject({
+      userId: UserId,
+      displayName: z.string(),
+      role: Role,
+      url: z.string(),
+      expiresAt: z.number().int(),
+    }),
+  ),
+  /** The source's admin threshold, to raise to once enough approvers have joined. */
+  templateAdminThreshold: z.number().int().min(1).max(16),
+});
+export type CloneResult = z.infer<typeof CloneResult>;

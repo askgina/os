@@ -26,8 +26,10 @@ import {
   encodeAssertion,
   fromBase64Url,
   possessionOf,
+  REFUSAL_TEXT,
   requestOptions,
   toBase64Url,
+  WARNING_TEXT,
 } from "../public/approve.js";
 import { createApproveApp, MAX_BODY_BYTES, readPageFiles } from "../src/app.ts";
 import type { Logger } from "../src/log.ts";
@@ -616,6 +618,60 @@ describe("the page's passkey code", () => {
       value: keyFingerprint(NEW_PASSKEY.publicKey),
       kind: "code",
     });
+  });
+
+  it("a retirement or a deletion warns first that keys are destroyed and balances unchecked", () => {
+    const workspaceId = newId("ws");
+    const wallet = { walletId: newId("wal"), address: `0x${"ab".repeat(20)}` as const };
+    const render = (envelope: Record<string, unknown>, wallets: (typeof wallet)[]) =>
+      renderConfirmation({
+        envelope: Envelope.parse({
+          v: 1,
+          approvalId: newId("apr"),
+          workspaceId,
+          nonce: randomBytes(16).toString("base64url"),
+          issuedAt: NOW,
+          expiresAt: NOW + 3_600,
+          destroyAfter: NOW + 604_800,
+          ...envelope,
+        }),
+        subject: { kind: "envelope-only" },
+        wallet: null,
+        chains: [],
+        assets: [],
+        currentPolicy: null,
+        spent24h: 0n,
+        approvals: { collected: 0, required: 1 },
+        adminThreshold: 1,
+        possessionProven: false,
+        treasuries: [],
+        cancelTarget: null,
+        wallets: wallets.map((item) => ({ ...item, label: "Invoice payer's wallet" })),
+      });
+    const retire = render({ type: "retire-wallet", wallet }, [wallet]);
+    const remove = render({ type: "delete-workspace", wallets: [wallet] }, [wallet]);
+    expect(retire.title).toBe("Retire a wallet");
+    expect(remove.title).toBe("Delete this workspace");
+    for (const view of [retire, remove]) {
+      expect(view.warnings).toEqual(["keys_destroyed", "balances_unchecked"]);
+      expect(view.warnings.map((warning) => WARNING_TEXT[warning])).toEqual([
+        expect.stringMatching(/lost for good/),
+        expect.stringMatching(/^The signer cannot see balances/),
+      ]);
+    }
+    // A workspace without wallets loses no key, so neither warning is shown.
+    expect(render({ type: "delete-workspace", wallets: [] }, []).warnings).toEqual([]);
+    // Each refusal of the lifecycle says what to do in words, not the code.
+    for (const code of [
+      "workspace_deleting",
+      "workspace_deleted",
+      "wallet_retired",
+      "wallet_set_mismatch",
+      "destroy_delay_out_of_range",
+      "destroy_not_due",
+    ] as const) {
+      expect(REFUSAL_TEXT[code]).not.toContain("_");
+    }
   });
 
   it("base64url round-trips every length", () => {

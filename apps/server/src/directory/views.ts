@@ -3,8 +3,10 @@ import type {
   ApproverState,
   Member,
   Role,
+  WalletLifecycle,
   WalletSummary,
   WorkspaceDetail,
+  WorkspaceLifecycle,
 } from "@askgina/os-api";
 import type { WorkspaceId } from "@askgina/os-protocol";
 import { and, asc, count, eq, ne } from "drizzle-orm";
@@ -35,6 +37,27 @@ export function agentSummary(row: typeof agents.$inferSelect): AgentSummary {
   };
 }
 
+/** A wallet's lifecycle as its mirror row holds it. */
+export function walletLifecycle(
+  row: Pick<typeof wallets.$inferSelect, "lifecycle" | "destroyAfter">,
+): WalletLifecycle {
+  return {
+    state: row.lifecycle,
+    destroyAfter: row.destroyAfter === null ? null : seconds(row.destroyAfter),
+  };
+}
+
+/** A workspace's lifecycle as its row holds it. */
+export function workspaceLifecycle(
+  row: Pick<typeof workspaces.$inferSelect, "lifecycle" | "destroyAfter" | "deletedAt">,
+): WorkspaceLifecycle {
+  return {
+    state: row.lifecycle,
+    destroyAfter: row.destroyAfter === null ? null : seconds(row.destroyAfter),
+    deletedAt: row.deletedAt === null ? null : seconds(row.deletedAt),
+  };
+}
+
 export function walletSummary(
   row: typeof wallets.$inferSelect,
   agentId: AgentSummary["id"] | null,
@@ -47,6 +70,7 @@ export function walletSummary(
     agentId,
     policy: row.policy,
     policyHash: row.policyHash,
+    lifecycle: walletLifecycle(row),
   };
 }
 
@@ -155,6 +179,7 @@ export async function workspaceDetail(
     role,
     paused: workspace.paused,
     pendingApprovals: await pendingApprovalCount(ctx, workspaceId),
+    lifecycle: workspaceLifecycle(workspace),
     adminThreshold: workspace.adminThreshold,
     notificationDetail: workspace.notificationDetail,
     members: await listMembers(ctx, workspaceId, role),

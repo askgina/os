@@ -18,6 +18,7 @@ import {
   linkClass,
   PageHeader,
 } from "@/components/common.tsx";
+import { RetireWalletCard, WalletLifecycleNotice } from "@/components/lifecycle.tsx";
 import { MandatesCard } from "@/components/mandate.tsx";
 import { PolicyTable } from "@/components/policy.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
@@ -43,6 +44,7 @@ import {
   shortAddress,
   UnitsError,
 } from "@/lib/format.ts";
+import { walletChangeable } from "@/lib/lifecycle.ts";
 import { sweepDestinations } from "@/lib/sweep.ts";
 
 export function WalletPage() {
@@ -59,6 +61,9 @@ function WalletView({ wallet, workspace }: { wallet: WalletDetail; workspace: Wo
   const agent = workspace.agents.find((item) => item.id === wallet.agentId) ?? null;
   const context = { chains: workspace.chains, agents: workspace.agents, balances: wallet.balances };
   const canAdmin = workspace.role === "owner";
+  // A wallet of a workspace being deleted is retiring with it, so this also covers that.
+  const active = wallet.lifecycle.state === "active";
+  const changeable = walletChangeable(wallet.lifecycle) && workspace.lifecycle.state === "active";
   return (
     <div className="grid grid-cols-1 gap-6">
       <PageHeader
@@ -80,6 +85,7 @@ function WalletView({ wallet, workspace }: { wallet: WalletDetail; workspace: Wo
           )
         }
       />
+      <WalletLifecycleNotice wallet={wallet} workspace={workspace} />
       <Card>
         <CardHeader>
           <CardTitle>Address</CardTitle>
@@ -88,7 +94,9 @@ function WalletView({ wallet, workspace }: { wallet: WalletDetail; workspace: Wo
         <CardContent>
           <FullAddress address={wallet.address} className="text-base" />
           <p className="mt-2 text-xs text-muted-foreground">
-            Send funds here to let this wallet pay. Check every group before sending.
+            {wallet.lifecycle.state === "retiring" || wallet.lifecycle.state === "destroyed"
+              ? "Do not send anything here: this wallet's key is destroyed or soon will be."
+              : "Send funds here to let this wallet pay. Check every group before sending."}
           </p>
         </CardContent>
       </Card>
@@ -184,17 +192,22 @@ function WalletView({ wallet, workspace }: { wallet: WalletDetail; workspace: Wo
         </Alert>
       ) : null}
 
-      <MandatesCard workspace={workspace} filter={{ walletId: wallet.id }} editor={{ wallet }} />
+      <MandatesCard
+        workspace={workspace}
+        filter={{ walletId: wallet.id }}
+        editor={active ? { wallet } : null}
+      />
 
-      {canAdmin ? <SweepCard wallet={wallet} workspace={workspace} /> : null}
-      {canAdmin ? <PolicyEditor wallet={wallet} workspace={workspace} /> : null}
+      {canAdmin && active ? <SweepCard wallet={wallet} workspace={workspace} /> : null}
+      {canAdmin && changeable ? <PolicyEditor wallet={wallet} workspace={workspace} /> : null}
+      {canAdmin && changeable ? <RetireWalletCard wallet={wallet} workspace={workspace} /> : null}
     </div>
   );
 }
 
 /**
  * Empty one asset of the wallet without an agent: the way out for a wallet whose agent was
- * disabled, and for a paused workspace. Only destinations the signer accepts are offered.
+ * removed, and for a paused workspace. Only destinations the signer accepts are offered.
  */
 function SweepCard({ wallet, workspace }: { wallet: WalletDetail; workspace: WorkspaceDetail }) {
   const navigate = useNavigate();

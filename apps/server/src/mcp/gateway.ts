@@ -7,7 +7,7 @@ import { and, eq, isNull, lt, or } from "drizzle-orm";
 import type { Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../context.ts";
-import { agents, wallets } from "../db/schema.ts";
+import { agents, wallets, workspaces } from "../db/schema.ts";
 import { chainAccess } from "../execution/chains.ts";
 import {
   cancelIntent,
@@ -487,6 +487,13 @@ export function mountMcp(app: Hono, ctx: AppContext): void {
       return fail();
     }
     if (agent.status !== "active") return deny(403, "forbidden", "this agent is disabled");
+    const [workspace] = await ctx.db
+      .select({ lifecycle: workspaces.lifecycle })
+      .from(workspaces)
+      .where(eq(workspaces.id, agent.workspaceId));
+    if (workspace?.lifecycle !== "active") {
+      return deny(403, "forbidden", "this agent's workspace is being deleted");
+    }
     return agent;
   };
 

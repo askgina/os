@@ -6,9 +6,11 @@ import {
   type Routes,
   routes,
 } from "@askgina/os-api";
+import { and, eq } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import { z } from "zod";
 import type { AppContext, Session } from "../context.ts";
+import { memberships, workspaces } from "../db/schema.ts";
 import { HttpError } from "./errors.ts";
 
 type Infer<S> = S extends z.ZodType ? z.infer<S> : undefined;
@@ -28,9 +30,23 @@ export type Handler<N extends RouteName> = (
 ) => Promise<z.input<Routes[N]["response"]>>;
 
 /**
+ * The writes to a workspace that still work while it is being deleted, or after: they pause,
+ * cancel, end authority, or change what notifications say. Reads always work.
+ */
+const ALLOWED_WHILE_DELETING: Partial<Record<RouteName, true>> = {
+  pauseWorkspace: true,
+  cancelDeleteWorkspace: true,
+  cancelRetireWallet: true,
+  revokeMandate: true,
+  setNotificationDetail: true,
+};
+
+/**
  * Serve one endpoint of the contract in `@askgina/os-api`. This is the only way routes under
  * `/api/v1` are registered, so every endpoint gets the same treatment: session check, origin
- * check on writes, input validation, and a response that matches the contract.
+ * check on writes, input validation, a write to a workspace being deleted refused (`conflict`,
+ * detail `workspace_deleting` or `workspace_deleted`) unless it is one of
+ * {@link ALLOWED_WHILE_DELETING}, and a response that matches the contract.
  */
 export function handle<N extends RouteName>(
   app: Hono,
@@ -51,6 +67,29 @@ export function handle<N extends RouteName>(
     const session = await ctx.sessions.resolve(c.req.raw);
     if (route.auth === "session" && session === null) {
       throw new HttpError("unauthenticated", "sign in first");
+    }
+    const workspaceId = (c.req.param() as Record<string, string | undefined>).workspaceId;
+    if (
+      route.method !== "GET" &&
+      session !== null &&
+      workspaceId !== undefined &&
+      ALLOWED_WHILE_DELETING[name] !== true
+    ) {
+      // Only a member learns the state; anyone else gets the handler's `not_found`.
+      const [row] = await ctx.db
+        .select({ lifecycle: workspaces.lifecycle })
+        .from(workspaces)
+        .innerJoin(memberships, eq(memberships.workspaceId, workspaces.id))
+        .where(
+          and(eq(workspaces.id, workspaceId as never), eq(memberships.userId, session.user.id)),
+        );
+      if (row && row.lifecycle !== "active") {
+        throw new HttpError(
+          "conflict",
+          "this workspace is being deleted: only pausing, cancelling and notification settings still work",
+          `workspace_${row.lifecycle}`,
+        );
+      }
     }
     const body =
       route.body === null ? undefined : route.body.parse(await c.req.json().catch(() => null));

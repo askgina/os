@@ -79,6 +79,8 @@ export async function issueSession(
     idHash: sha256Hex(value),
     userId: input.userId,
     credentialId: input.credentialId,
+    // On the app's clock, as `expiresAt` is: a record export asks how long ago the passkey was used.
+    createdAt: new Date(now * 1000),
     expiresAt: new Date((now + ctx.config.sessionTtlSeconds) * 1000),
   });
   c.header("set-cookie", serializeCookie(ctx.config, value, ctx.config.sessionTtlSeconds), {

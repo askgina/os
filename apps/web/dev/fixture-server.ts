@@ -17,14 +17,21 @@
  * waits for the person it adds to answer there with the new passkey ("This passkey is mine"),
  * which shows them its fingerprint; until then nobody can approve it.
  *
- * Besides the contract it has four development endpoints under `/__fixture/`: one lets a test
+ * Besides the contract it has five development endpoints under `/__fixture/`: one lets a test
  * act as an agent and propose a payment (the real server takes those over MCP), one puts a sent
  * payment into a chain outcome (stuck, or rejected by the chain), one turns Web Push off or on
- * as an operator would with `WEB_PUSH_ENABLED`, and one resets state.
+ * as an operator would with `WEB_PUSH_ENABLED`, one makes a retirement or deletion due (`due`,
+ * below), and one resets state.
  *
  * Approvals in advance (mandates) are held and counted here as the signer holds them: a proposed
  * transfer that one of the agent's live mandates covers is sent with no request, checked against
  * the wallet's limits too and counted for good; anything else opens a request as usual.
+ *
+ * Retiring a wallet and deleting a workspace wait out the signer's shortest delay (7 days) like
+ * the real ones, and can be cancelled until then. `/__fixture/due` makes one due at once, as if
+ * its delay had passed; the next request then finishes it as the server's sweeper would, unless
+ * a sent transaction is not mined yet: the key goes, and a deleted workspace is gone for its
+ * members.
  *
  * Notification settings are kept as the server keeps them. Web Push reports itself on, with a
  * P-256 key made at start (`OS_WEB_FIXTURE_WEB_PUSH=0` starts it off, and a reset goes back to
@@ -37,8 +44,11 @@ import {
   type ApprovalDetail,
   type ApprovalSubject,
   type ApprovalSummary,
+  type AssetBalance,
   type AuditEvent,
   type ChainInfo,
+  type CloneOptions,
+  type CloneResult,
   CONTENT_SECURITY_POLICY,
   type IntentDetail,
   type InviteSummary,
@@ -61,6 +71,7 @@ import {
   type TransactionInfo,
   type WalletSummary,
   type WorkspaceDetail,
+  type WorkspaceTemplate,
 } from "@askgina/os-api";
 import {
   AssertionResponse,
@@ -174,6 +185,9 @@ interface Workspace {
   wallets: WalletSummary[];
   audit: AuditEvent[];
   decisions: SignerDecision[];
+  lifecycle: WorkspaceDetail["lifecycle"];
+  /** While it is being deleted: each wallet's state before, which a cancel restores. */
+  beforeDelete: Map<string, "active" | "held">;
 }
 interface Approval {
   summary: ApprovalSummary;
@@ -843,6 +857,7 @@ function workspaceDetail(workspace: Workspace, userId: string): WorkspaceDetail 
     role: memberOf(workspace, userId).role,
     paused: workspace.paused,
     pendingApprovals: pending,
+    lifecycle: workspace.lifecycle,
     adminThreshold: workspace.adminThreshold,
     notificationDetail: workspace.notificationDetail,
     members: workspace.members.map((member) => ({
@@ -963,7 +978,11 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
   const agent = workspace.agents.find((item) => item.id === agentId);
   const wallet = workspace.wallets.find((item) => item.agentId === agentId);
   if (!agent || !wallet || agent.status !== "active")
-    throw new Refusal("forbidden", "This agent is disabled.");
+    throw new Refusal("forbidden", "This agent was removed.");
+  // Mirrors the gateway and the signer: nothing is proposed from a workspace being deleted or a
+  // wallet that is retiring, stopped or destroyed.
+  if (workspace.lifecycle.state !== "active" || wallet.lifecycle.state !== "active")
+    throw new Refusal("forbidden", "This wallet is retired or its workspace is being deleted.");
   if (!wallet.policy || !wallet.policyHash)
     throw new Refusal("policy_denied", "This wallet has no policy yet.", "policy_missing");
   const chainId = wallet.policy.chains[0] ?? "eip155:31337";
@@ -1344,6 +1363,164 @@ function policyRefusal(
   return null;
 }
 
+// --- retiring and deleting --------------------------------------------------------------------
+
+/** The signer's default range for the delay before keys are destroyed: 7 to 90 days. */
+const MIN_DESTROY_DELAY_SECONDS = 604_800;
+const MAX_DESTROY_DELAY_SECONDS = 7_776_000;
+
+/** What `getWallet` and the deletion preflight read in every wallet. */
+const BALANCES: AssetBalance[] = [
+  {
+    chainId: "eip155:31337",
+    asset: "native",
+    symbol: "ETH",
+    decimals: 18,
+    amount: "1250000000000000000",
+  },
+  { chainId: "eip155:31337", asset: TEST_USDC, symbol: "USDC", decimals: 6, amount: "420000000" },
+];
+
+const systemActor: AuditEvent["actor"] = { type: "system", id: null, name: null };
+
+/** Mirrors the signer: the delay from now, the request's `issuedAt`, must be in its range. */
+function checkDestroyAfter(destroyAfter: number): void {
+  const delay = destroyAfter - now();
+  if (delay < MIN_DESTROY_DELAY_SECONDS || delay > MAX_DESTROY_DELAY_SECONDS) {
+    throw new Refusal(
+      "invalid_request",
+      "The delay before keys are destroyed is outside what the signer allows.",
+      "destroy_delay_out_of_range",
+    );
+  }
+}
+
+/** Whether a sent transaction of the workspace, or of one wallet, is not mined yet (D7). */
+function unmined(workspace: Workspace, walletId?: string): boolean {
+  return [...state.intents.values()].some(
+    (intent) =>
+      intent.workspaceId === workspace.id &&
+      (walletId === undefined || intent.walletId === walletId) &&
+      intent.transaction !== null &&
+      isSent(intent.transaction),
+  );
+}
+
+/** Withdraws a waiting request, and the payment it asked for. */
+function cancelApproval(approval: Approval): void {
+  approval.summary.status = "cancelled";
+  if (approval.subject.kind === "approve-intent") {
+    const intent = state.intents.get(approval.subject.intent.id);
+    if (intent) intent.status = "cancelled";
+  }
+}
+
+/**
+ * What applying a deletion (`walletId` null) or a retirement ends at once, as the server does:
+ * waiting requests, except cancels of sent transactions, and live mandates. A retirement ends only
+ * the wallet's waiting grants and sweeps, and its mandates.
+ */
+function endAuthority(workspace: Workspace, walletId: string | null, keep: string): void {
+  for (const approval of state.approvals.values()) {
+    const { summary, envelope } = approval;
+    if (summary.workspaceId !== workspace.id || summary.status !== "pending") continue;
+    if (summary.id === keep || envelope.type === "cancel-transaction") continue;
+    const ofWallet =
+      (envelope.type === "grant-mandate" || envelope.type === "sweep-wallet") &&
+      envelope.walletId === walletId;
+    if (walletId === null || ofWallet) cancelApproval(approval);
+  }
+  for (const record of state.mandates.values()) {
+    if (
+      record.workspaceId === workspace.id &&
+      (walletId === null || record.mandate.walletId === walletId)
+    ) {
+      endMandate(record, "revoked");
+    }
+  }
+}
+
+/** The waiting request to retire `walletId`, or to delete the workspace when it is null. */
+function waitingLifecycle(workspace: Workspace, walletId: string | null): Approval | undefined {
+  return [...state.approvals.values()].find(
+    ({ summary, envelope }) =>
+      summary.workspaceId === workspace.id &&
+      summary.status === "pending" &&
+      (walletId === null
+        ? envelope.type === "delete-workspace"
+        : envelope.type === "retire-wallet" && envelope.wallet.walletId === walletId),
+  );
+}
+
+/**
+ * Finishes what is due, as the server's sweeper does: destroys the key of each retiring wallet
+ * whose time came, and makes each workspace being deleted a tombstone, unless a sent transaction
+ * of it is not mined yet (D7). The tombstone keeps ids and the logs; its members, invites and
+ * agent tokens are gone, so it is gone for its members.
+ */
+function finalizeDue(): void {
+  for (const workspace of state.workspaces.values()) {
+    const { lifecycle } = workspace;
+    if (lifecycle.state === "deleting" && lifecycle.destroyAfter !== null) {
+      if (lifecycle.destroyAfter > now() || unmined(workspace)) continue;
+      for (const approval of state.approvals.values()) {
+        if (approval.summary.workspaceId === workspace.id && approval.summary.status === "pending")
+          cancelApproval(approval);
+      }
+      for (const wallet of workspace.wallets) {
+        if (wallet.lifecycle.state === "destroyed") continue;
+        wallet.lifecycle = { state: "destroyed", destroyAfter: lifecycle.destroyAfter };
+        decide(workspace, null, "destroy-wallet", null);
+      }
+      const agentIds = new Set<string>(workspace.agents.map((agent) => agent.id));
+      for (const [token, agentId] of state.tokens)
+        if (agentIds.has(agentId)) state.tokens.delete(token);
+      for (const [token, invite] of state.invites) {
+        if (invite.workspaceId === workspace.id) state.invites.delete(token);
+      }
+      workspace.agents = workspace.agents.map((agent) => ({
+        ...agent,
+        status: "disabled",
+        name: "Removed agent",
+      }));
+      audit(workspace, systemActor, "workspace.deleted", { type: "workspace", id: workspace.id });
+      decide(workspace, null, "delete-workspace", null);
+      workspace.name = "Deleted workspace";
+      workspace.members = [];
+      workspace.beforeDelete.clear();
+      workspace.lifecycle = {
+        state: "deleted",
+        destroyAfter: lifecycle.destroyAfter,
+        deletedAt: now(),
+      };
+      continue;
+    }
+    for (const wallet of workspace.wallets) {
+      const due = wallet.lifecycle.destroyAfter;
+      if (wallet.lifecycle.state !== "retiring" || due === null || due > now()) continue;
+      if (unmined(workspace, wallet.id)) continue;
+      wallet.lifecycle = { state: "destroyed", destroyAfter: due };
+      audit(workspace, systemActor, "wallet.destroyed", { type: "wallet", id: wallet.id });
+      decide(workspace, null, "destroy-wallet", null);
+    }
+  }
+}
+
+/**
+ * Mirrors the server: while a workspace is being deleted it refuses every change but pausing,
+ * cancelling, deciding on what still waits and notification settings. Reads stay open.
+ */
+const ALLOWED_WHILE_DELETING: Partial<Record<RouteName, true>> = {
+  pauseWorkspace: true,
+  cancelDeleteWorkspace: true,
+  cancelRetireWallet: true,
+  requestCancel: true,
+  requestSweepCancel: true,
+  collectApproval: true,
+  reject: true,
+  setNotificationDetail: true,
+};
+
 // --- handlers ---------------------------------------------------------------------------------
 
 type Handler = (input: {
@@ -1506,8 +1683,15 @@ const handlers: Record<RouteName, Handler> = {
       items: [...state.workspaces.values()]
         .filter((workspace) => workspace.members.some((member) => member.user.id === id))
         .map((workspace) => {
-          const { id: wsId, name, role, paused, pendingApprovals } = workspaceDetail(workspace, id);
-          return { id: wsId, name, role, paused, pendingApprovals };
+          const {
+            id: wsId,
+            name,
+            role,
+            paused,
+            pendingApprovals,
+            lifecycle,
+          } = workspaceDetail(workspace, id);
+          return { id: wsId, name, role, paused, pendingApprovals, lifecycle };
         }),
     };
   },
@@ -1519,6 +1703,8 @@ const handlers: Record<RouteName, Handler> = {
       paused: false,
       adminThreshold: 1,
       notificationDetail: "count",
+      lifecycle: { state: "active", destroyAfter: null, deletedAt: null },
+      beforeDelete: new Map(),
       members: [
         {
           user: userSummary(id),
@@ -1601,6 +1787,113 @@ const handlers: Record<RouteName, Handler> = {
         workspace.adminThreshold = proposed;
       },
     }).summary;
+  },
+  getDeletionPreflight: ({ params, userId }) => {
+    const id = signedIn(userId);
+    const workspace = workspaceOf(params.workspaceId ?? "");
+    requireOwner(workspace, id);
+    const wallets = workspace.wallets.filter((wallet) => wallet.lifecycle.state !== "destroyed");
+    const pending = [...state.approvals.values()].some(
+      ({ summary }) => summary.workspaceId === workspace.id && summary.status === "pending",
+    );
+    return {
+      workspaceId: workspace.id,
+      source: "control-plane",
+      wallets: wallets.map((wallet) => ({ wallet, balances: BALANCES })),
+      blockers: [
+        ...(pending ? ["pending_approvals"] : []),
+        ...(unmined(workspace) ? ["unmined_transactions"] : []),
+        ...(wallets.length > 0 ? ["nonzero_balance"] : []),
+      ],
+      minDestroyDelaySeconds: MIN_DESTROY_DELAY_SECONDS,
+      earliestDestroyAfter: now() + MIN_DESTROY_DELAY_SECONDS,
+    };
+  },
+  requestDeleteWorkspace: ({ params, body, userId }) => {
+    const id = signedIn(userId);
+    const workspace = workspaceOf(params.workspaceId ?? "");
+    requireOwner(workspace, id);
+    if (!workspace.paused) {
+      throw new Refusal("conflict", "Pause the workspace first: it is deleted only while paused.");
+    }
+    if (waitingLifecycle(workspace, null)) {
+      throw new Refusal("conflict", "A request to delete this workspace already waits.");
+    }
+    const destroyAfter = Number(body.destroyAfter);
+    checkDestroyAfter(destroyAfter);
+    // The envelope names every wallet whose key the signer holds, sorted by id.
+    const wallets = workspace.wallets
+      .filter((wallet) => wallet.lifecycle.state !== "destroyed")
+      .sort((a, b) => (a.id < b.id ? -1 : 1));
+    const approval = openApproval({
+      workspace,
+      kind: "delete-workspace",
+      title:
+        wallets.length === 1
+          ? "Delete this workspace and destroy 1 wallet key"
+          : `Delete this workspace and destroy ${wallets.length} wallet keys`,
+      requestedBy: {
+        type: "user",
+        id: id as Member["user"]["id"],
+        name: state.users.get(id) ?? "",
+      },
+      threshold: workspace.adminThreshold,
+      ttl: 3600,
+      envelope: {
+        wallets: wallets.map((wallet) => ({ walletId: wallet.id, address: wallet.address })),
+        destroyAfter,
+      },
+      subject: {
+        kind: "delete-workspace",
+        wallets: wallets.map((wallet) => ({ ...wallet })),
+        destroyAfter,
+      },
+      apply: () => {
+        // Mirrors the signer: every listed wallet retires with the workspace, and a cancel puts
+        // back what each was (one already retiring on its own comes back stopped).
+        for (const wallet of wallets) {
+          workspace.beforeDelete.set(
+            wallet.id,
+            wallet.lifecycle.state === "active" ? "active" : "held",
+          );
+          wallet.lifecycle = { state: "retiring", destroyAfter };
+        }
+        workspace.lifecycle = { state: "deleting", destroyAfter, deletedAt: null };
+        endAuthority(workspace, null, approval.summary.id);
+        audit(workspace, userActor(id), "workspace.deleting", {
+          type: "workspace",
+          id: workspace.id,
+        });
+        decide(workspace, approval.summary.id, "delete-workspace", null);
+      },
+    });
+    return approval.summary;
+  },
+  cancelDeleteWorkspace: ({ params, userId }) => {
+    const id = signedIn(userId);
+    const workspace = workspaceOf(params.workspaceId ?? "");
+    memberOf(workspace, id);
+    const waiting = waitingLifecycle(workspace, null);
+    if (waiting) {
+      cancelApproval(waiting);
+    } else if (workspace.lifecycle.state === "deleting") {
+      // The keys stay; the workspace stays paused; ended mandates stay ended.
+      for (const wallet of workspace.wallets) {
+        const before = workspace.beforeDelete.get(wallet.id);
+        if (before === undefined || wallet.lifecycle.state !== "retiring") continue;
+        wallet.lifecycle = { state: before, destroyAfter: null };
+      }
+      workspace.beforeDelete.clear();
+      workspace.lifecycle = { state: "active", destroyAfter: null, deletedAt: null };
+      audit(workspace, userActor(id), "workspace.delete_cancelled", {
+        type: "workspace",
+        id: workspace.id,
+      });
+      decide(workspace, null, "cancel-delete-workspace", null);
+    } else {
+      throw new Refusal("conflict", "Nothing is waiting to delete this workspace.");
+    }
+    return workspaceDetail(workspace, id);
   },
   createInvite: ({ params, body, userId, origin }) => {
     const id = signedIn(userId);
@@ -1727,6 +2020,7 @@ const handlers: Record<RouteName, Handler> = {
       agentId,
       policy: null,
       policyHash: null,
+      lifecycle: { state: "active", destroyAfter: null },
     };
     const token = `osa_${randomToken(32)}`;
     const agent = {
@@ -1764,14 +2058,16 @@ const handlers: Record<RouteName, Handler> = {
     const agent = workspace.agents.find((item) => item.id === params.agentId);
     if (!agent) throw new Refusal("not_found", "This agent does not exist.");
     agent.status = "disabled";
-    // Mirrors the server: its waiting grants are cancelled and its mandates revoked.
+    // Mirrors the server: removing an agent cancels its waiting grants and payment requests, and
+    // revokes its mandates.
     for (const approval of state.approvals.values()) {
+      const { summary, envelope, subject } = approval;
+      if (summary.status !== "pending") continue;
       if (
-        approval.summary.status === "pending" &&
-        approval.envelope.type === "grant-mandate" &&
-        approval.envelope.agentId === agent.id
+        (envelope.type === "grant-mandate" && envelope.agentId === agent.id) ||
+        (subject.kind === "approve-intent" && subject.intent.agent.id === agent.id)
       ) {
-        approval.summary.status = "cancelled";
+        cancelApproval(approval);
       }
     }
     for (const record of state.mandates.values()) {
@@ -1793,6 +2089,7 @@ const handlers: Record<RouteName, Handler> = {
       agentId: null,
       policy: null,
       policyHash: null,
+      lifecycle: { state: "active", destroyAfter: null },
     };
     workspace.wallets.push(wallet);
     return wallet;
@@ -1811,22 +2108,7 @@ const handlers: Record<RouteName, Handler> = {
     );
     return {
       ...wallet,
-      balances: [
-        {
-          chainId: "eip155:31337",
-          asset: "native",
-          symbol: "ETH",
-          decimals: 18,
-          amount: "1250000000000000000",
-        },
-        {
-          chainId: "eip155:31337",
-          asset: TEST_USDC,
-          symbol: "USDC",
-          decimals: 6,
-          amount: "420000000",
-        },
-      ],
+      balances: BALANCES,
       spent: [...state.spent]
         .filter(([key]) => key.startsWith(`${wallet.id}|`))
         .map(([key, amount]) => {
@@ -1842,6 +2124,9 @@ const handlers: Record<RouteName, Handler> = {
     requireOwner(workspace, id);
     const wallet = workspace.wallets.find((item) => item.id === params.walletId);
     if (!wallet) throw new Refusal("not_found", "This wallet does not exist.");
+    if (wallet.lifecycle.state === "retiring" || wallet.lifecycle.state === "destroyed") {
+      throw new Refusal("conflict", "This wallet is retired: its limits cannot change.");
+    }
     const draft = body.draft as PolicyDraft;
     // Mirrors the server: more approvals per payment than for admin changes would be undone by
     // anyone who can change the limits.
@@ -1874,6 +2159,10 @@ const handlers: Record<RouteName, Handler> = {
       apply: () => {
         wallet.policy = proposed;
         wallet.policyHash = hash;
+        // Mirrors the signer: new limits let a wallet stopped after a cancelled retirement sign.
+        if (wallet.lifecycle.state === "held") {
+          wallet.lifecycle = { state: "active", destroyAfter: null };
+        }
         decide(workspace, null, "set_policy", null);
       },
     }).summary;
@@ -1948,6 +2237,66 @@ const handlers: Record<RouteName, Handler> = {
       },
     });
     return approval.summary;
+  },
+  requestRetireWallet: ({ params, body, userId }) => {
+    const id = signedIn(userId);
+    const workspace = workspaceOf(params.workspaceId ?? "");
+    requireOwner(workspace, id);
+    const wallet = workspace.wallets.find((item) => item.id === params.walletId);
+    if (!wallet) throw new Refusal("not_found", "This wallet does not exist.");
+    if (wallet.lifecycle.state === "retiring" || wallet.lifecycle.state === "destroyed") {
+      throw new Refusal("conflict", "This wallet is already being retired or retired.");
+    }
+    if (waitingLifecycle(workspace, wallet.id)) {
+      throw new Refusal("conflict", "A request to retire this wallet already waits.");
+    }
+    const destroyAfter = Number(body.destroyAfter);
+    checkDestroyAfter(destroyAfter);
+    const approval = openApproval({
+      workspace,
+      kind: "retire-wallet",
+      title: `Retire ${wallet.label} and destroy its key`,
+      requestedBy: {
+        type: "user",
+        id: id as Member["user"]["id"],
+        name: state.users.get(id) ?? "",
+      },
+      threshold: workspace.adminThreshold,
+      ttl: 3600,
+      envelope: { wallet: { walletId: wallet.id, address: wallet.address }, destroyAfter },
+      subject: { kind: "retire-wallet", wallet: { ...wallet }, destroyAfter },
+      apply: () => {
+        wallet.lifecycle = { state: "retiring", destroyAfter };
+        endAuthority(workspace, wallet.id, approval.summary.id);
+        audit(workspace, userActor(id), "wallet.retiring", { type: "wallet", id: wallet.id });
+        decide(workspace, approval.summary.id, "retire-wallet", null);
+      },
+    });
+    return approval.summary;
+  },
+  cancelRetireWallet: ({ params, userId }) => {
+    const id = signedIn(userId);
+    const workspace = workspaceOf(params.workspaceId ?? "");
+    if (memberOf(workspace, id).role === "viewer") {
+      throw new Refusal("forbidden", "Viewers cannot cancel a retirement.");
+    }
+    const wallet = workspace.wallets.find((item) => item.id === params.walletId);
+    if (!wallet) throw new Refusal("not_found", "This wallet does not exist.");
+    if (workspace.lifecycle.state !== "active") {
+      throw new Refusal("conflict", "The workspace is being deleted: cancel that instead.");
+    }
+    const waiting = waitingLifecycle(workspace, wallet.id);
+    if (waiting) {
+      cancelApproval(waiting);
+    } else if (wallet.lifecycle.state === "retiring") {
+      // The key stays; the wallet signs nothing until new limits are approved.
+      wallet.lifecycle = { state: "held", destroyAfter: null };
+      audit(workspace, userActor(id), "wallet.retire_cancelled", { type: "wallet", id: wallet.id });
+      decide(workspace, null, "cancel-retire-wallet", null);
+    } else {
+      throw new Refusal("conflict", "Nothing is waiting to retire this wallet.");
+    }
+    return wallet;
   },
   proposeMandate: ({ params, body, userId }) => {
     const id = signedIn(userId);
@@ -2439,7 +2788,212 @@ const handlers: Record<RouteName, Handler> = {
     }
     return workspaceDetail(workspace, id);
   },
+  exportTemplate: ({ params, userId }) => {
+    const id = signedIn(userId);
+    const workspace = workspaceOf(params.workspaceId ?? "");
+    requireOwner(workspace, id);
+    return toTemplate(workspace);
+  },
+  exportRecord: ({ params, userId }) => {
+    // Unlike the server, the fixture does not ask for a recent passkey sign-in first.
+    const id = signedIn(userId);
+    const workspace = workspaceOf(params.workspaceId ?? "");
+    requireOwner(workspace, id);
+    audit(workspace, userActor(id), "workspace.exported", { type: "workspace", id: workspace.id });
+    const head = (log: { seq: number; hash: string }[]) => {
+      const last = log.at(-1);
+      return { seq: last?.seq ?? 0, hash: last?.hash ?? null };
+    };
+    const lines = [
+      {
+        format: "askgina.os/workspace-record/v1",
+        workspaceId: workspace.id,
+        exportedAt: now(),
+        auditHead: head(workspace.audit),
+        signerDecisionHead: head(workspace.decisions),
+      },
+      ...workspace.audit.map((entry) => ({ type: "audit", ...entry })),
+      ...workspace.decisions.map((entry) => ({ type: "signer-decision", ...entry })),
+      {
+        type: "end",
+        counts: {
+          audit: workspace.audit.length,
+          intent: 0,
+          transaction: 0,
+          "policy-revision": 0,
+          mandate: 0,
+          "mandate-use": 0,
+          "signer-decision": workspace.decisions.length,
+        },
+      },
+    ];
+    return { record: `${lines.map((line) => JSON.stringify(line)).join("\n")}\n` };
+  },
+  cloneWorkspace: (input) => {
+    const id = signedIn(input.userId);
+    const source = workspaceOf(input.params.workspaceId ?? "");
+    requireOwner(source, id);
+    return instantiate(toTemplate(source), input.body as CloneOptions, input);
+  },
+  importTemplate: (input) => {
+    signedIn(input.userId);
+    const { template, ...options } = input.body as CloneOptions & { template: WorkspaceTemplate };
+    const unknown = template.wallets
+      .flatMap((wallet) => wallet.policy?.chains ?? [])
+      .find((chainId) => !CHAINS.some((chain) => chain.chainId === chainId));
+    if (unknown) {
+      throw new Refusal("invalid_request", `The network ${unknown} is not configured here.`);
+    }
+    return instantiate(template, options, input);
+  },
 };
+
+// --- export and clone -------------------------------------------------------------------------
+
+/**
+ * The workspace's configuration as the server exports it: each wallet that is not retiring or
+ * destroyed, and not the wallet of a disabled agent, by ref, with its agent's name and its
+ * policy, whose requesters point at the kept agents' wallets by ref.
+ */
+function toTemplate(workspace: Workspace): WorkspaceTemplate {
+  const kept = workspace.wallets.filter(
+    (wallet) =>
+      wallet.lifecycle.state !== "retiring" &&
+      wallet.lifecycle.state !== "destroyed" &&
+      (wallet.kind === "treasury" ||
+        workspace.agents.some((agent) => agent.id === wallet.agentId && agent.status === "active")),
+  );
+  const refs = new Map<string, string>(kept.map((wallet, index) => [wallet.id, `w${index + 1}`]));
+  return {
+    format: "askgina.os/workspace-template/v1",
+    name: workspace.name,
+    adminThreshold: workspace.adminThreshold,
+    notificationDetail: workspace.notificationDetail,
+    wallets: kept.map((wallet) => {
+      const agent = workspace.agents.find((item) => item.id === wallet.agentId);
+      const { policy } = wallet;
+      return {
+        ref: refs.get(wallet.id) ?? "",
+        kind: wallet.kind,
+        label: wallet.label,
+        agent: agent ? { name: agent.name } : null,
+        policy: policy
+          ? {
+              chains: policy.chains,
+              requesters: policy.requesters.flatMap((agentId) => {
+                const walletId = workspace.agents.find((item) => item.id === agentId)?.walletId;
+                return refs.get(walletId ?? "") ?? [];
+              }),
+              assets: policy.assets,
+              recipients: policy.recipients,
+              contractCalls: policy.contractCalls,
+              fees: policy.fees,
+              approvals: policy.approvals,
+            }
+          : null,
+      };
+    }),
+    members: workspace.members.map((member) => ({ userId: member.user.id, role: member.role })),
+  };
+}
+
+/**
+ * A new workspace from a template, through the same steps a person takes: the person is its only
+ * member, every wallet is new, and each policy waits in a `set-policy` request.
+ */
+function instantiate(
+  template: WorkspaceTemplate,
+  options: CloneOptions,
+  input: Parameters<Handler>[0],
+): CloneResult {
+  const id = signedIn(input.userId);
+  const call = (name: RouteName, params: Record<string, string>, body: Record<string, unknown>) =>
+    handlers[name]({ ...input, params, query: {}, body });
+  const workspace = call("createWorkspace", {}, { name: options.name }) as WorkspaceDetail;
+  const created = workspaceOf(workspace.id);
+  created.notificationDetail = template.notificationDetail;
+  const agents: CloneResult["agents"] = [];
+  const walletOfRef = new Map<string, WalletSummary>();
+  const agentOfRef = new Map<string, string>();
+  for (const item of template.wallets) {
+    if (item.agent !== null) {
+      if (!options.includeAgents) continue;
+      const made = call(
+        "createAgent",
+        { workspaceId: workspace.id },
+        { name: item.agent.name },
+      ) as {
+        agent: { id: string };
+        wallet: WalletSummary;
+        token: string;
+        mcpUrl: string;
+      };
+      agents.push({
+        agentId: made.agent.id as CloneResult["agents"][number]["agentId"],
+        walletId: made.wallet.id,
+        token: made.token,
+        mcpUrl: made.mcpUrl,
+      });
+      agentOfRef.set(item.ref, made.agent.id);
+      walletOfRef.set(item.ref, made.wallet);
+    } else {
+      walletOfRef.set(
+        item.ref,
+        call(
+          "createTreasury",
+          { workspaceId: workspace.id },
+          { label: item.label },
+        ) as WalletSummary,
+      );
+    }
+    const wallet = walletOfRef.get(item.ref);
+    if (wallet) wallet.label = item.label;
+  }
+  const approvals = template.wallets.flatMap((item) => {
+    const wallet = walletOfRef.get(item.ref);
+    if (!wallet || !item.policy) return [];
+    const draft = {
+      ...item.policy,
+      requesters: item.policy.requesters.flatMap((ref) => agentOfRef.get(ref) ?? []),
+      // A new workspace has one approver, so nothing may need more approvals than that yet.
+      approvals: { ...item.policy.approvals, threshold: 1 },
+    };
+    return [
+      call(
+        "requestPolicy",
+        { workspaceId: workspace.id, walletId: wallet.id },
+        { draft },
+      ) as ApprovalSummary,
+    ];
+  });
+  const invites = options.includeMembers
+    ? template.members.flatMap((member) => {
+        if (member.userId === id || !state.users.has(member.userId)) return [];
+        const invite = call(
+          "createInvite",
+          { workspaceId: workspace.id },
+          { role: member.role },
+        ) as { url: string; expiresAt: number };
+        return [
+          {
+            userId: member.userId,
+            displayName: state.users.get(member.userId) ?? "",
+            role: member.role,
+            url: invite.url,
+            expiresAt: invite.expiresAt,
+          },
+        ];
+      })
+    : [];
+  audit(created, userActor(id), "workspace.cloned", { type: "workspace", id: created.id });
+  return {
+    workspace: workspaceDetail(created, id),
+    approvals,
+    agents,
+    invites,
+    templateAdminThreshold: template.adminThreshold,
+  };
+}
 
 function joinWorkspace(token: string, userId: string): string {
   const invite = state.invites.get(token);
@@ -2548,6 +3102,21 @@ const server = createServer(async (req, res) => {
       }
       return send(res, 200, { ok: true });
     }
+    // Lets a test skip a retirement's or deletion's delay: it is due now, and the next request
+    // finishes it.
+    if (url.pathname === "/__fixture/due" && req.method === "POST") {
+      const input = (await readBody(req)) as { workspaceId?: string; walletId?: string };
+      const workspace = workspaceOf(input.workspaceId ?? "");
+      const wallet = workspace.wallets.find((item) => item.id === input.walletId);
+      if (input.walletId === undefined && workspace.lifecycle.state === "deleting") {
+        workspace.lifecycle = { ...workspace.lifecycle, destroyAfter: now() };
+      } else if (wallet?.lifecycle.state === "retiring") {
+        wallet.lifecycle = { state: "retiring", destroyAfter: now() };
+      } else {
+        throw new Refusal("conflict", "Nothing of this is being retired or deleted.");
+      }
+      return send(res, 200, { ok: true });
+    }
     const proposeMatch = /^\/__fixture\/propose$/.exec(url.pathname);
     if (proposeMatch && req.method === "POST") {
       const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
@@ -2561,6 +3130,7 @@ const server = createServer(async (req, res) => {
 
     expireApprovals();
     advanceTransactions();
+    finalizeDue();
     const match = compiled.find(
       (item) => item.route.method === req.method && item.pattern.test(url.pathname),
     );
@@ -2585,6 +3155,10 @@ const server = createServer(async (req, res) => {
     const userId = cookie ? (state.sessions.get(cookie) ?? null) : null;
     if (match.route.auth === "session" && !userId)
       throw new Refusal("unauthenticated", "Sign in first.");
+    const deleting = state.workspaces.get(params.workspaceId ?? "")?.lifecycle.state === "deleting";
+    if (deleting && match.route.method !== "GET" && !ALLOWED_WHILE_DELETING[match.name]) {
+      throw new Refusal("conflict", "This workspace is being deleted. Cancel the deletion first.");
+    }
     const output = await handlers[match.name]({ params, query, body, userId, res, origin });
     // Fails loudly (500) when the fixture drifts from the contract.
     send(res, 200, match.route.response.parse(output));
@@ -2744,7 +3318,58 @@ function confirmationLines(approval: Approval): { label: string; value: string }
         { label: "Their purpose", value: mandate.purpose || "(none)" },
       ];
     }
+    case "retire-wallet":
+    case "delete-workspace": {
+      const wallets = subject.kind === "retire-wallet" ? [subject.wallet] : subject.wallets;
+      const after = new Date(subject.destroyAfter * 1000).toISOString();
+      return [
+        ...(subject.kind === "delete-workspace"
+          ? [{ label: "Wallets", value: String(wallets.length) }]
+          : []),
+        ...wallets.flatMap((wallet) => [
+          { label: "Wallet address", value: wallet.address },
+          { label: "Wallet name (not checked)", value: wallet.label },
+        ]),
+        {
+          label: subject.kind === "retire-wallet" ? "Key destroyed after" : "Keys destroyed after",
+          value: after,
+        },
+        {
+          label: "Time to cancel",
+          value: `${Math.round((subject.destroyAfter - approval.summary.createdAt) / 86_400)} days from the request`,
+        },
+      ];
+    }
   }
+}
+
+/**
+ * The signer's own title for a request: its words, not the control plane's. The fixture keeps
+ * the control plane's title except where the signer's view names the request itself.
+ */
+function confirmationTitle(approval: Approval): string {
+  switch (approval.subject.kind) {
+    case "retire-wallet":
+      return "Retire a wallet";
+    case "delete-workspace":
+      return "Delete this workspace";
+    default:
+      return approval.summary.title;
+  }
+}
+
+/** The warnings the signer's page shows first, in its words (`apps/approve`'s `WARNING_TEXT`). */
+function confirmationWarnings(approval: Approval): string[] {
+  const subject = approval.subject;
+  const destroys =
+    subject.kind === "retire-wallet" ||
+    (subject.kind === "delete-workspace" && subject.wallets.length > 0);
+  return destroys
+    ? [
+        "After the time below the signer destroys the keys of the wallets listed. Whatever is still in them then is lost for good, and nobody can get it back.",
+        "The signer cannot see balances: nothing on this page shows whether these wallets are empty. Check them where you were asked to approve, and empty them first.",
+      ]
+    : [];
 }
 
 /** Whose passkeys may approve here: the workspace's active approvers. */
@@ -2758,10 +3383,11 @@ function approverOf(approval: Approval, credentialUserId: string): boolean {
 }
 
 function confirmationView(approval: Approval) {
-  const { id, workspaceId, status, threshold, title } = approval.summary;
+  const { id, workspaceId, status, threshold } = approval.summary;
   return {
     approvalId: id,
-    title,
+    title: confirmationTitle(approval),
+    warnings: confirmationWarnings(approval),
     lines: confirmationLines(approval),
     state:
       status !== "pending" ? "closed" : approval.atSigner.length >= threshold ? "complete" : "open",

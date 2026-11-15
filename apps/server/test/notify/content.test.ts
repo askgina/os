@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/config.ts";
 import {
   approvalLink,
+  lifecycleMessage,
   PUSH_PAYLOAD_MAX_BYTES,
   type PushFacts,
   pushMessage,
@@ -137,6 +138,43 @@ describe("what a push notification says", () => {
     expect(url.search).toBe("");
     expect(url.hash).toBe("");
     expect(() => approvalLink(ORIGIN, "ws_../../evil", approvalId)).toThrow();
+  });
+
+  it("announces scheduled key destruction at each level, replaced by its 24-hour notice", () => {
+    const base = {
+      approvalId,
+      kind: "delete-workspace" as const,
+      workspaceName: "Acme ops",
+      // 2027-01-15 08:00:00 UTC
+      destroyAfter: 1_800_000_000,
+      pendingCount: 2,
+      link,
+      dueSoon: false,
+    };
+    const counted = lifecycleMessage({ ...base, level: "count" }).notification;
+    expect(counted).toMatchObject({
+      title: "Keys scheduled for destruction",
+      body: "Open to review or cancel",
+      navigate: link,
+      tag: `lifecycle-${approvalId}`,
+      app_badge: "2",
+    });
+    expect(JSON.stringify(counted)).not.toContain("Acme");
+    const summary = lifecycleMessage({ ...base, level: "summary", dueSoon: true }).notification;
+    expect(summary.title).toBe("In 24 hours: Workspace deletion scheduled");
+    expect(summary.body).toBe("Keys destroyed 2027-01-15 08:00 UTC in Acme ops");
+    expect(summary.tag).toBe(counted.tag);
+    const long = lifecycleMessage({
+      ...base,
+      level: "summary",
+      kind: "retire-wallet",
+      workspaceName: "\u{1F600}".repeat(200),
+    });
+    expect(new TextEncoder().encode(JSON.stringify(long)).length).toBeLessThanOrEqual(
+      PUSH_PAYLOAD_MAX_BYTES,
+    );
+    expect(long.notification.title).toBe("Wallet retirement scheduled");
+    expect(long.notification.body.startsWith("Keys destroyed 2027-01-15 08:00 UTC in ")).toBe(true);
   });
 
   it("needs a PUBLIC_ORIGIN short enough for the link to fit, when Web Push is on", () => {

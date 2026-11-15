@@ -6,9 +6,13 @@ import {
   ApprovalSummary,
   apiErrorStatus,
   createApiClient,
+  DeletionPreflight,
   DisplayName,
   type RouteName,
   routes,
+  WalletSummary,
+  WorkspaceSummary,
+  WorkspaceTemplate,
 } from "../src/index.ts";
 import * as f from "./fixtures.ts";
 
@@ -47,6 +51,27 @@ const examples: { [N in RouteName]: { body?: unknown; query?: unknown; response:
   pauseWorkspace: { body: {}, response: { ...f.workspace, paused: true } },
   requestResume: { body: {}, response: f.approvalSummary },
   requestAdminThreshold: { body: { adminThreshold: 2 }, response: f.approvalSummary },
+  getDeletionPreflight: { response: f.deletionPreflight },
+  requestDeleteWorkspace: {
+    body: { destroyAfter: 1_700_604_800 },
+    response: { ...f.approvalSummary, kind: "delete-workspace" },
+  },
+  cancelDeleteWorkspace: { body: {}, response: { ...f.workspace, paused: true } },
+  exportTemplate: { response: f.workspaceTemplate },
+  exportRecord: { response: { record: '{"format":"askgina.os/workspace-record/v1"}\n' } },
+  cloneWorkspace: {
+    body: { name: "Acme copy", includeAgents: true, includeMembers: true },
+    response: f.cloneResult,
+  },
+  importTemplate: {
+    body: {
+      template: f.workspaceTemplate,
+      name: "Acme copy",
+      includeAgents: false,
+      includeMembers: false,
+    },
+    response: f.cloneResult,
+  },
   createInvite: {
     body: { role: "approver" },
     response: { id: "inv_1", url: "https://os.example.com/join/tok", expiresAt: 1_700_000_600 },
@@ -94,6 +119,14 @@ const examples: { [N in RouteName]: { body?: unknown; query?: unknown; response:
   requestSweep: {
     body: { chainId: "eip155:8453", asset: "native", to: f.sweep.to },
     response: { ...f.approvalSummary, kind: "sweep-wallet" },
+  },
+  requestRetireWallet: {
+    body: { destroyAfter: 1_700_604_800 },
+    response: { ...f.approvalSummary, kind: "retire-wallet" },
+  },
+  cancelRetireWallet: {
+    body: {},
+    response: { ...f.wallet, lifecycle: { state: "held", destroyAfter: null } },
   },
   proposeMandate: {
     body: f.mandateDraft,
@@ -314,6 +347,77 @@ describe("route contract", () => {
     ]) {
       expect(ApprovalSubject.safeParse({ ...subject, transaction: broken }).success).toBe(false);
     }
+  });
+
+  it("a lifecycle state that contradicts itself does not parse, and a deletion names its wallets", () => {
+    expect(ApprovalDetail.parse(f.deleteApprovalDetail)).toEqual(f.deleteApprovalDetail);
+    const wallet = (lifecycle: unknown) =>
+      WalletSummary.safeParse({ ...f.wallet, lifecycle }).success;
+    expect(wallet({ state: "retiring", destroyAfter: 1_700_604_800 })).toBe(true);
+    expect(wallet({ state: "destroyed", destroyAfter: 1_700_604_800 })).toBe(true);
+    expect(wallet({ state: "held", destroyAfter: null })).toBe(true);
+    expect(wallet({ state: "retiring", destroyAfter: null })).toBe(false);
+    expect(wallet({ state: "held", destroyAfter: 1_700_604_800 })).toBe(false);
+    expect(wallet({ state: "removed", destroyAfter: null })).toBe(false);
+    const workspace = (lifecycle: unknown) =>
+      WorkspaceSummary.safeParse({ ...f.workspaceSummary, lifecycle }).success;
+    expect(workspace({ state: "deleting", destroyAfter: 1_700_604_800, deletedAt: null })).toBe(
+      true,
+    );
+    expect(workspace({ state: "deleting", destroyAfter: null, deletedAt: null })).toBe(false);
+    expect(
+      workspace({ state: "deleting", destroyAfter: 1_700_604_800, deletedAt: 1_700_604_900 }),
+    ).toBe(false);
+    expect(
+      workspace({ state: "deleted", destroyAfter: 1_700_604_800, deletedAt: 1_700_604_900 }),
+    ).toBe(true);
+    // A deletion is always for a time, and the preflight never claims to speak for the signer.
+    expect(routes.requestDeleteWorkspace.body.safeParse({}).success).toBe(false);
+    expect(DeletionPreflight.safeParse({ ...f.deletionPreflight, source: "signer" }).success).toBe(
+      false,
+    );
+    expect(
+      DeletionPreflight.safeParse({ ...f.deletionPreflight, blockers: ["keys_destroyed"] }).success,
+    ).toBe(false);
+  });
+
+  it("a template carries no mandate and points requesters only at its own agents' wallets", () => {
+    const template = f.workspaceTemplate;
+    expect(WorkspaceTemplate.parse(template)).toEqual(template);
+    const [agentWallet, treasury] = template.wallets;
+    if (!agentWallet?.policy || !treasury) throw new Error("fixture changed");
+    const withPolicy = (requesters: string[]) => ({
+      ...template,
+      wallets: [{ ...agentWallet, policy: { ...agentWallet.policy, requesters } }, treasury],
+    });
+    // A requester is a ref of a template wallet with an agent, never an id or the treasury.
+    expect(WorkspaceTemplate.safeParse(withPolicy(["w2"])).success).toBe(false);
+    expect(WorkspaceTemplate.safeParse(withPolicy([f.AGENT])).success).toBe(false);
+    expect(WorkspaceTemplate.safeParse(withPolicy(["w9"])).success).toBe(false);
+    // Strict: nothing else rides along, a mandate least of all.
+    expect(WorkspaceTemplate.safeParse({ ...template, mandates: [] }).success).toBe(false);
+    expect(
+      WorkspaceTemplate.safeParse({
+        ...template,
+        wallets: [{ ...treasury, address: "0x1111111111111111111111111111111111111111" }],
+      }).success,
+    ).toBe(false);
+    expect(
+      WorkspaceTemplate.safeParse({ ...template, wallets: [treasury, { ...treasury, ref: "w3" }] })
+        .success,
+    ).toBe(false);
+    expect(
+      WorkspaceTemplate.safeParse({
+        ...template,
+        wallets: [{ ...treasury, agent: { name: "bot" } }],
+      }).success,
+    ).toBe(false);
+    expect(
+      WorkspaceTemplate.safeParse({
+        ...template,
+        members: [...template.members, ...template.members],
+      }).success,
+    ).toBe(false);
   });
 
   it("a sweep's subject carries the exact sweep, and a sweep the protocol refuses does not parse", () => {

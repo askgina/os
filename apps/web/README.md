@@ -82,6 +82,30 @@ decides: "Cancelled on chain" (`voided`, nothing moved, a fee was paid) or the p
 outcome. Every refusal of a speed-up or a cancel, and the outcomes `transaction_cancelled`,
 `cancel_too_late` and `nonce_used_elsewhere`, have their own sentences (`src/lib/codes.ts`).
 
+## Retiring a wallet, deleting a workspace, removing an agent
+
+Owners retire a wallet from its page ("Retire this wallet…") and delete a workspace from its
+overview ("Delete this workspace…", only while paused). Both forms first read
+`getDeletionPreflight`: what the server reads is still in each wallet, labelled "read by the
+server; the signer cannot check balances", the reasons deleting would lose something or wait
+(`blockerText` in `src/lib/lifecycle.ts`), and the signer's shortest delay, which is the default
+of the delay choices (7 days unless the operator changed it, then 14 and 30 days), each with the
+date the keys go. `destroyAfter` is worked out on the server's clock with a few minutes' margin,
+so the shortest choice is never refused as too short. The request is approved like any admin
+change, on the signer's page, which warns that the keys are destroyed and that the signer cannot
+see balances; its approval page is short so the link stays on a phone's first screen, and lists
+the wallets with what the server reads in them below the decision.
+
+While a wallet retires, its page says when its key goes, counts down, warns against sending to it
+and offers "Cancel retirement" (owners and approvers, no passkey), which leaves it stopped until
+new limits are approved. A destroyed wallet says so and offers nothing. While a workspace is
+deleted, every page of it shows when its keys go, a countdown and "Cancel deletion" (any member,
+no passkey; it stays paused); nothing can be added or resumed. If the deletion finishes while its
+page is open, the page says the workspace was deleted: its former members can no longer read it.
+
+"Remove" on an agent's page is the API's `disableAgent`: its token stops working, its waiting
+payment requests are cancelled and its mandates end, for good. Its wallet stays until retired.
+
 ## Notifications
 
 The settings page turns notifications on for the device it is opened on, lists the person's
@@ -203,7 +227,11 @@ the React plugin's Fast Refresh: a change reloads the page.
   `/__fixture/settle`) is sped up and is mined; another is cancelled through its request, approved
   on the confirmation page, and ends "Cancelled on chain"; a viewer sees the first stuck payment's
   attempts with no action. After signing out, a notification's
-  path leads through sign-in back to its approval. Headless Chromium reaches no push service, so
+  path leads through sign-in back to its approval. A second journey, on a fresh server, removes an
+  agent, retires its wallet and cancels that, retires the treasury to the end, then deletes the
+  workspace: refused until paused, cancelled during the delay, asked again and finished, after
+  which the page says it was deleted. The 7-day delay is skipped with `/__fixture/due`, so that
+  journey runs against the fixture only. Headless Chromium reaches no push service, so
   the browser's push subscription is a stand-in (`test/push-stand-in.ts`: real keys, a made-up
   endpoint) and messages reach the real worker through the DevTools protocol, unencrypted; the
   permission, the worker's registration under the production Content-Security-Policy and the

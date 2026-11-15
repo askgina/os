@@ -9,10 +9,17 @@ import {
   PauseCircle,
   Plus,
   ShieldAlert,
+  Trash2,
   Users,
 } from "lucide-react";
 import { useState } from "react";
 import { backLinkClass, EmptyState, ErrorState, FormError, Loading } from "@/components/common.tsx";
+import {
+  DeletedWorkspace,
+  DeleteWorkspaceCard,
+  DeletingNotice,
+  deletedWhileOpen,
+} from "@/components/lifecycle.tsx";
 import { NotificationLevelCard } from "@/components/notifications.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
@@ -29,6 +36,7 @@ import { Label } from "@/components/ui/label.tsx";
 import { Switch } from "@/components/ui/switch.tsx";
 import { api, keys, queryClient, useWorkspace } from "@/lib/api.ts";
 import { shortAddress } from "@/lib/format.ts";
+import { walletLifecycleLabel } from "@/lib/lifecycle.ts";
 import { revealToken } from "@/lib/reveal.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -44,9 +52,15 @@ export function WorkspaceLayout() {
   const workspace = useWorkspace(workspaceId);
   if (workspace.isPending) return <Loading />;
   if (workspace.isError) {
+    // Read while it was being deleted, then gone: the deletion finished while this page was open.
+    if (deletedWhileOpen(workspace.error, workspace.data)) {
+      return <DeletedWorkspace name={workspace.data.name} />;
+    }
     return <ErrorState error={workspace.error} retry={() => void workspace.refetch()} />;
   }
   const data = workspace.data;
+  if (data.lifecycle.state === "deleted") return <DeletedWorkspace name={data.name} />;
+  const deleting = data.lifecycle.state === "deleting";
   const tabs = [
     { to: "/w/$workspaceId", label: "Overview", exact: true },
     {
@@ -66,7 +80,12 @@ export function WorkspaceLayout() {
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-2xl font-semibold tracking-tight break-words">{data.name}</h1>
           <Badge>{ROLE_NAMES[data.role]}</Badge>
-          {data.paused ? (
+          {deleting ? (
+            <Badge tone="danger">
+              <Trash2 aria-hidden />
+              Being deleted
+            </Badge>
+          ) : data.paused ? (
             <Badge tone="danger">
               <PauseCircle aria-hidden />
               Paused
@@ -94,7 +113,9 @@ export function WorkspaceLayout() {
           </ul>
         </nav>
       </div>
-      {data.paused ? (
+      {deleting ? (
+        <DeletingNotice workspace={data} />
+      ) : data.paused ? (
         <Alert tone="danger">
           <PauseCircle aria-hidden />
           <p>
@@ -113,14 +134,16 @@ export function WorkspaceOverview() {
   const workspace = useWorkspace(workspaceId);
   if (!workspace.data) return null;
   const data = workspace.data;
-  const canAdmin = data.role === "owner";
+  const active = data.lifecycle.state === "active";
+  // Nothing can be added or changed while the workspace is being deleted.
+  const canAdmin = data.role === "owner" && active;
   const withoutPolicy = data.wallets.filter((wallet) => wallet.policy === null);
   const treasury = data.wallets.find((wallet) => wallet.kind === "treasury") ?? null;
 
   return (
     <div className="grid grid-cols-1 gap-6">
-      <NextStep workspace={data} />
-      {withoutPolicy.length > 0 && data.agents.length > 0 ? (
+      {active ? <NextStep workspace={data} /> : null}
+      {active && withoutPolicy.length > 0 && data.agents.length > 0 ? (
         <Alert tone="warning">
           <ShieldAlert aria-hidden />
           <div>
@@ -154,6 +177,7 @@ export function WorkspaceOverview() {
             <ul className="divide-y rounded-md border">
               {data.agents.map((agent) => {
                 const wallet = data.wallets.find((item) => item.id === agent.walletId);
+                const walletState = wallet ? walletLifecycleLabel(wallet.lifecycle) : null;
                 return (
                   <li key={agent.id}>
                     <Link
@@ -170,13 +194,15 @@ export function WorkspaceOverview() {
                           </p>
                         ) : null}
                       </div>
-                      {wallet && wallet.policy === null ? (
+                      {walletState ? (
+                        <Badge tone="warning">{walletState}</Badge>
+                      ) : wallet && wallet.policy === null ? (
                         <Badge tone="warning">No limits</Badge>
                       ) : null}
                       {agent.status === "active" ? (
                         <Badge tone="success">Active</Badge>
                       ) : (
-                        <Badge>Disabled</Badge>
+                        <Badge>Removed</Badge>
                       )}
                       <ChevronRight className="size-4 text-muted-foreground" aria-hidden />
                     </Link>
@@ -249,6 +275,8 @@ export function WorkspaceOverview() {
       <NotificationLevelCard workspace={data} />
 
       <PauseCard workspace={data} />
+
+      {canAdmin ? <DeleteWorkspaceCard workspace={data} /> : null}
     </div>
   );
 }
@@ -296,6 +324,7 @@ function NextStep({ workspace }: { workspace: WorkspaceDetail }) {
 }
 
 function WalletRow({ workspaceId, wallet }: { workspaceId: string; wallet: WalletSummary }) {
+  const walletState = walletLifecycleLabel(wallet.lifecycle);
   return (
     <Link
       to="/w/$workspaceId/wallets/$walletId"
@@ -307,7 +336,11 @@ function WalletRow({ workspaceId, wallet }: { workspaceId: string; wallet: Walle
         <p className="truncate font-medium">{wallet.label}</p>
         <p className="font-mono text-xs text-muted-foreground">{shortAddress(wallet.address)}</p>
       </div>
-      {wallet.policy === null ? <Badge tone="warning">No limits</Badge> : null}
+      {walletState ? (
+        <Badge tone="warning">{walletState}</Badge>
+      ) : wallet.policy === null ? (
+        <Badge tone="warning">No limits</Badge>
+      ) : null}
       <ChevronRight className="size-4 text-muted-foreground" aria-hidden />
     </Link>
   );
@@ -394,7 +427,8 @@ function CreateTreasury({ workspaceId }: { workspaceId: string }) {
 
 function PauseCard({ workspace }: { workspace: WorkspaceDetail }) {
   const navigate = useNavigate();
-  const canAct = workspace.role !== "viewer";
+  // While it is being deleted it stays paused: resuming waits until the deletion is cancelled.
+  const canAct = workspace.role !== "viewer" && workspace.lifecycle.state === "active";
   const pause = useMutation({
     mutationFn: () =>
       api.call("pauseWorkspace", { params: { workspaceId: workspace.id }, body: {} }),

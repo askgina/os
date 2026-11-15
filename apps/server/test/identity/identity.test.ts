@@ -231,8 +231,8 @@ describe("passkeys", () => {
 });
 
 describe("origin check", () => {
-  // Approvals, intents, sweeps and mandates are the execution module's and are not on this test
-  // app; the execution tests check them.
+  // Approvals, intents, sweeps, mandates and the lifecycle are the execution module's and are not
+  // on this test app; the execution and lifecycle tests check them.
   const elsewhere = new Set([
     "collectApproval",
     "reject",
@@ -242,6 +242,12 @@ describe("origin check", () => {
     "speedUp",
     "requestCancel",
     "requestSweepCancel",
+    "requestDeleteWorkspace",
+    "cancelDeleteWorkspace",
+    "cloneWorkspace",
+    "importTemplate",
+    "requestRetireWallet",
+    "cancelRetireWallet",
   ]);
   const writes = Object.entries(routes).filter(
     ([name, route]) => route.method !== "GET" && !elsewhere.has(name),

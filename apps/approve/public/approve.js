@@ -60,9 +60,9 @@ export const STATE_TEXT = {
 /** @type {Record<ConfirmationWarning, string>} */
 export const WARNING_TEXT = {
   keys_destroyed:
-    "After the time below the signer destroys these keys. Whatever is still in these wallets then is lost for good.",
+    "After the time below the signer destroys the keys of the wallets listed. Whatever is still in them then is lost for good, and nobody can get it back.",
   balances_unchecked:
-    "The signer cannot see balances, so nothing on this page says these wallets are empty. Check them before you approve.",
+    "The signer cannot see balances: nothing on this page shows whether these wallets are empty. Check them where you were asked to approve, and empty them first.",
   raw_contract_call:
     "A raw contract call. The signer cannot say what it does: approve only if you know this contract and this data.",
   unknown_token:
@@ -124,14 +124,17 @@ export const REFUSAL_TEXT = {
     "This transaction has as many attempts as the signer allows, so it signs no more for it.",
   reprice_window_closed:
     "This transaction can no longer have its fee raised without approval. Cancel it instead.",
-  workspace_deleting: "This workspace is being deleted. The signer refuses everything else for it.",
-  workspace_deleted: "This workspace was deleted. The signer refuses everything for it.",
-  wallet_retired: "This wallet is retired. The signer signs nothing for it.",
+  workspace_deleting:
+    "This workspace is being deleted, so the signer approves nothing for it except cancelling a stuck transaction. Cancel the deletion first if this is still needed.",
+  workspace_deleted:
+    "This workspace was deleted and its keys destroyed. The signer acts on nothing for it.",
+  wallet_retired:
+    "This wallet is retired: the signer signs nothing for it, and its key is destroyed or soon will be.",
   wallet_set_mismatch:
-    "The wallets in this request are not the workspace's wallets at the signer. Ask for it again.",
+    "This request does not list exactly the workspace's wallets as the signer holds them: one was added or its key destroyed since. Ask for it again.",
   destroy_delay_out_of_range:
-    "The destroy time is sooner or later than the signer allows. Ask for it again.",
-  destroy_not_due: "The destroy time has not come yet.",
+    "The time the keys are destroyed is sooner or later than the signer allows. Ask for it again with another time.",
+  destroy_not_due: "It is not yet time to destroy these keys.",
   vault_error: "The signer's key store failed. Try again later.",
   internal: "The signer could not be reached or failed. Try again in a moment.",
 };
