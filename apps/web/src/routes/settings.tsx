@@ -41,7 +41,7 @@ export function SettingsPage() {
     },
   });
   return (
-    <div className="grid gap-6">
+    <div className="grid grid-cols-1 gap-6">
       <PageHeader
         title="Your passkeys"
         description={
@@ -57,7 +57,7 @@ export function SettingsPage() {
       <FormError error={logout.error} />
       {opened.length > 0 ? (
         <Alert tone="accent" className="items-start">
-          <div className="grid gap-1">
+          <div className="grid grid-cols-1 gap-1">
             <p className="font-medium">Workspaces where you approve must agree to this change:</p>
             <ul>
               {opened.map((approval) => (
@@ -85,7 +85,7 @@ export function SettingsPage() {
             </CardDescription>
           </div>
         </CardHeader>
-        <CardContent className="grid gap-5">
+        <CardContent className="grid grid-cols-1 gap-5">
           {passkeys.isPending ? <Loading /> : null}
           {passkeys.isError ? (
             <ErrorState error={passkeys.error} retry={() => void passkeys.refetch()} />
@@ -186,13 +186,13 @@ function AddPasskey({ onApprovals }: { onApprovals: (approvals: ApprovalSummary[
   });
   return (
     <form
-      className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end"
+      className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end"
       onSubmit={(event) => {
         event.preventDefault();
         add.mutate();
       }}
     >
-      <div className="grid gap-2">
+      <div className="grid grid-cols-1 gap-2">
         <Label htmlFor="passkey-label">Name for the new passkey</Label>
         <Input
           id="passkey-label"

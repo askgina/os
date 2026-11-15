@@ -59,7 +59,7 @@ function WalletView({ wallet, workspace }: { wallet: WalletDetail; workspace: Wo
   const context = { chains: workspace.chains, agents: workspace.agents, balances: wallet.balances };
   const canAdmin = workspace.role === "owner";
   return (
-    <div className="grid gap-6">
+    <div className="grid grid-cols-1 gap-6">
       <PageHeader
         title={wallet.label}
         description={
@@ -96,11 +96,11 @@ function WalletView({ wallet, workspace }: { wallet: WalletDetail; workspace: Wo
         <CardHeader>
           <CardTitle>Balances and limits</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-5">
+        <CardContent className="grid grid-cols-1 gap-5">
           {wallet.balances.length === 0 ? (
             <p className="text-sm text-muted-foreground">No balances yet.</p>
           ) : (
-            <ul className="grid gap-2">
+            <ul className="grid grid-cols-1 gap-2">
               {wallet.balances.map((balance) => (
                 <li
                   key={`${balance.chainId}|${balance.asset}`}
@@ -124,7 +124,7 @@ function WalletView({ wallet, workspace }: { wallet: WalletDetail; workspace: Wo
               )?.amount ?? "0";
             const share = percentOf(spent, limit.maxPerDay);
             return (
-              <div key={`${limit.chainId}|${limit.asset}`} className="grid gap-1.5">
+              <div key={`${limit.chainId}|${limit.asset}`} className="grid grid-cols-1 gap-1.5">
                 <div className="flex flex-wrap justify-between gap-2 text-sm">
                   <span>{info.symbol} spent in the last 24 hours</span>
                   <span className="tabular-nums">
@@ -245,7 +245,7 @@ function SweepCard({ wallet, workspace }: { wallet: WalletDetail; workspace: Wor
           <p className="text-sm text-muted-foreground">This wallet holds nothing to move.</p>
         ) : (
           <form
-            className="grid gap-4"
+            className="grid grid-cols-1 gap-4"
             onSubmit={(event) => {
               event.preventDefault();
               submit.mutate();
@@ -505,7 +505,7 @@ function PolicyEditor({ wallet, workspace }: { wallet: WalletDetail; workspace: 
       </CardHeader>
       <CardContent>
         <form
-          className="grid gap-7"
+          className="grid grid-cols-1 gap-7"
           onSubmit={(event) => {
             event.preventDefault();
             try {
@@ -562,7 +562,10 @@ function PolicyEditor({ wallet, workspace }: { wallet: WalletDetail; workspace: 
                   "")
                 : "";
               return (
-                <div key={row.key} className="grid gap-3 rounded-md border p-3 sm:grid-cols-2">
+                <div
+                  key={row.key}
+                  className="grid grid-cols-1 gap-3 rounded-md border p-3 sm:grid-cols-2"
+                >
                   <div className="flex items-center justify-between sm:col-span-2">
                     <p className="text-sm font-medium">Asset {index + 1}</p>
                     <Button
@@ -729,7 +732,7 @@ function PolicyEditor({ wallet, workspace }: { wallet: WalletDetail; workspace: 
             ) : null}
           </Group>
 
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <Labelled id={`${id}-fee`} label="Network fee ceiling per transaction (native coin)">
               <Input
                 id={`${id}-fee`}
@@ -788,7 +791,7 @@ function PolicyEditor({ wallet, workspace }: { wallet: WalletDetail; workspace: 
 
 function Group({ legend, hint, children }: { legend: string; hint?: string; children: ReactNode }) {
   return (
-    <fieldset className="grid gap-3">
+    <fieldset className="grid grid-cols-1 gap-3">
       <legend className="mb-1 text-sm font-semibold">{legend}</legend>
       {hint ? <p className="-mt-2 text-xs text-muted-foreground">{hint}</p> : null}
       {children}
@@ -798,7 +801,7 @@ function Group({ legend, hint, children }: { legend: string; hint?: string; chil
 
 function Labelled({ id, label, children }: { id: string; label: string; children: ReactNode }) {
   return (
-    <div className="grid gap-1.5">
+    <div className="grid grid-cols-1 gap-1.5">
       <Label htmlFor={id}>{label}</Label>
       {children}
     </div>

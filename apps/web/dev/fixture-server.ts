@@ -6,14 +6,21 @@
  * failing loudly. Nothing under `dev/` is part of the built UI.
  *
  * It is not a security boundary and not shipped: passkey responses are checked only for the
- * right challenge and a known credential, never cryptographically. Run it with
+ * right challenge, origin and a known credential, never cryptographically. Run it with
  * `bun run fixture` (port 55731) and the UI with `bun run dev`, or let Playwright start it.
+ *
+ * Approvals are made only on the signer's confirmation page, on its own origin. The fixture
+ * stands in for that page too, on a second port (55732, so `http://localhost:55732`): it shows
+ * the request, asks the passkey there, and holds the approval as the signer would, until reading
+ * the request counts it here (`collect`). The page itself is `dev/confirm/`. It is a fixture, not
+ * the real page, which is `apps/approve/public/`.
  *
  * Besides the contract it has three development endpoints under `/__fixture/`: one lets a test
  * act as an agent and propose a payment (the real server takes those over MCP), one puts a sent
  * payment into a chain outcome (stuck, or rejected by the chain), and one resets state.
  */
 import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import {
   type ApprovalDetail,
@@ -35,6 +42,7 @@ import {
   type WorkspaceDetail,
 } from "@askgina/os-api";
 import {
+  AssertionResponse,
   type Envelope,
   envelopeChallenge,
   type Intent,
@@ -47,15 +55,16 @@ import {
   sweepHash,
   type WalletPolicy,
 } from "@askgina/os-protocol";
+import { z } from "zod";
 
 const PORT = Number(process.env.OS_WEB_FIXTURE_PORT ?? 55731);
 const SETUP_TOKEN = process.env.OS_WEB_FIXTURE_SETUP_TOKEN ?? "fixture-setup-token-0123456789";
 const RP_NAME = "Agent Workspaces";
-/**
- * Where the signer's confirmation page would be. Nothing serves it here: the journey checks the
- * link the approval page shows, and approves with the control plane's own passkey prompt.
- */
-const CONFIRM_ORIGIN = process.env.OS_WEB_FIXTURE_CONFIRM_ORIGIN ?? "http://localhost:55732";
+/** The stand-in confirmation page's port. `localhost`, so the passkeys made for the UI work there. */
+const CONFIRM_PORT = Number(process.env.OS_WEB_FIXTURE_CONFIRM_PORT ?? 55732);
+const CONFIRM_ORIGIN = `http://localhost:${CONFIRM_PORT}`;
+/** Where the confirmation page sends the person back to: the UI on the Vite dev server. */
+const RETURN_ORIGIN = process.env.OS_WEB_FIXTURE_RETURN_ORIGIN ?? "http://localhost:55730";
 
 const CHAINS: ChainInfo[] = [
   { chainId: "eip155:31337", name: "Local test chain", nativeSymbol: "ETH", explorerUrl: null },
@@ -117,12 +126,18 @@ interface Workspace {
 interface Approval {
   summary: ApprovalSummary;
   envelope: Envelope;
+  /** The envelope's digest, base64url: the challenge the confirmation page asks a passkey for. */
   challenge: string;
   approvedBy: { id: string; displayName: string }[];
   rejectedBy: { id: string; displayName: string } | null;
   subject: ApprovalSubject;
-  /** The token of the request's confirmation link, as the signer would issue it. */
-  confirmToken: string;
+  /**
+   * The token of the request's confirmation link, issued when the request is first read, as the
+   * signer issues it. Null until then, and while the signer refuses to open it.
+   */
+  confirmToken: string | null;
+  /** The people whose approval the confirmation page holds, counted here by `collect`. */
+  atSigner: string[];
   /** The effect applied when enough people approve. */
   apply: () => void;
 }
@@ -314,7 +329,8 @@ function openApproval(input: {
     approvedBy: [],
     rejectedBy: null,
     subject: input.subject,
-    confirmToken: randomToken(16),
+    confirmToken: null,
+    atSigner: [],
     apply: input.apply,
   };
   state.approvals.set(id, approval);
@@ -370,6 +386,62 @@ function approverApprovals(
   return opened;
 }
 
+/**
+ * Mirrors the signer's refusal to open a confirmation: a request made under limits that have
+ * changed since can never be signed, so it gets no page to approve it on.
+ */
+function signerRefuses(approval: Approval): boolean {
+  const envelope = approval.envelope;
+  if (envelope.type !== "approve-intent" && envelope.type !== "set-policy") return false;
+  const wallet = workspaceOf(approval.summary.workspaceId).wallets.find(
+    (item) => item.id === envelope.walletId,
+  );
+  const current = wallet?.policyHash ?? null;
+  return envelope.type === "approve-intent"
+    ? envelope.policyHash !== current
+    : envelope.previousPolicyHash !== current;
+}
+
+/**
+ * The link to the confirmation page, opened the first time a pending request is read, as the
+ * control plane asks the signer to. A refused request is asked about again on the next read.
+ */
+function confirmUrl(approval: Approval): string | null {
+  if (approval.summary.status !== "pending") return null;
+  if (approval.confirmToken === null) {
+    if (signerRefuses(approval)) return null;
+    approval.confirmToken = randomToken(16);
+  }
+  return `${CONFIRM_ORIGIN}/a/${approval.summary.id}#${approval.confirmToken}`;
+}
+
+/**
+ * Counts the approvals the confirmation page holds, as the control plane does when a pending
+ * request is read: each person once, and the request is applied when enough are in.
+ */
+function collect(approval: Approval): void {
+  if (approval.summary.status !== "pending") return;
+  const workspace = workspaceOf(approval.summary.workspaceId);
+  for (const userId of approval.atSigner) {
+    if (approval.approvedBy.some((user) => user.id === userId)) continue;
+    approval.approvedBy.push(userSummary(userId));
+    approval.summary.approvals = approval.approvedBy.length;
+    audit(workspace, userActor(userId), "approval.assertion_added", {
+      type: "approval",
+      id: approval.summary.id,
+    });
+    if (approval.summary.approvals >= approval.summary.threshold) {
+      audit(workspace, userActor(userId), "approval.approved", {
+        type: "approval",
+        id: approval.summary.id,
+      });
+      approval.summary.status = "executed";
+      approval.apply();
+      return;
+    }
+  }
+}
+
 function approvalDetail(approval: Approval, userId: string): ApprovalDetail {
   const workspace = workspaceOf(approval.summary.workspaceId);
   const member = workspace.members.find((item) => item.user.id === userId);
@@ -381,7 +453,6 @@ function approvalDetail(approval: Approval, userId: string): ApprovalDetail {
   return {
     ...approval.summary,
     envelope: approval.envelope,
-    challenge: approval.challenge,
     approvedBy: approval.approvedBy.map((user) => userSummary(user.id)),
     rejectedBy: approval.rejectedBy ? userSummary(approval.rejectedBy.id) : null,
     canDecide:
@@ -391,10 +462,7 @@ function approvalDetail(approval: Approval, userId: string): ApprovalDetail {
       member.approver === "active" &&
       !approval.approvedBy.some((user) => user.id === userId),
     subject: liveSubject,
-    confirmUrl:
-      approval.summary.status === "pending"
-        ? `${CONFIRM_ORIGIN}/a/${approval.summary.id}#${approval.confirmToken}`
-        : null,
+    confirmUrl: confirmUrl(approval),
   };
 }
 
@@ -439,13 +507,18 @@ function fakeAddress(): `0x${string}` {
   return `0x${randomBytes(20).toString("hex")}`;
 }
 
-function clientChallenge(response: { response: { clientDataJSON: string } }): string {
-  const clientData = JSON.parse(
-    Buffer.from(response.response.clientDataJSON, "base64url").toString("utf8"),
-  ) as {
-    challenge?: string;
-  };
-  return clientData.challenge ?? "";
+/** What the browser wrote into a passkey response: the fields the fixture compares. */
+const ClientData = z.object({
+  type: z.string().optional(),
+  challenge: z.string().optional(),
+  origin: z.string().optional(),
+  crossOrigin: z.boolean().optional(),
+});
+
+function clientData(response: { response: { clientDataJSON: string } }) {
+  return ClientData.parse(
+    JSON.parse(Buffer.from(response.response.clientDataJSON, "base64url").toString("utf8")),
+  );
 }
 
 function finishCeremony(
@@ -455,7 +528,11 @@ function finishCeremony(
 ) {
   const ceremony = state.ceremonies.get(ceremonyId);
   state.ceremonies.delete(ceremonyId);
-  if (!ceremony || ceremony.kind !== kind || clientChallenge(response) !== ceremony.challenge) {
+  if (
+    !ceremony ||
+    ceremony.kind !== kind ||
+    clientData(response).challenge !== ceremony.challenge
+  ) {
     throw new Refusal("invalid_request", "This sign-in attempt is no longer valid. Start again.");
   }
   return ceremony;
@@ -1272,8 +1349,11 @@ const handlers: Record<RouteName, Handler> = {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
     memberOf(workspace, id);
-    const items = [...state.approvals.values()]
-      .filter((item) => item.summary.workspaceId === workspace.id)
+    const listed = [...state.approvals.values()].filter(
+      (item) => item.summary.workspaceId === workspace.id,
+    );
+    for (const item of listed) collect(item);
+    const items = listed
       .filter((item) => query.status !== "pending" || item.summary.status === "pending")
       .map((item) => item.summary)
       .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
@@ -1284,58 +1364,15 @@ const handlers: Record<RouteName, Handler> = {
     const approval = state.approvals.get(params.approvalId ?? "");
     if (!approval) throw new Refusal("not_found", "This request does not exist.");
     memberOf(workspaceOf(approval.summary.workspaceId), id);
+    collect(approval);
     return approvalDetail(approval, id);
   },
-  // No confirmation page runs here, so there is never anything to collect.
   collectApproval: ({ params, userId }) => {
     const id = signedIn(userId);
     const approval = state.approvals.get(params.approvalId ?? "");
     if (!approval) throw new Refusal("not_found", "This request does not exist.");
     memberOf(workspaceOf(approval.summary.workspaceId), id);
-    return approvalDetail(approval, id);
-  },
-  startApproval: ({ params, userId }) => {
-    const id = signedIn(userId);
-    const approval = state.approvals.get(params.approvalId ?? "");
-    if (!approval) throw new Refusal("not_found", "This request does not exist.");
-    if (!approvalDetail(approval, id).canDecide)
-      throw new Refusal("forbidden", "You cannot approve this request.");
-    const allowCredentials = [...state.credentials]
-      .filter(([, credential]) => credential.userId === id)
-      .map(([credentialId]) => ({ id: credentialId, type: "public-key" }));
-    return {
-      options: {
-        challenge: approval.challenge,
-        rpId: "localhost",
-        allowCredentials,
-        userVerification: "required",
-        timeout: 60_000,
-      },
-    };
-  },
-  approve: ({ params, body, userId }) => {
-    const id = signedIn(userId);
-    const approval = state.approvals.get(params.approvalId ?? "");
-    if (!approval) throw new Refusal("not_found", "This request does not exist.");
-    if (!approvalDetail(approval, id).canDecide)
-      throw new Refusal("forbidden", "You cannot approve this request.");
-    const response = body.response as { id: string; response: { clientDataJSON: string } };
-    if (clientChallenge(response) !== approval.challenge) {
-      throw new Refusal("invalid_request", "The passkey signed a different request.");
-    }
-    if (state.credentials.get(response.id)?.userId !== id)
-      throw new Refusal("forbidden", "This passkey is not yours.");
-    approval.approvedBy.push(userSummary(id));
-    approval.summary.approvals = approval.approvedBy.length;
-    const workspace = workspaceOf(approval.summary.workspaceId);
-    audit(workspace, userActor(id), "approval.approved", {
-      type: "approval",
-      id: approval.summary.id,
-    });
-    if (approval.summary.approvals >= approval.summary.threshold) {
-      approval.summary.status = "executed";
-      approval.apply();
-    }
+    collect(approval);
     return approvalDetail(approval, id);
   },
   reject: ({ params, userId }) => {
@@ -1546,6 +1583,230 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "127.0.0.1", () => {
-  process.stdout.write(`${JSON.stringify({ event: "fixture.listening", port: PORT })}\n`);
+// --- the stand-in confirmation page, on its own origin -----------------------------------------
+
+const confirmFiles: Record<string, { type: string; body: Buffer }> = {
+  "/confirm.js": {
+    type: "text/javascript; charset=utf-8",
+    body: readFileSync(new URL("./confirm/confirm.js", import.meta.url)),
+  },
+  "/confirm.css": {
+    type: "text/css; charset=utf-8",
+    body: readFileSync(new URL("./confirm/confirm.css", import.meta.url)),
+  },
+  "/favicon.svg": {
+    type: "image/svg+xml",
+    body: readFileSync(new URL("../public/favicon.svg", import.meta.url)),
+  },
+};
+const confirmHtml = readFileSync(new URL("./confirm/index.html", import.meta.url));
+
+/** Like the real page's: nothing inline, nothing from elsewhere, no framing. */
+const CONFIRM_CSP = [
+  "default-src 'none'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "img-src 'self'",
+  "connect-src 'self'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join("; ");
+
+/** The request in words, from the fixture's own records, as the signer's view would show it. */
+function confirmationLines(approval: Approval): { label: string; value: string }[] {
+  const subject = approval.subject;
+  switch (subject.kind) {
+    case "approve-intent": {
+      const { display, chainId } = subject.intent;
+      return [
+        { label: "Amount", value: `${display.amountFormatted} ${display.assetSymbol}` },
+        { label: display.rawCall ? "Contract" : "Recipient", value: display.to },
+        { label: "From wallet", value: `${subject.wallet.label} ${subject.wallet.address}` },
+        {
+          label: "Network",
+          value: CHAINS.find((chain) => chain.chainId === chainId)?.name ?? chainId,
+        },
+        { label: "Agent", value: subject.intent.agent.name },
+        { label: "The agent's note", value: subject.intent.memo || "(none)" },
+      ];
+    }
+    case "sweep-wallet":
+      return [
+        {
+          label: "Amount",
+          value: `${formatAmount(subject.sweep.amount, subject.assetDecimals)} ${subject.assetSymbol}`,
+        },
+        { label: "Recipient", value: subject.sweep.to },
+        { label: "From wallet", value: `${subject.wallet.label} ${subject.wallet.address}` },
+        {
+          label: "Network",
+          value:
+            CHAINS.find((chain) => chain.chainId === subject.sweep.chainId)?.name ??
+            subject.sweep.chainId,
+        },
+      ];
+    case "set-policy":
+      return [
+        { label: "Wallet", value: `${subject.wallet.label} ${subject.wallet.address}` },
+        { label: "Policy revision", value: String(subject.proposed.revision) },
+        { label: "Approvals per payment", value: String(subject.proposed.approvals.threshold) },
+      ];
+    case "add-approver":
+    case "remove-approver":
+      return [
+        { label: "Person", value: subject.user.displayName },
+        { label: "Passkey", value: subject.passkeyLabel },
+      ];
+    case "set-admin-threshold":
+      return [
+        { label: "Approvals needed now", value: String(subject.current) },
+        { label: "After", value: String(subject.proposed) },
+      ];
+    case "resume-workspace":
+      return [{ label: "Workspace", value: workspaceOf(approval.summary.workspaceId).name }];
+  }
+}
+
+/** Whose passkeys may approve here: the workspace's active approvers. */
+function approverOf(approval: Approval, credentialUserId: string): boolean {
+  return workspaceOf(approval.summary.workspaceId).members.some(
+    (member) =>
+      member.user.id === credentialUserId &&
+      member.role !== "viewer" &&
+      member.approver === "active",
+  );
+}
+
+function confirmationView(approval: Approval) {
+  const { id, workspaceId, status, threshold, title } = approval.summary;
+  return {
+    approvalId: id,
+    title,
+    lines: confirmationLines(approval),
+    state:
+      status !== "pending" ? "closed" : approval.atSigner.length >= threshold ? "complete" : "open",
+    approvals: { collected: approval.atSigner.length, required: threshold },
+    webauthn: {
+      challenge: approval.challenge,
+      rpId: "localhost",
+      allowCredentials: [...state.credentials]
+        .filter(([, credential]) => approverOf(approval, credential.userId))
+        .map(([credentialId]) => credentialId),
+      userVerification: "required",
+      timeoutMs: 60_000,
+    },
+    returnUrl: `${RETURN_ORIGIN}/w/${workspaceId}/approvals/${id}`,
+  };
+}
+
+/** The request behind a confirmation link; a wrong or missing token finds nothing. */
+function confirmationFor(approvalId: string, token: string | string[] | undefined): Approval {
+  const approval = state.approvals.get(approvalId);
+  if (!approval || approval.confirmToken === null || token !== approval.confirmToken) {
+    throw new Refusal("not_found", "This confirmation link is not valid.");
+  }
+  return approval;
+}
+
+/**
+ * Holds one person's approval, as the signer does: made on this origin, top level, for this
+ * request's challenge, with a passkey of an active approver who has not approved it yet.
+ */
+function holdApproval(approval: Approval, body: unknown) {
+  const parsed = z.strictObject({ response: AssertionResponse }).safeParse(body);
+  if (!parsed.success) throw new Refusal("invalid_request", "The passkey response is not valid.");
+  const response = parsed.data.response;
+  const { threshold } = approval.summary;
+  if (approval.summary.status !== "pending" || approval.atSigner.length >= threshold) {
+    throw new Refusal("conflict", "This request no longer waits for approval.");
+  }
+  const data = clientData(response);
+  if (
+    data.type !== "webauthn.get" ||
+    data.challenge !== approval.challenge ||
+    data.origin !== CONFIRM_ORIGIN ||
+    data.crossOrigin === true
+  ) {
+    throw new Refusal(
+      "invalid_request",
+      "This approval was not made on this page for this request.",
+    );
+  }
+  const userId = state.credentials.get(response.id)?.userId;
+  if (!userId || !approverOf(approval, userId)) {
+    throw new Refusal("forbidden", "This passkey does not approve for this workspace.");
+  }
+  if (approval.atSigner.includes(userId)) {
+    throw new Refusal("conflict", "You approved this request already.");
+  }
+  approval.atSigner.push(userId);
+  return {
+    collected: approval.atSigner.length,
+    required: threshold,
+    returnUrl: confirmationView(approval).returnUrl,
+  };
+}
+
+const confirmServer = createServer(async (req, res) => {
+  const url = new URL(req.url ?? "/", CONFIRM_ORIGIN);
+  const reply = (code: number, type: string, body: string | Buffer) => {
+    res.writeHead(code, {
+      "content-type": type,
+      "cache-control": "no-store",
+      "content-security-policy": CONFIRM_CSP,
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+    });
+    res.end(body);
+  };
+  const json = "application/json";
+  try {
+    expireApprovals();
+    const file = confirmFiles[url.pathname];
+    if (req.method === "GET" && file) return reply(200, file.type, file.body);
+    if (req.method === "GET" && /^\/a\/apr_[A-Za-z0-9_-]+$/.test(url.pathname)) {
+      return reply(200, "text/html; charset=utf-8", confirmHtml);
+    }
+    const match = /^\/api\/approvals\/([^/]+)(\/assertions)?$/.exec(url.pathname);
+    if (match) {
+      const approval = confirmationFor(
+        decodeURIComponent(match[1] ?? ""),
+        req.headers["x-confirm-token"],
+      );
+      if (req.method === "GET" && !match[2]) {
+        return reply(200, json, JSON.stringify(confirmationView(approval)));
+      }
+      if (req.method === "POST" && match[2]) {
+        return reply(200, json, JSON.stringify(holdApproval(approval, await readBody(req))));
+      }
+    }
+    throw new Refusal("not_found", "Nothing is here.");
+  } catch (error) {
+    if (error instanceof Refusal) {
+      return reply(
+        status[error.code],
+        json,
+        JSON.stringify({ error: { code: error.code, message: error.message } }),
+      );
+    }
+    process.stderr.write(
+      `${JSON.stringify({ event: "fixture.confirm.error", path: url.pathname, error: String(error) })}\n`,
+    );
+    reply(
+      500,
+      json,
+      JSON.stringify({ error: { code: "internal", message: "The fixture failed." } }),
+    );
+  }
+});
+
+// The confirmation page listens first: once the API answers, both are up.
+confirmServer.listen(CONFIRM_PORT, "127.0.0.1", () => {
+  server.listen(PORT, "127.0.0.1", () => {
+    process.stdout.write(
+      `${JSON.stringify({ event: "fixture.listening", port: PORT, confirmPort: CONFIRM_PORT })}\n`,
+    );
+  });
 });

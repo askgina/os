@@ -12,11 +12,15 @@ For a public host name with HTTPS, set `OS_HOSTNAME` and `PUBLIC_HOST` in `.env`
 `docker compose -f compose.yaml -f compose.tls.yaml up -d --build`. Ports 80 and 443 must be
 reachable so Caddy can obtain certificates. Changing the host name later invalidates every passkey.
 
-Every layout also names the origin of the signer's confirmation page, `APPROVE_ORIGIN`, where
-people approve with their passkeys (`specs/trusted-display.md`). The `approve` service serves it,
-and Caddy publishes it as a second site. It must not be `PUBLIC_ORIGIN`; the server and the
-signer refuse to start when it is, and the signer also refuses when its host is not
-`OS_HOSTNAME` or a name under it. Pick one of two layouts:
+Every layout also names the origin of the signer's confirmation page, `APPROVE_ORIGIN`. It is the
+only place people approve with their passkeys (`specs/trusted-display.md`): a person opens a
+request in the control plane, follows its link there, checks the address bar, reads the request
+as the signer holds it, and approves. The signer accepts an approval only when the browser made
+it at `APPROVE_ORIGIN`, top-level, as a `webauthn.get`; the control plane has no approval prompt
+of its own. The `approve` service serves the page, and Caddy publishes it as a second site. It
+must not be `PUBLIC_ORIGIN`; the server and the signer refuse to start when it is, and the
+signer also refuses when its host is not `OS_HOSTNAME` or a name under it. Pick one of two
+layouts:
 
 - A subdomain, for example `APPROVE_ORIGIN=https://approve.os.example.com`. Give the name its own
   DNS record pointing at this machine; with the TLS overlay Caddy obtains its certificate and
@@ -29,12 +33,11 @@ signer refuse to start when it is, and the signer also refuses when its host is 
 Either way passkeys keep working: the confirmation page asks for them under the same RP ID,
 `OS_HOSTNAME`. Without the TLS overlay `APPROVE_ORIGIN` defaults to `http://localhost:8081` and
 Caddy publishes it on `127.0.0.1:${APPROVE_HTTP_PORT:-8081}`, which fits only
-`OS_HOSTNAME=localhost`. The TLS overlay requires `APPROVE_ORIGIN`. Change it only while no
-request waits for approval: an approval made on the old origin is refused afterwards, and its
-request must be proposed again.
+`OS_HOSTNAME=localhost`. The TLS overlay requires `APPROVE_ORIGIN`.
 
-Until the cutover in `specs/trusted-display.md` milestone 3, the control plane's own approval
-button keeps working next to the link to the confirmation page.
+You can move from one layout to the other later. Nobody enrolls a passkey again, because the RP
+ID stays `OS_HOSTNAME`. Move only while no request waits for approval: an approval made on the
+old origin and not yet acted on is refused afterwards, and its request must be proposed again.
 
 If something else already terminates HTTPS in front of this machine (Tailscale Serve, a tunnel,
 a load balancer), keep the plain `compose.yaml` and tell the stack the address people will use.
@@ -53,17 +56,17 @@ The proxy must pass the `Host` header through unchanged. With Tailscale:
 
 ## Services
 
-| Service          | Purpose                                                                                                                            |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `init`           | Runs once at start; creates any missing secret in the secret volumes and never changes an existing one.                            |
-| `postgres`       | Control-plane data and the encrypted Workflow history.                                                                             |
-| `signer`         | Holds the wallets; verifies passkey approvals itself and signs at most once per approval. No outside access.                       |
-| `approve`        | The confirmation page at `APPROVE_ORIGIN`. Holds no key; relays a view and an assertion to the signer's two confirmation routes.   |
-| `server`         | UI, API, MCP gateway and the Workflow runtime.                                                                                     |
-| `caddy`          | The only public entry point, with two sites: the UI and the confirmation page. Refuses `/.well-known/workflow/*` as a second lock. |
-| `agent-gateway`  | The only thing agent containers can reach. Forwards `/mcp` and nothing else.                                                       |
-| `anvil`          | `dev` profile: a local chain (id 31337).                                                                                           |
-| `scripted-agent` | An example agent, not started by `up`. `docker compose --profile dev run --rm -e AGENT_TOKEN=… -e TRANSFER_TO=0x… scripted-agent`. |
+| Service          | Purpose                                                                                                                                                        |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `init`           | Runs once at start; creates any missing secret in the secret volumes and never changes an existing one.                                                        |
+| `postgres`       | Control-plane data and the encrypted Workflow history.                                                                                                         |
+| `signer`         | Holds the wallets; verifies passkey approvals itself and signs at most once per approval. No outside access.                                                   |
+| `approve`        | The confirmation page at `APPROVE_ORIGIN`, where every approval is made. Holds no key; relays a view and an assertion to the signer's two confirmation routes. |
+| `server`         | UI, API, MCP gateway and the Workflow runtime.                                                                                                                 |
+| `caddy`          | The only public entry point, with two sites: the UI and the confirmation page. Refuses `/.well-known/workflow/*` as a second lock.                             |
+| `agent-gateway`  | The only thing agent containers can reach. Forwards `/mcp` and nothing else.                                                                                   |
+| `anvil`          | `dev` profile: a local chain (id 31337).                                                                                                                       |
+| `scripted-agent` | An example agent, not started by `up`. `docker compose --profile dev run --rm -e AGENT_TOKEN=… -e TRANSFER_TO=0x… scripted-agent`.                             |
 
 ## Networks
 
@@ -80,6 +83,26 @@ The proxy must pass the `Host` header through unchanged. With Tailscale:
 Only the server and the `approve` service reach the signer, each on its own network, and each
 with its own request secret. The `approve` service's secret opens the signer's two confirmation
 routes and no other; the server's opens every route except those two.
+
+```mermaid
+flowchart LR
+  B[Browser] -->|PUBLIC_ORIGIN| C[caddy]
+  B -->|APPROVE_ORIGIN| C
+  Ag[agent containers] -->|agents network| AG[agent-gateway]
+  AG -->|control network, /mcp only| S[server]
+  C -->|control network| S
+  C -->|approve-edge network, no cookies| A[approve]
+  S -->|signing network, control secret| G[signer]
+  A -->|approve-signer network, confirm secret| G
+  S -->|control network| P[(postgres)]
+  S -->|chain network| R[(chain RPC)]
+```
+
+The `approve` service reads one secret, `confirm-request-secret`, from the `approve-secrets`
+volume, mounted read-only. It holds no wallet key, no keyring and no database password, and it
+sets no cookie. A compromise of it, or of Caddy in front of it, lets an attacker show people a
+false confirmation page and relay their approvals over other operations; it cannot sign or read
+a key (`docs/threat-model.md`).
 
 ## Volumes
 
@@ -128,10 +151,11 @@ so. A restore puts the signer's record of used approvals back to the moment of t
 approval paid after the backup would look unused, and approving it again would pay a second
 time. After the fence, the signer refuses every approval issued before the fence with
 `envelope_fenced`, whatever the control plane asks. The control plane still shows approvals
-that were waiting when the backup was taken; approving one ends it as failed with
-`envelope_fenced`, and the agent must propose it again. The same happens to a proposal made in
-the first 30 seconds after the fence (the clock skew the signer allows). Approvals that were
-already used stay used. A chain is not part of a backup.
+that were waiting when the backup was taken, but none can be approved: the confirmation page
+shows them as closed (`superseded`) and refuses an approval (`confirmation_closed`), or the
+request shows no link at all. Reject them, and the agent proposes again. The same happens to a
+proposal made in the first 30 seconds after the fence (the clock skew the signer allows).
+Approvals that were already used stay used. A chain is not part of a backup.
 
 The signer also fences itself when it opens a database file that is not the file it last opened:
 one extracted from an archive, copied, or moved to another host. It logs `restore fence set`
@@ -184,6 +208,14 @@ signer with the restore fence on a v0.1 database fences it once, because nothing
 file was not restored: approvals waiting at that moment must be proposed again. A signer refuses
 to start on a database written by a newer signer (`schema_too_new`). Do not go back to a v0.1
 signer image after upgrading: it does not know the fence and would ignore it.
+
+Upgrading from a release in which the control plane's own page could approve (it had the
+signer setting `WEBAUTHN_ORIGINS`): the signer now accepts approvals made on the confirmation
+page only. A request approved on the control plane's page before the upgrade and not yet signed
+or applied ends `failed` with `assertion_invalid`, and must be proposed again. A request that
+waits without approvals simply gains its link to the confirmation page. Set `APPROVE_ORIGIN`
+first if your layout needs another value than the default. `WEBAUTHN_ORIGINS` is no longer
+read anywhere.
 
 ## The approval webhook
 

@@ -84,6 +84,9 @@
     color: var(--foreground);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
+    /* A word longer than its box (an address, a host, a long name) breaks inside the box
+       instead of widening the page. On a phone, a page wider than the screen shifts every tap. */
+    overflow-wrap: anywhere;
   }
   :focus-visible {
     outline: 2px solid var(--ring);

@@ -1,15 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { ApiErrorBody, routes } from "@askgina/os-api";
 import type { ApprovalId, IntentId } from "@askgina/os-protocol";
-import type { SignRequest, SignResponse } from "@askgina/os-protocol/signer";
+import { SignerError, type SignRequest, type SignResponse } from "@askgina/os-protocol/signer";
 import { scanForMarkers } from "@askgina/os-testkit";
 import type { Client } from "@modelcontextprotocol/client";
 import { eq } from "drizzle-orm";
 import { encodeFunctionData, erc20Abi, parseTransaction } from "viem";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, intents, transactions } from "../../src/db/schema.ts";
+import { agents, approvalAssertions, intents, transactions } from "../../src/db/schema.ts";
 import { engineOf } from "../../src/execution/approvals.ts";
-import { TEST_CHAIN_ID, TEST_ORIGIN, type TestPerson } from "../support/context.ts";
+import { TEST_CHAIN_ID, type TestPerson } from "../support/context.ts";
 import {
   anvil,
   createFixture,
@@ -45,23 +45,6 @@ async function propose(
     .where(eq(intents.id, proposed.intentId as IntentId));
   if (!row?.approvalId) throw new Error("intent without approval");
   return { intentId: row.id, approvalId: row.approvalId };
-}
-
-/** Approve through the HTTP API with a person's passkey, as the approval page does. */
-async function approveViaApi(person: TestPerson, approvalId: ApprovalId) {
-  const { options } = await person.browser.api.call("startApproval", {
-    params: { approvalId },
-    body: {},
-  });
-  const response = f.t.authenticator.authenticate({
-    credentialId: person.credentialId,
-    challenge: String(options.challenge),
-    origin: TEST_ORIGIN,
-  });
-  return person.browser.api.call("approve", {
-    params: { approvalId },
-    body: { response: response as never },
-  });
 }
 
 /** Run the follow-up step until it is done, as the workflow would. */
@@ -102,7 +85,7 @@ describe("approving an intent", () => {
     });
     expect(pending.items.map((item) => item.id)).toContain(approvalId);
 
-    const decided = await approveViaApi(f.t.owner, approvalId);
+    const decided = await f.t.approveOnPage(f.t.owner, approvalId);
     expect(decided.status).toBe("approved");
 
     const steps = engineOf(f.t.ctx).steps();
@@ -184,16 +167,19 @@ describe("approving an intent", () => {
       amount: "1",
       memo: "needs two",
     });
-    const first = await approveViaApi(f.t.owner, approvalId);
+    const first = await f.t.approveOnPage(f.t.owner, approvalId);
     expect(first).toMatchObject({ status: "pending", approvals: 1, canDecide: false });
-    await expect(approveViaApi(f.t.owner, approvalId)).rejects.toMatchObject({ code: "conflict" });
-    const second = await approveViaApi(carol, approvalId);
+    // The signer takes one approval per person: the same person again does not count twice.
+    await expect(f.t.approveOnPage(f.t.owner, approvalId)).rejects.toMatchObject({
+      code: "conflict",
+    });
+    const second = await f.t.approveOnPage(carol, approvalId);
     expect(second).toMatchObject({ status: "approved", approvals: 2 });
     expect(await engineOf(f.t.ctx).steps().execute(approvalId)).toEqual({ ok: true });
     expect((await intentStatus(intentId)).status).toBe("signed");
   });
 
-  it("lets only one of two concurrent decisions win, and the loser fails cleanly", async () => {
+  it("lets only one of two concurrent decisions win: collecting an approval or a rejection", async () => {
     const client = await f.mcp(f.agent.token);
     const { approvalId } = await propose(client, {
       chainId: TEST_CHAIN_ID,
@@ -201,15 +187,32 @@ describe("approving an intent", () => {
       amount: "0.01",
       memo: "race",
     });
-    const results = await Promise.allSettled([
-      approveViaApi(f.t.owner, approvalId),
+    // The approval is made on the confirmation page first; the race is between the control plane
+    // counting it and a rejection.
+    const { confirmUrl, envelope } = await f.t.owner.browser.api.call("getApproval", {
+      params: { approvalId },
+    });
+    if (confirmUrl === null) throw new Error("no confirmation link");
+    await f.t.approveAt(confirmUrl, f.t.owner, envelope);
+    const [collected, rejected] = await Promise.allSettled([
+      f.t.owner.browser.api.call("collectApproval", { params: { approvalId }, body: {} }),
       bob.browser.api.call("reject", { params: { approvalId }, body: {} }),
     ]);
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    const loser = results.find((result) => result.status === "rejected");
-    expect(loser?.status === "rejected" && loser.reason).toMatchObject({ code: "conflict" });
     const row = await engineOf(f.t.ctx).row(approvalId);
-    expect(["approved", "rejected"]).toContain(row.status);
+    const counted = await f.t.ctx.db
+      .select()
+      .from(approvalAssertions)
+      .where(eq(approvalAssertions.approvalId, approvalId));
+    if (row.status === "approved") {
+      expect(counted).toHaveLength(1);
+      expect(rejected.status === "rejected" && rejected.reason).toMatchObject({ code: "conflict" });
+    } else {
+      // The rejection won: the approval was not stored, and the signer will never act on it.
+      expect(row.status).toBe("rejected");
+      expect(counted).toHaveLength(0);
+      expect(collected.status === "fulfilled" && collected.value.status).toBe("rejected");
+      expect((await f.t.ctx.signer.getApproval(approvalId)).state).toBe("revoked");
+    }
   });
 
   it("gives two approved intents of one wallet consecutive nonces", async () => {
@@ -226,8 +229,8 @@ describe("approving an intent", () => {
       amount: "0.1",
       memo: "two",
     });
-    await approveViaApi(f.t.owner, first.approvalId);
-    await approveViaApi(f.t.owner, second.approvalId);
+    await f.t.approveOnPage(f.t.owner, first.approvalId);
+    await f.t.approveOnPage(f.t.owner, second.approvalId);
     const steps = engineOf(f.t.ctx).steps();
     await Promise.all([steps.execute(first.approvalId), steps.execute(second.approvalId)]);
     const rows = await f.t.ctx.db
@@ -255,12 +258,30 @@ describe("approving an intent", () => {
       amount: "0.2",
       memo: "before the change",
     });
+    // Approved on the confirmation page under the old policy, collected after the change.
+    const { confirmUrl, envelope } = await f.t.owner.browser.api.call("getApproval", {
+      params: { approvalId },
+    });
+    if (confirmUrl === null) throw new Error("no confirmation link");
+    await f.t.approveAt(confirmUrl, f.t.owner, envelope);
     await f.setPolicy(
       f.workspaceId,
       agent.walletId,
       draftFor(agent.id, { fees: { maxPerTxWei: "90000000000000000" } }),
     );
-    const row = await f.t.approve(approvalId, [f.t.owner]);
+    // The confirmation page now says the request can no longer be approved.
+    const token = new URL(confirmUrl).hash.slice(1);
+    expect((await f.t.confirm.getConfirmation(approvalId, token)).state).toBe("superseded");
+    const collected = await f.t.owner.browser.api.call("collectApproval", {
+      params: { approvalId },
+      body: {},
+    });
+    expect(collected.status).toBe("approved");
+    const steps = engineOf(f.t.ctx).steps();
+    const result = await steps.execute(approvalId);
+    expect(result).toEqual({ ok: false, code: "policy_changed" });
+    if (!result.ok) await steps.fail(approvalId, result.code);
+    const row = await engineOf(f.t.ctx).row(approvalId);
     expect(row).toMatchObject({ status: "failed", failureCode: "policy_changed" });
     expect(await intentStatus(intentId)).toMatchObject({
       status: "failed",
@@ -291,8 +312,17 @@ describe("approving an intent", () => {
       amount: "0.01",
       memo: "will lapse",
     });
+    const { confirmUrl, envelope } = await f.t.owner.browser.api.call("getApproval", {
+      params: { approvalId },
+    });
+    if (confirmUrl === null) throw new Error("no confirmation link while it waited");
     f.t.clock.advance(3_601);
-    await expect(approveViaApi(f.t.owner, approvalId)).rejects.toMatchObject({ code: "conflict" });
+    // The approval page no longer links to the confirmation page, and the signer refuses an
+    // approval made there late.
+    await expect(f.t.approveOnPage(f.t.owner, approvalId)).rejects.toThrow(/no confirmation page/);
+    const late = f.t.approveAt(confirmUrl, f.t.owner, envelope);
+    await expect(late).rejects.toBeInstanceOf(SignerError);
+    await expect(late).rejects.toMatchObject({ code: "confirmation_closed" });
     const steps = engineOf(f.t.ctx).steps();
     const row = await engineOf(f.t.ctx).row(approvalId);
     expect(await steps.settle(approvalId, row.runId ?? "wrun_test_expiry")).toBe("expired");
@@ -400,9 +430,9 @@ describe("approving an intent", () => {
 
 describe("origin check on the execution routes", () => {
   // The identity test app covers every other write; these exist only here.
-  const writes = (
-    ["startApproval", "approve", "collectApproval", "reject", "requestSweep"] as const
-  ).map((name) => [name, routes[name]] as const);
+  const writes = (["collectApproval", "reject", "requestSweep"] as const).map(
+    (name) => [name, routes[name]] as const,
+  );
 
   it.each(writes)("%s refuses a write without a same-site Origin", async (_name, route) => {
     const path = route.path.replace(/:[A-Za-z]+/g, "x");

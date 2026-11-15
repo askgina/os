@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
+  type AddApproverEnvelope,
   type Address,
   type ApprovalId,
   type ApproverCredential,
@@ -16,20 +17,24 @@ import {
   Envelope,
   envelopeChallenge,
   intentSpend,
+  keyFingerprint,
   PROTOCOL_VERSION,
+  possessionChallenge,
   renderConfirmation,
   type UserId,
   type WalletId,
   type WorkspaceId,
 } from "@askgina/os-protocol";
 import type {
+  GetPossessionResponse,
   ListConfirmationAssertionsResponse,
   OpenConfirmationRequest,
   OpenConfirmationResponse,
   SignerErrorCode,
   SubmitConfirmationResponse,
+  SubmitPossessionResponse,
 } from "@askgina/os-protocol/signer";
-import { verifyAuthorization } from "@askgina/os-protocol/webauthn";
+import { verifyAuthorization, verifyPossession } from "@askgina/os-protocol/webauthn";
 import { transaction } from "./db.ts";
 import { SignerFailure } from "./errors.ts";
 import type { Logger } from "./log.ts";
@@ -43,14 +48,20 @@ import { envelopeDigest, type SignerRecords } from "./signer.ts";
  * own records, never from anything the control plane says about them, and an assertion is
  * accepted only if the browser made it at the approval origin.
  *
+ * An approver change has one more step: the person being added proves on the same page, with
+ * the passkey the envelope carries, that they hold it. Until then the request takes no
+ * approval, and the signer adds no approver for it (`possession_unproven`).
+ *
  * Nothing here adds authority: an assertion is verified again, with all the others, when the
- * signer signs or applies the approval. These routes are logged to stdout, not to the decision
- * log.
+ * signer signs or applies the approval, and a proven possession only lifts a refusal. These
+ * routes are logged to stdout, not to the decision log.
  */
 
 /** Submissions per confirmation, counted whatever their outcome. */
 const MAX_ATTEMPTS = 64;
 const TOKEN_BYTES = 16;
+/** A possession challenge's nonce, the size of an envelope's. */
+const NONCE_BYTES = 16;
 /** How long the page lets the browser wait for the passkey, in milliseconds. */
 const WEBAUTHN_TIMEOUT_MS = 120_000;
 
@@ -87,6 +98,17 @@ export interface Confirmations {
   ): Promise<SubmitConfirmationResponse>;
   /** Control scope. */
   listConfirmationAssertions(approvalId: ApprovalId): ListConfirmationAssertionsResponse;
+  /**
+   * Confirm scope. The challenge for the new passkey of an approver change: the same one until
+   * an answer uses it, then a new one. Another kind of request has no such step: `not_found`.
+   */
+  getPossession(approvalId: ApprovalId, token: string): GetPossessionResponse;
+  /** Confirm scope. The answer to the current challenge, made at the approval origin. */
+  submitPossession(
+    approvalId: ApprovalId,
+    token: string,
+    response: AssertionResponse,
+  ): Promise<SubmitPossessionResponse>;
 }
 
 type ConfirmationRow = {
@@ -116,24 +138,6 @@ function walletIdOf(envelope: Envelope): WalletId | null {
       return envelope.walletId;
     default:
       return null;
-  }
-}
-
-/**
- * True when the browser says the assertion was made inside a frame of another origin, or when
- * its client data cannot be read. A page that frames the confirmation page could otherwise get
- * an assertion stamped with the approval origin; `@simplewebauthn/server` accepts that.
- */
-function madeCrossOrigin(response: AssertionResponse): boolean {
-  try {
-    const clientData: unknown = JSON.parse(
-      Buffer.from(response.response.clientDataJSON, "base64url").toString("utf8"),
-    );
-    if (typeof clientData !== "object" || clientData === null) return true;
-    if ("topOrigin" in clientData) return true;
-    return "crossOrigin" in clientData && clientData.crossOrigin === true;
-  } catch {
-    return true;
   }
 }
 
@@ -357,13 +361,11 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
     };
   }
 
-  async function submitConfirmation(
-    approvalId: ApprovalId,
-    token: string,
-    response: AssertionResponse,
-  ): Promise<SubmitConfirmationResponse> {
-    const row = rowForToken(approvalId, token);
-    // Counted in its own transaction first, so a refused submission still counts.
+  /**
+   * Count one submission, an approval or a possession step's answer, in its own transaction
+   * before anything else, so a refused one still counts.
+   */
+  function countAttempt(fields: { approvalId: ApprovalId; workspaceId: string }): void {
     const { attempts } = transaction(
       db,
       () =>
@@ -371,13 +373,22 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
           .prepare(
             "UPDATE confirmations SET attempts = attempts + 1 WHERE approval_id = ? RETURNING attempts",
           )
-          .get(approvalId) as { attempts: number },
+          .get(fields.approvalId) as { attempts: number },
     );
-    const fields = { approvalId, workspaceId: row.workspace_id };
     if (attempts > MAX_ATTEMPTS) {
       log.warn("confirmation.rate_limited", { ...fields, attempts });
       throw new SignerFailure("rate_limited");
     }
+  }
+
+  async function submitConfirmation(
+    approvalId: ApprovalId,
+    token: string,
+    response: AssertionResponse,
+  ): Promise<SubmitConfirmationResponse> {
+    const row = rowForToken(approvalId, token);
+    const fields = { approvalId, workspaceId: row.workspace_id };
+    countAttempt(fields);
     try {
       const { envelope } = stored(row);
       const open = () => {
@@ -391,9 +402,17 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
       };
 
       const { approvers, rules } = open();
+      // An approval of a key nobody has shown they hold could hand the workspace to whoever
+      // chose that key. A proven possession is never withdrawn, so checking once is enough.
+      if (
+        envelope.type === "add-approver" &&
+        (find(approvalId)?.possession_proven_at ?? null) === null
+      ) {
+        throw new SignerFailure("possession_unproven");
+      }
       const approver = approvers.find((candidate) => candidate.credentialId === response.id);
       if (!approver) throw new SignerFailure("approver_unknown");
-      if (madeCrossOrigin(response)) throw new SignerFailure("assertion_invalid");
+      // Refuses an assertion made anywhere but top-level on the approval origin.
       const verdict = await verifyAuthorization({
         authorization: {
           envelope,
@@ -456,5 +475,113 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
     return { assertions: collected(row, records.approvers(row.workspace_id)) };
   }
 
-  return { openConfirmation, getConfirmation, submitConfirmation, listConfirmationAssertions };
+  /** The envelope of an approver change. No other kind of request has a possession step. */
+  function approverChange(row: ConfirmationRow): AddApproverEnvelope {
+    const { envelope } = stored(row);
+    if (envelope.type !== "add-approver") throw new SignerFailure("not_found");
+    return envelope;
+  }
+
+  /**
+   * The possession step stays open while the request can still be applied: while it is `open`,
+   * and while it is `complete` with approvals collected before the step existed, which the
+   * signer refuses to apply until the step is done.
+   */
+  function assertPossessionOpen(row: ConfirmationRow, envelope: AddApproverEnvelope): void {
+    const approvers = records.approvers(row.workspace_id);
+    const { required } = rulesFor(envelope, workspaceOf(row).admin_threshold);
+    const state = stateOf(envelope, collected(row, approvers).length, required);
+    if (state !== "open" && state !== "complete") throw new SignerFailure("confirmation_closed");
+  }
+
+  function getPossession(approvalId: ApprovalId, token: string): GetPossessionResponse {
+    const row = rowForToken(approvalId, token);
+    const envelope = approverChange(row);
+    // One challenge at a time, kept until an answer uses it: the page asks for it when it
+    // loads, so the passkey prompt can run straight from the person's tap, and a second page
+    // open on the same request does not end the first one's challenge.
+    const nonce = transaction(db, () => {
+      assertPossessionOpen(row, envelope);
+      db.prepare(
+        "INSERT INTO possession_challenges (approval_id, nonce) VALUES (?, ?) ON CONFLICT (approval_id) DO NOTHING",
+      ).run(approvalId, randomBytes(NONCE_BYTES).toString("base64url"));
+      // Present: inserted just above unless it was there already.
+      const issued = db
+        .prepare("SELECT nonce FROM possession_challenges WHERE approval_id = ?")
+        .get(approvalId) as { nonce: string };
+      return issued.nonce;
+    });
+    const challenge = possessionChallenge({
+      approvalId,
+      credentialId: envelope.credentialId,
+      nonce,
+    });
+    return {
+      rpId: options.rpId,
+      challenge: Buffer.from(challenge).toString("base64url"),
+      // Only the passkey being added may answer.
+      allowCredentials: [envelope.credentialId],
+      userVerification: "required",
+      timeoutMs: WEBAUTHN_TIMEOUT_MS,
+    };
+  }
+
+  async function submitPossession(
+    approvalId: ApprovalId,
+    token: string,
+    response: AssertionResponse,
+  ): Promise<SubmitPossessionResponse> {
+    const row = rowForToken(approvalId, token);
+    const fields = { approvalId, workspaceId: row.workspace_id };
+    countAttempt(fields);
+    try {
+      const envelope = approverChange(row);
+      assertPossessionOpen(row, envelope);
+      // Only an answer to the challenge the signer issued, and that no answer used yet, counts.
+      const issued = db
+        .prepare("SELECT nonce FROM possession_challenges WHERE approval_id = ?")
+        .get(approvalId) as { nonce: string } | undefined;
+      if (issued === undefined) throw new SignerFailure("assertion_invalid");
+      const { nonce } = issued;
+      // Against the key the envelope carries, under the rule every approval meets: top-level
+      // at the approval origin, `webauthn.get`, user verification.
+      const verdict = await verifyPossession({
+        possession: { approvalId, credentialId: envelope.credentialId, nonce },
+        publicKey: envelope.publicKey,
+        response,
+        relyingParty,
+      });
+      if (!verdict.ok) throw new SignerFailure(verdict.code);
+      transaction(db, () => {
+        // Re-checked: while the answer was verified the request may have closed, or another
+        // answer may have used the challenge.
+        assertPossessionOpen(row, envelope);
+        const used = db
+          .prepare("DELETE FROM possession_challenges WHERE approval_id = ? AND nonce = ?")
+          .run(approvalId, nonce);
+        if (used.changes === 0) throw new SignerFailure("assertion_invalid");
+        db.prepare(
+          "UPDATE confirmations SET possession_proven_at = COALESCE(possession_proven_at, ?) WHERE approval_id = ?",
+        ).run(options.now(), approvalId);
+      });
+      log.info("confirmation.possession", { ...fields, outcome: "proven", code: null });
+      return { fingerprint: keyFingerprint(envelope.publicKey) };
+    } catch (error) {
+      log.info("confirmation.possession", {
+        ...fields,
+        outcome: "refused",
+        code: error instanceof SignerFailure ? error.code : "internal",
+      });
+      throw error;
+    }
+  }
+
+  return {
+    openConfirmation,
+    getConfirmation,
+    submitConfirmation,
+    listConfirmationAssertions,
+    getPossession,
+    submitPossession,
+  };
 }

@@ -41,7 +41,7 @@ Three properties make this worth building:
 
 Non-goals for v0.1, each recorded on the map as "Not yet specified" or "Out of scope": approvals
 wider than one action (session delegation, mandates); a trusted display that proves the approver
-saw the right details; chains other than EVM and venues that are not on-chain transactions; a
+saw the right details (built after v0.1 by [trusted-display.md](./trusted-display.md)); chains other than EVM and venues that are not on-chain transactions; a
 bundled agent runtime or sandbox supervisor; KMS key providers, HA and Kubernetes; push or chat
 notifications; workspace clone, export and delete; repricing stuck transactions; hosted operation.
 
@@ -241,16 +241,16 @@ flowchart LR
 
 Trust, stated plainly:
 
-| If this is compromised       | The attacker can                                                              | The attacker cannot                                                              |
-| ---------------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| An agent or its token        | Propose operations; read its own wallet's state                               | Approve, sign, change policy, reach the signer or the vault                      |
-| The control plane's database | Read names, ids, statuses, addresses, policies; corrupt or delete records     | Read sealed content without the keyring; forge an approval; make the signer sign |
-| The control plane process    | Ask the signer anything; show a person a misleading card; read sealed content | Produce a passkey assertion; exceed the signer's policy caps; reuse an approval  |
-| The signer host              | Everything for the wallets on it                                              | (nothing is protected against this)                                              |
+| If this is compromised       | The attacker can                                                              | The attacker cannot                                                                    |
+| ---------------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| An agent or its token        | Propose operations; read its own wallet's state                               | Approve, sign, change policy, reach the signer or the vault                            |
+| The control plane's database | Read names, ids, statuses, addresses, policies; corrupt or delete records     | Read sealed content without the keyring; forge an approval; make the signer sign       |
+| The control plane process    | Ask the signer anything; show a person a misleading card; read sealed content | Get an approval the signer accepts; exceed the signer's policy caps; reuse an approval |
+| The signer host              | Everything for the wallets on it                                              | (nothing is protected against this)                                                    |
 
-The third row is the known gap: a passkey proves a person approved a digest, not that they saw the
-right details. A compromised control plane can show one operation and submit another for
-approval. The signer's policy caps bound the damage for payments only: a misled approval of a policy change or a new approver is not bounded by them (found by the trusted-display research, [trusted-display.md](./trusted-display.md)). The map lists a trusted display as future work.
+The third row was v0.1's known gap: a passkey proves a person approved a digest, not that they saw the
+right details, and in v0.1 people approved on the control plane's own page, so a compromised control plane could show one operation and submit another for
+approval. The signer's policy caps bound that damage for payments only: a misled approval of a policy change or a new approver is not bounded by them (found by the trusted-display research). Since milestone 3 of [trusted-display.md](./trusted-display.md) people approve only on the signer's confirmation page, on its own origin, and the signer accepts only assertions made there, top-level, as a `webauthn.get`; the control plane has no approval route. What remains (a compromised confirmation service or its proxy, a person who approves without reading, a new approver's key not yet proven to be theirs) is in `docs/threat-model.md`, "Limits".
 
 Assumptions:
 
@@ -340,7 +340,7 @@ Acceptance:
 
 Scope: `apps/server/src/execution/`, `apps/server/src/mcp/`, `apps/server/workflows/`.
 
-- Approvals engine: open a request (envelope, nonce, expiry, sealed detail, audit event, workflow start), list and show, issue WebAuthn options whose challenge is the envelope's 32 digest bytes, record assertions (verified locally with `verifyAuthorization` first), decide when the threshold is reached or anyone rejects, wake the workflow through the outbox.
+- Approvals engine: open a request (envelope, nonce, expiry, sealed detail, audit event, workflow start), list and show, issue WebAuthn options whose challenge is the envelope's 32 digest bytes, record assertions (verified locally with `verifyAuthorization` first), decide when the threshold is reached or anyone rejects, wake the workflow through the outbox. (Superseded by trusted-display milestone 3: the engine no longer issues options or takes assertions; it opens a confirmation at the signer and collects the assertions made on the confirmation page.)
 - One workflow for every kind: wait for the decision or the expiry; apply the kind's effect in a step; for intents, then broadcast and reconcile.
 - Intents: validate, simulate, pre-check policy, build the canonical `Intent`, open its approval. Statuses as in `IntentStatus`.
 - Chain access with viem: balances, token metadata, simulation, fees, nonces, broadcast, receipts. Nonce for a wallet and chain is `max(pending count from the chain, highest in-flight nonce + 1)` under a Postgres advisory lock.
@@ -358,7 +358,7 @@ Scope: `apps/web`. Vite, React 19, Tailwind 4, shadcn/ui components, TanStack Qu
 
 Pages: setup; sign-in; workspaces; workspace overview (agents, wallets, treasury, members, pause); approval inbox and approval page; wallet page with the policy editor; agent page with the token (once) and MCP connection snippets; members and invites; join by invite; activity (audit log with verification, signer decisions); my passkeys.
 
-The approval page is the product. It shows, without scrolling on a phone: what will happen in one sentence, the amount in whole units with the symbol, the full recipient address, the wallet and the agent, the agent's memo marked as the agent's words, the fee ceiling, where the amount sits against the wallet's caps, the simulation result, the time left, and how many approvals are in. Raw contract calls carry a warning that caps cannot measure them. "Technical details" shows the canonical intent, its hash, the envelope and the challenge. Approve asks for the passkey; Reject does not.
+The approval page is the product. It shows, without scrolling on a phone: what will happen in one sentence, the amount in whole units with the symbol, the full recipient address, the wallet and the agent, the agent's memo marked as the agent's words, the fee ceiling, where the amount sits against the wallet's caps, the simulation result, the time left, and how many approvals are in. Raw contract calls carry a warning that caps cannot measure them. "Technical details" shows the canonical intent, its hash, the envelope and the challenge. Approve asks for the passkey; Reject does not. (Superseded by trusted-display milestone 3: the page links to the signer's confirmation page, where the passkey is asked for, and no longer shows a challenge; Reject still needs no passkey.)
 
 Acceptance:
 
@@ -419,7 +419,7 @@ Configuration (environment):
 | server  | `SESSION_TTL_SECONDS`, `ADMIN_APPROVAL_TTL_SECONDS`, `RECONCILE_TIMEOUT_SECONDS`, `WORKFLOW_WORKER_CONCURRENCY`, `NOTIFY_WEBHOOK_URL` | tuning and the optional webhook                                                                                                                                     |
 | signer  | `SIGNER_PORT`, `SIGNER_DATA_DIR`                                                                                                      | listener; vault and SQLite                                                                                                                                          |
 | signer  | `SIGNER_HMAC_SECRET_FILE`, `SIGNER_KEY_FILE`, `SIGNER_VAULT_PASSPHRASE_FILE`                                                          | request-signing secret; key that seals stored tokens; OWS owner passphrase (needed only to create wallets)                                                          |
-| signer  | `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS`                                                                                                  | the relying party assertions must match                                                                                                                             |
+| signer  | `WEBAUTHN_RP_ID`, `SIGNER_APPROVAL_ORIGIN`                                                                                            | the relying party assertions must match; v0.1 had `WEBAUTHN_ORIGINS` (the control plane's origin) here, removed by trusted-display milestone 3                      |
 | signer  | `SIGNER_MAX_INTENT_TTL_SECONDS`, `SIGNER_MAX_ADMIN_TTL_SECONDS`                                                                       | ceilings on envelope lifetimes                                                                                                                                      |
 
 External dependencies:
@@ -487,7 +487,7 @@ The release gates. Each line is a test; the name in brackets is where it lives.
 ## Risks and Open Questions
 
 - Risk: a compromised control plane shows one operation and submits another for approval.
-  Mitigation: signer-side caps bound the loss of a payment, not of a misled policy or approver change; the threat model says so and recommends an admin threshold of 2; a trusted display is drafted in [trusted-display.md](./trusted-display.md).
+  Mitigation: since trusted-display milestone 3, approvals are made only on the signer's confirmation page, which the control plane does not serve, and the signer refuses assertions made anywhere else ([trusted-display.md](./trusted-display.md)). A compromised confirmation service or its proxy reopens the gap; signer-side caps bound the loss of a payment, not of a misled policy or approver change, so the threat model still recommends an admin threshold of 2.
 - Risk: OWS error classification is by message text.
   Mitigation: exact version pin; a test per error class against the real SDK.
 - Risk: linux-arm64 (Apple Silicon Docker) for the OWS native module.
@@ -510,3 +510,4 @@ The release gates. Each line is a test; the name in brackets is where it lives.
 - 2026-11-14: First version, written after the five spikes and before the build.
 - 2026-11-14: Run attributes withheld by the World and the eve example shipped, after the owner took both decisions ticket 17 left open.
 - 2026-11-14: Progress, discoveries and outcomes brought up to date after the first green CI run. Recovery codes replaced by operator enrollment; the eve example parked; one hook per workflow run; stale job locks released after 30 seconds.
+- 2026-11-15: Statements about approving on the control plane's page corrected after milestone 3 of [trusted-display.md](./trusted-display.md): people now approve only on the signer's confirmation page, on its own origin (`APPROVE_ORIGIN`), served by the keyless `approve` service; the signer accepts only assertions made there, top-level, as a `webauthn.get`; the control plane's approval prompt, `startApproval`, `approve` and the signer's `WEBAUTHN_ORIGINS` are removed. Changed: the non-goals, the trust table and the paragraph under it, the approvals engine of Milestone 4, the approval page of Milestone 5, the signer's settings, and the first risk. The rest of this plan describes v0.1 as built.

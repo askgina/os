@@ -648,6 +648,15 @@ describe("request secrets", () => {
       ),
       "unauthenticated",
     );
+    await refused(asConfirm.getPossession(envelope.approvalId, token), "unauthenticated");
+    await refused(
+      asConfirm.submitPossession(
+        envelope.approvalId,
+        token,
+        assertAt(alice, envelope, APPROVAL_ORIGIN),
+      ),
+      "unauthenticated",
+    );
 
     expect((await t.client.getApproval(envelope.approvalId)).state).toBe("unknown");
     expect((await t.client.listConfirmationAssertions(envelope.approvalId)).assertions).toEqual([]);

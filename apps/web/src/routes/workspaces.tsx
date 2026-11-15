@@ -25,14 +25,14 @@ export function WorkspacesPage() {
         <ErrorState error={workspaces.error} retry={() => void workspaces.refetch()} />
       ) : null}
       {workspaces.data ? (
-        <div className="grid gap-6">
+        <div className="grid grid-cols-1 gap-6">
           {workspaces.data.items.length === 0 ? (
             <EmptyState icon={<Building2 aria-hidden />} title="No workspaces yet">
               Create one below. You will then add an agent, which gets its own wallet, and set that
               wallet's limits.
             </EmptyState>
           ) : (
-            <ul className="grid gap-3">
+            <ul className="grid grid-cols-1 gap-3">
               {workspaces.data.items.map((workspace) => (
                 <li key={workspace.id}>
                   <Link
@@ -87,13 +87,13 @@ function CreateWorkspace() {
     <Card>
       <CardContent>
         <form
-          className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end"
+          className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end"
           onSubmit={(event) => {
             event.preventDefault();
             create.mutate();
           }}
         >
-          <div className="grid gap-2">
+          <div className="grid grid-cols-1 gap-2">
             <Label htmlFor="workspace-name">New workspace</Label>
             <Input
               id="workspace-name"

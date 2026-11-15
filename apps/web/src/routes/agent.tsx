@@ -63,7 +63,7 @@ export function AgentPage() {
   const mcpUrl = revealed?.mcpUrl ?? `${window.location.origin}/mcp`;
 
   return (
-    <div className="grid gap-6">
+    <div className="grid grid-cols-1 gap-6">
       <PageHeader
         title={agent.name}
         description={`Token starts with ${agent.tokenPrefix}`}
@@ -128,8 +128,8 @@ export function AgentPage() {
             </CardDescription>
           </div>
         </CardHeader>
-        <CardContent className="grid gap-5">
-          <dl className="grid gap-3">
+        <CardContent className="grid grid-cols-1 gap-5">
+          <dl className="grid grid-cols-1 gap-3">
             <Field label="MCP address">
               <div className="flex flex-wrap items-center gap-2">
                 <code className="font-mono break-all">{mcpUrl}</code>
@@ -205,7 +205,7 @@ function TokenReveal({ token }: { token: string }) {
   return (
     <Alert tone="warning" className="items-start">
       <KeyRound aria-hidden />
-      <div className="grid min-w-0 flex-1 gap-3">
+      <div className="grid min-w-0 flex-1 grid-cols-1 gap-3">
         <div>
           <p className="font-medium">Copy this token now. It is shown only this once.</p>
           <p className="text-muted-foreground">
@@ -250,7 +250,7 @@ function scriptedAgentCommand(url: string, token: string | undefined): string {
 
 function Snippet({ title, text }: { title: string; text: string }) {
   return (
-    <div className="grid gap-2">
+    <div className="grid grid-cols-1 gap-2">
       <div className="flex items-center justify-between gap-2">
         <p className="text-sm font-medium">{title}</p>
         <CopyButton value={text} label={`Copy ${title}`} />

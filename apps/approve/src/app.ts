@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ApprovalId } from "@askgina/os-protocol";
+import { ApprovalId, type AssertionResponse } from "@askgina/os-protocol";
 import {
   CONFIRM_TOKEN_HEADER,
   type ConfirmClient,
@@ -9,6 +9,7 @@ import {
   type SignerErrorBody,
   type SignerErrorCode,
   SubmitConfirmationRequest,
+  SubmitPossessionRequest,
 } from "@askgina/os-protocol/signer";
 import { type Context, Hono } from "hono";
 import type { Logger } from "./log.ts";
@@ -117,10 +118,11 @@ async function readLimited(c: Context): Promise<Uint8Array | null> {
 }
 
 /**
- * The `approve` service: it serves the confirmation page and relays exactly two kinds of request
- * to the signer, the view of one approval and one passkey assertion, each with the token from
- * the link. It holds no key, sets no cookie and reads none, and its secret reaches no other
- * signer route. Everything not listed here is 404.
+ * The `approve` service: it serves the confirmation page and relays to the signer the view of
+ * one approval, one passkey assertion, and the two halves of an approver change's possession
+ * step (a challenge, and the new passkey's answer), each with the token from the link. It holds
+ * no key, sets no cookie and reads none, and its secret reaches no other signer route.
+ * Everything not listed here is 404.
  */
 export function createApproveApp(options: ApproveAppOptions): Hono {
   const { confirm, files, log } = options;
@@ -195,21 +197,51 @@ export function createApproveApp(options: ApproveAppOptions): Hono {
     return relay(c, "view", () => confirm.getConfirmation(found.approvalId, found.token));
   });
 
-  app.post("/api/approvals/:approvalId/assertions", async (c) => {
-    const found = target(c);
-    if (found === null) return refuse(c, "submit", NOT_FOUND);
+  /**
+   * The one passkey assertion a POST carries, refused here before the signer is called when the
+   * body is too large or anything else.
+   */
+  const readAssertion = async (
+    c: Context,
+    schema: typeof SubmitConfirmationRequest | typeof SubmitPossessionRequest,
+  ): Promise<{ response: AssertionResponse } | Refusal> => {
     const body = await readLimited(c);
-    if (body === null) return refuse(c, "submit", TOO_LARGE);
+    if (body === null) return TOO_LARGE;
     let parsed: unknown;
     try {
       parsed = JSON.parse(Buffer.from(body).toString("utf8"));
     } catch {
-      return refuse(c, "submit", MALFORMED);
+      return MALFORMED;
     }
-    const request = SubmitConfirmationRequest.safeParse(parsed);
-    if (!request.success) return refuse(c, "submit", MALFORMED);
+    const request = schema.safeParse(parsed);
+    return request.success ? request.data : MALFORMED;
+  };
+
+  app.post("/api/approvals/:approvalId/assertions", async (c) => {
+    const found = target(c);
+    if (found === null) return refuse(c, "submit", NOT_FOUND);
+    const request = await readAssertion(c, SubmitConfirmationRequest);
+    if ("status" in request) return refuse(c, "submit", request);
     return relay(c, "submit", () =>
-      confirm.submitConfirmation(found.approvalId, found.token, request.data.response),
+      confirm.submitConfirmation(found.approvalId, found.token, request.response),
+    );
+  });
+
+  // The possession step of an approver change: the person being added proves here, with the
+  // passkey the request carries, that it is theirs.
+  app.get("/api/approvals/:approvalId/possession", async (c) => {
+    const found = target(c);
+    if (found === null) return refuse(c, "challenge", NOT_FOUND);
+    return relay(c, "challenge", () => confirm.getPossession(found.approvalId, found.token));
+  });
+
+  app.post("/api/approvals/:approvalId/possession", async (c) => {
+    const found = target(c);
+    if (found === null) return refuse(c, "prove", NOT_FOUND);
+    const request = await readAssertion(c, SubmitPossessionRequest);
+    if ("status" in request) return refuse(c, "prove", request);
+    return relay(c, "prove", () =>
+      confirm.submitPossession(found.approvalId, found.token, request.response),
     );
   });
 

@@ -13,6 +13,8 @@ export const DomainTag = {
   authorize: "askgina.os/v1/authorize",
   audit: "askgina.os/v1/audit",
   sweep: "askgina.os/v1/sweep",
+  /** The challenge of the step where a new approver proves they hold the passkey being added. */
+  possession: "askgina.os/v1/possession",
 } as const;
 export type DomainTag = (typeof DomainTag)[keyof typeof DomainTag];
 

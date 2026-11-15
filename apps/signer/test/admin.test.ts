@@ -12,7 +12,7 @@ import {
   intentFor,
   newPerson,
   type Person,
-  RP,
+  RP_ID,
   refused,
   setUpWorld,
   startSigner,
@@ -34,8 +34,7 @@ describe("the admin CLI on the signer host", () => {
     SIGNER_HMAC_SECRET_FILE: join(dir, "hmac"),
     SIGNER_KEY_FILE: join(dir, "key"),
     SIGNER_VAULT_PASSPHRASE_FILE: join(dir, "passphrase"),
-    WEBAUTHN_RP_ID: RP.id,
-    WEBAUTHN_ORIGINS: RP.origins.join(","),
+    WEBAUTHN_RP_ID: RP_ID,
     ...confirmationEnvironment(dir),
   };
 

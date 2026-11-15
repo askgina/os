@@ -99,8 +99,6 @@ const examples: { [N in RouteName]: { body?: unknown; query?: unknown; response:
     response: { items: [f.approvalSummary], nextCursor: "c1" },
   },
   getApproval: { response: f.approvalDetail },
-  startApproval: { body: {}, response: { options: { challenge: f.approvalDetail.challenge } } },
-  approve: { body: { response: f.assertionResponse }, response: f.approvalDetail },
   collectApproval: { body: {}, response: f.approvalDetail },
   reject: {
     body: {},

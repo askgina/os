@@ -8,6 +8,7 @@ import {
   CONFIRM_TOKEN_HEADER,
   type CreateWalletRequest,
   type CreateWorkspaceRequest,
+  GetPossessionResponse,
   HealthResponse,
   ListConfirmationAssertionsResponse,
   ListDecisionsResponse,
@@ -19,6 +20,7 @@ import {
   type SignRequest,
   SignResponse,
   SubmitConfirmationResponse,
+  SubmitPossessionResponse,
   type SweepRequest,
   signerRoutes,
   WalletState,
@@ -102,9 +104,9 @@ export interface SignerClient {
 }
 
 /**
- * Everything the `approve` service can ask of the signer: the view of one approval and the
- * submission of one assertion, each with the token from the confirmation link. Its secret
- * reaches no other route.
+ * Everything the `approve` service can ask of the signer: the view of one approval, the
+ * submission of one assertion, and the possession step of an approver change, each with the
+ * token from the confirmation link. Its secret reaches no other route.
  */
 export interface ConfirmClient {
   getConfirmation(approvalId: ApprovalId, token: string): Promise<ConfirmationView>;
@@ -113,6 +115,14 @@ export interface ConfirmClient {
     token: string,
     response: AssertionResponse,
   ): Promise<SubmitConfirmationResponse>;
+  /** The passkey request of an approver change's possession step, with its current challenge. */
+  getPossession(approvalId: ApprovalId, token: string): Promise<GetPossessionResponse>;
+  /** The new person's answer to the possession step; the proven key's fingerprint. */
+  submitPossession(
+    approvalId: ApprovalId,
+    token: string,
+    response: AssertionResponse,
+  ): Promise<SubmitPossessionResponse>;
 }
 
 type Route = (typeof signerRoutes)[keyof typeof signerRoutes];
@@ -258,6 +268,13 @@ export function createConfirmClient(options: SignerClientOptions): ConfirmClient
       call(signerRoutes.getConfirmation, ConfirmationView, confirm(approvalId, token)),
     submitConfirmation: (approvalId: ApprovalId, token: string, response: AssertionResponse) =>
       call(signerRoutes.submitConfirmation, SubmitConfirmationResponse, {
+        ...confirm(approvalId, token),
+        body: { response },
+      }),
+    getPossession: (approvalId: ApprovalId, token: string) =>
+      call(signerRoutes.getPossession, GetPossessionResponse, confirm(approvalId, token)),
+    submitPossession: (approvalId: ApprovalId, token: string, response: AssertionResponse) =>
+      call(signerRoutes.submitPossession, SubmitPossessionResponse, {
         ...confirm(approvalId, token),
         body: { response },
       }),

@@ -30,7 +30,9 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
    "MCP tools").
 2. **Browser → control plane.** People sign in with passkeys. Sessions are rows behind an
    httpOnly, SameSite=Strict cookie; only a SHA-256 of the cookie value is stored
-   ([`apps/server/src/db/schema.ts`](../apps/server/src/db/schema.ts), table `sessions`).
+   ([`apps/server/src/db/schema.ts`](../apps/server/src/db/schema.ts), table `sessions`). No
+   approval is made here: the control plane lists and explains requests and links to the
+   confirmation page, and has no route that takes a passkey approval.
 3. **Control plane → signer.** Requests carry an HMAC request signature
    ([`request-signature.ts`](../packages/protocol/src/signer/request-signature.ts)). Anything that
    adds authority also needs passkey assertions the signer verifies itself
@@ -38,10 +40,14 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
 4. **Data at rest → keyring.** Content is encrypted under data keys that are wrapped by keys in a
    file outside Postgres ([`packages/keys/src/`](../packages/keys/src/)).
 5. **Browser → confirmation page.** The `approve` service serves the signer's confirmation page
-   on its own origin, `APPROVE_ORIGIN` ([`apps/approve`](../apps/approve)). It holds no key,
-   sets no cookie, and Caddy drops any cookie on the way to it. A link's token is in its
-   fragment, so it reaches the service only in a request header
-   ([`specs/trusted-display.md`](../specs/trusted-display.md), milestone 2).
+   on its own origin, `APPROVE_ORIGIN` ([`apps/approve`](../apps/approve)). Every approval is
+   made here. The page shows the view the signer built from its own records and its own origin,
+   with the instruction to approve only when the address bar shows it. The signer accepts an
+   assertion only when the browser made it at `APPROVE_ORIGIN`, top-level (not in a frame), as a
+   `webauthn.get` ([`verify-authorization.ts`](../packages/protocol/src/webauthn/verify-authorization.ts)).
+   The service holds no key, sets no cookie, and Caddy drops any cookie on the way to it. A
+   link's token is in its fragment, so it reaches the service only in a request header
+   ([`specs/trusted-display.md`](../specs/trusted-display.md)).
 6. **`approve` service → signer.** Requests carry an HMAC request signature under a second
    secret, which the signer accepts on its two confirmation routes and nowhere else
    ([`signer/api.ts`](../packages/protocol/src/signer/api.ts), `scope`).
@@ -103,23 +109,38 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
 
 ### Code execution in the control plane
 
+This covers code execution in the server and a script injected into a page on `PUBLIC_ORIGIN`
+(XSS, a malicious build of the UI).
+
 - **Can:** ask the signer anything the request signature allows; read sealed content (the
-  server holds the keyring); show a person a misleading approval card; pause workspaces and
-  revoke approvals. Pausing stops new signatures; a repeat of an approval the signer already
-  signed still returns that stored transaction, because it already exists. Ask for a sweep of
-  any wallet, which has no cap, and choose its amount when it asks.
-- **Stopped by:** it cannot produce a passkey assertion. It cannot exceed the signer's policy
-  caps, reuse an approval, or change policy or approvers without passkey approval of the exact
-  new value. The signer builds every transaction from the approved intent or sweep. A sweep needs
-  the workspace's admin threshold, and the signer sends it only to an address already on the
+  server holds the keyring), the confirmation links it holds, and so what the confirmation page
+  shows; show a person a misleading card in its own pages; propose any operation, policy change
+  or approver change; link a person to the confirmation page of a different waiting request;
+  refuse to open confirmations or withhold the approvals it collects; obtain a sign-in assertion
+  and a session; pause workspaces and revoke approvals. Pausing stops new signatures; a repeat of
+  an approval the signer already signed still returns that stored transaction, because it
+  already exists. Ask for a sweep of any wallet, which has no cap, and choose its amount when it
+  asks.
+- **Stopped by:** it cannot obtain an approval the signer accepts. A passkey prompt on any of
+  its pages makes an assertion stamped with `PUBLIC_ORIGIN`, which the signer refuses
+  (`assertion_invalid`), whatever digest it carries. It cannot change what the confirmation page
+  shows, because the signer renders that view from data whose hash the envelope fixes and from
+  its own records. It cannot frame or script the confirmation page: that page sends
+  `frame-ancestors 'none'` and `Cross-Origin-Opener-Policy: same-origin`, and the signer refuses
+  an assertion made in a frame. So it can no longer obtain an approval for an operation the
+  person did not see on the signer's page. It cannot exceed the signer's policy caps, reuse an
+  approval, or change policy or approvers without passkey approval of the exact new value. The
+  signer builds every transaction from the approved intent or sweep. A sweep needs the
+  workspace's admin threshold, and the signer sends it only to an address already on the
   wallet's recipient allowlist or to a treasury wallet of the same workspace, read from its own
   records ([`signer.ts`](../apps/signer/src/signer.ts), `assertSweepAllowed`). It cannot set or
   move the restore fence: that happens only on the signer host.
-- **Not stopped:** the trusted-display gap, stated in full under "Limits". The confirmation page
-  narrows it for a person who approves there: the page shows what the signer holds, and an
-  assertion made there names an origin the control plane does not serve. Until milestone 3 of
-  [`specs/trusted-display.md`](../specs/trusted-display.md) the control plane's own approval
-  prompt still works, and the gap stays open through it.
+- **Not stopped:** a person who approves a true but harmful request because the control plane or
+  an agent talked them into it; a person who approves without reading the confirmation page;
+  denial of service; a genuine `add-approver` request whose key is not the named person's (see
+  "Limits"). The release gate "an approval made on the control plane's page is refused" and the
+  browser gate "a script on the control plane's page cannot get an approval" test the refusal
+  against the real stack.
 
 ### A compromised `approve` service, or Caddy, DNS or the certificate for `APPROVE_ORIGIN`
 
@@ -132,8 +153,24 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
   relays is verified by the signer as one approver's, at `APPROVE_ORIGIN`, over the envelope's
   digest, and again when the signer acts. It reaches only the signer, on its own internal
   network.
-- **Not stopped:** a person misled on a page it controls. On the same host, root controls it as
-  it controls everything else.
+- **Not stopped:** a person misled on a page it controls; this brings back, for the people who
+  use the page meanwhile, the gap the confirmation page closes. A script injected into the
+  confirmation page is the same case. The page limits that risk: one hand-written script with no
+  dependencies, no inline script or style, text set with `textContent` only, Trusted Types
+  required (enforced by Chromium-based browsers), no third-party requests. On the same host,
+  root controls the service as it controls everything else.
+
+### A lookalike host (phishing)
+
+- **Can:** imitate the confirmation page on another host, or on a page the control plane
+  serves, and show a person a request that is not the one waiting, or keep them from the real
+  page.
+- **Stopped by:** a passkey is scoped to the RP ID, so a host outside it cannot obtain an
+  assertion at all, and the signer accepts only the exact `APPROVE_ORIGIN`, so an assertion
+  made on any other host under the RP ID is refused. The confirmation page shows its own origin
+  and tells people to approve only when the address bar shows exactly that, and the control
+  plane's approval page names the host the link opens.
+- **Not stopped:** a person who does not check the address bar and believes a false page.
 
 ### A stolen confirmation link
 
@@ -262,16 +299,32 @@ passkey research puts it this way
 > extension, compromised control-plane build) can obtain a valid approval for a different grant
 > from a user who believes they are approving the one shown.
 
-So a compromised control plane can show one operation and submit another for approval. For a
-payment, the signer's policy caps bound the loss. For a change of authority they do not: the
-control plane chooses the challenge on every passkey prompt it serves, the sign-in prompt
-included, so one misled tap by an approver can approve a new policy or enroll an attacker's
-passkey as an approver. A workspace starts with an admin threshold of 1, where one such tap is
-enough for lasting control of its wallets. Until a trusted display exists, raise the admin
-threshold to 2 as soon as a second approver is enrolled. The fix is
-[`specs/trusted-display.md`](../specs/trusted-display.md): the signer's confirmation page, on its
-own origin, which milestones 1 and 2 built. Until milestone 3 removes the control plane's own
-approval prompt, the gap is open: an approval made on the control plane's page still counts.
+The confirmation page ([`specs/trusted-display.md`](../specs/trusted-display.md)) closes this
+gap against the control plane. The page is on an origin the control plane does not serve, it
+shows what the signer holds, and the signer accepts only assertions made there, top-level, as a
+`webauthn.get`. A compromised control plane, or a script on its origin, chooses the challenge of
+every passkey prompt on its own pages, the sign-in prompt included, but no assertion made there
+counts. So it can no longer obtain an approval for an operation the person did not see on the
+signer's page. What remains:
+
+- **The confirmation page's own origin.** A compromised `approve` service, or Caddy, DNS or the
+  certificate for `APPROVE_ORIGIN`, brings the gap back: it can show one operation and relay an
+  approval for another. It still cannot sign or read a key. For a payment, the signer's policy
+  caps bound the loss; for a change of policy or approvers they do not.
+- **The signer host.** Whoever controls it controls the wallets, with or without approvals.
+- **A person who approves without reading.** The page shows the signer's warnings and the
+  operation as the signer holds it, but it cannot make anyone read them.
+- **Phishing with a lookalike host.** It cannot obtain an assertion the signer accepts, but it
+  can deceive a person who does not check the address bar, which is why the page tells people
+  to check it.
+- **A new approver's key.** The page shows the key an `add-approver` request would enroll, but
+  nothing yet proves that the key belongs to the person named. A request with a swapped key
+  looks genuine. Proof of possession and a fingerprint the people compare are milestone 4 of
+  the plan, not built.
+
+A workspace starts with an admin threshold of 1, where one misled approval of a policy or
+approver change is enough for lasting control of its wallets. Raise the admin threshold to 2 as
+soon as a second approver is enrolled.
 
 **On the port layout the browser sends the control plane's cookies to the confirmation page.**
 Cookies do not separate ports, so with `APPROVE_ORIGIN` on another port of the same host the
@@ -338,7 +391,8 @@ means the signer host's operator can always add an approver.
 From the map's "Not yet specified" list ([askgina/os#1](https://github.com/askgina/os/issues/1)):
 
 - Approvals wider than one action: session delegation and strategy mandates.
-- A trusted display that proves the approver saw the right details.
+- Proof that a new approver's key belongs to the person named (milestone 4 of
+  [`specs/trusted-display.md`](../specs/trusted-display.md)).
 - Operations that are not EVM transactions: other chains, and off-chain venues.
 - Shipping agent runtimes or sandboxes.
 - Operating beyond one machine: KMS or OpenBao key providers, HA Postgres, Kubernetes.

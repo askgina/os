@@ -20,6 +20,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Approvals are made only on the signer's confirmation page (specs/trusted-display.md,
+      # milestone 3). This fails when a name of the removed approval prompt on the control
+      # plane's own page comes back in code or configuration; prose may name it as history.
+      # git grep exits 0 on a match, 1 on none, above 1 on an error.
+      - name: The control plane has no approval prompt
+        run: |
+          set +e
+          git grep -nE 'startApproval|startCeremony|ApproveRequest|WEBAUTHN_ORIGINS|signWithPasskey\(options\)|/approvals/:approvalId/(options|approve)' \
+            -- apps packages e2e examples deploy compose.yaml compose.tls.yaml .env.example ':!*.md'
+          status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "a name of the removed control-plane approval prompt is back" >&2
+            exit 1
+          fi
+          [ "$status" -eq 1 ]
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4

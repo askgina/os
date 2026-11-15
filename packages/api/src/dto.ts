@@ -3,7 +3,6 @@ import {
   AgentId,
   Amount,
   ApprovalId,
-  AssertionResponse,
   AssetRef,
   Base64Url,
   ChainId,
@@ -446,10 +445,8 @@ export const ApprovalSubject = z.discriminatedUnion("kind", [
 export type ApprovalSubject = z.infer<typeof ApprovalSubject>;
 
 export const ApprovalDetail = ApprovalSummary.extend({
-  /** Exactly what a passkey signs. */
+  /** Exactly what a passkey approves on the signer's confirmation page. */
   envelope: Envelope,
-  /** The envelope's digest, base64url: the WebAuthn challenge. */
-  challenge: Base64Url,
   approvedBy: z.array(UserSummary),
   rejectedBy: UserSummary.nullable(),
   /** Whether the signed-in person may approve or reject right now. */
@@ -464,9 +461,6 @@ export const ApprovalDetail = ApprovalSummary.extend({
   confirmUrl: z.url({ protocol: /^https?$/ }).nullable(),
 });
 export type ApprovalDetail = z.infer<typeof ApprovalDetail>;
-
-export const ApproveRequest = z.strictObject({ response: AssertionResponse });
-export type ApproveRequest = z.infer<typeof ApproveRequest>;
 
 // --- audit ------------------------------------------------------------------------------------
 

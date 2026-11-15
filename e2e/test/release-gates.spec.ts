@@ -9,8 +9,11 @@
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import type { PolicyDraft, WalletSummary, WorkspaceDetail } from "@askgina/os-api";
+import { keyFingerprint } from "@askgina/os-protocol";
+import { b64url, coseEc2, SoftAuthenticator } from "@askgina/os-protocol/testing";
 import { scanForMarkers } from "@askgina/os-testkit";
 import { expect, test } from "@playwright/test";
+import pg from "pg";
 import { createPublicClient, createTestClient, formatEther, http, parseEther } from "viem";
 import { foundry } from "viem/chains";
 import { type AgentConnection, connectAgent, ToolRefused } from "../src/agent.ts";
@@ -81,17 +84,14 @@ function policy(extra: Partial<PolicyDraft> = {}): PolicyDraft {
   };
 }
 
-/** Ask for a new policy and approve it, by default on the control plane's own page. */
-async function setPolicy(
-  draft: PolicyDraft,
-  approve: (approvalId: string) => Promise<unknown> = (approvalId) => ada.approve(approvalId),
-): Promise<void> {
+/** Ask for a new policy and approve it on the signer's confirmation page. */
+async function setPolicy(draft: PolicyDraft): Promise<void> {
   const request = await ada.api.call("requestPolicy", {
     params: { workspaceId: workspace.id, walletId: wallet.id },
     body: { draft },
   });
   expect(request.kind).toBe("set-policy");
-  await approve(request.id);
+  await ada.confirm(request.id);
   expect((await ada.settled(request.id)).status).toBe("executed");
 }
 
@@ -206,14 +206,16 @@ test("a proposal becomes one transaction after a passkey approval", async () => 
   expect(approval.canDecide).toBe(true);
   expect(approval.subject.kind).toBe("approve-intent");
 
-  await ada.approve(approvalId);
+  await ada.confirm(approvalId);
   expect(await intentSettles(intentId)).toBe("confirmed");
   expect(formatEther((await chain.getBalance({ address: RECIPIENT })) - before)).toBe("0.01");
   expect(await chain.getTransactionCount({ address: wallet.address })).toBe(nonceBefore + 1);
 
-  // The approval is spent: presenting it again changes nothing.
-  await expect(ada.approve(approvalId)).rejects.toThrow();
-  expect(await chain.getTransactionCount({ address: wallet.address })).toBe(nonceBefore + 1);
+  // The approval is spent: the request no longer links to the confirmation page.
+  expect(await ada.api.call("getApproval", { params: { approvalId } })).toMatchObject({
+    status: "executed",
+    confirmUrl: null,
+  });
   spentApprovalId = approvalId;
 });
 
@@ -268,6 +270,153 @@ test("a payment approved on the confirmation page becomes one transaction", asyn
   expect(await chain.getTransactionCount({ address: wallet.address })).toBe(nonceBefore + 1);
 });
 
+test("an approval made on the control plane's page is refused", async () => {
+  const nonceBefore = await chain.getTransactionCount({ address: wallet.address });
+  const payment = await propose("0.003", "approved on the wrong page");
+  // An approver change, the kind one misled tap would use to take a workspace over for good.
+  const grace = new Person(stack.origin, "Grace");
+  const invite = await ada.api.call("createInvite", {
+    params: { workspaceId: workspace.id },
+    body: { role: "approver" },
+  });
+  await grace.join(invite.url);
+  const pending = await ada.api.call("listApprovals", {
+    params: { workspaceId: workspace.id },
+    query: { status: "pending" },
+  });
+  const addGrace = pending.items.find((item) => item.kind === "add-approver");
+  if (!addGrace) throw new Error("joining as an approver opened no approver change");
+  // Grace proves on the confirmation page that the new passkey is hers, so what is refused below
+  // is only where Ada's approval was made.
+  await grace.provePossession(addGrace.id);
+
+  // Ada's passkey signs each request's exact digest, but on the control plane's own page, as a
+  // script there (or a compromised control plane) could make it do. The browser writes that
+  // page's origin into the assertion, and the confirmation page refuses it.
+  for (const approvalId of [payment.approvalId, addGrace.id]) {
+    const link = await ada.confirmationLink(approvalId);
+    const view = await ada.readConfirmation(link);
+    const onControlPlane = ada.assertion(view.webauthn.challenge, stack.origin);
+    expect(await refusalCode(ada.approveOnConfirmationPage(link, view, onControlPlane))).toBe(
+      "assertion_invalid",
+    );
+    expect((await ada.readConfirmation(link)).approvals.collected).toBe(0);
+    const detail = await ada.api.call("collectApproval", { params: { approvalId }, body: {} });
+    expect(detail).toMatchObject({ status: "pending", approvals: 0 });
+  }
+
+  // A control plane that stores such an approval itself and sends it to the signer through its
+  // own execution path, as a compromised one would, gets nothing signed: the request ends failed.
+  const { user } = await ada.api.call("getSession");
+  if (!user || ada.credentialId === undefined) throw new Error("Ada is not signed in");
+  const view = await ada.readConfirmation(await ada.confirmationLink(payment.approvalId));
+  const onControlPlane = ada.assertion(view.webauthn.challenge, stack.origin);
+  const db = new pg.Client({ connectionString: await databaseUrl() });
+  await db.connect();
+  try {
+    await db.query(
+      "INSERT INTO os.approval_assertions (approval_id, user_id, credential_id, response) VALUES ($1, $2, $3, $4)",
+      [payment.approvalId, user.id, ada.credentialId, JSON.stringify(onControlPlane)],
+    );
+    // Decided a minute ago, so the sweeper wakes the request's workflow at once.
+    await db.query(
+      "UPDATE os.approvals SET status = 'approved', decided_at = now() - interval '1 minute', resume_state = 'needed' WHERE id = $1 AND status = 'pending'",
+      [payment.approvalId],
+    );
+  } finally {
+    await db.end();
+  }
+  expect(await ada.settled(payment.approvalId)).toMatchObject({
+    status: "failed",
+    failureCode: "assertion_invalid",
+  });
+  expect(await intentSettles(payment.intentId)).toBe("failed");
+  expect(await chain.getTransactionCount({ address: wallet.address })).toBe(nonceBefore);
+
+  // Grace stays a member who cannot approve.
+  await ada.reject(addGrace.id);
+  const members = await ada.api.call("getWorkspace", { params: { workspaceId: workspace.id } });
+  expect(members.members.find((member) => member.user.displayName === "Grace")?.approver).not.toBe(
+    "active",
+  );
+});
+
+test("an approver change whose key the new person does not hold cannot be approved", async () => {
+  // Heidi joins as a viewer, so no approver change is opened yet.
+  const heidi = new Person(stack.origin, "Heidi");
+  const invite = await ada.api.call("createInvite", {
+    params: { workspaceId: workspace.id },
+    body: { role: "viewer" },
+  });
+  const { user } = await heidi.join(invite.url);
+  if (!user || heidi.credentialId === undefined) throw new Error("Heidi did not join");
+
+  // A compromised control plane puts a key of its own choosing into her approver change, under
+  // her passkey's id. Here the key is one this test made; the database row the change is built
+  // from is rewritten the way such a control plane would.
+  const chosen = new SoftAuthenticator().register({
+    rpId: new URL(stack.origin).hostname,
+    challenge: "chosen-key",
+  });
+  const chosenKey = Buffer.from(coseEc2(chosen.credential.publicKey));
+  const db = new pg.Client({ connectionString: await databaseUrl() });
+  await db.connect();
+  let change: { id: string } | undefined;
+  try {
+    const { rows } = await db.query<{ public_key: Buffer }>(
+      "SELECT public_key FROM os.credentials WHERE id = $1",
+      [heidi.credentialId],
+    );
+    const original = rows[0]?.public_key;
+    if (!original) throw new Error("Heidi's passkey is not in the database");
+    await db.query("UPDATE os.credentials SET public_key = $1 WHERE id = $2", [
+      chosenKey,
+      heidi.credentialId,
+    ]);
+    try {
+      const promoted = await ada.api.call("setMemberRole", {
+        params: { workspaceId: workspace.id, userId: user.id },
+        body: { role: "approver" },
+      });
+      change = promoted.approvals.find((item) => item.kind === "add-approver");
+    } finally {
+      await db.query("UPDATE os.credentials SET public_key = $1 WHERE id = $2", [
+        original,
+        heidi.credentialId,
+      ]);
+    }
+  } finally {
+    await db.end();
+  }
+  if (!change) throw new Error("making Heidi an approver opened no approver change");
+  const approvalId = change.id;
+
+  // The page names Heidi's passkey but shows the fingerprint of the key the change carries.
+  const link = await heidi.confirmationLink(approvalId);
+  const view = await heidi.readConfirmation(link);
+  expect(view).toMatchObject({ kind: "add-approver", state: "open" });
+  expect(view.warnings).toContain("possession_unproven");
+  const fingerprint = view.lines.find((line) => line.label === "Key fingerprint")?.value;
+  expect(fingerprint).toBe(keyFingerprint(b64url(chosenKey)));
+
+  // Heidi's real passkey fails the possession step: it is not the key in the request.
+  const options = await heidi.readPossession(link);
+  expect(options.allowCredentials).toEqual([heidi.credentialId]);
+  expect(await refusalCode(heidi.proveOnConfirmationPage(link, options))).toBe("assertion_invalid");
+
+  // Ada's approval is refused until someone proves it, so nothing is counted or applied.
+  const adaLink = await ada.confirmationLink(approvalId);
+  expect(
+    await refusalCode(ada.approveOnConfirmationPage(adaLink, await ada.readConfirmation(adaLink))),
+  ).toBe("possession_unproven");
+  expect(await ada.api.call("collectApproval", { params: { approvalId }, body: {} })).toMatchObject(
+    { status: "pending", approvals: 0 },
+  );
+  await ada.reject(approvalId);
+  const members = await ada.api.call("getWorkspace", { params: { workspaceId: workspace.id } });
+  expect(members.members.find((member) => member.user.id === user.id)?.approver).not.toBe("active");
+});
+
 test("the confirmation service reaches the signer and nothing else", async () => {
   const script = `
     const dns = require("node:dns/promises");
@@ -319,7 +468,7 @@ test("two approved proposals that together exceed the daily limit produce one tr
   const before = await chain.getBalance({ address: RECIPIENT });
   const first = await propose("0.04", "first of two");
   const second = await propose("0.04", "second of two");
-  await Promise.all([ada.approve(first.approvalId), ada.approve(second.approvalId)]);
+  await Promise.all([ada.confirm(first.approvalId), ada.confirm(second.approvalId)]);
 
   const outcomes = [await intentSettles(first.intentId), await intentSettles(second.intentId)];
   expect(outcomes.filter((status) => status === "confirmed")).toHaveLength(1);
@@ -337,11 +486,7 @@ test("limits change only with a passkey, and a raw contract call stays a proposa
     }),
   ).rejects.toThrow(/contract_call_not_allowed/);
 
-  // This change is approved on the signer's confirmation page.
-  await setPolicy(
-    policy({ contractCalls: { mode: "allowlist", targets: [CALL_TARGET] } }),
-    (approvalId) => ada.confirm(approvalId),
-  );
+  await setPolicy(policy({ contractCalls: { mode: "allowlist", targets: [CALL_TARGET] } }));
   const detail = await ada.api.call("getWallet", {
     params: { workspaceId: workspace.id, walletId: wallet.id },
   });
@@ -434,7 +579,7 @@ test("the example agent, in a container on the agents network, gets its payment 
     .poll(() => /approvals\/(apr_[0-9a-z]+)/.exec(output)?.[1] ?? null, { timeout: 120_000 })
     .not.toBeNull();
   const approvalId = /approvals\/(apr_[0-9a-z]+)/.exec(output)?.[1] ?? "";
-  await ada.approve(approvalId);
+  await ada.confirm(approvalId);
 
   expect(await exited.promise, output).toBe(0);
   expect(output).toContain("status: confirmed");
@@ -466,7 +611,7 @@ test("a crash after the approval and before the broadcast still ends in exactly 
   // With the chain frozen, the approved request cannot get past its broadcast. The approval is
   // sent without waiting for its answer, because the answer may itself wait on the chain.
   await compose("pause", "anvil");
-  const approving = ada.approve(approvalId).catch(() => undefined);
+  const approving = ada.confirm(approvalId).catch(() => undefined);
   await delay(4_000);
   await compose("kill", "server");
   await approving;
@@ -521,7 +666,7 @@ test("a person empties a disabled agent's wallet to the treasury while paused, a
   // A destination the approvers never allowed: approved with a passkey, refused by the signer.
   const nonceBefore = await chain.getTransactionCount({ address: retired.wallet.address });
   const elsewhere = await sweep(RECIPIENT);
-  await ada.approve(elsewhere.id);
+  await ada.confirm(elsewhere.id);
   expect(await ada.settled(elsewhere.id)).toMatchObject({
     status: "failed",
     failureCode: "sweep_destination_not_allowed",
@@ -531,7 +676,7 @@ test("a person empties a disabled agent's wallet to the treasury while paused, a
   // The treasury: one transaction, the approved amount, also while the workspace is paused.
   const treasuryBefore = await chain.getBalance({ address: treasury.address });
   const toTreasury = await sweep(treasury.address);
-  await ada.approve(toTreasury.id);
+  await ada.confirm(toTreasury.id);
   expect((await ada.settled(toTreasury.id)).status).toBe("executed");
   let approved = await ada.api.call("getApproval", { params: { approvalId: toTreasury.id } });
   for (let i = 0; i < 240; i += 1) {
@@ -560,7 +705,7 @@ test("a person empties a disabled agent's wallet to the treasury while paused, a
     params: { workspaceId: workspace.id },
     body: {},
   });
-  await ada.approve(resume.id);
+  await ada.confirm(resume.id);
   expect((await ada.settled(resume.id)).status).toBe("executed");
 });
 
@@ -574,7 +719,7 @@ test("a restored and fenced backup keeps wallets, refuses an approval used after
   await backUpInto(restoreProject);
 
   const paidBefore = await chain.getBalance({ address: RECIPIENT });
-  await ada.approve(paidAfterBackup.approvalId);
+  await ada.confirm(paidAfterBackup.approvalId);
   expect(await intentSettles(paidAfterBackup.intentId)).toBe("confirmed");
   expect(formatEther((await chain.getBalance({ address: RECIPIENT })) - paidBefore)).toBe("0.006");
 
@@ -592,7 +737,9 @@ test("a restored and fenced backup keeps wallets, refuses an approval used after
   );
 
   // An approval that was used before the backup is still used.
-  await expect(ada.approve(spentApprovalId)).rejects.toThrow();
+  expect(
+    await ada.api.call("getApproval", { params: { approvalId: spentApprovalId } }),
+  ).toMatchObject({ status: "executed", confirmUrl: null });
 
   // The chain is not part of a backup: the restored stack has a fresh local one. Whatever the
   // signer signed now would land on it.
@@ -600,17 +747,22 @@ test("a restored and fenced backup keeps wallets, refuses an approval used after
   const before = await chain.getBalance({ address: RECIPIENT });
   const nonceBefore = await chain.getTransactionCount({ address: wallet.address });
 
-  // The restored control plane shows the payment made after the backup as waiting again. A
-  // person who approves it is refused by the signer, whatever the control plane asks.
+  // The restored control plane shows the payment made after the backup as waiting again. The
+  // signer's confirmation page says it will never act on it, nor on the one that waited at the
+  // backup, and refuses an approval for either.
   const shown = await ada.api.call("getApproval", {
     params: { approvalId: paidAfterBackup.approvalId },
   });
   expect(shown.status).toBe("pending");
   for (const proposal of [paidAfterBackup, waiting]) {
-    await ada.approve(proposal.approvalId);
-    expect(await intentSettles(proposal.intentId, 200_000)).toBe("failed");
-    const intent = await ada.api.call("getIntent", { params: { intentId: proposal.intentId } });
-    expect(intent.failureCode).toBe("envelope_fenced");
+    const link = await ada.confirmationLink(proposal.approvalId);
+    const view = await ada.readConfirmation(link);
+    expect(view.state).toBe("superseded");
+    expect(await refusalCode(ada.approveOnConfirmationPage(link, view))).toBe(
+      "confirmation_closed",
+    );
+    await ada.reject(proposal.approvalId);
+    expect(await intentSettles(proposal.intentId, 200_000)).toBe("rejected");
   }
   expect(await chain.getTransactionCount({ address: wallet.address })).toBe(nonceBefore);
   expect(await chain.getBalance({ address: RECIPIENT })).toBe(before);
@@ -639,7 +791,7 @@ test("a restored and fenced backup keeps wallets, refuses an approval used after
   if (Date.now() < skewEnds) await delay(skewEnds - Date.now());
   agent = await connectAgent(`${stack.origin}/mcp`, agentToken);
   const fresh = await propose("0.001", "after the restore");
-  await ada.approve(fresh.approvalId);
+  await ada.confirm(fresh.approvalId);
   expect(await intentSettles(fresh.intentId)).toBe("confirmed");
   expect(formatEther((await chain.getBalance({ address: RECIPIENT })) - before)).toBe("0.001");
 });

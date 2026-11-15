@@ -130,7 +130,7 @@ How the pieces fit after the change:
 - `Engine.open()` calls `enqueueApprovalNotifications(tx, approval)` inside its transaction. That writes one `notification_deliveries` row for the webhook (if configured) and one per eligible push subscription, plus reminder rows.
 - `sweep()` calls `deliverDueNotifications(ctx)`, which claims due rows with `FOR UPDATE SKIP LOCKED`, checks the approval is still pending and unexpired, builds the content from identifiers only, and sends through the webhook or Web Push sender.
 - The web app registers `/sw.js`, subscribes through `pushManager.subscribe` with the server's VAPID public key, and POSTs the subscription to `/api/v1/me/push-subscriptions`.
-- The signer is not involved at any step. Approving is unchanged: the page fetches options, the browser makes the assertion, the signer verifies it with its own `WEBAUTHN_RP_ID` and `WEBAUTHN_ORIGINS` (`apps/signer/src/config.ts:13`, `:91`).
+- The signer is not involved at any step. Approving is unchanged by this plan. Since the trusted display was built, a person approves on the signer's confirmation page, and the signer accepts an assertion only from that origin (`SIGNER_APPROVAL_ORIGIN`); a notification still links to the control plane's page, which links onward.
 
 Assumptions:
 

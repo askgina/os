@@ -72,8 +72,8 @@ export function SetupPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={submit} className="grid gap-5">
-            <div className="grid gap-2">
+          <form onSubmit={submit} className="grid grid-cols-1 gap-5">
+            <div className="grid grid-cols-1 gap-2">
               <Label htmlFor="setup-token">Setup token</Label>
               <Input
                 id="setup-token"
@@ -89,7 +89,7 @@ export function SetupPage() {
                 The server printed it in its log when it first started.
               </p>
             </div>
-            <div className="grid gap-2">
+            <div className="grid grid-cols-1 gap-2">
               <Label htmlFor="display-name">Your name</Label>
               <Input
                 id="display-name"
@@ -135,7 +135,7 @@ export function LoginPage() {
           <CardTitle className="text-xl">Sign in to {session.data?.relyingParty.name}</CardTitle>
           <CardDescription>Use the passkey you created for this server.</CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-4">
+        <CardContent className="grid grid-cols-1 gap-4">
           <FormError error={login.error} />
           <Button size="lg" onClick={() => login.mutate()} disabled={login.isPending}>
             <KeyRound aria-hidden />
@@ -203,7 +203,7 @@ export function JoinPage() {
         </CardHeader>
         <CardContent>
           {user ? (
-            <div className="grid gap-4">
+            <div className="grid grid-cols-1 gap-4">
               <p className="text-sm">
                 You are signed in as <strong>{user.displayName}</strong>.
               </p>
@@ -215,13 +215,13 @@ export function JoinPage() {
             </div>
           ) : (
             <form
-              className="grid gap-5"
+              className="grid grid-cols-1 gap-5"
               onSubmit={(event) => {
                 event.preventDefault();
                 register.mutate();
               }}
             >
-              <div className="grid gap-2">
+              <div className="grid grid-cols-1 gap-2">
                 <Label htmlFor="join-name">Your name</Label>
                 <Input
                   id="join-name"

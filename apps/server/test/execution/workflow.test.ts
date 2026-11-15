@@ -8,7 +8,7 @@ import { approvals, intents, transactions } from "../../src/db/schema.ts";
 import { engineOf } from "../../src/execution/approvals.ts";
 import { startBackground, sweep } from "../../src/execution/index.ts";
 import { workflowRuntime } from "../../src/execution/workflow-runtime.ts";
-import { TEST_CHAIN_ID, TEST_ORIGIN, type TestPerson } from "../support/context.ts";
+import { TEST_CHAIN_ID } from "../support/context.ts";
 import { anvil, createFixture, type Fixture, toolJson } from "./fixture.ts";
 
 let f: Fixture;
@@ -40,22 +40,6 @@ async function proposeOverMcp(memo: string, to = randomAddress()) {
     .where(eq(intents.id, proposed.intentId as IntentId));
   if (!row?.approvalId) throw new Error(JSON.stringify(proposed));
   return { client, intentId: row.id, approvalId: row.approvalId, to };
-}
-
-async function approveViaApi(person: TestPerson, approvalId: ApprovalId) {
-  const { options } = await person.browser.api.call("startApproval", {
-    params: { approvalId },
-    body: {},
-  });
-  const response = f.t.authenticator.authenticate({
-    credentialId: person.credentialId,
-    challenge: String(options.challenge),
-    origin: TEST_ORIGIN,
-  });
-  return person.browser.api.call("approve", {
-    params: { approvalId },
-    body: { response: response as never },
-  });
 }
 
 /** Wait for a condition the workflow brings about, delivering missed wake-ups as the sweeper would. */
@@ -90,7 +74,7 @@ describe("the approval workflow", () => {
       () => approvalRow(approvalId),
       (row) => row.runId !== null,
     );
-    await approveViaApi(f.t.owner, approvalId);
+    await f.t.approveOnPage(f.t.owner, approvalId);
     const final = await until(
       async () =>
         toolJson(
@@ -161,7 +145,7 @@ describe("the approval workflow", () => {
     );
     // The process "dies" between the decision and the wake-up: nothing resumes the workflow.
     engine.attachRuntime(null);
-    await approveViaApi(f.t.owner, approvalId);
+    await f.t.approveOnPage(f.t.owner, approvalId);
     engine.attachRuntime(workflowRuntime(f.t.ctx));
     expect((await approvalRow(approvalId)).resumeState).toBe("needed");
 
@@ -203,7 +187,7 @@ describe("the approval workflow", () => {
       () => approvalRow(approvalId),
       (value) => value.runId !== null,
     );
-    await approveViaApi(f.t.owner, approvalId);
+    await f.t.approveOnPage(f.t.owner, approvalId);
     await until(
       async () =>
         (await f.t.ctx.db.select().from(intents).where(eq(intents.id, intentId)))[0]?.status,

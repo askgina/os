@@ -28,6 +28,10 @@ Please test only against your own deployment and your own test wallets.
   intent describes.
 - The approval protocol: digests, envelopes, the authorization verifier, the request signature
   ([`docs/approval-protocol.md`](docs/approval-protocol.md)).
+- The confirmation page and the `approve` service that serves it: anything that lets an approval
+  made anywhere but the confirmation page's origin count, lets a page frame or script it, makes
+  it show something other than what the signer holds, or lets its secret reach a signer route
+  other than its two.
 - The control plane: authentication, workspace isolation, the MCP gateway, and exposure of the
   Workflow delivery routes.
 - Encryption at rest: any content stored readable that
@@ -36,7 +40,8 @@ Please test only against your own deployment and your own test wallets.
 
 ## Known limits
 
-Some weaknesses are known and documented, such as the passkey "trusted display" gap and the fact
-that the signer host holds the wallets. They are listed in
+Some weaknesses are known and documented, such as a compromised confirmation service bringing
+back the display gap, a new approver's key not yet being proven to belong to the person named,
+and the fact that the signer host holds the wallets. They are listed in
 [`docs/threat-model.md`](docs/threat-model.md#limits). A report that shows one of them is worse
 than documented is in scope.

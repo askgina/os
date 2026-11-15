@@ -57,8 +57,8 @@ export function WorkspaceLayout() {
     { to: "/w/$workspaceId/activity", label: "Activity", exact: false },
   ] as const;
   return (
-    <div className="grid gap-6">
-      <div className="grid gap-3">
+    <div className="grid grid-cols-1 gap-6">
+      <div className="grid grid-cols-1 gap-3">
         <Link to="/" className={backLinkClass}>
           ← All workspaces
         </Link>
@@ -117,7 +117,7 @@ export function WorkspaceOverview() {
   const treasury = data.wallets.find((wallet) => wallet.kind === "treasury") ?? null;
 
   return (
-    <div className="grid gap-6">
+    <div className="grid grid-cols-1 gap-6">
       <NextStep workspace={data} />
       {withoutPolicy.length > 0 && data.agents.length > 0 ? (
         <Alert tone="warning">
@@ -143,7 +143,7 @@ export function WorkspaceOverview() {
             <CardDescription>Each agent has its own wallet and its own token.</CardDescription>
           </div>
         </CardHeader>
-        <CardContent className="grid gap-4">
+        <CardContent className="grid grid-cols-1 gap-4">
           {data.agents.length === 0 ? (
             <EmptyState icon={<Bot aria-hidden />} title="No agents yet">
               An agent is any program that connects over MCP. It can propose payments from its
@@ -326,13 +326,13 @@ function AddAgent({ workspaceId }: { workspaceId: string }) {
   });
   return (
     <form
-      className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end"
+      className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end"
       onSubmit={(event) => {
         event.preventDefault();
         create.mutate();
       }}
     >
-      <div className="grid gap-2">
+      <div className="grid grid-cols-1 gap-2">
         <Label htmlFor="agent-name">Agent name</Label>
         <Input
           id="agent-name"
@@ -362,13 +362,13 @@ function CreateTreasury({ workspaceId }: { workspaceId: string }) {
   });
   return (
     <form
-      className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end"
+      className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end"
       onSubmit={(event) => {
         event.preventDefault();
         create.mutate();
       }}
     >
-      <div className="grid gap-2">
+      <div className="grid grid-cols-1 gap-2">
         <Label htmlFor="treasury-label">Treasury name</Label>
         <Input
           id="treasury-label"

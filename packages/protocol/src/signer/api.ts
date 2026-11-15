@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ConfirmationSubject } from "../confirmation.ts";
+import { ConfirmationSubject, PasskeyRequest } from "../confirmation.ts";
 import {
   ApproverCredential,
   Assertion,
@@ -29,7 +29,7 @@ import { Sweep } from "../sweep.ts";
 
 /**
  * Which secret signs a route's requests (see `request-signature.ts`).
- * - `control`: the control plane's secret. Everything except the two confirm routes.
+ * - `control`: the control plane's secret. Everything except the confirm routes.
  * - `confirm`: the `approve` service's secret. Only the routes the confirmation page needs.
  * - `unsigned`: the health check.
  * A request signed with the other scope's secret is `unauthenticated`.
@@ -88,6 +88,12 @@ export const signerRoutes = {
     path: "/v1/confirm/:approvalId/assertions",
     scope: "confirm",
   },
+  getPossession: { method: "GET", path: "/v1/confirm/:approvalId/possession", scope: "confirm" },
+  submitPossession: {
+    method: "POST",
+    path: "/v1/confirm/:approvalId/possession",
+    scope: "confirm",
+  },
 } as const satisfies Record<
   string,
   { method: "GET" | "POST" | "PUT"; path: string; scope: SignerRouteScope }
@@ -128,7 +134,8 @@ export type AuthorizedRequest = z.infer<typeof AuthorizedRequest>;
  * Add an approver with assertions from existing approvers. There is no way over HTTP to add one
  * without them: recovery after every passkey is lost happens on the signer host itself, through
  * the operator's admin CLI, because whoever relays a request over HTTP (the control plane) would
- * otherwise choose the key that gets enrolled.
+ * otherwise choose the key that gets enrolled. The person being added must also have proven on
+ * the confirmation page of this envelope that they hold its key, else `possession_unproven`.
  */
 export const AddApproverRequest = AuthorizedRequest;
 export type AddApproverRequest = z.infer<typeof AddApproverRequest>;
@@ -257,7 +264,7 @@ export type ApprovalState = z.infer<typeof ApprovalState>;
 // --- confirmations ----------------------------------------------------------------------------
 
 /**
- * The header that carries a confirmation token on the two confirm routes. The token is the
+ * The header that carries a confirmation token on the confirm routes. The token is the
  * secret part of a confirmation link: 16 random bytes, base64url. The signer keeps only its
  * SHA-256, and a wrong token is `not_found`.
  */
@@ -315,6 +322,30 @@ export const SubmitConfirmationResponse = z.strictObject({
 });
 export type SubmitConfirmationResponse = z.infer<typeof SubmitConfirmationResponse>;
 
+/**
+ * The possession step of an `add-approver` request (confirm scope): what the confirmation page
+ * asks the new passkey to sign. Only the envelope's credential may answer, and the challenge is
+ * `possessionChallenge({ approvalId, credentialId, nonce })` with a random nonce the signer
+ * keeps until an answer uses it; the next call after that gets a new one.
+ */
+export const GetPossessionResponse = PasskeyRequest;
+export type GetPossessionResponse = z.infer<typeof GetPossessionResponse>;
+
+/**
+ * The new person's answer to the possession step (confirm scope). The signer verifies it against
+ * the envelope's public key, made top-level at the approval origin with user verification, and
+ * records that the key's holder was there. Until then the request takes no approval and the
+ * signer adds no approver for it (`possession_unproven`).
+ */
+export const SubmitPossessionRequest = z.strictObject({ response: AssertionResponse });
+export type SubmitPossessionRequest = z.infer<typeof SubmitPossessionRequest>;
+
+export const SubmitPossessionResponse = z.strictObject({
+  /** `keyFingerprint` of the proven key, for the new person to read to the approvers. */
+  fingerprint: z.string().regex(/^[0-9A-HJKMNP-TV-Z]{4}(?:-[0-9A-HJKMNP-TV-Z]{4}){3}$/),
+});
+export type SubmitPossessionResponse = z.infer<typeof SubmitPossessionResponse>;
+
 // --- errors -----------------------------------------------------------------------------------
 
 export const SignerErrorCode = z.enum([
@@ -328,6 +359,11 @@ export const SignerErrorCode = z.enum([
   "conflict",
   /** The approval can no longer collect assertions: revoked, used, expired, superseded or complete. */
   "confirmation_closed",
+  /**
+   * An approver change whose new person has not proven on the confirmation page that they hold
+   * the passkey it adds: it takes no approval and the signer adds no one.
+   */
+  "possession_unproven",
   // 429
   /** More than 64 assertions were submitted for one confirmation. */
   "rate_limited",
@@ -365,6 +401,7 @@ export const signerErrorStatus: Record<SignerErrorCode, 400 | 401 | 403 | 404 | 
   not_found: 404,
   conflict: 409,
   confirmation_closed: 409,
+  possession_unproven: 409,
   rate_limited: 429,
   workspace_paused: 403,
   approval_revoked: 403,

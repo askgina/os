@@ -1,0 +1,70 @@
+/* The fixture's stand-in for the signer's confirmation page. Development only; the real page's
+   stylesheet is apps/approve/public/approve.css. */
+
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  line-height: 1.5;
+}
+
+body {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+p {
+  margin: 0;
+}
+
+.origin {
+  border-bottom: 1px solid;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+}
+
+main {
+  margin: 0 auto;
+  max-width: 40rem;
+  padding: 1rem;
+  display: grid;
+  gap: 1rem;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  line-height: 1.25;
+}
+
+dl {
+  margin: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+dt {
+  font-size: 0.75rem;
+  opacity: 0.75;
+}
+
+dd {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  min-height: 3rem;
+  padding: 0.5rem 1rem;
+  border: 0;
+  border-radius: 0.375rem;
+  background: #1d4ed8;
+  color: #ffffff;
+}
+
+button:disabled {
+  opacity: 0.5;
+}
+
+.refusal {
+  color: #b91c1c;
+}

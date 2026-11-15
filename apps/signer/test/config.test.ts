@@ -22,7 +22,6 @@ describe("the signer's configuration", () => {
     SIGNER_KEY_FILE: file("key", randomBytes(32).toString("base64")),
     SIGNER_VAULT_PASSPHRASE_FILE: join(dir, "passphrase"),
     WEBAUTHN_RP_ID: "os.example.com",
-    WEBAUTHN_ORIGINS: "https://os.example.com",
     SIGNER_APPROVAL_ORIGIN: "https://approve.os.example.com",
     SIGNER_RETURN_ORIGIN: "https://os.example.com",
     SIGNER_CHAINS_FILE: join(DEPLOY, "chains.json"),
@@ -44,11 +43,9 @@ describe("the signer's configuration", () => {
       { chainId: "eip155:31337", name: "Local chain", nativeSymbol: "ETH" },
     ]);
     expect(config.assets).toEqual([]);
+    expect(config.rpId).toBe("os.example.com");
     expect(config.approvalOrigin).toBe("https://approve.os.example.com");
-    expect(config.relyingParty).toEqual({
-      id: "os.example.com",
-      origins: ["https://os.example.com"],
-    });
+    expect(config.returnOrigin).toBe("https://os.example.com");
   });
 
   it("the signer refuses to start when the approval origin's host is not under the RP ID", () => {
@@ -68,12 +65,13 @@ describe("the signer's configuration", () => {
     );
   });
 
-  it("the signer refuses to start when the approval origin equals the return origin or a control-plane origin", () => {
+  it("the signer refuses to start when the approval origin equals the return origin", () => {
+    // The return origin is the control plane's: an approval page there would protect nothing.
     expect(refusal({ SIGNER_RETURN_ORIGIN: "https://approve.os.example.com" })).toMatch(
       /^SIGNER_RETURN_ORIGIN:/,
     );
     expect(refusal({ SIGNER_APPROVAL_ORIGIN: "https://os.example.com" })).toMatch(
-      /^SIGNER_APPROVAL_ORIGIN:/,
+      /^SIGNER_RETURN_ORIGIN:/,
     );
   });
 

@@ -113,7 +113,148 @@ Success means:
       tests whether Chromium's virtual authenticator follows the tab across the origin change.
 - [ ] Milestone 3: cutover; the signer accepts approvals only from the confirmation origin;
       documents corrected.
-- [ ] Milestone 4: proof of possession and fingerprints for new approver keys.
+  - [x] (2026-11-15 00:20Z) Code and tests, without `apps/web` and the prose documents (split
+        to a second agent and a docs pass). Built: `verifyAuthorization` refuses an assertion
+        made in a frame (`crossOrigin: true`, any `topOrigin`, unreadable client data) and
+        passes `expectedType: "webauthn.get"`; the signer has no `WEBAUTHN_ORIGINS` and accepts
+        approvals for signing and applying from `SIGNER_APPROVAL_ORIGIN` alone (`SignerOptions`
+        and `SignerConfig` carry `rpId`, no `relyingParty`); `WEBAUTHN_ORIGINS` is gone from
+        `compose.yaml` and `compose.tls.yaml`; `Engine.startCeremony`, `Engine.approve`, the
+        routes `startApproval` and `approve`, `ApproveRequest` and `ApprovalDetail.challenge`
+        are removed, and `Engine.#verify` checks against `APPROVE_ORIGIN` only; `t.approve`
+        and the new `t.approveOnPage` and `t.approveAt` in the server's test support approve
+        through the signer's confirm route and collect; `Person.approve` is removed, every
+        release gate and both browser gates approve on the confirmation page; the negative
+        release gate "an approval made on the control plane's page is refused" and browser gate
+        "a script on the control plane's page cannot get an approval"; the guard step "The
+        control plane has no approval prompt" in the CI `check` job. Proven locally, one file
+        at a time: `packages/protocol/test/verify-authorization.test.ts` (28),
+        `signer-client.test.ts` (18), `schemas.test.ts` (46), `confirmation.test.ts` (38),
+        `soft-authenticator.test.ts` (5); `apps/signer/test/signing.test.ts` (31),
+        `governance.test.ts` (15), `config.test.ts` (5), `confirmations.test.ts` (13),
+        `hardening.test.ts` (8), `fence.test.ts` (10), `sweep.test.ts` (7), `admin.test.ts`
+        (3), `ows.test.ts` (1); `packages/api/test/api.test.ts` (94);
+        `apps/server/test/execution/confirmation.test.ts` (10), `engine.test.ts` (12),
+        `hardening.test.ts` (19), `sweep.test.ts` (4), `mcp.test.ts` (8),
+        `apps/server/test/identity/identity.test.ts` (36),
+        `apps/server/test/directory/directory.test.ts` (32),
+        `apps/server/test/support/public-app.test.ts` (2), `apps/approve/test/app.test.ts` (7);
+        `tsc --noEmit` in `packages/protocol`, `packages/api`, `apps/signer`, `apps/server`,
+        `apps/approve`, `e2e`, `examples/scripted-agent`; `docker compose config -q` for
+        `compose.yaml`, with `e2e/compose.e2e.yaml`, and with `compose.tls.yaml`. Not run
+        locally (CI only): `apps/server/test/execution/workflow.test.ts`, the release and
+        browser gates, the guard step. Left for the other parts of this milestone: `apps/web`
+        (the approval page and its dev fixture) and the documents, including
+        `apps/signer/README.md`, which still names `WEBAUTHN_ORIGINS`.
+  - [x] (2026-11-15) Documents. `README.md` (the opening, a new "Why" item, the sequence
+        diagram with the confirmation page, step 7 of "Run it", the trust table, the first
+        limit, and the screenshot's caption, marked as v0.1's page), `SECURITY.md` (the
+        confirmation page in scope, the known limits), `docs/architecture.md` (the server's
+        role, one sequence diagram for the whole flow in place of the two, "Why each boundary
+        exists"), `docs/approval-protocol.md` (section 6: the frame check and type
+        `webauthn.get` as checks, the origin rule; section 10: the submission rule and the only
+        place an approval is made), `docs/threat-model.md` (trust boundaries 2 and 5, code
+        execution in the control plane, the `approve` service and XSS on its page, a new
+        position for lookalike hosts, "Limits" with the residual risks of this plan's threat
+        model, "Out of scope" without the trusted display and with proof of possession),
+        `deploy/README.md` (the rule, moving between layouts without new passkeys, a network
+        diagram, the `approve` service's secret, the restore outcome `superseded`, upgrading
+        from a release with `WEBAUTHN_ORIGINS`), `apps/signer/README.md` (the relying party,
+        `WEBAUTHN_ORIGINS` removed from its settings and named as removed; also the default of
+        `SIGNER_MAX_INTENT_TTL_SECONDS`, 86400 in `config.ts`, not 3600), the new
+        `apps/approve/README.md`, the `APPROVE_ORIGIN` comment in `.env.example`, and a revision
+        note with corrected statements in `specs/agent-workspaces-v0.1.md`. The "Until milestone
+        3" and "Until the cutover" sentences are gone. Checked: `biome check` on the touched
+        files; every Mermaid block in `README.md`, `docs/architecture.md`, `deploy/README.md`
+        and this file parses with mermaid's parser (syntax only, not rendered). Not done:
+        `docs/images/approval-phone.png` still shows v0.1's approval page with its passkey
+        button; it needs a new screenshot from the journey.
+- [x] (2026-11-15 00:45Z) Milestone 4: proof of possession and fingerprints for new approver
+      keys, without `apps/web` and the prose documents. Built: the tag
+      `askgina.os/v1/possession` (`DomainTag.possession`), `PossessionChallengeInput` and
+      `possessionChallenge()` in `packages/protocol/src/confirmation.ts`, and `PasskeyRequest`,
+      the shape of `ConfirmationView.webauthn` now named; `verifyPossession()` in
+      `verify-authorization.ts`, which shares one assertion check with `verifyAuthorization`;
+      the routes `getPossession` and `submitPossession` (confirm scope), `GetPossessionResponse`,
+      `SubmitPossessionRequest`, `SubmitPossessionResponse` (`{ fingerprint }`) and the code
+      `possession_unproven` (409), with `ConfirmClient.getPossession` and `submitPossession`;
+      in the signer, schema version 4 (table `possession_challenges`), `getPossession` and
+      `submitPossession` in `confirmations.ts`, `submitConfirmation` refusing an approval of an
+      unproven `add-approver` with `possession_unproven`, and `addApprover` in `signer.ts`
+      refusing with `possession_unproven` unless the confirmation of that exact envelope
+      records the proof (`enroll-approver` on the signer host is unchanged); in `apps/approve`,
+      the two relayed routes and the page's "This passkey is mine" step, with the fingerprint
+      and the text to compare it over a call or in person, and the approve button disabled
+      until the proof; `t.provePossession` in the server's test support and `t.approve` doing
+      the step for every `add-approver`; `Person.readPossession`, `proveOnConfirmationPage` and
+      `provePossession` in `e2e/src/person.ts`; the milestone 3 negative gate now has Grace
+      prove first; the release gate "an approver change whose key the new person does not hold
+      cannot be approved"; the tag in `docs/approval-protocol.md` section 2. New tests:
+      `apps/signer/test/possession.test.ts` (the three the plan names and three more),
+      "takes no approval until the person being added proved on the page that the passkey is
+      theirs" in `apps/server/test/execution/confirmation.test.ts`, the pinned possession
+      vector in `digests.test.ts`, three `verifyPossession` cases, a client case, the possession
+      routes in `apps/approve/test/app.test.ts` and the page's `possessionOf`. Proven locally,
+      one file at a time: `packages/protocol/test/digests.test.ts` (91), `schemas.test.ts` (46),
+      `signer-client.test.ts` (19), `verify-authorization.test.ts` (31), `confirmation.test.ts`
+      (38); `apps/signer/test/possession.test.ts` (6), `confirmations.test.ts` (13),
+      `governance.test.ts` (15), `signing.test.ts` (31), `config.test.ts` (5),
+      `hardening.test.ts` (8), `fence.test.ts` (10), `sweep.test.ts` (7), `admin.test.ts` (3),
+      `ows.test.ts` (1); `apps/approve/test/app.test.ts` (9);
+      `apps/server/test/execution/confirmation.test.ts` (11), `engine.test.ts` (12),
+      `hardening.test.ts` (19), `sweep.test.ts` (4), `mcp.test.ts` (8),
+      `apps/server/test/directory/directory.test.ts` (32),
+      `apps/server/test/identity/identity.test.ts` (36),
+      `apps/server/test/support/public-app.test.ts` (2); `tsc --noEmit` in `packages/protocol`,
+      `packages/api`, `apps/signer`, `apps/approve`, `apps/server`, `apps/web`, `e2e`,
+      `examples/scripted-agent`; `biome check` on the touched files; the guard step's `git grep`
+      finds nothing. The existing digests and test vectors are unchanged. Still to prove in CI:
+      the whole `test` job (with `apps/server/test/execution/workflow.test.ts`, whose fixture
+      adds approvers through `t.approve`); `check`; the new release gate and the changed
+      milestone 3 gate on `stack (amd64)` and `stack (arm64)`, which also run the signer's
+      schema version 4 for the first time on a real volume; `stack (tls)`, whose browser gates
+      load the reworked `approve.js` for payments. Not proven anywhere: no browser gate presses
+      "This passkey is mine", so the page's possession step runs only in a manual check; the
+      release gates drive its two routes through the `approve` service. No test reaches the
+      step on a `complete` request (approvals collected before this milestone), because no route
+      can collect them any more. Left for others: the two open items below.
+  - [ ] `apps/web`: the approval page shows the confirmation link only to people who can decide,
+        so the person being added never sees it there (see Surprises). It must show them the link
+        on an `add-approver` request whose `subject.user` is the signed-in person, with a line
+        saying to open it and press "This passkey is mine"; `apps/web/src/lib/codes.ts` needs a
+        meaning for `possession_unproven`.
+  - [ ] Documents for milestone 4, for the docs pass (none written yet):
+        `docs/approval-protocol.md` section 10, "The confirmation routes": six routes, not four,
+        with `GET /v1/confirm/:approvalId/possession` (confirm, header `x-confirm-token` →
+        `{ rpId, challenge, allowCredentials: [the envelope's credentialId], userVerification,
+    timeoutMs }`) and `POST /v1/confirm/:approvalId/possession` (confirm, header,
+        `{ response }` → `{ fingerprint }`), and the rules: only `add-approver` has the step
+        (`not_found` otherwise); the step is open while the request is `open` or `complete`
+        (`confirmation_closed` otherwise); one random nonce per request, kept until an answer uses
+        it; the answer must come from the envelope's credential, verified against the envelope's
+        `publicKey` under section 6's checks; a used or absent challenge is `assertion_invalid`;
+        answers count toward the 64 submissions; an approval of an unproven `add-approver` is
+        `possession_unproven` (409). Section 8 or the `add-approver` row of section 5: the signer
+        applies an `add-approver` only when the confirmation of that exact envelope records the
+        proof, else `possession_unproven`; the operator's `enroll-approver` has no such step.
+        Section 11: the vector `possessionChallenge({ approvalId: "apr_01jd0000000000000000000005",
+    credentialId: "Y3JlZC1h", nonce: "AAAAAAAAAAAAAAAAAAAAAA" })` =
+        `7voVoMiWeZwDat_WCB8R-xOqaIfjygPAYO7xmCsm8ec` (JSON in `digests.test.ts`). Section 12: a
+        new tag for a new structure, no version change. `docs/threat-model.md`: line 140 ("a
+        genuine `add-approver` request whose key is not the named person's") and "Limits" (line
+        320, "A new approver's key ... milestone 4") and "Out of scope" (proof of possession): say
+        what is built and what remains, as in this plan's Surprises (the holder of a swapped key can
+        prove it; only the fingerprint comparison over another channel catches the swap), and keep
+        the admin threshold of 2 recommendation. `docs/architecture.md` (around line 156): the
+        person being added opens the request's link and presses "This passkey is mine" before
+        anyone can approve; the `approve` service relays four routes. `README.md` and `SECURITY.md`
+        where they state the approver-key limit. `apps/approve/README.md`: the two new routes in
+        its route table (`GET` and `POST /api/approvals/:approvalId/possession`, relayed to
+        `/v1/confirm/:approvalId/possession`), "two confirmation routes" becomes four, and the
+        page's step. `apps/signer/README.md`: the two routes beside `GET /v1/confirm/:approvalId`,
+        the table `possession_challenges` in its SQLite list, and `possession_unproven`.
+        `deploy/README.md` (line 206, migrations): schema version 4 adds `possession_challenges`;
+        an older signer image refuses the file (`schema_too_new`).
 - [ ] Run validation and record evidence (CI run URLs, one manual phone run).
 - [ ] Update this spec with the final outcome and residual risks.
 
@@ -176,12 +317,47 @@ Success means:
   lock with theirs. Under a burst of views that can exhaust the pool.
   Evidence: `ensureConfirmation` in `apps/server/src/execution/approvals.ts`; the server's pool
   is `workflowWorkerConcurrency + 12` (`apps/server/src/main.ts`).
+- Observation: once the signer stopped accepting assertions from the control plane's origin,
+  a request whose wallet policy changed, or that was issued before the restore fence, can no
+  longer be approved by anyone: the confirmation page shows it `superseded` and refuses with
+  `confirmation_closed`. Two tests had approved such requests and expected the signer to fail
+  them at signing (`policy_changed`, `envelope_fenced`). The server test now approves on the
+  page before the policy changes and collects after it; the restore gate now expects
+  `superseded` and `confirmation_closed`, then rejects both requests.
+  Evidence: `apps/server/test/execution/engine.test.ts` ("ends an intent failed with
+  policy_changed ..."), `e2e/test/release-gates.spec.ts` (the restore gate), `stateOf` and
+  `supersededBy` in `apps/signer/src/confirmations.ts`.
+- Observation: with approvals counted only when collected, a rejection racing a collection can
+  leave the collect call succeeding with status `rejected`; the old test expected exactly one
+  of an approve and a reject call to fail. The lock in `#record` still decides once.
+  Evidence: `apps/server/test/execution/engine.test.ts` ("lets only one of two concurrent
+  decisions win ...").
 - Observation: the Chromium virtual authenticator lives on the tab, and Playwright gives each
   test a new tab by default. The browser gates therefore share one tab, in order, so the
   passkey enrolled by the first is the one the confirmation page asks for.
   Evidence: `e2e/test/browser.spec.ts` (`beforeAll`). Whether the authenticator follows the tab
   across the origin change (and the browsing-context-group switch that COOP causes) is proven
   only by the `stack` jobs.
+- Observation: the possession step proves that whoever answered holds the key, not that the key
+  is the named person's. A WebAuthn signature does not cover the credential id, so whoever holds
+  a key the control plane swapped in can answer under the named person's credential id and pass
+  the step; the real person's passkey fails it. Only the fingerprint the people compare over
+  another channel catches that swap, as D5's rationale says.
+  Evidence: `apps/signer/test/possession.test.ts` ("a passkey other than the envelope's cannot
+  prove possession", its last part).
+- Observation: the person being added already gets the confirmation link from the API, because
+  `confirmUrl` goes to every member who can read the request and a newcomer is a member. The
+  web approval page shows the link only to people who can decide, so in the browser the person
+  being added has no way to reach the step.
+  Evidence: `getApproval` in `apps/server/src/execution/routes.ts` (`requireMember` with no
+  role), `ensureConfirmation` in `apps/server/src/execution/approvals.ts`, the `canDecide`
+  branch in `apps/web/src/routes/approval.tsx`; the server test "takes no approval until the
+  person being added proved on the page that the passkey is theirs" reads the link as Dana.
+- Observation: every signer migration is a no-op on a file that already has its tables, and
+  the test "a v0.1 file is migrated ..." relies on it: it resets `user_version` to 0 on a file
+  with every table. An `ALTER TABLE ... ADD COLUMN` would fail there with a duplicate column
+  (`[INFERENCE]` from SQLite's rules; not run).
+  Evidence: `apps/signer/src/db.ts` (`VERSION_1` to `VERSION_3`), `apps/signer/test/fence.test.ts`.
 
 ## Decision Log
 
@@ -349,6 +525,89 @@ and the research agent's rationale.
   Rationale: the copy is not a secret of its own; after a restore of `signer-secrets` it must
   follow, and a backup of it would only be a second copy to protect.
   Date/Author: 2026-11-14 / milestone 2.
+- Decision: the frame check moves from `submitConfirmation` into `verifyAuthorization`, which
+  now refuses `crossOrigin: true`, any `topOrigin` and unreadable client data, and passes
+  `expectedType: "webauthn.get"`; the signer's copy is removed.
+  Rationale: one rule for every verifier: the signer when it signs or applies, the
+  confirmation route, and the control plane when it collects.
+  Date/Author: 2026-11-15 / milestone 3.
+- Decision: the signer's options and configuration carry `rpId` and `approvalOrigin`; the
+  relying party `{ id: rpId, origins: [approvalOrigin] }` is built inside the signer. The check
+  "`SIGNER_APPROVAL_ORIGIN` is one of `WEBAUTHN_ORIGINS`" is gone with the setting; the existing
+  check that `SIGNER_RETURN_ORIGIN` (the control plane's origin) differs from it remains.
+  Rationale: no setting can widen the accepted origins again.
+  Date/Author: 2026-11-15 / milestone 3.
+- Decision: the CI guard uses `git grep` over code and configuration (`apps`, `packages`,
+  `e2e`, `examples`, `deploy`, both Compose files, `.env.example`), excluding Markdown, for
+  `startApproval`, `startCeremony`, `ApproveRequest`, `WEBAUTHN_ORIGINS`,
+  `signWithPasskey(options)` and the two removed paths.
+  Rationale: `git grep` is on every runner; documents may name the removed setting as history.
+  Date/Author: 2026-11-15 / milestone 3.
+- Decision: the execution-path part of the negative release gate writes the approval into
+  Postgres itself (`os.approval_assertions`, then `os.approvals` set `approved` with
+  `resume_state = 'needed'`), as a compromised control plane or one approved before the upgrade
+  would hold it, and lets the sweeper wake the workflow.
+  Rationale: the control plane has no route left that stores such an approval.
+  Date/Author: 2026-11-15 / milestone 3.
+- Decision: `SoftAuthenticator` takes `topOrigin` and `clientDataType`, so tests can produce a
+  correctly signed assertion of another type or from a frame.
+  Rationale: a tampered client data would fail on its signature and test nothing.
+  Date/Author: 2026-11-15 / milestone 3.
+- Decision: `possessionChallenge()` hashes `{ v: 1, approvalId, credentialId, nonce }` under
+  `askgina.os/v1/possession`, parsed with the strict `PossessionChallengeInput` first, and lives
+  in `confirmation.ts` beside `keyFingerprint`; the tag joins `DomainTag` in `canonical.ts`.
+  Rationale: a new structure gets its own tag, so no existing digest changes and an approval's
+  challenge can never stand in for a proof, nor a proof's for an approval.
+  Date/Author: 2026-11-15 / milestone 4.
+- Decision: the proof is checked by `verifyPossession()`, which recomputes the challenge and
+  runs the same assertion check as `verifyAuthorization` (frame, `webauthn.get`, origin, RP ID,
+  user verification), after refusing an answer whose `id` is not the envelope's credential id.
+  `verifyAuthorization` keeps deriving its challenge from an envelope only.
+  Rationale: one rule for every assertion; a possession challenge is not an envelope, and taking
+  a challenge from the caller would weaken the function every approval goes through.
+  Date/Author: 2026-11-15 / milestone 4.
+- Decision: the nonce lives in a new table `possession_challenges` (schema version 4), is made
+  when the page first asks for the challenge, stays the same until an answer uses it, and is
+  then deleted; an answer to a used or absent challenge is `assertion_invalid`. The draft's
+  "a fresh nonce on every request" was dropped.
+  Rationale: the page fetches the challenge when it shows the step, so nothing waits between the
+  tap and the passkey prompt, and a second page open on the same request does not end the
+  first page's challenge; a table keeps every migration a no-op on a file that has it (see
+  Surprises). Freshness still holds: an answer signs a random nonce the signer issued and is
+  accepted once.
+  Date/Author: 2026-11-15 / milestone 4.
+- Decision: the possession step is checked twice. `submitConfirmation` refuses an approval of an
+  unproven `add-approver` with `possession_unproven` before it verifies anything, and
+  `addApprover` refuses with `possession_unproven` unless the confirmation whose
+  `envelope_digest` is the envelope's records `possession_proven_at`. The page keeps its approve
+  button disabled until the proof.
+  Rationale: the page then never collects an approval that cannot be used, and the signer's own
+  check holds even for assertions that never went through the page.
+  Date/Author: 2026-11-15 / milestone 4.
+- Decision: the step is open while the request is `open` or `complete`, only for
+  `add-approver` (`not_found` for any other kind), and its answers count toward the same 64
+  submissions as approvals. `possession_unproven` answers 409, as the plan's table said.
+  Rationale: `complete` covers approvals collected before this milestone, which the signer
+  would otherwise refuse forever; the limit protects the verifier whatever is submitted.
+  Date/Author: 2026-11-15 / milestone 4.
+- Decision: a proof is logged to stdout as `confirmation.possession` (outcome and code), not to
+  the decision log; the signer's refusals of `add-approver` with `possession_unproven` are in the
+  decision log like every other refusal.
+  Rationale: as for `confirmation.assertion`: the proof adds no authority by itself.
+  Date/Author: 2026-11-15 / milestone 4.
+- Decision: in the server's tests, `t.approve` does the possession step for every
+  `add-approver` before anyone approves, answering with the shared soft authenticator, which
+  holds every test passkey; `t.provePossession` exposes the step. In e2e, the person being
+  added calls `Person.provePossession` with their own passkey.
+  Rationale: the tests model the order the product requires: the new person first, then the
+  approvers.
+  Date/Author: 2026-11-15 / milestone 4.
+- Decision: the release gate makes the control plane carry a key the test generated by
+  rewriting `os.credentials.public_key` of a viewer's passkey before an owner makes the viewer an
+  approver, then restoring it once the request is opened.
+  Rationale: the control plane has no route that chooses a key; a compromised one would change
+  the record its approver change is built from, which is what the gate does.
+  Date/Author: 2026-11-15 / milestone 4.
 
 ## Outcomes & Retrospective
 
@@ -371,6 +630,30 @@ and the research agent's rationale.
   Evidence: the single-file runs listed under Progress (2026-11-14 23:45Z).
   Remaining: CI (`check`, `test`, `ui`, all `stack` jobs, which build the `approve` image and
   run the new gates for the first time); milestones 3 and 4.
+- Outcome (milestone 3): a person approves only on the confirmation page. The signer accepts an
+  assertion only when the browser made it at `SIGNER_APPROVAL_ORIGIN`, top-level, as a
+  `webauthn.get`, when it signs, applies or takes a submission, and the control plane checks
+  what it collects the same way against `APPROVE_ORIGIN`. The control plane has no route that
+  takes a passkey approval, and no setting can add its origin back. The documents describe
+  this, and say what it does not close: a compromised `approve` service or its edge, the signer
+  host, a person who approves without reading, phishing that the address bar would reveal, and
+  a new approver's key that nothing yet binds to the person named; they still recommend an
+  admin threshold of 2.
+  Evidence: the single-file runs listed under Progress (2026-11-15) for the code; the
+  documents' checks listed with them.
+  Remaining: CI (`check` with its guard step, `test` with `workflow.test.ts`, `ui`, all
+  `stack` jobs with the two negative gates); the `apps/web` part as recorded under Progress; a
+  new screenshot for the README; milestone 4.
+- Outcome (milestone 4): an approver change takes no approval, at the confirmation page or at the
+  signer, until the person being added has answered on the confirmation page, with the passkey
+  the request carries, a challenge only that key can sign. The page then shows them the key's
+  fingerprint, and the approvers' page shows the same fingerprint with the text to compare it
+  over a call or in person. What remains: whoever holds a key a compromised control plane
+  swapped in can pass the step; only the fingerprint comparison catches that.
+  Evidence: the single-file runs listed under Progress (2026-11-15 00:45Z).
+  Remaining: CI (`check`, `test` with `workflow.test.ts`, the new and the changed release gates
+  on all `stack` jobs); a browser or manual run of the page's possession step; the `apps/web`
+  link for the person being added; the documents listed under Progress.
 
 ## Context and Orientation
 
@@ -915,7 +1198,7 @@ Local interfaces:
   | `listConfirmationAssertions` | `GET /v1/approvals/:approvalId/assertions`    | control | none                                                        | `{ assertions: Assertion[] }`        |
   | `getConfirmation`            | `GET /v1/confirm/:approvalId`                 | confirm | none, header `x-confirm-token`                              | `ConfirmationView`                   |
   | `submitConfirmation`         | `POST /v1/confirm/:approvalId/assertions`     | confirm | `{ response: AssertionResponse }`, header `x-confirm-token` | `{ collected, required, returnUrl }` |
-  | `getPossession` (M4)         | `GET /v1/confirm/:approvalId/possession`      | confirm | header `x-confirm-token`                                    | WebAuthn options                     |
+  | `getPossession` (M4)         | `GET /v1/confirm/:approvalId/possession`      | confirm | header `x-confirm-token`                                    | `PasskeyRequest`                     |
   | `submitPossession` (M4)      | `POST /v1/confirm/:approvalId/possession`     | confirm | `{ response }`, header `x-confirm-token`                    | `{ fingerprint }`                    |
 
   Failures: the existing codes plus `confirmation_closed` (409), `rate_limited` (429),
@@ -926,11 +1209,22 @@ Local interfaces:
   `OpenConfirmationRequest`, `OpenConfirmationResponse` (exactly `/a/<approvalId>#<token>`),
   `ListConfirmationAssertionsResponse`, `SubmitConfirmationRequest`,
   `SubmitConfirmationResponse` (`returnUrl` http or https only).
+  Built in milestone 4: `GetPossessionResponse` (`PasskeyRequest`: `{ rpId, challenge,
+  allowCredentials, userVerification: "required", timeoutMs }`, the shape of
+  `ConfirmationView.webauthn`, with `allowCredentials` the envelope's credential id only),
+  `SubmitPossessionRequest` (`{ response: AssertionResponse }`), `SubmitPossessionResponse`
+  (`{ fingerprint }`, `keyFingerprint`'s format). In `packages/protocol`:
+  `possessionChallenge(input: PossessionChallengeInput): Uint8Array` in `confirmation.ts`, and
+  `verifyPossession({ possession, publicKey, response, relyingParty }):
+  Promise<{ ok: true } | { ok: false; code: "assertion_invalid"; message: string }>` in
+  `webauthn/verify-authorization.ts`.
 - `packages/protocol/src/signer/client.ts`: `SignerClient.openConfirmation(approvalId, { envelope,
   subject })`, `SignerClient.listConfirmationAssertions(approvalId)`;
   `createConfirmClient(options: SignerClientOptions): ConfirmClient` with
-  `getConfirmation(approvalId, token): Promise<ConfirmationView>` and
-  `submitConfirmation(approvalId, token, response): Promise<SubmitConfirmationResponse>`. The
+  `getConfirmation(approvalId, token): Promise<ConfirmationView>`,
+  `submitConfirmation(approvalId, token, response): Promise<SubmitConfirmationResponse>`, and
+  from milestone 4 `getPossession(approvalId, token): Promise<GetPossessionResponse>` and
+  `submitPossession(approvalId, token, response): Promise<SubmitPossessionResponse>`. The
   token travels only in its header.
 - `apps/signer/src/confirmations.ts`: `createConfirmations(options: ConfirmationOptions):
   Confirmations`, reading the signer's records through `SignerRecords`
@@ -1037,6 +1331,14 @@ Regression checks:
 - Backout: revert the milestone 3 commit. That restores `WEBAUTHN_ORIGINS` and the control-plane
   prompt; milestones 1 and 2 stay harmless. Assertions collected on the confirmation page remain
   valid under the restored list only if `APPROVE_ORIGIN` is added to it.
+- Milestone 4 adds schema version 4 (`possession_challenges`, `CREATE TABLE IF NOT EXISTS`). An
+  older signer image refuses such a file (`schema_too_new`), so milestone 4 too is backed out by
+  fixing forward. `getPossession` is safe to repeat: it returns the same challenge until an
+  answer uses it. `submitPossession` is safe to repeat in effect: a used challenge is
+  `assertion_invalid`, and a second proof keeps the first `possession_proven_at`.
+- Upgrade across milestone 4: an `add-approver` request whose approvals were collected before it
+  stays `complete` but is refused by the signer with `possession_unproven` until the person
+  being added does the step, which stays open in `complete` for that reason.
 
 ## Rollout and Operations
 
@@ -1119,3 +1421,14 @@ Regression checks:
   serve a favicon, and two network gates; corrected the leaked-link risk. Each has its reason
   in "Surprises & Discoveries" or the Decision Log. The documents now describe the `approve`
   service, its networks and its secret; milestone 3 still corrects them for the cutover.
+- 2026-11-15: Milestone 3's documents corrected for the cutover; see the Progress item
+  "Documents" and the milestone 3 outcome. The sections "Current behavior", "Artifacts and
+  Notes" and the milestone plans keep describing the state before each milestone, as written.
+- 2026-11-15: Milestone 4 built and proven locally one file at a time, without `apps/web` and the
+  prose documents; CI pending. Changed from the draft: the nonce stays the same until an answer
+  uses it instead of changing on every request, and lives in a new table (schema version 4)
+  rather than on the confirmation row; the confirmation route refuses an unproven approver
+  change's approvals as well as the signer; the step stays open in `complete`. Each has its
+  reason in the Decision Log or "Surprises & Discoveries". Added the observation that the holder
+  of a swapped key can pass the step, and that the web page does not yet show the person being
+  added their link.

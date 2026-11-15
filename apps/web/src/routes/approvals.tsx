@@ -20,8 +20,8 @@ export function ApprovalsPage() {
   const decided = all.data?.items.filter((item) => item.status !== "pending") ?? [];
 
   return (
-    <div className="grid gap-8">
-      <section aria-labelledby="pending-title" className="grid gap-3">
+    <div className="grid grid-cols-1 gap-8">
+      <section aria-labelledby="pending-title" className="grid grid-cols-1 gap-3">
         <h2 id="pending-title" className="text-lg font-semibold">
           Waiting for approval
         </h2>
@@ -38,7 +38,7 @@ export function ApprovalsPage() {
           <ApprovalList workspaceId={workspaceId} items={pending.data.items} now={now} />
         ) : null}
       </section>
-      <section aria-labelledby="history-title" className="grid gap-3">
+      <section aria-labelledby="history-title" className="grid grid-cols-1 gap-3">
         <h2 id="history-title" className="text-lg font-semibold">
           Decided
         </h2>

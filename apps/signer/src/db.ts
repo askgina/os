@@ -143,8 +143,21 @@ CREATE TABLE IF NOT EXISTS confirmation_assertions (
 ) STRICT;
 `;
 
+/**
+ * Version 4: the possession step of an approver change (`confirmations.ts`). `nonce` belongs to
+ * the one challenge the new passkey may answer: random, made when the page first asks for it,
+ * and deleted when an answer uses it. The answer itself is `confirmations.possession_proven_at`
+ * (version 3).
+ */
+const VERSION_4 = `
+CREATE TABLE IF NOT EXISTS possession_challenges (
+  approval_id TEXT PRIMARY KEY REFERENCES confirmations(approval_id),
+  nonce TEXT NOT NULL
+) STRICT;
+`;
+
 /** Migration `n` (from 1) takes a database from version `n - 1` to version `n`. */
-const MIGRATIONS: readonly string[] = [VERSION_1, VERSION_2, VERSION_3];
+const MIGRATIONS: readonly string[] = [VERSION_1, VERSION_2, VERSION_3, VERSION_4];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
 /** A database written by a newer signer. Opening it with older code could lose what it records. */

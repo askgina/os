@@ -2,9 +2,11 @@ import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  type AddApproverEnvelope,
   type AgentId,
   type ApprovalId,
   type ApproverCredential,
+  AssertionResponse,
   type AssetLabel,
   type Authorization,
   type ChainLabel,
@@ -23,6 +25,7 @@ import {
   type ConfirmClient,
   createConfirmClient,
   createSignerClient,
+  type GetPossessionResponse,
   type SignerClient,
   SignerError,
   type TransactionParams,
@@ -35,8 +38,10 @@ import {
 import { expect } from "vitest";
 import { createSigner, createTestVault, type Signer, type Vault } from "../src/index.ts";
 
-export const RP = { id: "localhost", origins: ["http://localhost:5173"] } as const;
-export const ORIGIN = RP.origins[0];
+/** The RP ID passkeys are registered under. */
+export const RP_ID = "localhost";
+/** The control plane's page: the same RP ID, where people sign in, and never an approval origin. */
+export const ORIGIN = "http://localhost:5173";
 export const CHAIN = "eip155:31337" as const;
 export const RECIPIENT = "0x00000000000000000000000000000000000000aa" as const;
 export const TOKEN = "0x00000000000000000000000000000000000000bb" as const;
@@ -85,14 +90,19 @@ export interface Person {
 
 export function newPerson(): Person {
   const authenticator = new SoftAuthenticator({ incrementCounter: false });
-  const { credential } = authenticator.register({ rpId: RP.id, challenge: "registration" });
+  const { credential } = authenticator.register({ rpId: RP_ID, challenge: "registration" });
   const userId = newId("usr");
   return { userId, authenticator, credential: approverCredentialOf(userId, credential) };
 }
 
 export const newNonce = () => randomBytes(16).toString("base64url");
 
-export function authorize(envelope: Envelope, people: readonly Person[]): Authorization {
+/** Each person's approval of `envelope`, made at `origin`: by default the confirmation page. */
+export function authorize(
+  envelope: Envelope,
+  people: readonly Person[],
+  origin: string = APPROVAL_ORIGIN,
+): Authorization {
   return {
     envelope,
     assertions: people.map((person) =>
@@ -100,10 +110,52 @@ export function authorize(envelope: Envelope, people: readonly Person[]): Author
         userId: person.userId,
         credentialId: person.credential.credentialId,
         envelope,
-        origin: ORIGIN,
+        origin,
       }),
     ),
   };
+}
+
+/**
+ * What `holder`'s browser sends after their passkey answered a possession step: by default on
+ * the confirmation page, top-level. `overrides` change where and how the browser made it.
+ */
+export function answerPossession(
+  holder: Person,
+  options: Pick<GetPossessionResponse, "challenge">,
+  overrides: Omit<
+    Parameters<SoftAuthenticator["authenticate"]>[0],
+    "credentialId" | "challenge"
+  > = {},
+): AssertionResponse {
+  return AssertionResponse.parse(
+    holder.authenticator.authenticate({
+      credentialId: holder.credential.credentialId,
+      challenge: options.challenge,
+      origin: APPROVAL_ORIGIN,
+      ...overrides,
+    }),
+  );
+}
+
+/**
+ * As the person being added does on the confirmation page: open the confirmation of an approver
+ * change and prove there, with `holder`'s passkey, that the key it carries is theirs. Returns the
+ * link's token.
+ */
+export async function provePossession(
+  t: Pick<TestSigner, "client" | "confirm">,
+  envelope: AddApproverEnvelope,
+  holder: Person,
+): Promise<string> {
+  const { path } = await t.client.openConfirmation(envelope.approvalId, {
+    envelope,
+    subject: { kind: "envelope-only" },
+  });
+  const token = path.slice(path.indexOf("#") + 1);
+  const options = await t.confirm.getPossession(envelope.approvalId, token);
+  await t.confirm.submitPossession(envelope.approvalId, token, answerPossession(holder, options));
+  return token;
 }
 
 /** A mutable clock, in seconds, that tests advance explicitly. */
@@ -137,7 +189,7 @@ export function startSigner(
   const signer = createSigner({
     sqlitePath: input.sqlitePath ?? ":memory:",
     vault,
-    relyingParty: RP,
+    rpId: RP_ID,
     requestSecret: secret,
     confirmSecret,
     ...CONFIRMATION_SETTINGS,

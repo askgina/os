@@ -528,12 +528,35 @@ export function createSignerCore(options: SignerCoreOptions) {
     });
   }
 
+  /**
+   * The person being added proved on the confirmation page of this exact envelope that they hold
+   * its key (`confirmations.ts`). Without that, approvers may have approved a key whoever proposed
+   * the change chose, and the one tap would hand that holder the workspace.
+   */
+  function assertPossessionProven(envelope: Envelope): void {
+    const row = db
+      .prepare(
+        "SELECT envelope_digest, possession_proven_at FROM confirmations WHERE approval_id = ?",
+      )
+      .get(envelope.approvalId) as
+      | { envelope_digest: string; possession_proven_at: number | null }
+      | undefined;
+    if (
+      !row ||
+      row.envelope_digest !== envelopeDigest(envelope) ||
+      row.possession_proven_at === null
+    ) {
+      throw new SignerFailure("possession_unproven");
+    }
+  }
+
   function addApprover(workspaceId: string, request: AddApproverRequest): Promise<WorkspaceState> {
     return authorizedChange({
       workspaceId,
       authorization: request.authorization,
       type: "add-approver",
       action: "add-approver",
+      check: assertPossessionProven,
       apply: (envelope) => {
         if (envelope.type !== "add-approver") throw new SignerFailure("envelope_mismatch");
         insertApprover(workspaceId, {

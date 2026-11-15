@@ -1,9 +1,9 @@
 /**
  * One person's first day through the real UI, against a fresh installation of the real stack:
  * claim the server, create a workspace and an agent, set and approve the wallet's limits, and
- * approve one payment that an agent proposed over MCP, then a second one on the signer's
- * confirmation page. Passkeys come from Chromium's virtual authenticator, so registration and
- * every approval go through the browser's WebAuthn API.
+ * approve payments that an agent proposed over MCP. Every approval is made on the signer's
+ * confirmation page, the only place one counts. Passkeys come from Chromium's virtual
+ * authenticator, so registration and every approval go through the browser's WebAuthn API.
  *
  * The tests share one tab and its authenticator, in order: the passkey the first test registers
  * on the control plane's origin is the one the confirmation page asks for.
@@ -11,6 +11,10 @@
  * `e2e/run.sh` starts a second, empty stack for this file, because setting up a server can be
  * done only once.
  */
+
+import { ApprovalDetail } from "@askgina/os-api";
+import { envelopeChallenge } from "@askgina/os-protocol";
+import { SignerErrorBody } from "@askgina/os-protocol/signer";
 import { type BrowserContext, expect, type Page, test } from "@playwright/test";
 import { createPublicClient, createTestClient, formatEther, http, parseEther } from "viem";
 import { foundry } from "viem/chains";
@@ -77,6 +81,18 @@ test.afterAll(async () => {
   await context?.close();
 });
 
+/**
+ * From the approval page, follow its link to the signer's confirmation page, approve there with
+ * the passkey, and come back: the page returns to the request by itself.
+ */
+async function approveOnSignersPage(): Promise<void> {
+  const approvalPage = page.url();
+  await page.getByRole("link", { name: "Review and approve on the signer's page" }).click();
+  await expect(page.locator("#origin")).toHaveText(stack.approveOrigin);
+  await page.getByRole("button", { name: "Approve with passkey" }).click();
+  await expect(page).toHaveURL(approvalPage, { timeout: 30_000 });
+}
+
 test("setup, an agent with limits, and one payment approved with a passkey in the browser", async () => {
   test.setTimeout(240_000);
 
@@ -103,13 +119,14 @@ test("setup, an agent with limits, and one payment approved with a passkey in th
   agentToken = (await page.locator("code", { hasText: /^osa_/ }).first().textContent()) ?? "";
   expect(agentToken).toMatch(/^osa_/);
 
-  await test.step("the wallet's first limits are approved with the passkey", async () => {
+  await test.step("the wallet's first limits are approved with the passkey on the signer's page", async () => {
     await page.getByRole("link", { name: "Overview" }).click();
     await page.getByRole("link", { name: "Set this wallet's policy" }).click();
     await page.getByLabel("Most per transaction ETH").fill("0.05");
     await page.getByLabel("Most per 24 hours ETH").fill("0.2");
     await page.getByRole("button", { name: "Submit for approval" }).click();
-    await page.getByRole("button", { name: "Approve with passkey" }).click();
+    await expect(page.getByRole("heading", { name: /Change the limits of/ })).toBeVisible();
+    await approveOnSignersPage();
     await expect(page.getByText("Done. The change is in effect.")).toBeVisible({ timeout: 60_000 });
   });
 
@@ -126,7 +143,7 @@ test("setup, an agent with limits, and one payment approved with a passkey in th
     memo: "Pay invoice #4411 to Northwind <b>not bold</b>",
   });
 
-  await test.step("the approval page shows the payment and the passkey approves it", async () => {
+  await test.step("the approval page shows the payment and the passkey approves it on the signer's page", async () => {
     await page.goto(new URL(String(proposal.approvalUrl)).pathname);
     await expect(page.getByRole("heading", { name: /^Send 0\.015 ETH to 0x0000/ })).toBeVisible();
     // The memo is the agent's text, shown literally, never as HTML.
@@ -135,7 +152,9 @@ test("setup, an agent with limits, and one payment approved with a passkey in th
     );
     await expect(page.locator("blockquote b")).toHaveCount(0);
     await expect(page.getByText("15000000000000000 base units")).toBeVisible();
-    await page.getByRole("button", { name: "Approve with passkey" }).click();
+    // The control plane's page offers no passkey prompt of its own.
+    await expect(page.getByRole("button", { name: "Approve with passkey" })).toHaveCount(0);
+    await approveOnSignersPage();
     await expect(page.getByText("Confirmed", { exact: true })).toBeVisible({ timeout: 120_000 });
   });
 
@@ -230,6 +249,86 @@ test(`the confirmation page${HTTPS ? " over HTTPS" : ""} shows the payment and a
     await expect(page.getByRole("button", { name: "Approve with passkey" })).toHaveCount(0);
   });
 
+  expect(problems).toEqual([]);
+});
+
+test("a script on the control plane's page cannot get an approval", async () => {
+  test.setTimeout(120_000);
+  expect(agentToken, "the first gate creates the agent").toMatch(/^osa_/);
+  const agent = await connectAgent(`${stack.origin}/mcp`, agentToken);
+  const proposal = await agent.call("propose_transfer", {
+    chainId: "eip155:31337",
+    to: RECIPIENT,
+    amount: "0.001",
+    memo: "asked for on the wrong page",
+  });
+  await agent.close();
+  const approvalPath = new URL(String(proposal.approvalUrl)).pathname;
+  const approvalId = approvalPath.split("/").at(-1) ?? "";
+  await page.goto(approvalPath);
+  await expect(page.getByRole("heading", { name: /^Send 0\.001 ETH to 0x0000/ })).toBeVisible();
+  const link = new URL(
+    (await page
+      .getByRole("link", { name: "Review and approve on the signer's page" })
+      .getAttribute("href")) ?? "",
+  );
+
+  // A script running on the control plane's page (injected, or served by a compromised control
+  // plane) asks the passkey for the exact digest of the waiting request.
+  const detail = ApprovalDetail.parse(
+    await (await page.request.get(`${stack.origin}/api/v1/approvals/${approvalId}`)).json(),
+  );
+  const challenge = Buffer.from(envelopeChallenge(detail.envelope)).toString("base64url");
+  const response = await page.evaluate(async (digest) => {
+    const fromBase64Url = (text: string) =>
+      Uint8Array.from(atob(text.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+    const toBase64Url = (buffer: ArrayBuffer) =>
+      btoa(String.fromCharCode(...new Uint8Array(buffer)))
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/, "");
+    const credential = (await navigator.credentials.get({
+      publicKey: {
+        challenge: fromBase64Url(digest),
+        rpId: location.hostname,
+        userVerification: "required",
+        timeout: 60_000,
+      },
+    })) as PublicKeyCredential;
+    const answer = credential.response as AuthenticatorAssertionResponse;
+    return {
+      id: credential.id,
+      rawId: toBase64Url(credential.rawId),
+      type: credential.type,
+      response: {
+        clientDataJSON: toBase64Url(answer.clientDataJSON),
+        authenticatorData: toBase64Url(answer.authenticatorData),
+        signature: toBase64Url(answer.signature),
+        ...(answer.userHandle ? { userHandle: toBase64Url(answer.userHandle) } : {}),
+      },
+      clientExtensionResults: credential.getClientExtensionResults(),
+    };
+  }, challenge);
+  // The passkey signed the request's exact digest; the browser wrote the page's origin in.
+  const clientData = JSON.parse(
+    Buffer.from(response.response.clientDataJSON, "base64url").toString("utf8"),
+  );
+  expect(clientData).toMatchObject({ type: "webauthn.get", challenge, origin: stack.origin });
+
+  // Sent to the confirmation page, as a script could, the signer refuses it.
+  const submitted = await fetch(`${link.origin}/api/approvals/${approvalId}/assertions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-confirm-token": link.hash.slice(1) },
+    body: JSON.stringify({ response }),
+  });
+  expect(submitted.ok).toBe(false);
+  expect(SignerErrorBody.parse(await submitted.json()).error.code).toBe("assertion_invalid");
+
+  // Nothing was counted, on either page.
+  await page.goto(link.href);
+  await expect(page.getByText("Waiting for approvals. 0 of 1 so far.")).toBeVisible();
+  await page.goto(approvalPath);
+  await expect(page.getByText("0 of 1 approvals")).toBeVisible();
   expect(problems).toEqual([]);
 });
 

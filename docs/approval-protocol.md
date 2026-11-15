@@ -54,16 +54,20 @@ digest(tag, value) = SHA-256( UTF-8( tag || "\n" || canonicalJson(value) ) )
 `"\n"` is one line-feed byte (0x0A). The tags separate the kinds of structure, so a digest of one
 kind can never stand in for another kind:
 
-| Tag                       | Used for                                              |
-| ------------------------- | ----------------------------------------------------- |
-| `askgina.os/v1/intent`    | `intentHash(intent)`                                  |
-| `askgina.os/v1/policy`    | `policyHash(policy)`                                  |
-| `askgina.os/v1/authorize` | `envelopeChallenge(envelope)`, the WebAuthn challenge |
-| `askgina.os/v1/audit`     | audit log entries                                     |
-| `askgina.os/v1/sweep`     | `sweepHash(sweep)`                                    |
+| Tag                        | Used for                                                               |
+| -------------------------- | ---------------------------------------------------------------------- |
+| `askgina.os/v1/intent`     | `intentHash(intent)`                                                   |
+| `askgina.os/v1/policy`     | `policyHash(policy)`                                                   |
+| `askgina.os/v1/authorize`  | `envelopeChallenge(envelope)`, the WebAuthn challenge                  |
+| `askgina.os/v1/audit`      | audit log entries                                                      |
+| `askgina.os/v1/sweep`      | `sweepHash(sweep)`                                                     |
+| `askgina.os/v1/possession` | `possessionChallenge(input)`, the possession step's WebAuthn challenge |
 
 `intentHash`, `policyHash` and `sweepHash` are the digest as a lowercase hex `Digest`.
-`envelopeChallenge` is the raw 32 bytes.
+`envelopeChallenge` and `possessionChallenge` are the raw 32 bytes. `possessionChallenge`
+hashes `{ v: 1, approvalId, credentialId, nonce }`, where `nonce` is 16 random bytes the signer
+issues for an approver change's possession step and accepts in one answer
+([`confirmation.ts`](../packages/protocol/src/confirmation.ts)).
 
 A value MUST pass its schema before it is hashed. Hashing an unvalidated value can produce a
 digest that no verifier will ever reproduce.
@@ -200,9 +204,9 @@ An **approver credential**, as the signer stores it, is `{ userId, credentialId,
 Source: [`webauthn/verify-authorization.ts`](../packages/protocol/src/webauthn/verify-authorization.ts).
 
 Inputs: the authorization; the workspace's approver credentials **from the verifier's own
-records**; the relying party (RP ID and the exact allowed origins, from configuration, never from
-the request); the threshold; the longest lifetime this kind of envelope may have; the verifier's
-clock `now`.
+records**; the relying party (RP ID and the exact origins of the confirmation page, from
+configuration, never from the request); the threshold; the longest lifetime this kind of envelope
+may have; the verifier's clock `now`.
 
 Checks, in this order. The first failure ends verification with its code.
 
@@ -215,20 +219,27 @@ Checks, in this order. The first failure ends verification with its code.
       `approver_unknown`.
    2. If `response.id` differs from that `credentialId`, or this person already has a verified
       assertion in this authorization → `assertion_invalid`.
-   3. Verify the WebAuthn response against the recomputed challenge, the allowed origins, the
-      RP ID, the stored public key, with user verification required. Failure →
-      `assertion_invalid`.
+   3. Decode `clientDataJSON`. If it cannot be read as a JSON object, if `crossOrigin` is
+      `true`, or if it has a `topOrigin` member at all → `assertion_invalid`. The assertion was
+      then made inside a frame of another page, and that page chose what the person saw.
+   4. Verify the WebAuthn response against the recomputed challenge, type `webauthn.get`, the
+      allowed origins, the RP ID, the stored public key, with user verification required.
+      Failure → `assertion_invalid`.
 5. Fewer distinct people than the threshold → `insufficient_approvals`.
 
 Every assertion must pass. One unknown approver or one bad signature fails the whole
 authorization, so removing a person invalidates the pending approvals they took part in.
 
-Which origins are allowed is the verifier's configuration. The signer allows two while
-[`specs/trusted-display.md`](../specs/trusted-display.md) is being built: the control plane's
-`PUBLIC_ORIGIN` and the confirmation page's `APPROVE_ORIGIN`. Milestone 3 of that plan leaves
-only `APPROVE_ORIGIN`. An assertion submitted on the confirmation page (section 10) is checked
-against `APPROVE_ORIGIN` alone already, and the control plane checks assertions it collects from
-there against `APPROVE_ORIGIN` alone too.
+**The origin rule.** The allowed origins are the confirmation page's, and only those: in this
+repository exactly one, `APPROVE_ORIGIN` (the signer's `SIGNER_APPROVAL_ORIGIN`). A verifier
+MUST NOT allow the origin of any page the control plane serves, `PUBLIC_ORIGIN` included: the
+control plane chooses what its own pages show, so an assertion made there proves nothing about
+what the person saw. So an assertion counts only when the browser made it top-level at the
+confirmation page's origin, as a `webauthn.get`. The signer applies this rule when it signs or
+applies (section 8) and when it accepts an assertion on the confirmation page (section 10); the
+control plane applies it again to the assertions it collects. The signer refuses to start when
+the confirmation page's origin equals the control plane's (`SIGNER_RETURN_ORIGIN`) or when its
+host is not the RP ID or a name under it.
 
 The sign counter is not used (it is passed as 0). Synced passkeys report a counter of 0 forever,
 and with a counter of 0 an identical assertion verifies twice. **Verification does not prevent
@@ -432,14 +443,15 @@ Rules:
 - The view is rendered by the signer from its own records: the stored subject, its current
   policy, its 24-hour ledger, its approver registry, and the operator's chain and token labels.
   Its `state` is `open`, `complete`, `expired`, `revoked`, `used` or `superseded`.
-- A submitted assertion must come from an approver of the workspace, at `APPROVE_ORIGIN`, not in
-  a cross-origin frame, over the envelope's digest. A second one by the same person is
-  `conflict`, unless their first was made with a passkey that no longer approves; any state but
-  `open` is `confirmation_closed`; more than 64 submissions with a valid token are
-  `rate_limited`.
+- A submitted assertion must come from an approver of the workspace and pass section 6's checks
+  for one assertion: made top-level at `APPROVE_ORIGIN`, as a `webauthn.get`, over the
+  envelope's digest. A second one by the same person is `conflict`, unless their first was made
+  with a passkey that no longer approves; any state but `open` is `confirmation_closed`; more
+  than 64 submissions with a valid token are `rate_limited`.
 - An assertion stored here adds no authority by itself. The control plane collects it, checks it
   again, and sends it in an authorization, which the signer verifies again when it acts
-  (section 6).
+  (section 6). This page is the only place an approval is made: the control plane has no route
+  that takes one.
 
 ## 11. Test vectors
 

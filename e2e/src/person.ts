@@ -9,8 +9,10 @@ import {
 import { AssertionResponse, ConfirmationView } from "@askgina/os-protocol";
 import {
   CONFIRM_TOKEN_HEADER,
+  GetPossessionResponse,
   SignerErrorBody,
   SubmitConfirmationResponse,
+  SubmitPossessionResponse,
 } from "@askgina/os-protocol/signer";
 import { b64url, SoftAuthenticator } from "@askgina/os-protocol/testing";
 
@@ -100,17 +102,15 @@ export class Person {
   }
 
   /**
-   * Answer a sign-in or approval ceremony with this person's passkey, as a page at `origin`
-   * would: the browser writes the page's origin into the assertion.
+   * What the browser returns when a page at `origin` asks this person's passkey to sign
+   * `challenge` (base64url): the browser writes the page's origin into the assertion, and no page
+   * script can change it. Sign-in happens on the control plane's origin; an approval counts only
+   * when made on the confirmation page's.
    */
-  #assert(options: Record<string, unknown>, origin = this.origin) {
+  assertion(challenge: string, origin: string): AssertionResponse {
     if (this.credentialId === undefined) throw new Error(`${this.name} has no passkey yet`);
     return AssertionResponse.parse(
-      this.authenticator.authenticate({
-        credentialId: this.credentialId,
-        challenge: options.challenge as string,
-        origin,
-      }),
+      this.authenticator.authenticate({ credentialId: this.credentialId, challenge, origin }),
     );
   }
 
@@ -140,24 +140,12 @@ export class Person {
   async signIn(): Promise<SessionInfo> {
     const { ceremonyId, options } = await this.api.call("startLogin", { body: {} });
     return this.api.call("finishLogin", {
-      body: { ceremonyId, response: this.#assert(options) },
+      body: { ceremonyId, response: this.assertion(options.challenge as string, this.origin) },
     });
   }
 
   async signOut(): Promise<void> {
     await this.api.call("logout", { body: {} });
-  }
-
-  /** Approve a request with the passkey, exactly as the approval page does. */
-  async approve(approvalId: string): Promise<ApprovalDetail> {
-    const { options } = await this.api.call("startApproval", {
-      params: { approvalId },
-      body: {},
-    });
-    return this.api.call("approve", {
-      params: { approvalId },
-      body: { response: this.#assert(options) },
-    });
   }
 
   /** The confirmation page's link the approval page shows for a request that waits. */
@@ -182,30 +170,82 @@ export class Person {
   }
 
   /**
-   * Approve on the confirmation page at `link`: sign the view's challenge with this person's
-   * passkey at that page's origin and send it, as the page does. The signer stores it; the
-   * control plane counts it when it collects.
+   * Send an approval to the confirmation page at `link`, as the page does. By default it is made
+   * there, signing the view's challenge at that page's origin; `response` sends one the passkey
+   * made elsewhere. The signer stores an approval it accepts; the control plane counts it when it
+   * collects.
    */
   async approveOnConfirmationPage(
     link: ConfirmationLink,
     view: ConfirmationView,
+    response: AssertionResponse = this.assertion(view.webauthn.challenge, link.origin),
   ): Promise<SubmitConfirmationResponse> {
-    const response = await fetch(`${link.origin}/api/approvals/${link.approvalId}/assertions`, {
+    const answer = await fetch(`${link.origin}/api/approvals/${link.approvalId}/assertions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         origin: link.origin,
         [CONFIRM_TOKEN_HEADER]: link.token,
       },
-      body: JSON.stringify({ response: this.#assert(view.webauthn, link.origin) }),
+      body: JSON.stringify({ response }),
       redirect: "manual",
     });
-    return SubmitConfirmationResponse.parse(await answerOf(response));
+    return SubmitConfirmationResponse.parse(await answerOf(answer));
   }
 
   /**
-   * Approve a request on the signer's confirmation page, the way a person follows the link the
-   * approval page shows: read it there, approve there, then let the control plane collect.
+   * The challenge the confirmation page at `link` asks the new passkey of an approver change to
+   * answer, fetched as the page fetches it when the person being added presses "This passkey is
+   * mine".
+   */
+  async readPossession(link: ConfirmationLink): Promise<GetPossessionResponse> {
+    const response = await fetch(`${link.origin}/api/approvals/${link.approvalId}/possession`, {
+      headers: { [CONFIRM_TOKEN_HEADER]: link.token },
+      redirect: "manual",
+    });
+    return GetPossessionResponse.parse(await answerOf(response));
+  }
+
+  /**
+   * Answer the possession step on the confirmation page at `link`, as the page does: by default
+   * with this person's passkey, signing `options`' challenge at that page's origin; `response`
+   * sends another answer. The signer records the proof if it accepts it.
+   */
+  async proveOnConfirmationPage(
+    link: ConfirmationLink,
+    options: GetPossessionResponse,
+    response: AssertionResponse = this.assertion(options.challenge, link.origin),
+  ): Promise<SubmitPossessionResponse> {
+    const answer = await fetch(`${link.origin}/api/approvals/${link.approvalId}/possession`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: link.origin,
+        [CONFIRM_TOKEN_HEADER]: link.token,
+      },
+      body: JSON.stringify({ response }),
+      redirect: "manual",
+    });
+    return SubmitPossessionResponse.parse(await answerOf(answer));
+  }
+
+  /**
+   * As the person being added does before anyone can approve their passkey: follow the approver
+   * change's link to the confirmation page and prove there that the passkey is theirs. Returns
+   * the fingerprint the page shows them, to read to the people who approve.
+   */
+  async provePossession(approvalId: string): Promise<string> {
+    const link = await this.confirmationLink(approvalId);
+    const { fingerprint } = await this.proveOnConfirmationPage(
+      link,
+      await this.readPossession(link),
+    );
+    return fingerprint;
+  }
+
+  /**
+   * Approve a request the only way there is: follow the link the approval page shows to the
+   * signer's confirmation page, read it there, approve there, then let the control plane collect.
    */
   async confirm(approvalId: string): Promise<ApprovalDetail> {
     const link = await this.confirmationLink(approvalId);

@@ -7,6 +7,7 @@ import {
   type Intent,
   intentHash,
   policyHash,
+  possessionChallenge,
   type Sweep,
   sweepHash,
 } from "../src/index.ts";
@@ -53,6 +54,15 @@ const SWEEP_HASH = "aa3f2f4c50ee481b88aaf98c610125b769c5508ab8d6bac13f731c50bcca
 const SWEEP_ENVELOPE_JSON = `{"approvalId":"${APPROVAL}","chainId":"eip155:8453","expiresAt":1700000600,"issuedAt":1700000000,"nonce":"AAAAAAAAAAAAAAAAAAAAAA","sweepHash":"${SWEEP_HASH}","type":"sweep-wallet","v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
 const SWEEP_ENVELOPE_CHALLENGE = "lgZRKMxucwdO2AFLyWBfmAc4oANInAkJObl_azLac0Q";
 
+// Added with the possession step of an approver change. The vectors above did not change.
+const POSSESSION = {
+  approvalId: APPROVAL,
+  credentialId: "Y3JlZC1h",
+  nonce: "AAAAAAAAAAAAAAAAAAAAAA",
+} as const;
+const POSSESSION_JSON = `{"approvalId":"${APPROVAL}","credentialId":"Y3JlZC1h","nonce":"AAAAAAAAAAAAAAAAAAAAAA","v":1}`;
+const POSSESSION_CHALLENGE = "7voVoMiWeZwDat_WCB8R-xOqaIfjygPAYO7xmCsm8ec";
+
 describe("pinned digest vectors", () => {
   it("intentHash", () => {
     expect(canonicalJson(intent())).toBe(INTENT_JSON);
@@ -80,6 +90,24 @@ describe("pinned digest vectors", () => {
     );
   });
 
+  it("possessionChallenge", () => {
+    expect(canonicalJson({ v: 1, ...POSSESSION })).toBe(POSSESSION_JSON);
+    expect(Buffer.from(possessionChallenge(POSSESSION)).toString("base64url")).toBe(
+      POSSESSION_CHALLENGE,
+    );
+    // Every field is bound, and a malformed one is refused rather than hashed.
+    for (const change of [
+      { approvalId: "apr_01jd000000000000000000000z" as const },
+      { credentialId: "Y3JlZC1i" },
+      { nonce: "AAAAAAAAAAAAAAAAAAAAAQ" },
+    ]) {
+      expect(
+        Buffer.from(possessionChallenge({ ...POSSESSION, ...change })).toString("base64url"),
+      ).not.toBe(POSSESSION_CHALLENGE);
+    }
+    expect(() => possessionChallenge({ ...POSSESSION, nonce: "short" })).toThrow();
+  });
+
   it("domain tags", () => {
     expect(DomainTag).toEqual({
       intent: "askgina.os/v1/intent",
@@ -87,6 +115,7 @@ describe("pinned digest vectors", () => {
       authorize: "askgina.os/v1/authorize",
       audit: "askgina.os/v1/audit",
       sweep: "askgina.os/v1/sweep",
+      possession: "askgina.os/v1/possession",
     });
     expect(digestHex(DomainTag.intent, policy())).toBe(POLICY_UNDER_INTENT_TAG);
   });

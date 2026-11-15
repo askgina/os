@@ -12,7 +12,6 @@ import {
   type Assertion,
   type AssertionResponse,
   Envelope,
-  envelopeChallenge,
   newId,
   PROTOCOL_VERSION,
   type UserId,
@@ -20,7 +19,6 @@ import {
 } from "@askgina/os-protocol";
 import { SignerError } from "@askgina/os-protocol/signer";
 import { verifyAuthorization } from "@askgina/os-protocol/webauthn";
-import { generateAuthenticationOptions } from "@simplewebauthn/server";
 import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import {
   type ApprovalEngine,
@@ -319,8 +317,8 @@ export class Engine implements ApprovalEngine {
       .innerJoin(users, eq(users.id, approvalRejections.userId))
       .where(eq(approvalRejections.approvalId, row.id));
     const decided = approvedBy.some((user) => user.id === session.user.id);
-    // The same rule the approve and reject routes apply: the approver role and a passkey the
-    // signer accepts.
+    // The rule the reject route and collecting apply: the approver role and a passkey the signer
+    // accepts.
     const [membership] = await ctx.db
       .select({ role: memberships.role })
       .from(memberships)
@@ -335,7 +333,6 @@ export class Engine implements ApprovalEngine {
     return {
       ...(await this.summary(row)),
       envelope: row.envelope,
-      challenge: Buffer.from(envelopeChallenge(row.envelope)).toString("base64url"),
       approvedBy,
       rejectedBy: rejectedBy ?? null,
       canDecide,
@@ -395,11 +392,11 @@ export class Engine implements ApprovalEngine {
   }
 
   /**
-   * Count the approvals people made on the signer's confirmation page. The signer lists the
-   * assertions it accepted; each is checked here again, as one made at the confirmation page's
-   * origin by a passkey our records list as that person's approver, and recorded exactly as
-   * {@link approve} records one. Safe to repeat. An unreachable signer is logged and asked
-   * again on the next call.
+   * Count the approvals people made on the signer's confirmation page, the only place an approval
+   * is made. The signer lists the assertions it accepted; each is checked here again, as one made
+   * top-level at the confirmation page's origin by a passkey our records list as that person's
+   * approver, before it is stored and counted. Safe to repeat. An unreachable signer is logged
+   * and asked again on the next call.
    */
   async collect(row: ApprovalRow): Promise<void> {
     const ctx = this.#ctx;
@@ -423,9 +420,7 @@ export class Engine implements ApprovalEngine {
     let decided = false;
     for (const assertion of listed) {
       if (counted.has(assertion.userId)) continue;
-      const verdict = await this.#verify(row, assertion.userId, assertion.response, [
-        ctx.config.approveOrigin,
-      ]);
+      const verdict = await this.#verify(row, assertion.userId, assertion.response);
       if (!verdict.ok) {
         ctx.log.warn("a collected approval was not counted", {
           approvalId: row.id,
@@ -495,7 +490,7 @@ export class Engine implements ApprovalEngine {
   async activeApproverCredentials(
     workspaceId: WorkspaceId,
     userId?: UserId,
-  ): Promise<(ApproverCredential & { transports: string[] })[]> {
+  ): Promise<ApproverCredential[]> {
     const conditions = [
       eq(approverCredentials.workspaceId, workspaceId),
       inArray(approverCredentials.state, ["active", "removing"]),
@@ -507,7 +502,6 @@ export class Engine implements ApprovalEngine {
         userId: approverCredentials.userId,
         credentialId: approverCredentials.credentialId,
         publicKey: credentials.publicKey,
-        transports: credentials.transports,
       })
       .from(approverCredentials)
       .innerJoin(credentials, eq(credentials.id, approverCredentials.credentialId))
@@ -516,69 +510,16 @@ export class Engine implements ApprovalEngine {
       userId: row.userId,
       credentialId: row.credentialId,
       publicKey: Buffer.from(row.publicKey).toString("base64url"),
-      transports: row.transports,
     }));
-  }
-
-  async startCeremony(row: ApprovalRow, session: Session) {
-    if (this.shownStatus(row) !== "pending") {
-      throw new HttpError("conflict", "this request is no longer waiting for approval");
-    }
-    const mine = await this.activeApproverCredentials(row.workspaceId, session.user.id);
-    if (mine.length === 0) {
-      throw new HttpError("forbidden", "you have no passkey that approves for this workspace");
-    }
-    const options = await generateAuthenticationOptions({
-      rpID: this.#ctx.config.relyingParty.id,
-      // The challenge is the envelope's digest itself, as bytes, so the assertion is bound to
-      // exactly this request; nothing about it needs to be remembered here.
-      challenge: new Uint8Array(envelopeChallenge(row.envelope)),
-      allowCredentials: mine.map((credential) => ({
-        id: credential.credentialId,
-        transports: credential.transports as never,
-      })),
-      userVerification: "required",
-      timeout: 120_000,
-    });
-    return options as unknown as Record<string, unknown>;
-  }
-
-  async approve(row: ApprovalRow, session: Session, response: AssertionResponse): Promise<void> {
-    if (this.shownStatus(row) !== "pending") {
-      throw new HttpError("conflict", "this request is no longer waiting for approval");
-    }
-    const verdict = await this.#verify(
-      row,
-      session.user.id,
-      response,
-      this.#ctx.config.relyingParty.origins,
-    );
-    if (!verdict.ok) {
-      if (verdict.code === "approver_unknown") {
-        throw new HttpError("forbidden", "this passkey does not approve for this workspace");
-      }
-      throw new HttpError("forbidden", "the passkey assertion is not valid", verdict.code);
-    }
-    const outcome = await this.#record(row, session.user.id, verdict.credentialId, response);
-    if (outcome === "closed") {
-      throw new HttpError("conflict", "this request is no longer waiting for approval");
-    }
-    if (outcome === "duplicate") throw new HttpError("conflict", "you already approved this");
-    if (outcome === "decided") await this.wake(row.id);
   }
 
   /**
    * Whether `response` is `userId`'s approval of this request: made by a passkey our records
    * list as that person's approver here, while they hold the approver or owner role, over the
-   * envelope's digest, at one of `origins`. The signer checks again with its own registry when
-   * it acts; this refuses garbage before it is stored or counted.
+   * envelope's digest, top-level at the confirmation page's origin. The signer checks again with
+   * its own registry when it acts; this refuses garbage before it is stored or counted.
    */
-  async #verify(
-    row: ApprovalRow,
-    userId: UserId,
-    response: AssertionResponse,
-    origins: readonly string[],
-  ): Promise<Verdict> {
+  async #verify(row: ApprovalRow, userId: UserId, response: AssertionResponse): Promise<Verdict> {
     const ctx = this.#ctx;
     const [membership] = await ctx.db
       .select({ role: memberships.role })
@@ -594,7 +535,7 @@ export class Engine implements ApprovalEngine {
     const verdict = await verifyAuthorization({
       authorization: { envelope: row.envelope, assertions: [assertion] },
       approvers: mine,
-      relyingParty: { id: ctx.config.relyingParty.id, origins },
+      relyingParty: { id: ctx.config.relyingParty.id, origins: [ctx.config.approveOrigin] },
       threshold: 1,
       maxTtlSeconds: row.envelope.expiresAt - row.envelope.issuedAt,
       now: ctx.now(),

@@ -4,6 +4,7 @@ import {
   ConfirmationView,
   Envelope,
   envelopeChallenge,
+  keyFingerprint,
   newId,
   renderConfirmation,
   type UserId,
@@ -21,7 +22,13 @@ import {
 import { approverCredentialOf, b64url, SoftAuthenticator } from "@askgina/os-protocol/testing";
 import { verifyAuthorization } from "@askgina/os-protocol/webauthn";
 import { describe, expect, it } from "vitest";
-import { encodeAssertion, fromBase64Url, requestOptions, toBase64Url } from "../public/approve.js";
+import {
+  encodeAssertion,
+  fromBase64Url,
+  possessionOf,
+  requestOptions,
+  toBase64Url,
+} from "../public/approve.js";
 import { createApproveApp, MAX_BODY_BYTES, readPageFiles } from "../src/app.ts";
 import type { Logger } from "../src/log.ts";
 
@@ -45,11 +52,24 @@ const HEADERS = {
   "cache-control": "no-store",
 };
 
-/** A confirmation view as the signer would send it, for an envelope-only request. */
-function viewOf(approvalId: ApprovalId = newId("apr")): ConfirmationView {
+/** A new approver's passkey, as an `add-approver` envelope carries it. */
+const NEW_PASSKEY = {
+  userId: newId("usr"),
+  credentialId: randomBytes(32).toString("base64url"),
+  publicKey: randomBytes(77).toString("base64url"),
+};
+
+/**
+ * A confirmation view as the signer would send it, for an envelope-only request: by default a
+ * resumption, or an approver change whose new person has or has not proven their passkey.
+ */
+function viewOf(
+  approvalId: ApprovalId = newId("apr"),
+  change: { possessionProven: boolean } | null = null,
+): ConfirmationView {
   const envelope = Envelope.parse({
     v: 1,
-    type: "resume-workspace",
+    ...(change === null ? { type: "resume-workspace" } : { type: "add-approver", ...NEW_PASSKEY }),
     approvalId,
     workspaceId: newId("ws"),
     nonce: randomBytes(16).toString("base64url"),
@@ -68,7 +88,7 @@ function viewOf(approvalId: ApprovalId = newId("apr")): ConfirmationView {
     spent24h: 0n,
     approvals,
     adminThreshold: 1,
-    possessionProven: false,
+    possessionProven: change?.possessionProven ?? false,
     treasuries: [],
   });
   return ConfirmationView.parse({
@@ -210,6 +230,20 @@ describe("the approve service", () => {
         },
       ],
       [
+        "challenge",
+        async () => {
+          signer.answer({ status: 200, body: { ...view.webauthn, allowCredentials: ["AA"] } });
+          return app.request(`${api}/possession`, withToken());
+        },
+      ],
+      [
+        "prove",
+        async () => {
+          signer.answer({ status: 200, body: { fingerprint: "0123-4567-89AB-CDEF" } });
+          return app.request(`${api}/possession`, withToken(submit));
+        },
+      ],
+      [
         "a signer refusal",
         async () => {
           signer.answer({
@@ -301,9 +335,14 @@ describe("the approve service", () => {
       ["POST", `/api/approvals/${id}`],
       ["PUT", `/api/approvals/${id}/assertions`],
       ["DELETE", `/api/approvals/${id}`],
+      ["PUT", `/api/approvals/${id}/possession`],
+      ["DELETE", `/api/approvals/${id}/possession`],
+      ["GET", `/api/approvals/${id}/possession/more`],
       ["GET", "/api/approvals/apr_not-an-id"],
       ["POST", "/api/approvals/apr_not-an-id/assertions"],
+      ["GET", "/api/approvals/apr_not-an-id/possession"],
       ["GET", `/v1/confirm/${id}`],
+      ["GET", `/v1/confirm/${id}/possession`],
       ["POST", "/v1/sign"],
       ["GET", "/.well-known/workflow/v1/flow"],
     ];
@@ -315,21 +354,28 @@ describe("the approve service", () => {
 
     // A token that cannot be one the signer issued never reaches it either.
     for (const token of ["", "short", `${TOKEN}A`, "!".repeat(22)]) {
-      for (const method of ["GET", "POST"]) {
-        const path = `/api/approvals/${id}${method === "POST" ? "/assertions" : ""}`;
+      for (const [method, path] of [
+        ["GET", `/api/approvals/${id}`],
+        ["POST", `/api/approvals/${id}/assertions`],
+        ["GET", `/api/approvals/${id}/possession`],
+        ["POST", `/api/approvals/${id}/possession`],
+      ] as const) {
         const response = await app.request(
           path,
           withToken({ method, body: method === "POST" ? "{}" : null }, token),
         );
-        expect(response.status, `${method} with token "${token}"`).toBe(404);
+        expect(response.status, `${method} ${path} with token "${token}"`).toBe(404);
       }
     }
     expect(signer.calls).toEqual([]);
   });
 
-  it("an oversized body is refused before the signer is called", async () => {
+  it.each([
+    ["an assertion", "assertions"],
+    ["a possession step's answer", "possession"],
+  ])("an oversized body is refused before the signer is called: %s", async (_, route) => {
     const view = viewOf();
-    const path = `/api/approvals/${view.approvalId}/assertions`;
+    const path = `/api/approvals/${view.approvalId}/${route}`;
     const assertion = JSON.stringify({ response: assertionFor(view) });
     const { app, signer } = setUp();
     signer.answer({ status: 200, body: { collected: 1, required: 1, returnUrl: view.returnUrl } });
@@ -375,9 +421,12 @@ describe("the approve service", () => {
     // A body of exactly the limit is read and relayed.
     const atLimit = `${assertion}${" ".repeat(MAX_BODY_BYTES - assertion.length)}`;
     expect(new TextEncoder().encode(atLimit).length).toBe(MAX_BODY_BYTES);
+    if (route === "possession")
+      signer.answer({ status: 200, body: { fingerprint: "0123-4567-89AB-CDEF" } });
     const accepted = await app.request(path, withToken({ method: "POST", body: atLimit }));
     expect(accepted.status).toBe(200);
     expect(signer.calls).toHaveLength(1);
+    expect(signer.calls[0]?.path).toBe(`/v1/confirm/${view.approvalId}/${route}`);
   });
 
   it("the signer's answer is relayed unchanged", async () => {
@@ -411,8 +460,34 @@ describe("the approve service", () => {
     expect(call?.token).toBe(TOKEN);
     expect(JSON.parse(call?.body ?? "")).toEqual({ response });
 
+    // The possession step of an approver change: a challenge, then the new passkey's answer.
+    const challenge = { ...view.webauthn, allowCredentials: [NEW_PASSKEY.credentialId] };
+    signer.answer({ status: 200, body: challenge });
+    const asked = await app.request(`${api}/possession`, withToken());
+    expect(asked.status).toBe(200);
+    expect(await asked.json()).toEqual(challenge);
+    expect(signer.calls.at(-1)).toEqual({
+      method: "GET",
+      path: `/v1/confirm/${view.approvalId}/possession`,
+      token: TOKEN,
+      body: "",
+    });
+    const fingerprint = { fingerprint: keyFingerprint(NEW_PASSKEY.publicKey) };
+    signer.answer({ status: 200, body: fingerprint });
+    const proven = await app.request(
+      `${api}/possession`,
+      withToken({ method: "POST", body: JSON.stringify({ response }) }),
+    );
+    expect(proven.status).toBe(200);
+    expect(await proven.json()).toEqual(fingerprint);
+    const proof = signer.calls.at(-1);
+    expect(proof?.path).toBe(`/v1/confirm/${view.approvalId}/possession`);
+    expect(proof?.token).toBe(TOKEN);
+    expect(JSON.parse(proof?.body ?? "")).toEqual({ response });
+
     const refusals: { code: SignerErrorCode; detail?: string }[] = [
       { code: "confirmation_closed" },
+      { code: "possession_unproven" },
       { code: "rate_limited" },
       { code: "not_found" },
       { code: "conflict" },
@@ -426,6 +501,8 @@ describe("the approve service", () => {
       for (const [path, init] of [
         [api, withToken()],
         [`${api}/assertions`, withToken({ method: "POST", body: JSON.stringify({ response }) })],
+        [`${api}/possession`, withToken()],
+        [`${api}/possession`, withToken({ method: "POST", body: JSON.stringify({ response }) })],
       ] as const) {
         const relayed = await app.request(path, init);
         expect(relayed.status, refusal.code).toBe(signerErrorStatus[refusal.code]);
@@ -524,6 +601,19 @@ describe("the page's passkey code", () => {
       });
       expect(verdict.ok).toBe(true);
     }
+  });
+
+  it("an approver change can be approved on the page only once the new passkey was proven", () => {
+    expect(possessionOf(viewOf())).toBe("none");
+    const unproven = viewOf(newId("apr"), { possessionProven: false });
+    expect(possessionOf(unproven)).toBe("unproven");
+    expect(possessionOf(viewOf(newId("apr"), { possessionProven: true }))).toBe("proven");
+    // Both sides read the same fingerprint: the page shows the one the signer computed.
+    expect(unproven.lines).toContainEqual({
+      label: "Key fingerprint",
+      value: keyFingerprint(NEW_PASSKEY.publicKey),
+      kind: "code",
+    });
   });
 
   it("base64url round-trips every length", () => {

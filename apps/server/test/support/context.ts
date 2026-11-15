@@ -2,11 +2,13 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ApiClient, createApiClient } from "@askgina/os-api";
+import { type ApiClient, type ApprovalDetail, createApiClient } from "@askgina/os-api";
 import { DataKeyStore, LocalKeyring } from "@askgina/os-keys";
 import {
+  type AddApproverEnvelope,
   type ApprovalId,
-  type AssertionResponse,
+  AssertionResponse,
+  type Envelope,
   envelopeChallenge,
   type UserId,
 } from "@askgina/os-protocol";
@@ -14,16 +16,18 @@ import {
   type ConfirmClient,
   createConfirmClient,
   createSignerClient,
+  type SubmitPossessionResponse,
 } from "@askgina/os-protocol/signer";
 import { SoftAuthenticator } from "@askgina/os-protocol/testing";
 import { createSigner, createTestVault, type Signer } from "@askgina/os-signer";
 import { createTestDatabase, type TestDatabase } from "@askgina/os-testkit";
+import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Hono } from "hono";
 import pg from "pg";
 import type { ApprovalRow } from "../../src/approvals/kinds.ts";
 import { type Config, loadConfig } from "../../src/config.ts";
-import type { AppContext, Session } from "../../src/context.ts";
+import type { AppContext } from "../../src/context.ts";
 import { migrateDatabase } from "../../src/db/migrate.ts";
 import * as schema from "../../src/db/schema.ts";
 import { createSealer } from "../../src/db/sealed.ts";
@@ -100,8 +104,30 @@ export interface TestContext {
   /** Sign in with an existing passkey of the soft authenticator. */
   signIn(credentialId: string, browser?: TestBrowser): Promise<TestBrowser>;
   /**
-   * Approve a request with each person's passkey, as the approval page would, and then do what
-   * the workflow does once the request is decided: apply it, or end it as failed.
+   * Approve a request as `person` does: follow the approval page's link to the signer's
+   * confirmation page, approve there with the passkey (an assertion made at
+   * {@link TEST_APPROVAL_ORIGIN}, sent through the `approve` service's route), then come back to
+   * the approval page, which collects. Throws the signer's refusal as a `SignerError`.
+   */
+  approveOnPage(person: TestPerson, approvalId: ApprovalId): Promise<ApprovalDetail>;
+  /**
+   * Only the confirmation page's part of {@link approveOnPage}: approve `envelope` with
+   * `person`'s passkey at the page `link` names, without collecting.
+   */
+  approveAt(link: string, person: TestPerson, envelope: Envelope): Promise<void>;
+  /**
+   * The possession step of an approver change, as the person being added does it on the
+   * confirmation page at `link`: answer the signer's challenge there with the passkey `envelope`
+   * carries. The shared soft authenticator holds every test passkey, so whoever registered it
+   * answers. Throws the signer's refusal as a `SignerError`.
+   */
+  provePossession(link: string, envelope: AddApproverEnvelope): Promise<SubmitPossessionResponse>;
+  /**
+   * Approve a request on the confirmation page with each person's passkey, collect each approval
+   * as the control plane does, and then do what the workflow does once the request is decided:
+   * apply it, or end it as failed. For an approver change, the person being added first does
+   * the possession step there, as nobody can approve before they have. Throws when the signer
+   * refuses an approval or the control plane does not count it.
    */
   approve(approvalId: ApprovalId, people: TestPerson[]): Promise<ApprovalRow>;
   /** Do what the workflow does when a request ends without effect (after a cancel or reject). */
@@ -170,7 +196,7 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
   const signer = createSigner({
     sqlitePath: ":memory:",
     vault: createTestVault(),
-    relyingParty: { id: config.relyingParty.id, origins: config.relyingParty.origins },
+    rpId: config.relyingParty.id,
     requestSecret: config.signerSecret,
     confirmSecret,
     approvalOrigin: config.approveOrigin,
@@ -296,38 +322,91 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
     return engine.row(approvalId);
   };
 
+  const confirm = createConfirmClient({
+    baseUrl: config.signerUrl,
+    secret: confirmSecret,
+    fetch: async (input, init) => signer.app.fetch(new Request(input, init)),
+    now: clock.now,
+  });
+  /** The confirmation page a link opens: its origin, and the token from the fragment. */
+  const pageAt = (link: string) => {
+    const url = new URL(link);
+    if (url.origin !== config.approveOrigin)
+      throw new Error(`${link} is not the confirmation page`);
+    return { origin: url.origin, token: url.hash.slice(1) };
+  };
+  /** What the confirmation page at `link` sends after `person` approved `envelope` there. */
+  const approveAt = async (link: string, person: TestPerson, envelope: Envelope) => {
+    const page = pageAt(link);
+    const response = AssertionResponse.parse(
+      authenticator.authenticate({
+        credentialId: person.credentialId,
+        challenge: Buffer.from(envelopeChallenge(envelope)).toString("base64url"),
+        origin: page.origin,
+      }),
+    );
+    await confirm.submitConfirmation(envelope.approvalId, page.token, response);
+  };
+  const provePossession = async (link: string, envelope: AddApproverEnvelope) => {
+    const page = pageAt(link);
+    const options = await confirm.getPossession(envelope.approvalId, page.token);
+    const response = AssertionResponse.parse(
+      authenticator.authenticate({
+        credentialId: envelope.credentialId,
+        challenge: options.challenge,
+        origin: page.origin,
+      }),
+    );
+    return confirm.submitPossession(envelope.approvalId, page.token, response);
+  };
+
   return {
     ctx,
     app,
     clock,
     log,
     signer,
-    confirm: createConfirmClient({
-      baseUrl: config.signerUrl,
-      secret: confirmSecret,
-      fetch: async (input, init) => signer.app.fetch(new Request(input, init)),
-      now: clock.now,
-    }),
+    confirm,
+    approveAt,
+    provePossession,
     authenticator,
     owner,
     browser,
     register,
     signIn,
+    async approveOnPage(person, approvalId) {
+      const shown = await person.browser.api.call("getApproval", { params: { approvalId } });
+      if (shown.confirmUrl === null) throw new Error(`${approvalId} shows no confirmation page`);
+      await approveAt(shown.confirmUrl, person, shown.envelope);
+      return person.browser.api.call("collectApproval", { params: { approvalId }, body: {} });
+    },
     async approve(approvalId, people) {
+      const opened = await engine.row(approvalId);
+      if (opened.status === "pending" && opened.envelope.type === "add-approver") {
+        const link = await engine.ensureConfirmation(opened);
+        if (link === null) throw new Error(`${approvalId} has no confirmation page`);
+        const view = await confirm.getConfirmation(approvalId, pageAt(link).token);
+        if (view.warnings.includes("possession_unproven")) {
+          await provePossession(link, opened.envelope);
+        }
+      }
       for (const person of people) {
         const row = await engine.row(approvalId);
         if (row.status !== "pending") break;
-        const session: Session = {
-          user: { id: person.userId, displayName: person.displayName },
-          credentialId: person.credentialId,
-          idHash: "test",
-        };
-        const response = authenticator.authenticate({
-          credentialId: person.credentialId,
-          challenge: Buffer.from(envelopeChallenge(row.envelope)).toString("base64url"),
-          origin: TEST_ORIGIN,
-        });
-        await engine.approve(row, session, response as AssertionResponse);
+        const link = await engine.ensureConfirmation(row);
+        if (link === null) throw new Error(`${approvalId} has no confirmation page`);
+        await approveAt(link, person, row.envelope);
+        await engine.collect(await engine.row(approvalId));
+        const [counted] = await ctx.db
+          .select({ userId: schema.approvalAssertions.userId })
+          .from(schema.approvalAssertions)
+          .where(
+            and(
+              eq(schema.approvalAssertions.approvalId, approvalId),
+              eq(schema.approvalAssertions.userId, person.userId),
+            ),
+          );
+        if (!counted) throw new Error(`${person.displayName}'s approval was not counted`);
       }
       const steps = engine.steps();
       if ((await engine.row(approvalId)).status === "approved") {

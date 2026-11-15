@@ -22,12 +22,12 @@ import {
   SIGNATURE_HEADER,
   SignRequest,
   SubmitConfirmationRequest,
+  SubmitPossessionRequest,
   SweepRequest,
   signerRoutes,
   TIMESTAMP_HEADER,
   verifyRequestSignature,
 } from "@askgina/os-protocol/signer";
-import type { RelyingParty } from "@askgina/os-protocol/webauthn";
 import { Hono } from "hono";
 import type { z } from "zod";
 import { createConfirmations } from "./confirmations.ts";
@@ -59,12 +59,8 @@ export interface SignerOptions {
   /** SQLite file, or ":memory:" for tests. */
   sqlitePath: string;
   vault: Vault;
-  /**
-   * The RP ID, and the control plane's approval page among `origins`. Until the cutover the
-   * signer accepts approvals for signing and applying from those origins and from
-   * `approvalOrigin`.
-   */
-  relyingParty: RelyingParty;
+  /** The RP ID passkeys were registered under. */
+  rpId: string;
   /** Shared with the control plane; authenticates every control-scope route. */
   requestSecret: Uint8Array;
   /**
@@ -72,7 +68,11 @@ export interface SignerOptions {
    * else. At least 32 bytes, and not the request secret.
    */
   confirmSecret: Uint8Array;
-  /** The confirmation page's exact origin, a host under the RP ID. */
+  /**
+   * The confirmation page's exact origin, a host under the RP ID. The signer accepts an approval,
+   * for signing and applying as on the confirmation routes, only when it was made top-level on
+   * this origin. Never the control plane's origin.
+   */
   approvalOrigin: string;
   /** The control plane's origin, where the confirmation page sends the person afterwards. */
   returnOrigin: string;
@@ -213,10 +213,7 @@ export function createSigner(options: SignerOptions): Signer {
   const core = createSignerCore({
     db,
     vault: options.vault,
-    relyingParty: {
-      id: options.relyingParty.id,
-      origins: [...new Set([...options.relyingParty.origins, options.approvalOrigin])],
-    },
+    relyingParty: { id: options.rpId, origins: [options.approvalOrigin] },
     tokenKey: options.tokenKey,
     maxIntentTtlSeconds: options.maxIntentTtlSeconds,
     maxAdminTtlSeconds: options.maxAdminTtlSeconds,
@@ -226,7 +223,7 @@ export function createSigner(options: SignerOptions): Signer {
   const confirmations = createConfirmations({
     db,
     records: core.records,
-    rpId: options.relyingParty.id,
+    rpId: options.rpId,
     approvalOrigin: options.approvalOrigin,
     returnOrigin: options.returnOrigin,
     chains: options.chains,
@@ -314,6 +311,14 @@ export function createSigner(options: SignerOptions): Signer {
           approvalId(),
           confirmToken,
           parse(SubmitConfirmationRequest, parseBody(body)).response,
+        );
+      case "getPossession":
+        return confirmations.getPossession(approvalId(), confirmToken);
+      case "submitPossession":
+        return confirmations.submitPossession(
+          approvalId(),
+          confirmToken,
+          parse(SubmitPossessionRequest, parseBody(body)).response,
         );
     }
   }

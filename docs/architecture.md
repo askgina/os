@@ -1,8 +1,9 @@
 # Architecture
 
 This project lets AI agents propose payments from wallets they cannot spend from on their own.
-A person approves each payment with a passkey. A separate signer service checks that passkey
-approval itself, checks the wallet's rules, and signs exactly one transaction.
+A person approves each payment with a passkey, on the signer's confirmation page. A separate
+signer service checks that passkey approval itself, checks the wallet's rules, and signs exactly
+one transaction.
 
 Everything runs on hardware you control. No hosted service is required.
 
@@ -89,7 +90,9 @@ The diagram is the network layout the plan fixes. The rules it encodes:
   the signer, on the internal `approve-signer` network.
 - **Server (control plane).** A Hono server on Node. It serves the UI, the REST API under
   `/api/v1` ([`packages/api/src/routes.ts`](../packages/api/src/routes.ts)), the MCP gateway at
-  `/mcp`, and runs the Workflow SDK runtime. The Workflow SDK's delivery routes have no
+  `/mcp`, and runs the Workflow SDK runtime. It lists and explains approval requests and links
+  to the confirmation page, but has no route that takes a passkey approval: it collects the
+  approvals the signer accepted there. The Workflow SDK's delivery routes have no
   authentication upstream, so they are mounted only on a second listener bound to loopback
   inside the server's container, never on the public one.
 - **Postgres.** Holds the control plane's tables (schema `os`), the Workflow runtime's tables
@@ -104,26 +107,45 @@ The diagram is the network layout the plan fixes. The rules it encodes:
 
 ## One payment, end to end
 
+A person opens the request in the control plane and follows its link to the signer's
+confirmation page, on its own origin, `APPROVE_ORIGIN`. There they check the address bar, read
+the view the signer built from its own records, and approve with a passkey. The control plane
+then collects the approvals from the signer and asks it to sign. The signer accepts an approval
+only when the browser made it at `APPROVE_ORIGIN`, top-level and not in a frame, as a
+`webauthn.get`; an approval made on any page the control plane serves is refused.
+
 ```mermaid
 sequenceDiagram
   autonumber
   participant Ag as Agent (MCP client)
   participant S as Server (control plane)
   participant P as Person (browser + passkey)
+  participant A as approve service
   participant G as Signer
   participant Ch as Chain
   Ag->>S: propose_transfer(chain, to, amount, memo)
   S->>S: build canonical Intent, compute intentHash
   S->>S: evaluateIntent against the policy (early feedback only)
   S->>S: open approval: approve-intent envelope with a fresh nonce and expiry
+  S->>G: open the confirmation (envelope and the intent it names)
+  G-->>S: path /a/:approvalId with a fresh token as its fragment, kept sealed in Postgres
   S-->>Ag: intentId, status pending_approval, approvalUrl
   P->>S: open the approval page
-  S-->>P: readable card and WebAuthn options (challenge = envelope digest)
-  P->>P: passkey signs the challenge
-  P->>S: assertion
-  S->>S: verifyAuthorization locally to refuse garbage early
+  S-->>P: readable card, with the link to APPROVE_ORIGIN and that path
+  P->>A: open the link, whose token stays in the fragment
+  P->>A: GET /api/approvals/:approvalId, token in the x-confirm-token header
+  A->>G: GET /v1/confirm/:approvalId, confirm secret
+  G-->>P: the view the signer rendered from its own records (through approve)
+  P->>P: check the address bar, then the passkey signs the envelope digest and the browser stamps APPROVE_ORIGIN
+  P->>A: POST the assertion
+  A->>G: POST /v1/confirm/:approvalId/assertions
+  G->>G: verify: approver of this workspace, origin APPROVE_ORIGIN, top-level, webauthn.get
+  G-->>P: approvals collected and required, link back (through approve)
+  P->>S: back on the approval page, which asks for the request
+  S->>G: list the assertions the signer accepted
+  S->>S: verify each again against APPROVE_ORIGIN, record it, decide
   S->>G: POST /v1/sign (intent, authorization, nonce and gas), HMAC-signed
-  G->>G: recompute intentHash and challenge, check policy hash, verify assertions
+  G->>G: recompute intentHash and challenge, check policy hash, verify assertions again
   G->>G: one transaction: nonce unused, evaluateIntent on own ledger, record nonce and spend, build and sign
   G-->>S: signed transaction and its hash
   S->>Ch: broadcast (repeating it is harmless)
@@ -131,41 +153,11 @@ sequenceDiagram
   S-->>Ag: get_intent shows confirmed
 ```
 
-The signer's checks, in order, are in
-[the approval protocol](./approval-protocol.md#the-signing-rule).
-
-### Approving on the confirmation page
-
-The approval page also links to the signer's confirmation page. There the person reads the
-request as the signer holds it and approves on an origin the control plane does not serve
-([`specs/trusted-display.md`](../specs/trusted-display.md), milestone 2). Until milestone 3
-both ways work; after it, only this one.
-
-```mermaid
-sequenceDiagram
-  autonumber
-  participant S as Server (control plane)
-  participant P as Person (browser + passkey)
-  participant A as approve service
-  participant G as Signer
-  S->>G: open the confirmation (envelope and the intent, policy or sweep it names)
-  G-->>S: path /a/:approvalId with a fresh token as its fragment, kept sealed in Postgres
-  P->>S: open the approval page
-  S-->>P: request, with the link to APPROVE_ORIGIN and that path
-  P->>A: open the link, whose token stays in the fragment
-  P->>A: GET /api/approvals/:approvalId, token in the x-confirm-token header
-  A->>G: GET /v1/confirm/:approvalId, confirm secret
-  G-->>P: the view the signer rendered from its own records (through approve)
-  P->>P: passkey signs the envelope digest, and the browser stamps APPROVE_ORIGIN
-  P->>A: POST the assertion
-  A->>G: POST /v1/confirm/:approvalId/assertions
-  G->>G: verify: approver of this workspace, origin APPROVE_ORIGIN, not framed
-  G-->>P: approvals collected and required, link back (through approve)
-  P->>S: back on the approval page, which asks for the request
-  S->>G: list the assertions the signer accepted
-  S->>S: verify each again against APPROVE_ORIGIN, record it, decide
-  S->>G: sign, as above, and the signer verifies the whole authorization again
-```
+Every other kind of request (a policy change, an approver change, the admin threshold, resuming
+a workspace, a sweep) is approved the same way, on the same page; the control plane then asks
+the signer to apply it instead of signing. The signer's checks, in order, are in
+[the approval protocol](./approval-protocol.md#the-signing-rule). The design of the
+confirmation page is in [`specs/trusted-display.md`](../specs/trusted-display.md).
 
 ## Where state lives
 
@@ -211,8 +203,9 @@ table is in [the threat model](./threat-model.md#what-is-encrypted-at-rest).
 - **The confirmation page has its own origin and its own service.** A passkey signs a digest,
   not what the page showed, and the browser writes the page's origin into the assertion. A page
   the control plane serves can show one thing and get a signature for another. On an origin it
-  does not serve, with a view the signer renders from its own records, it cannot. The `approve`
-  service holds no key, so its compromise brings back the display gap and nothing more.
+  does not serve, with a view the signer renders from its own records, it cannot, and the signer
+  accepts no other origin. The `approve` service holds no key, so its compromise brings back the
+  display gap and nothing more.
 - **The signer checks passkeys itself.** If the signer trusted an "approved" flag from the
   server, anyone who controlled the server or wrote to its database could approve. The signer
   recomputes the WebAuthn challenge from the envelope and checks the assertion against its own

@@ -10,7 +10,6 @@ import {
   AgentSummary,
   ApprovalDetail,
   ApprovalSummary,
-  ApproveRequest,
   AuditEvent,
   AuditVerification,
   CeremonyId,
@@ -29,7 +28,6 @@ import {
   SessionInfo,
   WalletDetail,
   WalletSummary,
-  WebAuthnOptions,
   WorkspaceDetail,
   WorkspaceSummary,
 } from "./dto.ts";
@@ -266,16 +264,10 @@ export const routes = {
     page(ApprovalSummary),
   ),
   getApproval: get("/api/v1/approvals/:approvalId", ApprovalDetail),
-  /** WebAuthn request options whose challenge is the envelope's digest. */
-  startApproval: post(
-    "/api/v1/approvals/:approvalId/options",
-    NoBody,
-    z.strictObject({ options: WebAuthnOptions }),
-  ),
-  approve: post("/api/v1/approvals/:approvalId/approve", ApproveRequest, ApprovalDetail),
   /**
    * Fetch the approvals people made on the signer's confirmation page and count them, as
-   * reading the request does while it waits. Each is checked here before it counts.
+   * reading the request does while it waits. Each is checked here before it counts. Approving
+   * happens only on that page: the control plane has no route that takes a passkey approval.
    */
   collectApproval: post("/api/v1/approvals/:approvalId/collect", NoBody, ApprovalDetail),
   reject: post("/api/v1/approvals/:approvalId/reject", NoBody, ApprovalDetail),

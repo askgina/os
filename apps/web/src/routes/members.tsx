@@ -49,14 +49,14 @@ export function MembersPage() {
   const me = session.data?.user?.id;
 
   return (
-    <div className="grid gap-6">
+    <div className="grid grid-cols-1 gap-6">
       {opened.length > 0 ? (
         <Alert tone="accent" className="items-start">
-          <div className="grid gap-1">
+          <div className="grid grid-cols-1 gap-1">
             <p className="font-medium">
               This change needs approval before it takes effect for the signer.
             </p>
-            <ul className="grid gap-1">
+            <ul className="grid grid-cols-1 gap-1">
               {opened.map((approval) => (
                 <li key={approval.id}>
                   <Link
@@ -139,7 +139,7 @@ function MemberRow({
   });
   const selectId = `role-${member.user.id}`;
   return (
-    <li className="grid gap-3 px-4 py-3 sm:grid-cols-[1fr_auto] sm:items-center">
+    <li className="grid grid-cols-1 gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
       <div className="min-w-0">
         <p className="truncate font-medium">{member.user.displayName}</p>
         <div className="mt-1 flex flex-wrap gap-1.5">
@@ -182,7 +182,7 @@ function MemberRow({
         <FormError error={setRole.error} />
       </div>
       {member.pendingPasskeys.length > 0 ? (
-        <div className="grid gap-3 sm:col-span-2">
+        <div className="grid grid-cols-1 gap-3 sm:col-span-2">
           {member.pendingPasskeys.map((passkey) => (
             <PendingPasskeyHelp
               key={passkey.credentialId}
@@ -241,13 +241,13 @@ function PendingPasskeyHelp({
     // Offer no command rather than one that could run something else on the signer's host.
   }
   return (
-    <div className="grid gap-2 rounded-md border bg-muted p-3 text-sm">
+    <div className="grid grid-cols-1 gap-2 rounded-md border bg-muted p-3 text-sm">
       <p className="flex items-center gap-2 font-medium">
         <KeyRound className="size-4 shrink-0" aria-hidden />
         Passkey “{passkey.label}” is waiting to become an approver
       </p>
       <p className="text-muted-foreground">There are two ways it can start approving:</p>
-      <ol className="grid list-decimal gap-2 pl-5">
+      <ol className="grid list-decimal grid-cols-1 gap-2 pl-5">
         <li>
           Someone who can already approve accepts the request in the{" "}
           <Link to="/w/$workspaceId/approvals" params={{ workspaceId }} className={linkClass}>
@@ -255,7 +255,7 @@ function PendingPasskeyHelp({
           </Link>
           .
         </li>
-        <li className="grid gap-2">
+        <li className="grid grid-cols-1 gap-2">
           <span>
             If nobody who can approve is left, the operator runs this one command on the signer's
             host:
@@ -313,7 +313,7 @@ function OpenInvites({
           <CardDescription>Links that have not been used yet.</CardDescription>
         </div>
       </CardHeader>
-      <CardContent className="grid gap-3">
+      <CardContent className="grid grid-cols-1 gap-3">
         <FormError error={invites.error ?? revoke.error} />
         {invites.data && items.length === 0 ? (
           <p className="text-sm text-muted-foreground">No open invites.</p>
@@ -364,15 +364,15 @@ function InviteCard({ workspaceId, revoked }: { workspaceId: string; revoked: st
           </CardDescription>
         </div>
       </CardHeader>
-      <CardContent className="grid gap-4">
+      <CardContent className="grid grid-cols-1 gap-4">
         <form
-          className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end"
+          className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end"
           onSubmit={(event) => {
             event.preventDefault();
             invite.mutate();
           }}
         >
-          <div className="grid gap-2">
+          <div className="grid grid-cols-1 gap-2">
             <Label htmlFor="invite-role">Role</Label>
             <Select
               id="invite-role"
@@ -393,7 +393,7 @@ function InviteCard({ workspaceId, revoked }: { workspaceId: string; revoked: st
         </form>
         <FormError error={invite.error} />
         {invite.data && !revoked.includes(invite.data.id) ? (
-          <div className="grid gap-2 rounded-md border bg-muted p-3">
+          <div className="grid grid-cols-1 gap-2 rounded-md border bg-muted p-3">
             <Label htmlFor="invite-url">
               Invite link, valid for {formatCountdown(invite.data.expiresAt - now)}
             </Label>
@@ -447,13 +447,13 @@ function ThresholdCard({ workspace }: { workspace: WorkspaceDetail }) {
       </CardHeader>
       <CardContent>
         <form
-          className="grid gap-3 sm:grid-cols-[12rem_auto] sm:items-end"
+          className="grid grid-cols-1 gap-3 sm:grid-cols-[12rem_auto] sm:items-end"
           onSubmit={(event) => {
             event.preventDefault();
             request.mutate();
           }}
         >
-          <div className="grid gap-2">
+          <div className="grid grid-cols-1 gap-2">
             <Label htmlFor="admin-threshold">Approvals needed</Label>
             <Input
               id="admin-threshold"

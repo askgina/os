@@ -2,6 +2,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { utf8ToBytes } from "@noble/hashes/utils.js";
 import { z } from "zod";
+import { DomainTag, digest } from "./canonical.ts";
 import {
   type ApproveIntentEnvelope,
   Envelope,
@@ -18,6 +19,7 @@ import {
   Base64Url,
   ChainId,
   EpochSeconds,
+  Nonce,
   PROTOCOL_VERSION,
   WorkspaceId,
 } from "./primitives.ts";
@@ -229,6 +231,19 @@ export const ConfirmationState = z.enum([
 ]);
 export type ConfirmationState = z.infer<typeof ConfirmationState>;
 
+/**
+ * The options the confirmation page passes to `navigator.credentials.get`: which passkeys may
+ * answer, and the challenge they sign.
+ */
+export const PasskeyRequest = z.strictObject({
+  rpId: z.string().min(1),
+  challenge: Base64Url,
+  allowCredentials: z.array(Base64Url).max(256),
+  userVerification: z.literal("required"),
+  timeoutMs: z.number().int().min(1).max(600_000),
+});
+export type PasskeyRequest = z.infer<typeof PasskeyRequest>;
+
 /** What the signer returns to the confirmation page for one approval. */
 export const ConfirmationView = z
   .strictObject({
@@ -248,14 +263,8 @@ export const ConfirmationView = z
     /** For "technical details": the exact data the passkey approves. */
     envelope: Envelope,
     subject: ConfirmationSubject,
-    webauthn: z.strictObject({
-      rpId: z.string().min(1),
-      /** The envelope's digest, base64url. */
-      challenge: Base64Url,
-      allowCredentials: z.array(Base64Url).max(256),
-      userVerification: z.literal("required"),
-      timeoutMs: z.number().int().min(1).max(600_000),
-    }),
+    /** Its challenge is the envelope's digest, base64url. */
+    webauthn: PasskeyRequest,
     /** Where the page sends the person afterwards: the control plane's page for the request. */
     returnUrl: z.url({ protocol: /^https?$/ }),
   })
@@ -823,6 +832,32 @@ function uncheckedText(value: string): string {
   return value.replace(HIDDEN_CHARACTER, (character) => {
     const code = character.codePointAt(0) ?? 0;
     return `[U+${code.toString(16).toUpperCase().padStart(4, "0")}]`;
+  });
+}
+
+// --- new approver keys ------------------------------------------------------------------------
+
+/**
+ * What the passkey of a new approver signs to prove, on the confirmation page, that the person
+ * being added holds the key an `add-approver` envelope carries: the approval, the key's
+ * credential id, and a random nonce the signer issued, which one answer uses up.
+ */
+export const PossessionChallengeInput = z.strictObject({
+  approvalId: ApprovalId,
+  credentialId: Base64Url,
+  nonce: Nonce,
+});
+export type PossessionChallengeInput = z.infer<typeof PossessionChallengeInput>;
+
+/**
+ * The 32 bytes the new approver's passkey signs in the possession step: the digest of
+ * `{ v, approvalId, credentialId, nonce }` under its own tag, so it can never stand in for an
+ * envelope's challenge, nor an envelope's for it.
+ */
+export function possessionChallenge(input: PossessionChallengeInput): Uint8Array {
+  return digest(DomainTag.possession, {
+    v: PROTOCOL_VERSION,
+    ...PossessionChallengeInput.parse(input),
   });
 }
 

@@ -64,9 +64,12 @@ export function policyRows(policy: WalletPolicy | null, context: PolicyContext):
 
 export function PolicyTable({ policy, context }: { policy: WalletPolicy; context: PolicyContext }) {
   return (
-    <dl className="grid gap-3">
+    <dl className="grid grid-cols-1 gap-3">
       {policyRows(policy, context).map((row) => (
-        <div key={row.label} className="grid gap-1 sm:grid-cols-[14rem_1fr] sm:gap-4">
+        <div
+          key={row.label}
+          className="grid grid-cols-1 gap-1 sm:grid-cols-[14rem_minmax(0,1fr)] sm:gap-4"
+        >
           <dt className="text-sm text-muted-foreground">{row.label}</dt>
           <dd className="text-sm break-words">{row.value}</dd>
         </div>
@@ -91,7 +94,7 @@ export function PolicyDiff({
   const changed = labels.filter((label) => before.get(label) !== after.get(label));
   const same = labels.filter((label) => before.get(label) === after.get(label));
   return (
-    <div className="grid gap-3">
+    <div className="grid grid-cols-1 gap-3">
       {current === null ? (
         <p className="text-sm text-muted-foreground">
           This is the wallet's first policy. Until it is approved, the wallet can sign nothing.
@@ -101,7 +104,10 @@ export function PolicyDiff({
         {[...changed, ...same].map((label) => {
           const isChanged = changed.includes(label);
           return (
-            <li key={label} className={cn("grid gap-1 px-4 py-3", !isChanged && "opacity-60")}>
+            <li
+              key={label}
+              className={cn("grid grid-cols-1 gap-1 px-4 py-3", !isChanged && "opacity-60")}
+            >
               <p className="flex items-center gap-2 text-sm font-medium">
                 {label}
                 {isChanged ? null : (
@@ -109,7 +115,7 @@ export function PolicyDiff({
                 )}
               </p>
               {isChanged ? (
-                <div className="grid gap-1 text-sm sm:grid-cols-2 sm:gap-4">
+                <div className="grid grid-cols-1 gap-1 text-sm sm:grid-cols-2 sm:gap-4">
                   <p className="break-words">
                     <span className="text-muted-foreground">Before: </span>
                     {before.get(label) ?? <span className="text-muted-foreground">not set</span>}

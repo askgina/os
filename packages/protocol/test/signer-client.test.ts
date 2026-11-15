@@ -344,6 +344,68 @@ describe("signer client", () => {
     expect(body(submitted)).toEqual({ response });
   });
 
+  it("sends the possession step to its routes, the token only in its header, signed with the confirm secret", async () => {
+    const CONFIRM_SECRET = new Uint8Array(32).fill(9);
+    const TOKEN = "AAAAAAAAAAAAAAAAAAAAAA";
+    const options = {
+      rpId: "os.example",
+      challenge: "7voVoMiWeZwDat_WCB8R-xOqaIfjygPAYO7xmCsm8ec",
+      allowCredentials: ["Y3JlZC1h"],
+      userVerification: "required",
+      timeoutMs: 120_000,
+    };
+    const fake = fakeFetch((url) =>
+      url.endsWith("/possession") && fake.calls.length === 1
+        ? { status: 200, body: options }
+        : { status: 200, body: { fingerprint: "0123-4567-89AB-CDEF" } },
+    );
+    const confirm = createConfirmClient({
+      baseUrl: "http://signer:8787",
+      secret: CONFIRM_SECRET,
+      fetch: fake.fetch,
+      now: () => T0,
+    });
+    const response = {
+      id: "Y3JlZC1h",
+      rawId: "Y3JlZC1h",
+      type: "public-key" as const,
+      response: { clientDataJSON: "e30", authenticatorData: "AA", signature: "AA" },
+      clientExtensionResults: {},
+    };
+
+    expect(await confirm.getPossession(APPROVAL, TOKEN)).toEqual(options);
+    expect(await confirm.submitPossession(APPROVAL, TOKEN, response)).toEqual({
+      fingerprint: "0123-4567-89AB-CDEF",
+    });
+    expect(fake.calls.map((call) => `${call.init.method} ${new URL(call.url).pathname}`)).toEqual([
+      `${signerRoutes.getPossession.method} /v1/confirm/${APPROVAL}/possession`,
+      `${signerRoutes.submitPossession.method} /v1/confirm/${APPROVAL}/possession`,
+    ]);
+    expect([signerRoutes.getPossession.scope, signerRoutes.submitPossession.scope]).toEqual([
+      "confirm",
+      "confirm",
+    ]);
+    for (const call of fake.calls) {
+      expect(verifyRecorded(call, CONFIRM_SECRET)).toBe(true);
+      expect(verifyRecorded(call, SECRET)).toBe(false);
+      expect(new Headers(call.init.headers).get(CONFIRM_TOKEN_HEADER)).toBe(TOKEN);
+      expect(call.url).not.toContain(TOKEN);
+    }
+    expect(JSON.parse(new TextDecoder().decode(fake.calls[1]?.init.body as Uint8Array))).toEqual({
+      response,
+    });
+
+    // A fingerprint that is not one is not passed on.
+    const odd = fakeFetch(() => ({ status: 200, body: { fingerprint: "0123-4567-89AB-CDEU" } }));
+    const oddClient = createConfirmClient({
+      baseUrl: "http://signer:8787",
+      secret: CONFIRM_SECRET,
+      fetch: odd.fetch,
+      now: () => T0,
+    });
+    await expect(oddClient.submitPossession(APPROVAL, TOKEN, response)).rejects.toThrow();
+  });
+
   it("rejects a malformed success body instead of returning it", async () => {
     const { signer } = client(() => ({ status: 200, body: { ...workspaceState, paused: "no" } }));
     await expect(signer.getWorkspace(WS)).rejects.not.toBeInstanceOf(SignerError);

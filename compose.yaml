@@ -57,8 +57,8 @@ services:
       SIGNER_KEY_FILE: /run/secrets/signer/token-key
       SIGNER_VAULT_PASSPHRASE_FILE: /run/secrets/signer/vault-passphrase
       WEBAUTHN_RP_ID: ${OS_HOSTNAME:-localhost}
-      WEBAUTHN_ORIGINS: ${PUBLIC_ORIGIN:-http://localhost:8080}
-      # The confirmation page's origin: a host under OS_HOSTNAME, or another port on it.
+      # The confirmation page's origin: a host under OS_HOSTNAME, or another port on it. The
+      # signer accepts an approval made there and nowhere else, not on the control plane's page.
       SIGNER_APPROVAL_ORIGIN: ${APPROVE_ORIGIN:-http://localhost:8081}
       SIGNER_RETURN_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
       SIGNER_CHAINS_FILE: /etc/os/chains.json

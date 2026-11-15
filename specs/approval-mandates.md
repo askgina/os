@@ -881,8 +881,8 @@ Regression checks:
 
 - Every v0.1 release gate passes unchanged, including "a proposal becomes one transaction after a
   passkey approval", "two approved proposals that together exceed the daily limit produce one
-  transaction", "an agent can propose and read, and nothing else" and "a restored backup keeps
-  wallets and waiting approvals, and refuses a spent one".
+  transaction", "an agent can propose and read, and nothing else" and the restore gate (since the
+  restore fence it refuses every approval issued before the restore).
 - The three existing digest vectors in `packages/protocol/test/digests.test.ts` are unchanged.
 - An agent without a mandate sees the same tool results as today, plus `authorizedBy: "person"`
   and `mandateId: null`.

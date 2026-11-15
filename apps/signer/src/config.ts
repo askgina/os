@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AssetLabels, ChainLabels } from "@askgina/os-protocol";
 import { MIN_SECRET_BYTES } from "@askgina/os-protocol/signer";
-import type { RelyingParty } from "@askgina/os-protocol/webauthn";
 import { z } from "zod";
 
 const Environment = z.object({
@@ -13,7 +12,6 @@ const Environment = z.object({
   SIGNER_KEY_FILE: z.string().min(1),
   SIGNER_VAULT_PASSPHRASE_FILE: z.string().min(1),
   WEBAUTHN_RP_ID: z.string().min(1),
-  WEBAUTHN_ORIGINS: z.string().min(1),
   SIGNER_APPROVAL_ORIGIN: z.string().min(1),
   SIGNER_RETURN_ORIGIN: z.string().min(1),
   SIGNER_CHAINS_FILE: z.string().min(1),
@@ -33,7 +31,9 @@ export interface SignerConfig {
   requestSecret: Uint8Array;
   confirmSecret: Uint8Array;
   tokenKey: Uint8Array;
-  relyingParty: RelyingParty;
+  /** The RP ID passkeys were registered under. */
+  rpId: string;
+  /** The confirmation page's origin: the one origin an approval may be made at. */
   approvalOrigin: string;
   returnOrigin: string;
   chains: ChainLabels;
@@ -87,16 +87,6 @@ function parseOrigin(variable: string, origin: string): URL {
   return parsed;
 }
 
-function parseOrigins(raw: string): string[] {
-  const origins = raw
-    .split(",")
-    .map((origin) => origin.trim())
-    .filter((origin) => origin !== "");
-  for (const origin of origins) parseOrigin("WEBAUTHN_ORIGINS", origin);
-  if (origins.length === 0) throw new ConfigError("WEBAUTHN_ORIGINS: empty");
-  return origins;
-}
-
 /**
  * The chains file is the one the control plane reads, which also holds RPC endpoints and
  * explorer links. The signer keeps only each chain's id, name and native coin (an object schema
@@ -138,17 +128,14 @@ export function loadConfig(environment: NodeJS.ProcessEnv): SignerConfig {
   if (tokenKey.byteLength !== 32) throw new ConfigError("SIGNER_KEY_FILE: not 32 bytes");
 
   const rpId = env.WEBAUTHN_RP_ID;
-  const origins = parseOrigins(env.WEBAUTHN_ORIGINS);
   // The confirmation page must share the RP ID so enrolled passkeys work there: its host is the
   // RP ID itself (another port) or a name under it.
   const approval = parseOrigin("SIGNER_APPROVAL_ORIGIN", env.SIGNER_APPROVAL_ORIGIN);
   if (approval.hostname !== rpId && !approval.hostname.endsWith(`.${rpId}`)) {
     throw new ConfigError("SIGNER_APPROVAL_ORIGIN: its host is not WEBAUTHN_RP_ID or under it");
   }
-  // On the control plane's own origin the confirmation page would protect nothing.
-  if (origins.includes(env.SIGNER_APPROVAL_ORIGIN)) {
-    throw new ConfigError("SIGNER_APPROVAL_ORIGIN: one of WEBAUTHN_ORIGINS");
-  }
+  // The return origin is the control plane's. An approval page on the control plane's own origin
+  // would protect nothing: the signer would accept assertions the control plane's page made.
   parseOrigin("SIGNER_RETURN_ORIGIN", env.SIGNER_RETURN_ORIGIN);
   if (env.SIGNER_RETURN_ORIGIN === env.SIGNER_APPROVAL_ORIGIN) {
     throw new ConfigError("SIGNER_RETURN_ORIGIN: the same origin as SIGNER_APPROVAL_ORIGIN");
@@ -168,7 +155,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv): SignerConfig {
     requestSecret,
     confirmSecret,
     tokenKey,
-    relyingParty: { id: rpId, origins },
+    rpId,
     approvalOrigin: env.SIGNER_APPROVAL_ORIGIN,
     returnOrigin: env.SIGNER_RETURN_ORIGIN,
     chains: readChainLabels(env.SIGNER_CHAINS_FILE),

@@ -7,6 +7,7 @@ const MESSAGES: Record<SignerErrorCode, string> = {
   not_found: "not found",
   conflict: "the request conflicts with what the signer already holds",
   confirmation_closed: "the request can no longer be approved",
+  possession_unproven: "the new approver has not proven they hold the passkey being added",
   rate_limited: "too many attempts for this request",
   workspace_paused: "the workspace is paused",
   approval_revoked: "the approval was revoked",

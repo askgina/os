@@ -25,7 +25,7 @@ try {
   signer = createSigner({
     sqlitePath: config.sqlitePath,
     vault: new OwsVault({ vaultPath: config.vaultPath, passphraseFile: config.passphraseFile }),
-    relyingParty: config.relyingParty,
+    rpId: config.rpId,
     requestSecret: config.requestSecret,
     confirmSecret: config.confirmSecret,
     approvalOrigin: config.approvalOrigin,

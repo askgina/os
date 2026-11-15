@@ -2,14 +2,24 @@ import {
   type AuthenticationResponseJSON,
   verifyAuthenticationResponse,
 } from "@simplewebauthn/server";
-import { type ApproverCredential, type Authorization, envelopeChallenge } from "../envelopes.ts";
-import type { UserId } from "../primitives.ts";
+import { type PossessionChallengeInput, possessionChallenge } from "../confirmation.ts";
+import {
+  type ApproverCredential,
+  type AssertionResponse,
+  type Authorization,
+  envelopeChallenge,
+} from "../envelopes.ts";
+import type { Base64Url, UserId } from "../primitives.ts";
 
 /** The WebAuthn relying party a deployment is configured as. Never derived from a request. */
 export interface RelyingParty {
   /** The RP ID passkeys were registered under, for example `localhost` or `os.example.com`. */
   id: string;
-  /** Exact origins the approval page may be served from, for example `https://os.example.com`. */
+  /**
+   * The exact origins of the confirmation page, where approvals are made, for example
+   * `https://approve.os.example.com`. Never the control plane's origin: the control plane chooses
+   * what its own pages show, so an assertion made there proves nothing about what a person saw.
+   */
   origins: readonly string[];
 }
 
@@ -44,16 +54,72 @@ export interface VerifyAuthorizationInput {
 export const CLOCK_SKEW_SECONDS = 30;
 
 /**
+ * True when the browser says the assertion was made in a frame of another page (`crossOrigin`
+ * true, or a `topOrigin` at all), or when its client data cannot be read. A page that frames the
+ * confirmation page could otherwise obtain an assertion stamped with the confirmation page's
+ * origin: `@simplewebauthn/server` accepts `crossOrigin: true` when no `topOrigin` is expected.
+ */
+function madeInFrame(response: AssertionResponse): boolean {
+  try {
+    const clientData: unknown = JSON.parse(
+      Buffer.from(response.response.clientDataJSON, "base64url").toString("utf8"),
+    );
+    if (typeof clientData !== "object" || clientData === null) return true;
+    if ("topOrigin" in clientData) return true;
+    return "crossOrigin" in clientData && clientData.crossOrigin === true;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Null when `response` is `credential`'s signature over `challenge`, made by a `webauthn.get`
+ * top-level on one of the relying party's origins with user verification; otherwise why not.
+ * The one rule for every assertion this package verifies.
+ */
+async function assertionProblem(input: {
+  response: AssertionResponse;
+  credential: { credentialId: string; publicKey: Base64Url };
+  challenge: Uint8Array;
+  relyingParty: RelyingParty;
+}): Promise<string | null> {
+  if (madeInFrame(input.response)) return "an assertion was made inside a frame of another page";
+  try {
+    const { verified } = await verifyAuthenticationResponse({
+      // Shape-checked by the `AssertionResponse` schema; the library validates the contents.
+      response: input.response as unknown as AuthenticationResponseJSON,
+      expectedChallenge: Buffer.from(input.challenge).toString("base64url"),
+      expectedType: "webauthn.get",
+      expectedOrigin: [...input.relyingParty.origins],
+      expectedRPID: input.relyingParty.id,
+      credential: {
+        id: input.credential.credentialId,
+        publicKey: new Uint8Array(Buffer.from(input.credential.publicKey, "base64url")),
+        // Synced passkeys report a counter of 0 forever, so the counter cannot stop a replay.
+        // The envelope's single-use nonce, or the possession step's, does that.
+        counter: 0,
+      },
+      requireUserVerification: true,
+    });
+    return verified ? null : "an assertion did not verify";
+  } catch (error) {
+    return error instanceof Error ? error.message : "invalid assertion";
+  }
+}
+
+/**
  * Check that enough known approvers signed this exact envelope with their passkeys.
  *
  * The challenge is recomputed here from the envelope; nothing the caller says about the
  * challenge is trusted. Every assertion must be valid: one unknown approver or one bad signature
  * fails the whole authorization, so a person removed from a workspace invalidates the pending
- * approvals they took part in.
+ * approvals they took part in. Each assertion must be a `webauthn.get` made top-level on one of
+ * the relying party's origins, never inside a frame.
  *
  * This proves that the approvers' authenticators signed the envelope's digest with user
- * verification. It does not prove the approvers saw the right details, and it does not stop a
- * replay: the caller must record the envelope's nonce as used, atomically with acting on it.
+ * verification, on a page at one of those origins. It does not prove the approvers read the
+ * details, and it does not stop a replay: the caller must record the envelope's nonce as used,
+ * atomically with acting on it.
  */
 export async function verifyAuthorization(
   input: VerifyAuthorizationInput,
@@ -69,7 +135,7 @@ export async function verifyAuthorization(
     return fail("envelope_ttl_too_long", "the envelope is valid for longer than allowed");
   }
 
-  const expectedChallenge = Buffer.from(envelopeChallenge(envelope)).toString("base64url");
+  const challenge = envelopeChallenge(envelope);
   const approvedBy = new Set<UserId>();
   for (const assertion of assertions) {
     const approver = input.approvers.find(
@@ -85,29 +151,13 @@ export async function verifyAuthorization(
     if (assertion.response.id !== approver.credentialId || approvedBy.has(approver.userId)) {
       return fail("assertion_invalid", "an assertion is mislabelled or repeats a person");
     }
-    try {
-      const { verified } = await verifyAuthenticationResponse({
-        // Shape-checked by the `AssertionResponse` schema; the library validates the contents.
-        response: assertion.response as unknown as AuthenticationResponseJSON,
-        expectedChallenge,
-        expectedOrigin: [...input.relyingParty.origins],
-        expectedRPID: input.relyingParty.id,
-        credential: {
-          id: approver.credentialId,
-          publicKey: new Uint8Array(Buffer.from(approver.publicKey, "base64url")),
-          // Synced passkeys report a counter of 0 forever, so the counter cannot stop a replay.
-          // The envelope's single-use nonce does that.
-          counter: 0,
-        },
-        requireUserVerification: true,
-      });
-      if (!verified) return fail("assertion_invalid", "an assertion did not verify");
-    } catch (error) {
-      return fail(
-        "assertion_invalid",
-        error instanceof Error ? error.message : "invalid assertion",
-      );
-    }
+    const problem = await assertionProblem({
+      response: assertion.response,
+      credential: approver,
+      challenge,
+      relyingParty: input.relyingParty,
+    });
+    if (problem !== null) return fail("assertion_invalid", problem);
     approvedBy.add(approver.userId);
   }
   if (approvedBy.size < input.threshold) {
@@ -121,4 +171,43 @@ export async function verifyAuthorization(
 
 function fail(code: AuthorizationFailure, message: string): AuthorizationVerdict {
   return { ok: false, code, message };
+}
+
+export interface VerifyPossessionInput {
+  /** The signer's current challenge: the approval, the new credential's id, the nonce. */
+  possession: PossessionChallengeInput;
+  /** The new credential's COSE public key, from the `add-approver` envelope. */
+  publicKey: Base64Url;
+  response: AssertionResponse;
+  relyingParty: RelyingParty;
+}
+
+export type PossessionVerdict =
+  | { ok: true }
+  | { ok: false; code: "assertion_invalid"; message: string };
+
+/**
+ * Check that the passkey an `add-approver` envelope names signed this attempt's possession
+ * challenge, under the same rule as an approval: a `webauthn.get` made top-level at one of the
+ * relying party's origins, with user verification. The challenge is recomputed here from
+ * `possession`. This proves that whoever answered on that page holds the new key; it does not
+ * say who that person is, which the people compare by the key's fingerprint.
+ */
+export async function verifyPossession(input: VerifyPossessionInput): Promise<PossessionVerdict> {
+  if (input.response.id !== input.possession.credentialId) {
+    return {
+      ok: false,
+      code: "assertion_invalid",
+      message: "the answer comes from another passkey than the one being added",
+    };
+  }
+  const problem = await assertionProblem({
+    response: input.response,
+    credential: { credentialId: input.possession.credentialId, publicKey: input.publicKey },
+    challenge: possessionChallenge(input.possession),
+    relyingParty: input.relyingParty,
+  });
+  return problem === null
+    ? { ok: true }
+    : { ok: false, code: "assertion_invalid", message: problem };
 }

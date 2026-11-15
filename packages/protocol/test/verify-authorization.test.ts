@@ -5,6 +5,7 @@ import {
   AssertionResponse,
   type Envelope,
   envelopeChallenge,
+  possessionChallenge,
   type UserId,
 } from "../src/index.ts";
 import {
@@ -20,8 +21,10 @@ import {
   CLOCK_SKEW_SECONDS,
   type RelyingParty,
   verifyAuthorization,
+  verifyPossession,
 } from "../src/webauthn/index.ts";
 import {
+  APPROVAL,
   approveIntent,
   changedEnvelopes,
   envelopeVariants,
@@ -31,8 +34,11 @@ import {
   USER_C,
 } from "./fixtures.ts";
 
-const RP: RelyingParty = { id: "os.example.com", origins: ["https://os.example.com"] };
-const ORIGIN = "https://os.example.com";
+/** The confirmation page, where approvals are made: a name under the RP ID. */
+const ORIGIN = "https://approve.os.example.com";
+/** The control plane's page: the same RP ID, so its passkey prompts work, but not an approval origin. */
+const CONTROL_PLANE = "https://os.example.com";
+const RP: RelyingParty = { id: "os.example.com", origins: [ORIGIN] };
 
 type Person = { userId: UserId; device: SoftAuthenticator; credential: ApproverCredential };
 
@@ -142,17 +148,75 @@ describe("an assertion is bound to its exact envelope", () => {
   });
 });
 
+/** An assertion over `envelope` with the client data a browser would write in other situations. */
+function signWith(
+  person: Person,
+  envelope: Envelope,
+  clientData: { origin?: string; crossOrigin?: boolean; topOrigin?: string; type?: string },
+): Assertion {
+  return {
+    userId: person.userId,
+    credentialId: person.credential.credentialId,
+    response: AssertionResponse.parse(
+      person.device.authenticate({
+        credentialId: person.credential.credentialId,
+        challenge: b64url(envelopeChallenge(envelope)),
+        origin: clientData.origin ?? ORIGIN,
+        ...(clientData.crossOrigin === undefined ? {} : { crossOrigin: clientData.crossOrigin }),
+        ...(clientData.topOrigin === undefined ? {} : { topOrigin: clientData.topOrigin }),
+        ...(clientData.type === undefined ? {} : { clientDataType: clientData.type }),
+      }),
+    ),
+  };
+}
+
 describe("relying party and authenticator checks", () => {
-  it("wrong origin", async () => {
+  it("an assertion from an origin outside the approval origins is refused", async () => {
+    // Every envelope kind: a payment, and the admin changes that grant lasting control.
+    for (const { name, base } of envelopeVariants) {
+      for (const origin of [CONTROL_PLANE, "https://evil.example.com", `${ORIGIN}:8443`]) {
+        const verdict = await verify(base, [sign(alice, base, origin)]);
+        expect([name, origin, codeOf(verdict)]).toEqual([name, origin, "assertion_invalid"]);
+      }
+      // The same passkey on the confirmation page: accepted.
+      expect([name, codeOf(await verify(base, [sign(alice, base)]))]).toEqual([name, "ok"]);
+    }
+  });
+
+  it("an assertion with crossOrigin true is refused", async () => {
     const envelope = approveIntent();
-    const assertion = sign(alice, envelope, "https://evil.example.com");
-    expect(codeOf(await verify(envelope, [assertion]))).toBe("assertion_invalid");
+    // A page that frames the confirmation page gets the confirmation page's origin stamped in,
+    // and the browser says so only with these two members.
+    for (const clientData of [
+      { crossOrigin: true },
+      { crossOrigin: true, topOrigin: "https://evil.example.com" },
+      { crossOrigin: false, topOrigin: CONTROL_PLANE },
+    ]) {
+      const verdict = await verify(envelope, [signWith(alice, envelope, clientData)]);
+      expect([clientData, codeOf(verdict)]).toEqual([clientData, "assertion_invalid"]);
+    }
+    // One framed assertion fails the whole authorization, even beside a good one.
+    const framed = signWith(bob, envelope, { crossOrigin: true });
+    expect(codeOf(await verify(envelope, [sign(alice, envelope), framed], { threshold: 2 }))).toBe(
+      "assertion_invalid",
+    );
+    expect(
+      codeOf(await verify(envelope, [signWith(alice, envelope, { crossOrigin: false })])),
+    ).toBe("ok");
+  });
+
+  it("a signed assertion of another type than webauthn.get is refused", async () => {
+    const envelope = approveIntent();
+    for (const type of ["webauthn.create", "payment.get"]) {
+      const verdict = await verify(envelope, [signWith(alice, envelope, { type })]);
+      expect([type, codeOf(verdict)]).toEqual([type, "assertion_invalid"]);
+    }
   });
 
   it("an origin on the allowed list other than the first is accepted", async () => {
     const envelope = approveIntent();
-    const rp = { id: RP.id, origins: [ORIGIN, "https://approve.os.example.com"] };
-    const assertion = sign(alice, envelope, "https://approve.os.example.com");
+    const rp = { id: RP.id, origins: [ORIGIN, "https://os.example.com:8443"] };
+    const assertion = sign(alice, envelope, "https://os.example.com:8443");
     expect(codeOf(await verify(envelope, [assertion], { rp }))).toBe("ok");
   });
 
@@ -292,6 +356,76 @@ describe("time", () => {
   it("time checks run before any signature is examined", async () => {
     const assertion = { ...sign(alice, envelope), userId: USER_C };
     expect(codeOf(await verify(envelope, [assertion], { now: T0 + 600 }))).toBe("envelope_expired");
+  });
+});
+
+describe("possession of a new approver's passkey", () => {
+  const NONCE = "AAAAAAAAAAAAAAAAAAAAAA";
+  const possessionOf = (person: Person) => ({
+    approvalId: APPROVAL,
+    credentialId: person.credential.credentialId,
+    nonce: NONCE,
+  });
+  const answer = (
+    person: Person,
+    overrides: { origin?: string; crossOrigin?: boolean; challenge?: string } = {},
+  ) =>
+    AssertionResponse.parse(
+      person.device.authenticate({
+        credentialId: person.credential.credentialId,
+        challenge: b64url(possessionChallenge(possessionOf(person))),
+        origin: ORIGIN,
+        ...overrides,
+      }),
+    );
+  const check = (
+    person: Person,
+    response: AssertionResponse,
+    publicKey = person.credential.publicKey,
+  ) =>
+    verifyPossession({
+      possession: possessionOf(person),
+      publicKey,
+      response,
+      relyingParty: RP,
+    });
+
+  it("the passkey being added answers its challenge on the confirmation page", async () => {
+    expect(await check(alice, answer(alice))).toEqual({ ok: true });
+  });
+
+  it("another passkey, another key or another challenge proves nothing", async () => {
+    const results = [
+      // Bob's passkey, under its own id.
+      await check(alice, answer(bob)),
+      // Bob's signature labelled with Alice's credential id.
+      await check(alice, { ...answer(bob), id: alice.credential.credentialId }),
+      // Alice's passkey, but the request carries Bob's key under her id.
+      await check(alice, answer(alice), bob.credential.publicKey),
+      // An approval of an envelope is not a proof of possession.
+      await check(alice, answer(alice, { challenge: b64url(envelopeChallenge(approveIntent())) })),
+      // Another nonce.
+      await check(
+        alice,
+        answer(alice, {
+          challenge: b64url(
+            possessionChallenge({ ...possessionOf(alice), nonce: "AAAAAAAAAAAAAAAAAAAAAQ" }),
+          ),
+        }),
+      ),
+    ];
+    expect(results.map((result) => (result.ok ? "ok" : result.code))).toEqual(
+      Array(results.length).fill("assertion_invalid"),
+    );
+  });
+
+  it("a proof made on the control plane's page or in a frame is refused", async () => {
+    for (const overrides of [{ origin: CONTROL_PLANE }, { crossOrigin: true }]) {
+      expect(await check(alice, answer(alice, overrides))).toMatchObject({
+        ok: false,
+        code: "assertion_invalid",
+      });
+    }
   });
 });
 

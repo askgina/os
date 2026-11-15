@@ -6,6 +6,7 @@ import {
   type Envelope,
   envelopeChallenge,
   type IntentId,
+  keyFingerprint,
 } from "@askgina/os-protocol";
 import { type SignerClient, SignerError } from "@askgina/os-protocol/signer";
 import { b64url } from "@askgina/os-protocol/testing";
@@ -285,7 +286,7 @@ describe("the confirmation page's link", () => {
     expect((await f.t.confirm.getConfirmation(approvalId, token)).state).toBe("open");
   });
 
-  it("a request the signer refuses to open shows no link, and the old approval path still works", async () => {
+  it("a request the signer refuses to open shows no link, and the control plane takes no approval for it", async () => {
     let request: { approvalId: ApprovalId; intentId: IntentId } | undefined;
     await withSigner(
       "openConfirmation",
@@ -300,11 +301,124 @@ describe("the confirmation page's link", () => {
         expect(detail.status).toBe("pending");
         expect(detail.confirmUrl).toBeNull();
         expect(detail.canDecide).toBe(true);
+        // The routes that once took a passkey approval on the control plane's own page are gone.
+        const { envelope } = detail;
+        for (const path of ["options", "approve"]) {
+          const response = await f.t.owner.browser.fetch(
+            `/api/v1/approvals/${request.approvalId}/${path}`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ response: assertAt(f.t.owner, envelope, TEST_ORIGIN) }),
+            },
+          );
+          expect([path, response.status]).toEqual([path, 404]);
+        }
+        expect(await storedAssertions(request.approvalId)).toHaveLength(0);
       },
     );
     if (!request) throw new Error("no request");
+    // Once the signer opens it, a later view shows the link, and the page approves it.
     const row = await f.t.approve(request.approvalId, [f.t.owner]);
     expect(row.status).toBe("executed");
+  });
+});
+
+describe("an approver change", () => {
+  it("takes no approval until the person being added proved on the page that the passkey is theirs", async () => {
+    const api = f.t.owner.browser.api;
+    const invite = await api.call("createInvite", {
+      params: { workspaceId: f.workspaceId },
+      body: { role: "approver" },
+    });
+    const token = invite.url.split("/").at(-1) ?? "";
+    const dana = f.t.browser();
+    const start = await dana.api.call("startInviteRegistration", {
+      params: { token },
+      body: { displayName: "Dana Joining" },
+    });
+    const passkey = f.t.register(start.options);
+    await dana.api.call("finishInviteRegistration", {
+      params: { token },
+      body: { ceremonyId: start.ceremonyId, response: passkey.response as never },
+    });
+    const pending = await api.call("listApprovals", {
+      params: { workspaceId: f.workspaceId },
+      query: { status: "pending" },
+    });
+    const change = pending.items.find((item) => item.kind === "add-approver");
+    if (!change) throw new Error("joining as an approver opened no approver change");
+
+    // The owner's approval on the confirmation page is refused, and nothing is counted.
+    const { token: confirmToken, detail } = await linkOf(change.id);
+    if (detail.envelope.type !== "add-approver" || detail.confirmUrl === null) {
+      throw new Error("not an approver change with a link");
+    }
+    expect(detail.envelope.credentialId).toBe(passkey.credentialId);
+    await expect(
+      f.t.approveAt(detail.confirmUrl, f.t.owner, detail.envelope),
+    ).rejects.toMatchObject({ code: "possession_unproven" });
+    expect(await storedAssertions(change.id)).toHaveLength(0);
+
+    // Dana, a member who cannot decide, sees the same link and proves there that the passkey
+    // is hers. The page shows her the fingerprint the owner's page shows.
+    const asDana = await dana.api.call("getApproval", { params: { approvalId: change.id } });
+    expect(asDana).toMatchObject({ canDecide: false, confirmUrl: detail.confirmUrl });
+    expect(await f.t.provePossession(detail.confirmUrl, detail.envelope)).toEqual({
+      fingerprint: keyFingerprint(detail.envelope.publicKey),
+    });
+    const view = await f.t.confirm.getConfirmation(change.id, confirmToken);
+    expect(view.warnings).toEqual([]);
+    expect(view.lines).toContainEqual({
+      label: "Key fingerprint",
+      value: keyFingerprint(detail.envelope.publicKey),
+      kind: "code",
+    });
+
+    // Now the owner's approval counts, and the signer adds the passkey.
+    expect((await f.t.approveOnPage(f.t.owner, change.id)).status).toBe("approved");
+    expect((await f.t.approve(change.id, [])).status).toBe("executed");
+    const atSigner = await f.t.ctx.signer.getWorkspace(f.workspaceId);
+    expect(atSigner.approvers.map((approver) => approver.credentialId)).toContain(
+      passkey.credentialId,
+    );
+  });
+});
+
+describe("an approval made on the control plane's page", () => {
+  it("is refused by the confirmation page, and by the signer when the control plane sends it anyway", async () => {
+    const { approvalId, intentId } = await proposePayment();
+    const { token, detail } = await linkOf(approvalId);
+    const onControlPlane = assertAt(f.t.owner, detail.envelope, TEST_ORIGIN);
+    await expect(
+      f.t.confirm.submitConfirmation(approvalId, token, onControlPlane),
+    ).rejects.toMatchObject({ code: "assertion_invalid" });
+
+    // A control plane that stores such an approval itself (one compromised, or one approved on
+    // its own page before the upgrade) gets nothing signed: the request ends failed.
+    await f.t.ctx.db.insert(approvalAssertions).values({
+      approvalId,
+      userId: f.t.owner.userId,
+      credentialId: f.t.owner.credentialId,
+      response: onControlPlane,
+      createdAt: new Date(f.t.clock.now() * 1000),
+    });
+    await f.t.ctx.db
+      .update(approvals)
+      .set({ status: "approved", decidedAt: new Date(f.t.clock.now() * 1000) })
+      .where(eq(approvals.id, approvalId));
+    const steps = engineOf(f.t.ctx).steps();
+    const result = await steps.execute(approvalId);
+    expect(result).toEqual({ ok: false, code: "assertion_invalid" });
+    if (!result.ok) await steps.fail(approvalId, result.code);
+    expect(await engineOf(f.t.ctx).row(approvalId)).toMatchObject({
+      status: "failed",
+      failureCode: "assertion_invalid",
+    });
+    expect(
+      await f.t.ctx.db.select().from(transactions).where(eq(transactions.intentId, intentId)),
+    ).toHaveLength(0);
+    expect((await f.t.ctx.signer.getApproval(approvalId)).state).toBe("revoked");
   });
 });
 

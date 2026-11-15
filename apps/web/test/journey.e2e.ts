@@ -1,14 +1,28 @@
-import { type APIRequestContext, type CDPSession, expect, type Page, test } from "@playwright/test";
+import {
+  type APIRequestContext,
+  test as baseTest,
+  type CDPSession,
+  expect,
+  type Locator,
+  type Page,
+} from "@playwright/test";
+import { expectNoSidewaysOverflow, type LayoutOptions, widenText } from "./layout.ts";
 
 /**
  * One person's whole first day, through the UI only: set up the server, create a workspace and
  * an agent, set and approve the wallet's limits, then approve one payment and reject one raw
- * contract call. Passkeys come from Chromium's virtual authenticator.
+ * contract call. Passkeys come from Chromium's virtual authenticator. Every approval is made
+ * where approvals are made: on the signer's confirmation page, on its own origin. Against the
+ * fixture that page is its stand-in (`dev/confirm/`).
  *
- * Two steps act as the agent instead of a person (proposing payments). Against the fixture they
+ * Some steps act as the agent instead of a person (proposing payments). Against the fixture they
  * use its `/__fixture/propose` endpoint; against a real server, point OS_WEB_PROPOSE_URL at an
  * equivalent helper that proposes over MCP with the agent's token.
+ *
+ * Every captured screen is checked for content wider than the screen (`shot`).
  */
+
+const test = baseTest.extend<LayoutOptions>({ widerText: [false, { option: true }] });
 
 const SETUP_TOKEN = process.env.OS_WEB_SETUP_TOKEN ?? "fixture-setup-token-0123456789";
 const SCREENSHOTS = new URL("../dev/screenshots/", import.meta.url).pathname;
@@ -51,6 +65,20 @@ function watchConsole(page: Page): string[] {
   return problems;
 }
 
+/**
+ * Approves the open request on the signer's confirmation page, with this page's passkey. The link
+ * opens it in the same tab, and the confirmation page comes back to the request when done.
+ */
+async function approveOnSignerPage(page: Page): Promise<void> {
+  const request = page.url();
+  const link = page.getByRole("link", { name: "Review and approve on the signer's page" });
+  const confirmation = new URL((await link.getAttribute("href")) ?? "");
+  await link.click();
+  await expect(page).toHaveURL((url) => url.origin === confirmation.origin);
+  await page.getByRole("button", { name: "Approve with passkey" }).click();
+  await expect(page).toHaveURL(request, { timeout: 15_000 });
+}
+
 /** Acts as the agent: proposes a native transfer and returns its intent and approval ids. */
 async function proposePayment(
   request: APIRequestContext,
@@ -71,19 +99,32 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
   request,
   baseURL,
   browser,
+  widerText,
 }, testInfo) => {
-  test.setTimeout(180_000);
-  const shot = (name: string) =>
-    page.screenshot({ path: `${SCREENSHOTS}${testInfo.project.name}-${name}.png`, fullPage: true });
+  test.setTimeout(240_000);
+  /** Checks the screen for content wider than it, then captures the page, a part or the view. */
+  const shot = async (name: string, target: { element?: Locator; viewport?: true } = {}) => {
+    await expectNoSidewaysOverflow(page, name);
+    const path = `${SCREENSHOTS}${testInfo.project.name}-${name}.png`;
+    await (target.element
+      ? target.element.screenshot({ path })
+      : page.screenshot({ path, fullPage: !target.viewport }));
+  };
   const problems = watchConsole(page);
   const proposeUrl = process.env.OS_WEB_PROPOSE_URL ?? `${baseURL}/__fixture/propose`;
   if (!process.env.OS_WEB_BASE_URL) await request.post(`${baseURL}/__fixture/reset`);
+  if (widerText) await widenText(page.context());
   await addAuthenticator(page);
 
   await test.step("setup creates the first owner with a passkey", async () => {
     await page.goto("/");
     await expect(page).toHaveURL(/\/setup$/);
     await expect(page.getByRole("heading", { name: "Set up this server" })).toBeVisible();
+    if (widerText) {
+      // The project proves nothing unless the wider letters really reached the page.
+      const body = page.locator("body");
+      expect(await body.evaluate((node) => getComputedStyle(node).letterSpacing)).toBe("1.28px");
+    }
     await shot("01-setup");
     await page.getByLabel("Setup token").fill(SETUP_TOKEN);
     await page.getByLabel("Your name").fill("Ada Owner");
@@ -141,7 +182,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(page.getByRole("heading", { name: /Change the limits of/ })).toBeVisible();
     await expect(page.getByText("This is the wallet's first policy.")).toBeVisible();
     await shot("07-approval-policy");
-    await page.getByRole("button", { name: "Approve with passkey" }).click();
+    await approveOnSignerPage(page);
     await expect(page.getByText("Done. The change is in effect.")).toBeVisible();
     await shot("08-approval-policy-done");
   });
@@ -187,26 +228,23 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(confirm).toHaveAttribute("rel", "noopener noreferrer");
     await expect(page.getByText(confirmUrl.host, { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Copy link" })).toBeVisible();
-    // Nothing on the page may be wider than the screen: on a phone that shifts every tap.
-    expect(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      ),
-    ).toBeLessThanOrEqual(0);
+    await expect(page.getByRole("button", { name: "Reject" })).toBeVisible();
+    // Approving happens only on the signer's page: nothing here asks for a passkey.
+    await expect(page.getByRole("button", { name: /passkey/i })).toHaveCount(0);
+    // On a phone, the decision fits on the first screen, without scrolling.
     const viewport = page.viewportSize();
-    const button = await page.getByRole("button", { name: "Approve with passkey" }).boundingBox();
-    if (testInfo.project.name.startsWith("phone") && viewport && button) {
-      expect(button.y + button.height).toBeLessThanOrEqual(viewport.height);
+    const decision = await confirm.boundingBox();
+    if (testInfo.project.name.startsWith("phone") && viewport && decision) {
+      expect(decision.y + decision.height).toBeLessThanOrEqual(viewport.height);
     }
-    await page.screenshot({
-      path: `${SCREENSHOTS}${testInfo.project.name}-10-approval-payment-viewport.png`,
-    });
+    await shot("10-approval-payment-viewport", { viewport: true });
     await page.getByText("Technical details").click();
     await expect(page.getByText("Intent hash (SHA-256)")).toBeVisible();
+    await expect(page.getByText(/challenge/i)).toHaveCount(0);
     await shot("11-approval-payment-details");
     await page.getByText("Technical details").click();
 
-    await page.getByRole("button", { name: "Approve with passkey" }).click();
+    await approveOnSignerPage(page);
     await expect(page.getByText("Approved.", { exact: true })).toBeVisible();
     await expect(page.getByText("Confirmed", { exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText("Included in a block. The payment went through.")).toBeVisible();
@@ -226,9 +264,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     const { approvalId } = (await proposed.json()) as { approvalId: string };
     await page.goto(approvalUrl.replace(/[^/]+$/, approvalId));
     await expect(page.getByText("Raw contract call.")).toBeVisible();
-    await page.screenshot({
-      path: `${SCREENSHOTS}${testInfo.project.name}-13-approval-raw-call.png`,
-    });
+    await shot("13-approval-raw-call", { viewport: true });
     await page.getByRole("button", { name: "Reject" }).click();
     await expect(page.getByRole("dialog", { name: "Reject this request?" })).toBeVisible();
     await page.getByRole("dialog").getByRole("button", { name: "Reject" }).click();
@@ -257,7 +293,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
         "1000000000000000",
       );
       await page.goto(approvalUrl.replace(/[^/]+$/, approvalId));
-      await page.getByRole("button", { name: "Approve with passkey" }).click();
+      await approveOnSignerPage(page);
       await expect(page.getByText("Approved.", { exact: true })).toBeVisible();
       if (process.env.OS_WEB_BASE_URL) continue;
       expect((await request.post(settleUrl, { data: { intentId: id, status } })).ok()).toBe(true);
@@ -281,9 +317,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     // Only destinations the signer accepts are offered: here, the treasury.
     await expect(card.getByLabel("Send it to")).toContainText("Treasury ·");
     await expect(card.getByLabel("Asset")).toContainText("ETH on");
-    await card.screenshot({
-      path: `${SCREENSHOTS}${testInfo.project.name}-25-wallet-sweep.png`,
-    });
+    await shot("25-wallet-sweep", { element: card });
     await card.getByRole("button", { name: "Ask for approval" }).click();
 
     await expect(page.getByRole("heading", { name: /^Empty [0-9.]+ ETH to 0x/ })).toBeVisible();
@@ -294,12 +328,35 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
       page.getByRole("link", { name: "Review and approve on the signer's page" }),
     ).toBeVisible();
     await shot("26-approval-sweep");
-    await page.getByRole("button", { name: "Approve with passkey" }).click();
+    await approveOnSignerPage(page);
     await expect(page.getByText("Approved.", { exact: true })).toBeVisible();
     await expect(
       page.getByRole("link", { name: "Review and approve on the signer's page" }),
     ).toHaveCount(0);
     await shot("27-approval-sweep-done");
+  });
+
+  await test.step("a payment asked for under limits that changed since cannot be approved", async () => {
+    const { approvalId } = await proposePayment(request, proposeUrl, token, "2000000000000000");
+    // The limits change before anyone opens the payment, so the signer will not open it.
+    await page.goto(workspacePath());
+    await page.getByRole("link", { name: /Invoice payer/ }).click();
+    await page.getByRole("link", { name: "Open wallet" }).click();
+    await page.getByLabel("Most per 24 hours ETH").fill("0.3");
+    await page.getByRole("button", { name: "Submit for approval" }).click();
+    await expect(page.getByRole("heading", { name: /Change the limits of/ })).toBeVisible();
+    await approveOnSignerPage(page);
+    await expect(page.getByText("Done. The change is in effect.")).toBeVisible();
+
+    await page.goto(approvalUrl.replace(/[^/]+$/, approvalId));
+    await expect(page.getByText("This request cannot be approved.")).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "Review and approve on the signer's page" }),
+    ).toHaveCount(0);
+    await shot("28-approval-cannot-approve");
+    await page.getByRole("button", { name: "Reject" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Reject" }).click();
+    await expect(page.getByText("This request was rejected. Nothing was signed.")).toBeVisible();
   });
 
   await test.step("the other pages render", async () => {

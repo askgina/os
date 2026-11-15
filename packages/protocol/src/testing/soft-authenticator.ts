@@ -41,6 +41,10 @@ type CallOverrides = {
   /** rpId whose hash goes into authenticatorData; defaults to the credential's rpId. */
   rpIdHashOf?: string;
   crossOrigin?: boolean;
+  /** clientDataJSON `topOrigin`, which a browser writes only for an assertion made in a frame. */
+  topOrigin?: string;
+  /** clientDataJSON `type` of an assertion; defaults to `webauthn.get`. */
+  clientDataType?: string;
 };
 
 function flagsByte(f: Flags, extra: number): number {
@@ -98,8 +102,17 @@ export class SoftAuthenticator {
     challenge: string,
     origin: string,
     crossOrigin: boolean,
+    topOrigin?: string,
   ): Uint8Array {
-    return new TextEncoder().encode(JSON.stringify({ type, challenge, origin, crossOrigin }));
+    return new TextEncoder().encode(
+      JSON.stringify({
+        type,
+        challenge,
+        origin,
+        crossOrigin,
+        ...(topOrigin === undefined ? {} : { topOrigin }),
+      }),
+    );
   }
 
   register(args: { rpId: string; challenge: string; userHandle?: Uint8Array } & CallOverrides): {
@@ -171,10 +184,11 @@ export class SoftAuthenticator {
       u32be(cred.signCount),
     );
     const clientDataJSON = this.clientData(
-      "webauthn.get",
+      args.clientDataType ?? "webauthn.get",
       args.challenge,
       args.origin ?? `https://${cred.rpId}`,
       args.crossOrigin ?? false,
+      args.topOrigin,
     );
     const signature = sign("sha256", concat(authData, sha256(clientDataJSON)), cred.privateKey);
     return {

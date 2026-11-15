@@ -45,19 +45,6 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
     return engine.detail(await engine.row(row.id), session);
   });
 
-  handle(app, ctx, "startApproval", async ({ params, session }) => {
-    const row = await engine.row(params.approvalId);
-    await requireMember(ctx, session, row.workspaceId, "approver");
-    return { options: await engine.startCeremony(row, session) };
-  });
-
-  handle(app, ctx, "approve", async ({ params, body, session }) => {
-    const row = await engine.row(params.approvalId);
-    await requireMember(ctx, session, row.workspaceId, "approver");
-    await engine.approve(row, session, body.response);
-    return engine.detail(await engine.row(row.id), session);
-  });
-
   handle(app, ctx, "reject", async ({ params, session }) => {
     const row = await engine.row(params.approvalId);
     await requireMember(ctx, session, row.workspaceId, "approver");

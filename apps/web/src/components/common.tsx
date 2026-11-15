@@ -200,7 +200,7 @@ export const linkClass = "font-medium text-accent underline-offset-4 hover:under
 /** A term and its value, stacked on narrow screens and side by side on wide ones. */
 export function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="grid gap-1 sm:grid-cols-[10rem_1fr] sm:gap-4">
+    <div className="grid grid-cols-1 gap-1 sm:grid-cols-[10rem_minmax(0,1fr)] sm:gap-4">
       <dt className="text-sm text-muted-foreground">{label}</dt>
       <dd className="min-w-0 text-sm">{children}</dd>
     </div>

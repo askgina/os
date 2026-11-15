@@ -1,4 +1,5 @@
 import { defineConfig } from "@playwright/test";
+import type { LayoutOptions } from "./test/layout.ts";
 
 /**
  * By default the journey runs against the Vite dev server, which proxies `/api` to the in-memory
@@ -17,7 +18,7 @@ const phone = {
 };
 const desktop = { viewport: { width: 1280, height: 800 } };
 
-export default defineConfig({
+export default defineConfig<LayoutOptions>({
   testDir: "test",
   testMatch: "**/*.e2e.ts",
   fullyParallel: false,
@@ -31,6 +32,9 @@ export default defineConfig({
     { name: "phone-dark", use: { ...phone, colorScheme: "dark" } },
     { name: "desktop-light", use: { ...desktop, colorScheme: "light" } },
     { name: "desktop-dark", use: { ...desktop, colorScheme: "dark" } },
+    // The phone journey with every letter wider than on any font here or on CI's runners, so a
+    // screen that fits only with narrow fonts fails on this machine too, not first in CI.
+    { name: "phone-wide-font", use: { ...phone, colorScheme: "light", widerText: true } },
   ],
   ...(external
     ? {}

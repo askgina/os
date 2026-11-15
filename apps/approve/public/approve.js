@@ -9,6 +9,10 @@
  * making markup from a string into an error. Everything shown comes from the signer through the
  * `approve` service; nothing here decides what a request means.
  *
+ * An approver change has one more step, for the person being added: they prove here, with the
+ * passkey the request adds, that it is theirs, and the page shows them its fingerprint to read
+ * to the people who approve. Approving waits until that step is done.
+ *
  * The exports are pure helpers for the tests. The page starts itself when a browser runs it.
  */
 
@@ -16,8 +20,10 @@
 /** @typedef {import("@askgina/os-protocol").ConfirmationState} ConfirmationState */
 /** @typedef {import("@askgina/os-protocol").ConfirmationWarning} ConfirmationWarning */
 /** @typedef {import("@askgina/os-protocol").AssertionResponse} AssertionResponse */
+/** @typedef {import("@askgina/os-protocol").PasskeyRequest} PasskeyRequest */
 /** @typedef {import("@askgina/os-protocol/signer").SignerErrorCode} SignerErrorCode */
 /** @typedef {import("@askgina/os-protocol/signer").SubmitConfirmationResponse} SubmitConfirmationResponse */
+/** @typedef {import("@askgina/os-protocol/signer").SubmitPossessionResponse} SubmitPossessionResponse */
 
 /**
  * The parts of a `PublicKeyCredential` from `navigator.credentials.get` that the signer checks.
@@ -64,7 +70,7 @@ export const WARNING_TEXT = {
     "This is more than the wallet may still send in the last 24 hours, so the signer will refuse it.",
   first_policy: "This is the wallet's first policy: everything below is new.",
   possession_unproven:
-    "The new person has not proven on this page that they hold this passkey. Compare its fingerprint with them.",
+    "The person being added has not yet proven on this page that they hold this passkey. Approving waits until they have.",
 };
 
 /** @type {Record<SignerErrorCode, string>} */
@@ -76,6 +82,8 @@ export const REFUSAL_TEXT = {
   conflict: "You already approved this request.",
   confirmation_closed:
     "This request no longer takes approvals: it was approved, rejected, used or replaced, or it expired.",
+  possession_unproven:
+    "The person being added has not yet proven on this page that the new passkey is theirs. Ask them to open this link and do that first, then reload this page.",
   rate_limited:
     "Too many approvals were tried for this request, so the signer takes no more for it.",
   workspace_paused: "This workspace is paused. The signer refuses everything until it is resumed.",
@@ -149,10 +157,22 @@ export function fromBase64Url(text) {
 }
 
 /**
- * The browser's request options for the view's challenge, the envelope's digest. Converted by
- * hand rather than with `PublicKeyCredential.parseRequestOptionsFromJSON`, which older
- * browsers lack.
- * @param {ConfirmationView["webauthn"]} webauthn
+ * Where the possession step of a request stands: `none` for anything but an approver change,
+ * `unproven` until the person being added proved on this page that the new passkey is theirs,
+ * `proven` after. Approving an approver change waits for `proven`.
+ * @param {ConfirmationView} view
+ * @returns {"none" | "unproven" | "proven"}
+ */
+export function possessionOf(view) {
+  if (view.kind !== "add-approver") return "none";
+  return view.warnings.includes("possession_unproven") ? "unproven" : "proven";
+}
+
+/**
+ * The browser's request options for a challenge from the signer: the envelope's digest, or the
+ * possession step's. Converted by hand rather than with
+ * `PublicKeyCredential.parseRequestOptionsFromJSON`, which older browsers lack.
+ * @param {PasskeyRequest} webauthn
  * @returns {PublicKeyCredentialRequestOptions}
  */
 export function requestOptions(webauthn) {
@@ -295,6 +315,72 @@ function technicalDetails(view) {
 }
 
 /**
+ * One request to this page's API with the link's token: the answer's body, or the refusal's
+ * code (`internal` when the service could not be reached).
+ * @param {string} path
+ * @param {string} token
+ * @param {unknown} [body] sent as JSON with POST; without it the request is a GET
+ * @returns {Promise<{ ok: true, body: unknown } | { ok: false, code: string }>}
+ */
+async function call(path, token, body) {
+  /** @type {Response} */
+  let response;
+  try {
+    response = await fetch(path, {
+      ...(body === undefined
+        ? { headers: { [TOKEN_HEADER]: token } }
+        : {
+            method: "POST",
+            headers: { "content-type": "application/json", [TOKEN_HEADER]: token },
+            body: JSON.stringify(body),
+          }),
+      cache: "no-store",
+      credentials: "omit",
+    });
+  } catch {
+    return { ok: false, code: "internal" };
+  }
+  const answer = await response.json().catch(() => null);
+  return response.ok ? { ok: true, body: answer } : { ok: false, code: errorCode(answer) };
+}
+
+/**
+ * Ask the browser for a passkey's answer to `webauthn`. Null when there is none, after saying
+ * so with `nothing` (what did not happen).
+ * @param {PasskeyRequest} webauthn
+ * @param {HTMLElement} result
+ * @param {string} nothing
+ * @returns {Promise<AssertionResponse | null>}
+ */
+async function askPasskey(webauthn, result, nothing) {
+  say(result, "Waiting for your passkey…", "");
+  /** @type {Credential | null} */
+  let credential;
+  try {
+    credential = await navigator.credentials.get({ publicKey: requestOptions(webauthn) });
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "Error";
+    say(result, `Your passkey did not answer (${name}). ${nothing} Try again.`, "refusal");
+    return null;
+  }
+  if (
+    !(credential instanceof PublicKeyCredential) ||
+    !(credential.response instanceof AuthenticatorAssertionResponse)
+  ) {
+    say(result, `Your browser returned no passkey. ${nothing} Try again.`, "refusal");
+    return null;
+  }
+  const passkey = credential;
+  return encodeAssertion({
+    id: passkey.id,
+    rawId: passkey.rawId,
+    type: passkey.type,
+    response: credential.response,
+    getClientExtensionResults: () => passkey.getClientExtensionResults(),
+  });
+}
+
+/**
  * Ask the passkey, send its assertion to the signer, and go back to the request.
  * @param {ConfirmationView} view
  * @param {string} token
@@ -303,61 +389,23 @@ function technicalDetails(view) {
  */
 async function approve(view, token, button, result) {
   button.disabled = true;
-  say(result, "Waiting for your passkey…", "");
-  /** @type {Credential | null} */
-  let credential;
-  try {
-    credential = await navigator.credentials.get({ publicKey: requestOptions(view.webauthn) });
-  } catch (error) {
-    const name = error instanceof Error ? error.name : "Error";
-    say(
-      result,
-      `Your passkey did not answer (${name}). Nothing was approved. Try again.`,
-      "refusal",
-    );
+  const assertion = await askPasskey(view.webauthn, result, "Nothing was approved.");
+  if (assertion === null) {
     button.disabled = false;
     return;
   }
-  if (
-    !(credential instanceof PublicKeyCredential) ||
-    !(credential.response instanceof AuthenticatorAssertionResponse)
-  ) {
-    say(result, "Your browser returned no passkey. Nothing was approved. Try again.", "refusal");
-    button.disabled = false;
-    return;
-  }
-  const passkey = credential;
-  const assertion = encodeAssertion({
-    id: passkey.id,
-    rawId: passkey.rawId,
-    type: passkey.type,
-    response: credential.response,
-    getClientExtensionResults: () => passkey.getClientExtensionResults(),
-  });
   say(result, "Sending your approval to the signer…", "");
-  /** @type {Response} */
-  let response;
-  try {
-    response = await fetch(`/api/approvals/${encodeURIComponent(view.approvalId)}/assertions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", [TOKEN_HEADER]: token },
-      body: JSON.stringify({ response: assertion }),
-      cache: "no-store",
-      credentials: "omit",
-    });
-  } catch {
-    say(result, REFUSAL_TEXT.internal, "refusal");
-    button.disabled = false;
+  const answer = await call(
+    `/api/approvals/${encodeURIComponent(view.approvalId)}/assertions`,
+    token,
+    { response: assertion },
+  );
+  if (!answer.ok) {
+    say(result, refusalText(answer.code), "refusal");
+    button.disabled = !Object.hasOwn(RETRYABLE, answer.code);
     return;
   }
-  const body = await response.json().catch(() => null);
-  if (!response.ok) {
-    const code = errorCode(body);
-    say(result, refusalText(code), "refusal");
-    button.disabled = !Object.hasOwn(RETRYABLE, code);
-    return;
-  }
-  const done = /** @type {SubmitConfirmationResponse} */ (body);
+  const done = /** @type {SubmitConfirmationResponse} */ (answer.body);
   button.hidden = true;
   say(
     result,
@@ -393,8 +441,13 @@ function render(main, view, token) {
     parts.push(warnings);
   }
   parts.push(lines(view));
+  const possession = possessionOf(view);
+  /** What the possession step enables once done on this page. */
+  let unlock = () => {};
+  /** @type {HTMLElement | null} */
+  let decide = null;
   if (view.state === "open") {
-    const decide = element("section", "decide");
+    decide = element("section", "decide");
     decide.setAttribute("aria-label", "Decision");
     const button = element("button", "approve", "Approve with passkey");
     button.type = "button";
@@ -407,16 +460,121 @@ function render(main, view, token) {
         "note",
         "Your passkey signs this request's digest. The signer accepts the approval only from this page.",
       ),
-      button,
-      result,
     );
-    parts.push(decide);
+    if (possession !== "none") {
+      decide.append(
+        element(
+          "p",
+          "note",
+          "Before you approve, ask the person being added to read you the fingerprint their page showed them, over a call or in person. Approve only if it matches the key fingerprint above.",
+        ),
+      );
+    }
+    if (possession === "unproven") {
+      const waiting = element(
+        "p",
+        "note",
+        "Approving opens once the person being added has proven on this page that the passkey is theirs. Reload this page after they have.",
+      );
+      button.disabled = true;
+      decide.append(waiting);
+      unlock = () => {
+        button.disabled = false;
+        waiting.remove();
+      };
+    }
+    decide.append(button, result);
   }
+  // Approvals collected before the step existed can leave a request `complete` but unproven;
+  // the signer applies it only once the person being added has done the step.
+  if (possession === "unproven" && (view.state === "open" || view.state === "complete")) {
+    parts.push(possessionStep(view, token, unlock));
+  }
+  if (decide !== null) parts.push(decide);
   const back = element("p", "back");
   back.append(link(view.returnUrl, "Back to the request"));
   parts.push(back, technicalDetails(view));
   main.replaceChildren(...parts);
   document.title = `${view.title} · Approve`;
+}
+
+/**
+ * The possession step, for the person being added: the signer's challenge, which only the new
+ * passkey may answer, is fetched when the step is shown, so nothing waits between the tap and
+ * the passkey prompt, as with approving. After the answer, the page shows the key's fingerprint
+ * to read out.
+ * @param {ConfirmationView} view
+ * @param {string} token
+ * @param {() => void} proven called once the signer recorded the proof
+ * @returns {HTMLElement}
+ */
+function possessionStep(view, token, proven) {
+  const section = element("section", "possession");
+  section.setAttribute("aria-label", "The new passkey");
+  const button = element("button", "prove", "This passkey is mine");
+  button.type = "button";
+  button.disabled = true;
+  const result = element("p", "result");
+  result.setAttribute("role", "status");
+  const path = `/api/approvals/${encodeURIComponent(view.approvalId)}/possession`;
+  /** @type {PasskeyRequest | null} */
+  let challenge = null;
+
+  /** The signer keeps one challenge until an answer uses it, so fetching again is safe. */
+  const load = async () => {
+    const answer = await call(path, token);
+    if (!answer.ok) {
+      say(result, refusalText(answer.code), "refusal");
+      return;
+    }
+    challenge = /** @type {PasskeyRequest} */ (answer.body);
+    button.disabled = false;
+  };
+
+  const prove = async (/** @type {PasskeyRequest} */ asked) => {
+    button.disabled = true;
+    const assertion = await askPasskey(asked, result, "Nothing was proven.");
+    if (assertion === null) {
+      button.disabled = false;
+      return;
+    }
+    say(result, "Sending your answer to the signer…", "");
+    const answer = await call(path, token, { response: assertion });
+    if (!answer.ok) {
+      say(result, refusalText(answer.code), "refusal");
+      if (Object.hasOwn(RETRYABLE, answer.code)) await load();
+      return;
+    }
+    const { fingerprint } = /** @type {SubmitPossessionResponse} */ (answer.body);
+    button.hidden = true;
+    result.replaceChildren(
+      element("span", "", "The signer checked that this passkey is yours. Its fingerprint is "),
+      element("strong", "fingerprint", fingerprint),
+      element(
+        "span",
+        "",
+        ". Read it to the people who approve over a call or in person, not through this site or a message it sent. They approve only if it matches the fingerprint their page shows.",
+      ),
+    );
+    result.className = "result success";
+    proven();
+  };
+
+  button.addEventListener("click", () => {
+    if (challenge !== null) void prove(challenge);
+  });
+  void load();
+  section.append(
+    element("h2", "", "Are you the person being added?"),
+    element(
+      "p",
+      "",
+      "Prove that the new passkey is yours, on the device where you just made it. Only you do this step. The people who approve wait for it, then compare the fingerprint with you.",
+    ),
+    button,
+    result,
+  );
+  return section;
 }
 
 async function start() {
@@ -430,24 +588,12 @@ async function start() {
     showRefusal(main, REFUSAL_TEXT.not_found);
     return;
   }
-  /** @type {Response} */
-  let response;
-  try {
-    response = await fetch(`/api/approvals/${approvalId}`, {
-      headers: { [TOKEN_HEADER]: token },
-      cache: "no-store",
-      credentials: "omit",
-    });
-  } catch {
-    showRefusal(main, REFUSAL_TEXT.internal);
+  const answer = await call(`/api/approvals/${approvalId}`, token);
+  if (!answer.ok) {
+    showRefusal(main, refusalText(answer.code));
     return;
   }
-  const body = await response.json().catch(() => null);
-  if (!response.ok) {
-    showRefusal(main, refusalText(errorCode(body)));
-    return;
-  }
-  render(main, /** @type {ConfirmationView} */ (body), token);
+  render(main, /** @type {ConfirmationView} */ (answer.body), token);
 }
 
 if (typeof document !== "undefined") void start();

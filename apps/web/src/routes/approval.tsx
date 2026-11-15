@@ -30,18 +30,25 @@ import { Alert } from "@/components/ui/alert.tsx";
 import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import { Dialog } from "@/components/ui/dialog.tsx";
 import { Progress } from "@/components/ui/progress.tsx";
-import { api, keys, queryClient, useApproval, useWallet, useWorkspace } from "@/lib/api.ts";
+import {
+  api,
+  keys,
+  queryClient,
+  useApproval,
+  useSession,
+  useWallet,
+  useWorkspace,
+} from "@/lib/api.ts";
 import { chainName } from "@/lib/assets.ts";
 import { explainCode } from "@/lib/codes.ts";
 import { formatCountdown, formatTime, formatUnits, percentOf, shortAddress } from "@/lib/format.ts";
-import { signWithPasskey } from "@/lib/passkey.ts";
 import { intentSentence, transactionSentence } from "@/lib/statuses.ts";
 import { cn } from "@/lib/utils.ts";
 
 /**
- * The approval page is where money moves, so it shows what the signer will act on, in words a
- * person can check, before the passkey prompt. It lives outside the workspace frame so that on
- * a phone everything needed to decide fits on one screen.
+ * The approval page is where a person reads what an agent or a member asked for, in words they
+ * can check, and goes to the signer's own page to approve it. It lives outside the workspace
+ * frame so that on a phone everything needed to decide fits on one screen.
  */
 export function ApprovalPage() {
   const { workspaceId, approvalId } = useParams({ from: "/w/$workspaceId/approvals/$approvalId" });
@@ -69,7 +76,10 @@ function ApprovalView({
   const secondsLeft = approval.expiresAt - now;
   const open = approval.status === "pending";
   return (
-    <article className="mx-auto grid max-w-2xl gap-4 sm:gap-6" aria-labelledby="approval-title">
+    <article
+      className="mx-auto grid max-w-2xl grid-cols-1 gap-4 sm:gap-6"
+      aria-labelledby="approval-title"
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <Link
           to="/w/$workspaceId/approvals"
@@ -106,7 +116,7 @@ function ApprovalView({
       )}
 
       {approval.approvedBy.length > 0 || approval.rejectedBy ? (
-        <section className="grid gap-1 text-sm">
+        <section className="grid grid-cols-1 gap-1 text-sm">
           {approval.approvedBy.length > 0 ? (
             <p>
               <span className="text-muted-foreground">Approved by: </span>
@@ -225,10 +235,10 @@ function SweepSubject({
       </Alert>
 
       <div>
-        <p className="text-3xl font-semibold tracking-tight tabular-nums">
+        <p className="text-3xl font-semibold tracking-tight tabular-nums wrap-anywhere">
           {amount} <span className="text-xl">{subject.assetSymbol}</span>
         </p>
-        <p className="font-mono text-xs text-muted-foreground">
+        <p className="font-mono text-xs text-muted-foreground wrap-anywhere">
           {sweep.amount} base units ({subject.assetDecimals} decimals)
           {sweep.asset === "native" ? "" : ` · token ${shortAddress(sweep.asset)}`}
         </p>
@@ -266,10 +276,10 @@ function SweepSubject({
 
 function Summary({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="grid gap-4">
+    <section className="grid grid-cols-1 gap-4">
       <h1
         id="approval-title"
-        className="text-xl font-semibold tracking-tight break-words sm:text-2xl"
+        className="text-xl font-semibold tracking-tight wrap-anywhere sm:text-2xl"
       >
         {title}
       </h1>
@@ -286,7 +296,7 @@ function Fact({ label, children, wide }: { label: string; children: ReactNode; w
   return (
     <div className={cn("min-w-0", wide && "col-span-2")}>
       <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="text-sm break-words">{children}</dd>
+      <dd className="text-sm wrap-anywhere">{children}</dd>
     </div>
   );
 }
@@ -320,10 +330,10 @@ function IntentSubject({
       ) : null}
 
       <div>
-        <p className="text-3xl font-semibold tracking-tight tabular-nums">
+        <p className="text-3xl font-semibold tracking-tight tabular-nums wrap-anywhere">
           {display.amountFormatted} <span className="text-xl">{display.assetSymbol}</span>
         </p>
-        <p className="font-mono text-xs text-muted-foreground">
+        <p className="font-mono text-xs text-muted-foreground wrap-anywhere">
           {display.amount} base units ({display.assetDecimals} decimals)
           {display.token ? ` · token ${shortAddress(display.token)}` : ""}
         </p>
@@ -355,7 +365,7 @@ function IntentSubject({
           The agent's own words, not checked by anyone:
         </figcaption>
         {/* Plain text only: React escapes it, and it is never parsed as HTML or Markdown. */}
-        <blockquote className="text-sm break-words whitespace-pre-wrap">
+        <blockquote className="text-sm whitespace-pre-wrap wrap-anywhere">
           {intent.memo === "" ? (
             <span className="text-muted-foreground">(no memo)</span>
           ) : (
@@ -414,9 +424,9 @@ function Limits({
   const txShare = percentOf(amount, limits.maxPerTx);
   const dayShare = percentOf(afterToday, limits.maxPerDay);
   return (
-    <div className="grid gap-2.5">
-      <div className="grid gap-1">
-        <div className="flex justify-between gap-2 text-xs">
+    <div className="grid grid-cols-1 gap-2.5">
+      <div className="grid grid-cols-1 gap-1">
+        <div className="flex flex-wrap justify-between gap-x-2 text-xs">
           <span className="text-muted-foreground">Of the per-transaction limit</span>
           <span className="tabular-nums">
             {units(amount)} of {units(limits.maxPerTx)}
@@ -428,8 +438,8 @@ function Limits({
           tone={txShare > 90 ? "warning" : "accent"}
         />
       </div>
-      <div className="grid gap-1">
-        <div className="flex justify-between gap-2 text-xs">
+      <div className="grid grid-cols-1 gap-1">
+        <div className="flex flex-wrap justify-between gap-x-2 text-xs">
           <span className="text-muted-foreground">Of the 24-hour limit, with this</span>
           <span className="tabular-nums">
             {units(afterToday)} of {units(limits.maxPerDay)}
@@ -471,79 +481,135 @@ function PolicySubject({
   );
 }
 
+/**
+ * What the person can do while the request waits. A request is approved only on the signer's own
+ * page, on another origin, which shows the request as the signer holds it; an approval made there
+ * names that origin, which this page cannot fake. This page links there and keeps reading the
+ * request, so the count and the outcome appear here once the signer has collected them.
+ */
 function Decide({ approval, expired }: { approval: ApprovalDetail; expired: boolean }) {
-  const [confirmReject, setConfirmReject] = useState(false);
-  const refresh = async (next: ApprovalDetail) => {
-    queryClient.setQueryData(keys.approval(approval.id), next);
-    await queryClient.invalidateQueries({ queryKey: ["approvals", approval.workspaceId] });
-    await queryClient.invalidateQueries({ queryKey: keys.workspace(approval.workspaceId) });
-  };
-  const approve = useMutation({
-    mutationFn: async () => {
-      const params = { approvalId: approval.id };
-      const { options } = await api.call("startApproval", { params, body: {} });
-      const response = await signWithPasskey(options);
-      return api.call("approve", { params, body: { response } });
-    },
-    onSuccess: refresh,
-  });
-  const reject = useMutation({
-    mutationFn: () => api.call("reject", { params: { approvalId: approval.id }, body: {} }),
-    onSuccess: async (next) => {
-      setConfirmReject(false);
-      await refresh(next);
-    },
-  });
-  const busy = approve.isPending || reject.isPending;
+  const session = useSession();
+  const userId = session.data?.user?.id;
 
+  if (approval.approvedBy.some((user) => user.id === userId)) {
+    const missing = approval.threshold - approval.approvals;
+    return (
+      <Alert tone="accent">
+        <CheckCircle2 aria-hidden />
+        <p>
+          You approved this request. It waits for {missing} more{" "}
+          {missing === 1 ? "approval" : "approvals"} from other approvers. This page updates when
+          they come in.
+        </p>
+      </Alert>
+    );
+  }
   if (!approval.canDecide) {
     return (
       <Alert>
         <KeyRound aria-hidden />
         <p>
-          You cannot decide this request: you may have approved it already, or your passkey is not
-          yet an approver in this workspace.
+          Only this workspace's approvers can decide this request, and your passkey is not an
+          approver here.
         </p>
       </Alert>
     );
   }
+  if (!approval.confirmUrl) {
+    return (
+      <section className="grid grid-cols-1 gap-2" aria-label="Decision">
+        <Alert tone="warning" className="items-start">
+          <TriangleAlert aria-hidden />
+          <div className="grid grid-cols-1 gap-1">
+            <p className="font-medium">This request cannot be approved.</p>
+            <p>
+              The signer would not open its page for approving it. That happens when something
+              changed after the request was made: the wallet's limits changed, a newer request
+              replaced it, or the server was restored from a backup. It also happens while the
+              signer cannot be reached. This page keeps checking. If nothing changes, reject it and
+              ask again.
+            </p>
+          </div>
+        </Alert>
+        <RejectButton approval={approval} disabled={expired} className="justify-self-start" />
+      </section>
+    );
+  }
+  const host = new URL(approval.confirmUrl).host;
   return (
-    <section className="grid gap-2" aria-label="Decision">
-      <p className="text-xs text-muted-foreground">
-        Approving lets the signer{" "}
-        {approval.kind === "approve-intent" || approval.kind === "sweep-wallet"
-          ? "sign exactly this operation"
-          : "apply exactly this change"}{" "}
-        once. Your passkey signs this request's fingerprint, nothing else.
-      </p>
-      <div className="grid grid-cols-[1fr_auto] gap-2">
-        <Button size="lg" onClick={() => approve.mutate()} disabled={busy || expired}>
-          <KeyRound aria-hidden />
-          {approve.isPending ? "Waiting for your passkey…" : "Approve with passkey"}
-        </Button>
-        <Button
-          size="lg"
-          variant="outline"
-          onClick={() => setConfirmReject(true)}
-          disabled={busy || expired}
-        >
-          <Ban aria-hidden />
-          Reject
-        </Button>
+    <section className="grid grid-cols-1 gap-2" aria-label="Decision">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+        {expired ? (
+          <Button size="lg" disabled className={wrappingButton}>
+            <ShieldCheck aria-hidden />
+            Review and approve on the signer's page
+          </Button>
+        ) : (
+          <a
+            href={approval.confirmUrl}
+            rel="noopener noreferrer"
+            className={cn(buttonVariants({ size: "lg" }), wrappingButton)}
+          >
+            <ShieldCheck aria-hidden />
+            Review and approve on the signer's page
+          </a>
+        )}
+        <RejectButton approval={approval} disabled={expired} />
       </div>
-      <FormError error={approve.error} />
-      {approval.confirmUrl ? <ConfirmationLink url={approval.confirmUrl} /> : null}
-      <Dialog
-        open={confirmReject}
-        onClose={() => setConfirmReject(false)}
-        title="Reject this request?"
+      <div className="flex items-start gap-2">
+        <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+          It opens <span className="font-mono break-all text-foreground">{host}</span>. Check that
+          your address bar shows exactly this before you approve. To approve on another device, copy
+          the link.
+        </p>
+        <CopyButton value={approval.confirmUrl} label="Copy link" />
+      </div>
+    </section>
+  );
+}
+
+/** A long label wraps on a narrow screen or with large text, instead of widening the page. */
+const wrappingButton = "h-auto min-h-12 min-w-0 px-4 py-2 text-center whitespace-normal";
+
+/** Saying no needs no passkey: it ends the request at once, for everyone. */
+function RejectButton({
+  approval,
+  disabled,
+  className,
+}: {
+  approval: ApprovalDetail;
+  disabled: boolean;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const reject = useMutation({
+    mutationFn: () => api.call("reject", { params: { approvalId: approval.id }, body: {} }),
+    onSuccess: async (next) => {
+      setOpen(false);
+      queryClient.setQueryData(keys.approval(approval.id), next);
+      await queryClient.invalidateQueries({ queryKey: ["approvals", approval.workspaceId] });
+      await queryClient.invalidateQueries({ queryKey: keys.workspace(approval.workspaceId) });
+    },
+  });
+  return (
+    <>
+      <Button
+        size="lg"
+        variant="outline"
+        className={className}
+        onClick={() => setOpen(true)}
+        disabled={disabled || reject.isPending}
       >
+        <Ban aria-hidden />
+        Reject
+      </Button>
+      <Dialog open={open} onClose={() => setOpen(false)} title="Reject this request?">
         <p className="mt-2 text-sm text-muted-foreground">
           It ends at once for everyone and cannot be approved later. No passkey is needed to say no.
         </p>
         <FormError error={reject.error} />
-        <div className="mt-6 flex justify-end gap-2">
-          <Button variant="outline" onClick={() => setConfirmReject(false)}>
+        <div className="mt-6 flex flex-wrap justify-end gap-2">
+          <Button variant="outline" onClick={() => setOpen(false)}>
             Keep it open
           </Button>
           <Button variant="destructive" onClick={() => reject.mutate()} disabled={reject.isPending}>
@@ -551,39 +617,7 @@ function Decide({ approval, expired }: { approval: ApprovalDetail; expired: bool
           </Button>
         </div>
       </Dialog>
-    </section>
-  );
-}
-
-/**
- * The signer's own page for this request, on another origin. It shows the request as the signer
- * holds it, and an approval made there names that origin, which this page cannot fake. It opens
- * in this tab and comes back here when done; the copied link works on another device too.
- */
-function ConfirmationLink({ url }: { url: string }) {
-  return (
-    <div className="grid gap-2 rounded-lg border p-3">
-      <a
-        href={url}
-        rel="noopener noreferrer"
-        // The label is long: it wraps on a narrow phone instead of widening the page.
-        className={cn(
-          buttonVariants({ variant: "outline", size: "lg" }),
-          "h-auto min-h-12 w-full py-2 text-center whitespace-normal",
-        )}
-      >
-        <ShieldCheck aria-hidden />
-        Review and approve on the signer's page
-      </a>
-      <div className="flex items-center justify-between gap-2">
-        <p className="min-w-0 text-xs text-muted-foreground">
-          It opens <span className="font-mono break-all text-foreground">{new URL(url).host}</span>.
-          Check that your address bar shows it before you approve. To approve on another device,
-          copy the link.
-        </p>
-        <CopyButton value={url} label="Copy link" />
-      </div>
-    </div>
+    </>
   );
 }
 
@@ -605,7 +639,7 @@ function Outcome({ approval }: { approval: ApprovalDetail }) {
       return (
         <Alert tone="success" className="items-start">
           <CheckCircle2 aria-hidden />
-          <div className="grid min-w-0 gap-1">
+          <div className="grid min-w-0 grid-cols-1 gap-1">
             <p className="font-medium">{signs ? "Approved." : "Done. The change is in effect."}</p>
             {intent ? (
               <div className="flex flex-wrap items-center gap-2">
@@ -696,7 +730,7 @@ function TechnicalDetails({ approval }: { approval: ApprovalDetail }) {
       <summary className="cursor-pointer px-4 py-3 text-sm font-medium select-none">
         Technical details
       </summary>
-      <div className="grid gap-4 border-t px-4 py-4 text-xs">
+      <div className="grid grid-cols-1 gap-4 border-t px-4 py-4 text-xs">
         {intent ? (
           <>
             <TechBlock label="Intent hash (SHA-256)" value={intent.intentHash} />
@@ -718,14 +752,13 @@ function TechnicalDetails({ approval }: { approval: ApprovalDetail }) {
           </>
         ) : null}
         <TechBlock
-          label="Envelope (exactly what your passkey signs)"
+          label="Envelope (what your passkey signs on the signer's page)"
           value={JSON.stringify(approval.envelope, null, 2)}
           pre
         />
-        <TechBlock label="Passkey challenge (the envelope's digest)" value={approval.challenge} />
         <p className="text-muted-foreground">
           Requested {formatTime(approval.createdAt)} · expires {formatTime(approval.expiresAt)} · id{" "}
-          <code className="font-mono">{approval.id}</code>
+          <code className="font-mono break-all">{approval.id}</code>
         </p>
       </div>
     </details>
@@ -734,7 +767,7 @@ function TechnicalDetails({ approval }: { approval: ApprovalDetail }) {
 
 function TechBlock({ label, value, pre }: { label: string; value: string; pre?: boolean }) {
   return (
-    <div className="grid gap-1">
+    <div className="grid grid-cols-1 gap-1">
       <p className="font-medium text-muted-foreground">{label}</p>
       {pre ? (
         <pre className="max-h-72 overflow-auto rounded-md bg-muted p-3 font-mono whitespace-pre-wrap break-all">

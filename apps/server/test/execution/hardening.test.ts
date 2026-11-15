@@ -49,20 +49,9 @@ async function propose(client: Client, amount = "0.01") {
   return { intentId: row.id, approvalId: row.approvalId, url: String(proposed.approvalUrl) };
 }
 
+/** Approve on the confirmation page and collect, leaving the workflow's steps to the test. */
 async function approveOnly(approvalId: ApprovalId, person: TestPerson = f.t.owner) {
-  const { options } = await person.browser.api.call("startApproval", {
-    params: { approvalId },
-    body: {},
-  });
-  const response = f.t.authenticator.authenticate({
-    credentialId: person.credentialId,
-    challenge: String(options.challenge),
-    origin: TEST_ORIGIN,
-  });
-  return person.browser.api.call("approve", {
-    params: { approvalId },
-    body: { response: response as never },
-  });
+  return f.t.approveOnPage(person, approvalId);
 }
 
 async function agentClient(name: string) {

@@ -2,7 +2,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { newId, policyHash, type WalletPolicy } from "@askgina/os-protocol";
+import {
+  type AddApproverEnvelope,
+  newId,
+  policyHash,
+  type WalletPolicy,
+} from "@askgina/os-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   approveIntent,
@@ -10,7 +15,9 @@ import {
   header,
   intentFor,
   newPerson,
+  ORIGIN,
   type Person,
+  provePossession,
   refused,
   setUpWorld,
   startSigner,
@@ -217,27 +224,77 @@ describe("policy changes", () => {
 
 describe("approvers and recovery", () => {
   it("adds an approver only with an existing approver's passkey", async () => {
-    const world = await setUpWorld(startSigner());
+    const t = startSigner();
+    const world = await setUpWorld(t);
     const carol = newPerson();
-    const addCarol = (people: Person[]) =>
-      authorize(
-        {
-          ...header(world.t.clock, newId("apr"), world.workspaceId),
-          type: "add-approver",
-          userId: carol.userId,
-          credentialId: carol.credential.credentialId,
-          publicKey: carol.credential.publicKey,
-        },
-        people,
-      );
+    const addCarol: AddApproverEnvelope = {
+      ...header(world.t.clock, newId("apr"), world.workspaceId),
+      type: "add-approver",
+      userId: carol.userId,
+      credentialId: carol.credential.credentialId,
+      publicKey: carol.credential.publicKey,
+    };
+    // Proving she holds the key is not approving: her passkey cannot let itself in.
+    await provePossession(t, addCarol, carol);
     await refused(
-      world.t.client.addApprover(world.workspaceId, { authorization: addCarol([carol]) }),
+      world.t.client.addApprover(world.workspaceId, {
+        authorization: authorize(addCarol, [carol]),
+      }),
       "approver_unknown",
     );
     const state = await world.t.client.addApprover(world.workspaceId, {
-      authorization: addCarol(world.people),
+      authorization: authorize(addCarol, world.people),
     });
     expect(state.approvers.map((approver) => approver.userId)).toContain(carol.userId);
+  });
+
+  it("refuses an approver change and a policy change approved on the control plane's page", async () => {
+    const t = startSigner();
+    const world = await setUpWorld(t);
+    const mallory = newPerson();
+    const addMallory: AddApproverEnvelope = {
+      ...header(world.t.clock, newId("apr"), world.workspaceId),
+      type: "add-approver",
+      userId: mallory.userId,
+      credentialId: mallory.credential.credentialId,
+      publicKey: mallory.credential.publicKey,
+    };
+    // She holds the key; what is refused below is where the approval was made.
+    await provePossession(t, addMallory, mallory);
+    // One misled tap on the control plane's page would hand over the workspace for good.
+    await refused(
+      world.t.client.addApprover(world.workspaceId, {
+        authorization: authorize(addMallory, world.people, ORIGIN),
+      }),
+      "assertion_invalid",
+    );
+    const policy = nextPolicy(world, { recipients: { mode: "any" } });
+    await refused(
+      world.t.client.setPolicy(world.walletId, {
+        policy,
+        authorization: authorize(
+          {
+            ...header(world.t.clock, newId("apr"), world.workspaceId),
+            type: "set-policy",
+            walletId: world.walletId,
+            policyHash: policyHash(policy),
+            previousPolicyHash: policyHash(world.policy),
+          },
+          world.people,
+          ORIGIN,
+        ),
+      }),
+      "assertion_invalid",
+    );
+    const state = await world.t.client.getWorkspace(world.workspaceId);
+    expect(state.approvers.map((approver) => approver.userId)).not.toContain(mallory.userId);
+    expect((await world.t.client.getWallet(world.walletId)).policy).toEqual(world.policy);
+
+    // Approved on the confirmation page, the same change is applied.
+    const added = await world.t.client.addApprover(world.workspaceId, {
+      authorization: authorize(addMallory, world.people),
+    });
+    expect(added.approvers.map((approver) => approver.userId)).toContain(mallory.userId);
   });
 
   it("refuses to remove an approver when the thresholds would become unreachable", async () => {

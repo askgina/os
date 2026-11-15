@@ -19,7 +19,7 @@ import { useWorkspaceId } from "@/routes/workspace.tsx";
 export function ActivityPage() {
   const workspaceId = useWorkspaceId();
   return (
-    <div className="grid gap-6">
+    <div className="grid grid-cols-1 gap-6">
       <AuditLog workspaceId={workspaceId} />
       <SignerDecisions workspaceId={workspaceId} />
     </div>
@@ -52,7 +52,7 @@ function AuditLog({ workspaceId }: { workspaceId: string }) {
           {verify.isPending ? "Checking…" : "Verify log"}
         </Button>
       </CardHeader>
-      <CardContent className="grid gap-4">
+      <CardContent className="grid grid-cols-1 gap-4">
         <FormError error={verify.error} />
         {verify.data ? (
           verify.data.ok ? (
@@ -84,7 +84,7 @@ function AuditLog({ workspaceId }: { workspaceId: string }) {
             {events.map((event) => (
               <li
                 key={event.seq}
-                className="grid gap-1 px-4 py-3 sm:grid-cols-[3rem_1fr_auto] sm:gap-4"
+                className="grid grid-cols-1 gap-1 px-4 py-3 sm:grid-cols-[3rem_minmax(0,1fr)_auto] sm:gap-4"
               >
                 <span className="font-mono text-xs text-muted-foreground">#{event.seq}</span>
                 <div className="min-w-0">
@@ -145,7 +145,7 @@ function SignerDecisions({ workspaceId }: { workspaceId: string }) {
             {[...decisions.data.items].reverse().map((decision) => (
               <li
                 key={decision.seq}
-                className="grid gap-1 px-4 py-3 sm:grid-cols-[3rem_1fr_auto] sm:gap-4"
+                className="grid grid-cols-1 gap-1 px-4 py-3 sm:grid-cols-[3rem_minmax(0,1fr)_auto] sm:gap-4"
               >
                 <span className="font-mono text-xs text-muted-foreground">#{decision.seq}</span>
                 <div className="min-w-0">

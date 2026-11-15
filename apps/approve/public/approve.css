@@ -176,9 +176,49 @@ h1 {
   color: var(--unchecked-border);
 }
 
-.decide {
+.decide,
+.possession {
   display: grid;
   gap: 0.5rem;
+}
+
+/* The step only the person being added does: set apart from the decision below it. */
+.possession {
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--card);
+  padding: 0.75rem;
+}
+
+h2 {
+  margin: 0;
+  font-size: 1.125rem;
+  line-height: 1.3;
+}
+
+.prove {
+  width: 100%;
+  min-height: 3rem;
+  border: 2px solid var(--accent);
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.prove:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Read aloud to the people who approve: large and monospaced; wraps rather than widen the page. */
+.fingerprint {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1.25rem;
+  letter-spacing: 0.05em;
+  overflow-wrap: anywhere;
 }
 
 .note {

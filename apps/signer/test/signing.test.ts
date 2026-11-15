@@ -1,13 +1,24 @@
-import { type Intent, newId, policyHash } from "@askgina/os-protocol";
+import {
+  AssertionResponse,
+  type Authorization,
+  envelopeChallenge,
+  type Intent,
+  newId,
+  policyHash,
+} from "@askgina/os-protocol";
 import { SIGNATURE_HEADER, signRequest, TIMESTAMP_HEADER } from "@askgina/os-protocol/signer";
+import { b64url } from "@askgina/os-protocol/testing";
 import { decodeFunctionData, erc20Abi, parseTransaction, recoverTransactionAddress } from "viem";
 import { describe, expect, it } from "vitest";
 import {
+  APPROVAL_ORIGIN,
   approveIntent,
   authorize,
   ETH,
   header,
   intentFor,
+  ORIGIN,
+  type Person,
   RECIPIENT,
   ROUTER,
   refused,
@@ -16,6 +27,53 @@ import {
   TOKEN,
   txParams,
 } from "./harness.ts";
+
+describe("where an approval was made", () => {
+  it("refuses an approval made on the control plane's page or in a frame, and signs nothing", async () => {
+    const world = await setUpWorld(startSigner());
+    const person = world.people[0] as Person;
+    const intent = intentFor(world);
+    const { envelope } = approveIntent(world, intent);
+    // The control plane's own page: same RP ID, same passkey, but the control plane chose what
+    // that page showed.
+    const onControlPlane = authorize(envelope, [person], ORIGIN);
+    // The confirmation page inside another page's frame: the browser stamps the confirmation
+    // page's origin, and says it was framed.
+    const framed: Authorization = {
+      envelope,
+      assertions: [
+        {
+          userId: person.userId,
+          credentialId: person.credential.credentialId,
+          response: AssertionResponse.parse(
+            person.authenticator.authenticate({
+              credentialId: person.credential.credentialId,
+              challenge: b64url(envelopeChallenge(envelope)),
+              origin: APPROVAL_ORIGIN,
+              crossOrigin: true,
+            }),
+          ),
+        },
+      ],
+    };
+    for (const authorization of [onControlPlane, framed]) {
+      await refused(
+        world.t.client.sign({ intent, authorization, transaction: txParams() }),
+        "assertion_invalid",
+      );
+    }
+    expect((await world.t.client.getApproval(envelope.approvalId)).state).toBe("unknown");
+    expect((await world.t.client.getWallet(world.walletId)).spent).toEqual([]);
+
+    // The same envelope approved on the confirmation page itself is signed.
+    const signed = await world.t.client.sign({
+      intent,
+      authorization: authorize(envelope, [person]),
+      transaction: txParams(),
+    });
+    expect(signed.approvalId).toBe(envelope.approvalId);
+  });
+});
 
 describe("signing an approved intent", () => {
   it("signs exactly the approved transfer, from the wallet's own key", async () => {
