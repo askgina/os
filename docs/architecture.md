@@ -335,30 +335,143 @@ same `Topic` and the same notification tag, so it replaces the first one. A push
 No notification carries what a request is about, and none is an input to an approval: the
 signer is not involved at any step.
 
+## Retiring a wallet and deleting a workspace
+
+People end a wallet by retiring it, and a workspace by deleting it with every wallet in it
+([`specs/workspace-lifecycle.md`](../specs/workspace-lifecycle.md)). Both end with the signer
+destroying keys, so both are approved like a signature: an owner asks, and people approve the
+`retire-wallet` or `delete-workspace` request on the confirmation page at the workspace's admin
+threshold. The envelope names the wallets with their addresses (for a deletion, exactly the
+wallets whose keys the signer still holds) and the destroy time. To empty a wallet first, people
+sweep it to an allowed address or the treasury.
+
+The signer keeps each lifecycle in its SQLite (schema version 7). A workspace is `active`,
+`deleting` or `deleted`; a wallet is `active`, `retiring`, `held` or `destroyed`:
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  state "Wallet" as W {
+    active --> retiring: retire-wallet applied (passkeys)
+    held --> retiring: retire-wallet applied (passkeys)
+    retiring --> held: cancelled (no passkey)
+    held --> active: a new policy applied (passkeys)
+    retiring --> destroyed: finalized once due
+  }
+  state "Workspace" as S {
+    ws_active: active
+    ws_deleting: deleting
+    ws_deleted: deleted
+    ws_active --> ws_deleting: delete-workspace applied (passkeys)
+    ws_deleting --> ws_active: cancelled (no passkey), still paused
+    ws_deleting --> ws_deleted: finalized once due
+  }
+```
+
+- **Applying** (`POST /v1/wallets/:walletId/retire`, `POST /v1/workspaces/:workspaceId/delete`
+  on the signer) needs the passkeys. From then on the wallet, or every wallet of the workspace,
+  signs nothing, and every live mandate of it ends in the same transaction. A deletion also
+  pauses the workspace and records each wallet's state before it (`active` or `held`); while it
+  waits the signer opens and signs only a `cancel-transaction`, so a stuck transaction can be
+  cleared first.
+- **Cancelling** needs no passkey, because it only keeps keys. A cancelled retirement leaves the
+  wallet `held`: it signs nothing until people approve a new policy for it. A cancelled deletion
+  puts each wallet back to the state the deletion found and leaves the workspace paused until
+  people approve `resume-workspace`. Mandates stay ended either way.
+- **Finalizing** needs no passkey either: it does only what people approved, once the destroy
+  time has passed by the signer's clock. The server's sweeper asks once a minute
+  ([`apps/server/src/lifecycle/finalize.ts`](../apps/server/src/lifecycle/finalize.ts)), and only
+  when no transaction of the subject can still be mined and no workflow run of it is unfinished.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant P as Person (browser + passkey)
+  participant S as Server (control plane)
+  participant A as approve service
+  participant G as Signer
+  P->>S: Delete workspace (owner, workspace paused)
+  S->>S: open a delete-workspace request at the admin threshold
+  P->>A: approve it on the confirmation page: wallets, addresses, destroy time
+  A->>G: the assertion, verified and kept by the signer
+  S->>G: POST /v1/workspaces/:workspaceId/delete (authorization)
+  G->>G: verify the passkeys, check the wallet set and the delay, end mandates, mark deleting
+  S->>S: notify: lifecycle.scheduled now, lifecycle.due_soon 24 hours before
+  Note over P,G: the delay: any member can cancel, and nothing is destroyed
+  loop sweeper, once a minute, after the destroy time
+    S->>S: wait while a transaction could be mined or a run is unfinished
+    S->>G: POST /v1/workspaces/:workspaceId/delete/finalize
+    G->>G: destroy each key in the vault, blank signed transactions, confirmations, mandate texts
+    S->>S: shred every run key and the workspace key, leave a tombstone
+  end
+```
+
+Who enforces what:
+
+| Rule                                                                                                                           | Enforced by                                                                                                                                            |
+| ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Passkeys at the admin threshold over the exact wallet set and destroy time                                                     | The signer, against its own approver registry and records (`wallet_set_mismatch`)                                                                      |
+| The delay lies between `SIGNER_MIN_DESTROY_DELAY_SECONDS` and `SIGNER_MAX_DESTROY_DELAY_SECONDS`                               | The signer (`destroy_delay_out_of_range`); the server checks it first for a clear error                                                                |
+| No key is destroyed before the destroy time                                                                                    | The signer's clock (`destroy_not_due`)                                                                                                                 |
+| A retiring or destroyed wallet, or a deleting or deleted workspace, signs nothing                                              | The signer (`wallet_retired`, `workspace_deleting`, `workspace_deleted`); the confirmation page shows such a request as closed                         |
+| Mandates end when the request is applied                                                                                       | The signer, in the same transaction                                                                                                                    |
+| A deletion is asked for only while the workspace is paused; who may ask (owner) and cancel (any member; approver for a wallet) | The server                                                                                                                                             |
+| Finalize waits for transactions that could still be mined and for unfinished runs                                              | The server: a compromised control plane can skip this, but not destroy early                                                                           |
+| Writes to a workspace that is not `active` are refused, except pause, cancel, revoking a mandate and the notification level    | The server (`conflict`, `workspace_deleting` or `workspace_deleted`); routes keyed by an approval or intent stay open, so a stuck one can be cancelled |
+| Data keys are shredded and the tombstone left                                                                                  | The server, after the signer's finalize                                                                                                                |
+| The balances shown before a deletion                                                                                           | Nobody: the server reads them for display, partially, and the signer cannot see them                                                                   |
+
+Removing an agent is disabling it, which is already final: it ends the agent's mandates and,
+now, its payments still waiting for people, which the server also revokes at the signer. The
+only way a wallet key leaves the signer is the operator's `admin.ts export-wallet` on the signer
+host; no route exports one. What each party can do with this is in
+[the threat model](./threat-model.md#retiring-a-wallet-and-deleting-a-workspace); the exact
+checks are in [the approval protocol, section 8](./approval-protocol.md).
+
 ## Where state lives
 
-| State                                                                                                                                                                | Where                                                                                                        | Who can change it                                                                                              |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| Wallet private keys                                                                                                                                                  | OWS vault in the signer's data volume                                                                        | Only the signer                                                                                                |
-| Authoritative wallet policy, approver registry, admin threshold, paused flag                                                                                         | Signer's SQLite                                                                                              | Only the signer, on passkey authorization (pausing and revoking need none, because they only remove authority) |
-| Used envelope nonces, spend ledger, signed transactions, hash-chained decision log                                                                                   | Signer's SQLite                                                                                              | Only the signer                                                                                                |
-| Mandates, the people who granted each, and every use counted under them                                                                                              | Signer's SQLite                                                                                              | Only the signer, on passkey authorization of the grant (revoking needs none)                                   |
-| People, passkeys for sign-in, sessions, workspaces, memberships, agents, wallets (addresses and a mirror of the policy), approvals, intents, transactions, audit log | Postgres, schema `os` ([`apps/server/src/db/schema.ts`](../apps/server/src/db/schema.ts))                    | The server                                                                                                     |
-| Workflow runs, steps, events, hooks, streams                                                                                                                         | Postgres, schemas `workflow` and `graphile_worker`                                                           | The Workflow runtime                                                                                           |
-| Wrapped data keys and shred tombstones                                                                                                                               | Postgres, schema `os_keys` ([`packages/keys/src/data-key-store.ts`](../packages/keys/src/data-key-store.ts)) | The server                                                                                                     |
-| Key-encryption keys                                                                                                                                                  | Keyring JSON file outside Postgres ([`packages/keys/src/keyring.ts`](../packages/keys/src/keyring.ts))       | The operator                                                                                                   |
-| Shared request-signing secret                                                                                                                                        | A file read by both server and signer                                                                        | The operator                                                                                                   |
-| Confirmation records, the hash of each link's token, assertions made on the confirmation page, possession challenges and proofs of new approver keys                 | Signer's SQLite                                                                                              | Only the signer                                                                                                |
-| Confirmation request secret                                                                                                                                          | A file read by the signer and, as a copy, by the `approve` service                                           | The operator                                                                                                   |
-| Notifications waiting to be sent, and each one's outcome                                                                                                             | Postgres, `os.notification_deliveries`                                                                       | The server                                                                                                     |
-| Webhook signing secret                                                                                                                                               | A file read by the server; the operator gives the receiver a copy                                            | The operator                                                                                                   |
-| Push subscriptions (each device's endpoint, keys and label), each person's notification switches per workspace and quiet hours                                       | Postgres, `os.push_subscriptions`, `os.notification_preferences`, `os.users.quiet_hours`                     | The server, at the person's request; it deletes a subscription its push service reports gone                   |
-| Each workspace's notification content level (`count` or `summary`)                                                                                                   | Postgres, `os.workspaces.notification_detail`                                                                | The server, at an owner's request, recorded in the audit log                                                   |
-| VAPID key (identifies the server to push services; every subscription is bound to it)                                                                                | A file read by the server, `vapid-key.pem` in its secrets volume                                             | The operator; `init` creates it when it is missing and never replaces it                                       |
+| State                                                                                                                                                                     | Where                                                                                                        | Who can change it                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| Wallet private keys                                                                                                                                                       | OWS vault in the signer's data volume                                                                        | Only the signer                                                                                                |
+| Authoritative wallet policy, approver registry, admin threshold, paused flag                                                                                              | Signer's SQLite                                                                                              | Only the signer, on passkey authorization (pausing and revoking need none, because they only remove authority) |
+| Used envelope nonces, spend ledger, signed transactions, hash-chained decision log                                                                                        | Signer's SQLite                                                                                              | Only the signer                                                                                                |
+| Mandates, the people who granted each, and every use counted under them                                                                                                   | Signer's SQLite                                                                                              | Only the signer, on passkey authorization of the grant (revoking needs none)                                   |
+| Each workspace's and wallet's lifecycle (`active`, `deleting`, `deleted`; `active`, `retiring`, `held`, `destroyed`), destroy time, each wallet's state before a deletion | Signer's SQLite                                                                                              | Only the signer, on passkey authorization (cancelling and finalizing need none)                                |
+| People, passkeys for sign-in, sessions, workspaces, memberships, agents, wallets (addresses and a mirror of the policy), approvals, intents, transactions, audit log      | Postgres, schema `os` ([`apps/server/src/db/schema.ts`](../apps/server/src/db/schema.ts))                    | The server                                                                                                     |
+| Workflow runs, steps, events, hooks, streams                                                                                                                              | Postgres, schemas `workflow` and `graphile_worker`                                                           | The Workflow runtime                                                                                           |
+| Wrapped data keys and shred tombstones                                                                                                                                    | Postgres, schema `os_keys` ([`packages/keys/src/data-key-store.ts`](../packages/keys/src/data-key-store.ts)) | The server                                                                                                     |
+| Key-encryption keys                                                                                                                                                       | Keyring JSON file outside Postgres ([`packages/keys/src/keyring.ts`](../packages/keys/src/keyring.ts))       | The operator                                                                                                   |
+| Shared request-signing secret                                                                                                                                             | A file read by both server and signer                                                                        | The operator                                                                                                   |
+| Confirmation records, the hash of each link's token, assertions made on the confirmation page, possession challenges and proofs of new approver keys                      | Signer's SQLite                                                                                              | Only the signer                                                                                                |
+| Confirmation request secret                                                                                                                                               | A file read by the signer and, as a copy, by the `approve` service                                           | The operator                                                                                                   |
+| Notifications waiting to be sent, and each one's outcome                                                                                                                  | Postgres, `os.notification_deliveries`                                                                       | The server                                                                                                     |
+| Webhook signing secret                                                                                                                                                    | A file read by the server; the operator gives the receiver a copy                                            | The operator                                                                                                   |
+| Push subscriptions (each device's endpoint, keys and label), each person's notification switches per workspace and quiet hours                                            | Postgres, `os.push_subscriptions`, `os.notification_preferences`, `os.users.quiet_hours`                     | The server, at the person's request; it deletes a subscription its push service reports gone                   |
+| Each workspace's notification content level (`count` or `summary`)                                                                                                        | Postgres, `os.workspaces.notification_detail`                                                                | The server, at an owner's request, recorded in the audit log                                                   |
+| VAPID key (identifies the server to push services; every subscription is bound to it)                                                                                     | A file read by the server, `vapid-key.pem` in its secrets volume                                             | The operator; `init` creates it when it is missing and never replaces it                                       |
 
 Some rows in Postgres mirror the signer's state for display (the policy on `wallets`, the paused
-flag on `workspaces`, the `approver_credentials` table, the `mandates` table). The schema's
-comments say so. The signer's copy is the one that counts.
+flag on `workspaces`, the `lifecycle` and `destroy_after` columns of both, the
+`approver_credentials` table, the `mandates` table). The schema's comments say so. The signer's
+copy is the one that counts.
+
+What a deleted workspace leaves, in each store:
+
+- **OWS vault:** nothing of its wallets. The signer deletes each wallet's file and every OWS API
+  key file named after it.
+- **Signer's SQLite:** the workspace as `deleted` and its wallets as `destroyed`, with empty
+  sealed credentials and empty signed transactions and attempts; used nonces, approvals,
+  spends, policies, mandate ids, hashes, grantors and uses, and the decision log. Its approvers,
+  confirmations, assertions and possession challenges are deleted and its mandate texts blanked.
+- **Postgres, schema `os`:** a tombstone: ids, statuses, times, hashes, addresses and the audit
+  chain, whose sealed details no key opens any more. Names and labels are cleared, agents are
+  disabled with their token hashes replaced, and memberships, invites, approver mirrors,
+  assertions, rejections, nonce reservations and notification preferences are removed. Former
+  members no longer see the workspace.
+- **Postgres, schemas `workflow` and `os_keys`:** the workflow rows stay, encrypted under run keys
+  that are now shredded tombstones, as is the workspace's data key.
+- **Backups taken before the deletion:** all of it, readable with the keyring saved beside them,
+  until the operator destroys them ([`deploy/README.md`](../deploy/README.md#backups-and-restoring)).
 
 ### What is encrypted at rest
 

@@ -4,7 +4,8 @@ This document says what the system protects, against whom, how, and where it doe
 claim names the file that implements it or the plan section that fixes it. The plan is
 [`specs/agent-workspaces-v0.1.md`](../specs/agent-workspaces-v0.1.md); mandates follow
 [`specs/approval-mandates.md`](../specs/approval-mandates.md), reprices and cancels of a stuck
-transaction [`specs/stuck-transaction-repricing.md`](../specs/stuck-transaction-repricing.md).
+transaction [`specs/stuck-transaction-repricing.md`](../specs/stuck-transaction-repricing.md),
+retiring a wallet and deleting a workspace [`specs/workspace-lifecycle.md`](../specs/workspace-lifecycle.md).
 Components and terms are introduced in [`architecture.md`](./architecture.md); the exact checks
 are in [`approval-protocol.md`](./approval-protocol.md).
 
@@ -17,6 +18,8 @@ are in [`approval-protocol.md`](./approval-protocol.md).
    memos, calldata, simulation results, audit details, workflow payloads.
 4. **Integrity of the record.** The audit log and the signer's decision log.
 5. **Availability.** Agents can propose and people can approve.
+6. **Erasure.** When people retire a wallet or delete a workspace, its keys are destroyed and
+   what was stored about it can no longer be read, outside the operator's older backups.
 
 ## Actors
 
@@ -159,11 +162,13 @@ This covers code execution in the server and a script injected into a page on `P
   denial of service; an `add-approver` request that carries a key the attacker holds under the
   named person's credential id, when nobody compares the fingerprint (see "Limits"); transfers it
   invents under a live mandate, which the signer signs with no person (see "Mandates"); network
-  fees burned by repricing up to each approval's fee ceiling (see "Stuck transactions"). The
-  release gate "an approval made on the control plane's page is refused" and the browser gate
-  "a script on the control plane's page cannot get an approval" test the refusal against the
-  real stack; the release gate "an approver change whose key the new person does not hold
-  cannot be approved" tests the possession step.
+  fees burned by repricing up to each approval's fee ceiling (see "Stuck transactions"); a
+  retirement or deletion people did not want, described falsely, or with false balances beside
+  it, and a deletion it stalls by cancelling it (see "Retiring a wallet and deleting a
+  workspace"). The release gate "an approval made on the control plane's page is refused" and
+  the browser gate "a script on the control plane's page cannot get an approval" test the
+  refusal against the real stack; the release gate "an approver change whose key the new person
+  does not hold cannot be approved" tests the possession step.
 
 ### A compromised `approve` service, or Caddy, DNS or the certificate for `APPROVE_ORIGIN`
 
@@ -241,12 +246,16 @@ This covers code execution in the server and a script injected into a page on `P
   approver can raise caps. The signer keeps every wallet's threshold at or below the admin
   threshold, so the admin threshold is the real bar for a wallet's rules. An owner can also ask
   for a sweep, which takes the same admin threshold and reaches only the treasury or an address
-  already on the wallet's allowlist.
+  already on the wallet's allowlist, and for retiring a wallet or deleting the paused workspace,
+  which take the same admin threshold and destroy keys only after the delay.
+- **Any member, viewer included:** can cancel a waiting deletion; an approver or owner can cancel
+  a waiting retirement. Cancelling keeps every key, so it needs no passkey.
 
 ### The signer host
 
 - **Can:** everything for the wallets on it. It holds the vault, the per-wallet OWS tokens and
-  the key that seals them.
+  the key that seals them. It is the only place a wallet key can be exported
+  (`admin.ts export-wallet`, recorded as `export-wallet-by-operator` in the decision log).
 - **Stopped by:** nothing in this design.
 
 ### The operator's backups
@@ -268,6 +277,10 @@ This covers code execution in the server and a script injected into a page on `P
   signed after the backup, a cancel among them, so it no longer reprices any transaction signed
   before the fence (`envelope_fenced`); a cancel, approved after the fence, is still signed (see
   "Stuck transactions").
+- **After a deletion:** a backup set taken before it holds the deleted workspace whole: its
+  wallet keys, the signer's signed transactions, confirmations and mandate texts, and its sealed
+  data with a keyring that opens it. Restored, it brings the workspace back. See "Retiring a
+  wallet and deleting a workspace".
 
 Back up each trust domain separately and protect the signer's backups as you would the funds.
 
@@ -561,6 +574,109 @@ paused workspace and the cancel of a sweep. Everything runs against Anvil. Nothi
 public mempool, the replacement rules of go-ethereum, reth or any other client, a reorg that
 swaps two attempts, or a real phone's passkey on a cancel.
 
+## Retiring a wallet and deleting a workspace
+
+Retiring a wallet, or deleting a workspace with every wallet in it, ends with the signer
+destroying keys. Destroying a key is treated like signing. An owner asks; people approve a
+`retire-wallet` or `delete-workspace` request on the confirmation page with passkeys at the
+workspace's admin threshold. The page shows the wallets and addresses the signer holds and the
+destroy time, with two warnings: whatever is still in the wallets then is lost, and the signer
+cannot see balances. From the moment it applies the approval the signer signs nothing for those
+wallets and ends their mandates ([`apps/signer/src/lifecycle.ts`](../apps/signer/src/lifecycle.ts);
+`approval-protocol.md`, section 8). It keeps the keys until the destroy time by its own clock,
+which must lie between `SIGNER_MIN_DESTROY_DELAY_SECONDS` (seven days by default) and
+`SIGNER_MAX_DESTROY_DELAY_SECONDS` (90 days) after the request was opened. Until then any member
+can cancel a deletion, and an owner or approver a retirement, with no passkey: a cancel only
+keeps keys. Once the time has passed and no transaction of the subject can still be mined, the
+server's sweeper has the signer destroy the keys, and for a workspace shreds its data keys and
+leaves a tombstone ([`apps/server/src/lifecycle/finalize.ts`](../apps/server/src/lifecycle/finalize.ts)).
+
+| If this is compromised | It can                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | It cannot                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The control plane      | Ask for a retirement or deletion people did not want and describe it falsely in its own pages; report false or partial balances, so approvers accept a loss they would not; cancel any retirement or deletion during the delay, which only delays it; leave runs unfinished or never call finalize, so a deletion never completes; read the workspace's sealed content until it shreds the workspace key; skip ending an agent's waiting payments when the agent is disabled | Show another wallet set, address or destroy time on the confirmation page: the signer renders them from its own records; destroy a key without passkeys at the admin threshold over an envelope that names exactly the wallets the signer still holds (`wallet_set_mismatch`); destroy before the destroy time, or set a delay outside the signer's bounds (`destroy_delay_out_of_range`); have a retiring or destroyed wallet sign, or have a deleting workspace approve anything but a `cancel-transaction`; make a cancelled deletion sign again: the workspace stays paused and a `held` wallet signs again only under a new policy people approve; bring back a mandate the request ended; export a key: no route does |
+| An agent or its token  | Nothing new: no tool retires, deletes or cancels                                                                                                                                                                                                                                                                                                                                                                                                                             | Use its token once its workspace is deleted: the tombstone replaces every agent's token hash                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| One owner's passkey    | Ask for a retirement or deletion, and approve it alone where the admin threshold is 1                                                                                                                                                                                                                                                                                                                                                                                        | Shorten the delay below the signer's minimum, or stop another member cancelling                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| A member's session     | Cancel a deletion (any member), or a retirement (an owner or approver)                                                                                                                                                                                                                                                                                                                                                                                                       | Destroy anything: a cancel only keeps keys                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| The signer host        | Everything, as before: export any key with `admin.ts export-wallet`, or delete the vault                                                                                                                                                                                                                                                                                                                                                                                     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+
+**What a successful attack gains.** A misled deletion destroys funds without moving them:
+sabotage, not theft, and recoverable from the operator's backups until they expire. Nothing in
+retiring or deleting sends money anywhere. The way to empty a wallet first is the sweep, whose
+bound is unchanged: an address on the wallet's allowlist or the workspace's treasury.
+
+**What the signer destroys, and what it keeps.** Finalizing runs in one write transaction with
+SQLite's `secure_delete` on. The signer reads the state again, deletes the wallet from the OWS
+vault (revoking every OWS API key named after it first, since each holds its own encrypted copy
+of the secret), then empties the wallet's sealed credential and every signed transaction and
+attempt of it. For a workspace it also deletes its approvers, confirmations, the assertions
+made on the confirmation page and possession challenges, and blanks the text of its mandates.
+After the commit it truncates the write-ahead log. It keeps used nonces, approvals, spends,
+policies, mandate ids, hashes, grantors and uses, and the decision log, so nothing of the
+workspace can be replayed, and afterwards answers only reads of its state and log for it
+(`workspace_deleted`). A vault failure rolls the rows back; a key already gone counts as
+deleted, so the next round completes.
+
+**What the control plane removes.** After the signer's step the server shreds the key of every
+workflow run of the workspace (`shredTenant("run", workspaceId)`: every run the server starts
+names the workspace as its tenant) and the workspace's data key, so no sealed column and no
+workflow payload of it can be opened with the live keyring
+([`data-key-store.ts`](../packages/keys/src/data-key-store.ts)). The tombstone keeps ids,
+statuses, times, hashes, addresses and the audit chain, which still verifies without the key;
+names and labels are cleared; agents are disabled with their token hashes replaced; memberships,
+invites, approver mirrors, assertions, rejections, nonce reservations and notification
+preferences are removed, and undelivered notifications dropped. Former members then get
+`not_found`.
+
+**A transaction that could still be mined.** A signed transaction stays valid after its key is
+destroyed, and nobody can replace it then. So finalize waits while any transaction of the
+subject is `signed`, `broadcast` or `stuck`, and while one is `rejected` and no later
+transaction of its wallet on its chain has used its nonce (`hasUnminedTransactions` in
+[`state.ts`](../apps/server/src/lifecycle/state.ts)). People clear a stuck one with its
+`cancel-transaction` request, which the signer still opens and signs while the deletion waits.
+
+**Mandates and agents.** Applying a retirement or deletion revokes every live mandate of the
+wallet or workspace in the same signer transaction, with reason `requested`; cancelling brings
+none back. Disabling an agent, the way to remove one, also ends its payments still waiting for
+people and revokes them at the signer
+([`directory/routes.ts`](../apps/server/src/directory/routes.ts)).
+
+**Not stopped:**
+
+- **Assets the control plane did not read.** The signer cannot see balances. The list the web
+  app shows before a deletion is the server's own reading of the native coin of each configured
+  chain and of the assets each wallet's policy lists ([`preflight.ts`](../apps/server/src/lifecycle/preflight.ts)):
+  partial, and false when the control plane lies. A token it does not list, or an NFT, is lost
+  with the key. The delay, the notifications (`lifecycle.scheduled` when the request applies,
+  `lifecycle.due_soon` 24 hours before the destroy time, to the webhook and to approvers' devices;
+  [`deploy/README.md`](../deploy/README.md#what-the-server-sends)) and the operator's
+  `export-wallet` before the time are the protection.
+- **A stalled deletion.** A compromised control plane can cancel every deletion, or never
+  finalize one. The keys survive, the workspace stays paused, and the state is visible. No
+  operator command finalizes a deletion from the signer host.
+- **The signer's clock decides the destroy time**, as it decides the restore fence and mandate
+  windows. A clock running ahead destroys early; the seven-day minimum dwarfs ordinary drift.
+- **Backups.** A backup set taken before the deletion holds the keys, the signed transactions,
+  the confirmations, the mandate texts and the sealed data with a keyring that opens it, until
+  the operator destroys it. Rotating the keyring after each deletion makes a pre-deletion
+  database copy unreadable with the current keyring, not with the keyring copy saved beside it
+  ([`deploy/README.md`](../deploy/README.md#backups-and-restoring)).
+- **Cached keys.** Other processes may keep a shredded data key in their cache for up to one
+  minute.
+- **A restore during the delay** brings back a `deleting` workspace whose countdown continues:
+  finalizing needs no envelope, so the restore fence does not stop it.
+- **Plaintext on the signer during the delay.** The confirmations, assertions and mandate texts
+  stay readable on the signer host until finalize removes them.
+
+Tests: [`apps/signer/test/lifecycle.test.ts`](../apps/signer/test/lifecycle.test.ts) (applying,
+cancelling, the delay bounds, the fence, a vault that fails mid-destroy, what a deleted
+workspace keeps, the version 7 migration),
+[`apps/server/test/lifecycle/retire.test.ts`](../apps/server/test/lifecycle/retire.test.ts) and
+[`delete.test.ts`](../apps/server/test/lifecycle/delete.test.ts) (mandates ended on approval, a
+cancel keeping the keys and the pause, the wait for a given-up transaction, the wait for runs, a
+proposal racing the tombstone, a deleted workspace whose stored data cannot be opened, disabling
+an agent), and the key store's tests of `shredTenant`. None of it has run on the real stack yet:
+the release gates are being written (plan, Milestone 7).
+
 ## What is encrypted at rest
 
 | Data                                                                                                                            | Where                                                                                                   | Encrypted?                                                                                 | Why                                                                                                                     |
@@ -709,6 +825,12 @@ threshold. What bounds a misled sweep is the destination rule: the money can onl
 address the approvers allowed earlier, or the workspace's own treasury. A paused workspace can
 still be swept, on purpose: it is how a paused workspace is emptied.
 
+**A deletion destroys what the signer cannot see.** The signer has no path to a chain, so it
+destroys keys whatever their wallets still hold. The confirmation page says so; the balances the
+web app shows are the control plane's, partial, and not checked by anyone else. A key is gone
+from backups only when every backup that holds it is gone (see "Retiring a wallet and deleting a
+workspace").
+
 **Removing the passkeys of every approver does not lock the funds forever, by design.** It also
 means the signer host's operator can always add an approver.
 
@@ -724,8 +846,9 @@ From the map's "Not yet specified" list ([askgina/os#1](https://github.com/askgi
 - Operating beyond one machine: KMS or OpenBao key providers, HA Postgres, Kubernetes.
 - Notifications outside the inbox beyond Web Push and the signed webhook with its sidecars (see
   "Notifications"): email, and chat adapters built into the control plane.
-- Workspace lifecycle beyond emptying a wallet: clone, export, retiring a wallet, and delete with
-  assets still in the wallets. A person can sweep a wallet whose agent is gone.
+- Workspace lifecycle beyond emptying, retiring and deleting: exporting a workspace's record or
+  template, cloning one, and erasing a person on request (plan
+  [`specs/workspace-lifecycle.md`](../specs/workspace-lifecycle.md), Milestones 5 and 8).
 - For stuck transactions: a new gas limit, legacy (type 0) and blob transactions, L2-specific
   fee fields, private order flow, and a signer that watches the chain itself.
 

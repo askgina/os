@@ -180,6 +180,28 @@ windows by the same clock: keep it synchronized (see "Mandates").
 The fence also stops the reprice of every transaction signed before it; a cancel of one is still
 signed (see "Stuck transactions").
 
+**Deleted workspaces stay in backups.** A backup set taken before a deletion holds the deleted
+workspace whole: `signer-data` holds its wallet keys, signed transactions, confirmations and
+mandate texts, and `postgres-data` with the `server-secrets` of the same moment opens its sealed
+data and workflow history. Deleted data leaves your backups only when every set taken before the
+deletion is destroyed. So, after each deletion:
+
+1. Rotate the keyring as in "Rotating the keyring" below, through `prune`, and note the date. The
+   server logs `lifecycle.rotate_keyring` when a deletion is finished, as the reminder. From then
+   on a database copy taken before the deletion cannot be opened with the live keyring; it still
+   opens with the `server-secrets` archive saved beside it.
+2. Keep backup sets for 30 days, then destroy them, `server-secrets` and `signer-data` archives
+   included. That retention is how long a deleted workspace stays recoverable, and readable to
+   whoever holds the archives. Choose another if you must, and write it down where the people who
+   delete workspaces can read it.
+
+Restoring a backup set brings back every workspace as it was at that moment, deleted ones
+included, with their keys. Every restore is fenced as above, which also ends every live mandate.
+A workspace that was waiting to be deleted at the backup comes back `deleting` with its countdown
+still running: finishing a deletion needs no new approval, so the fence does not stop it. Cancel
+the deletion if the restore was meant to undo it, or take the keys out first with `export-wallet`
+(see "Retiring wallets and deleting workspaces").
+
 ## Rotating the keyring
 
 The keyring holds the key-encryption keys that wrap every data key in the database. Rotating
@@ -193,6 +215,10 @@ re-wraps the data keys; it does not re-encrypt the data.
 
 Do not prune if rewrap reported failures: a data key still wrapped under a removed key can never
 be read again. Back up `server-secrets` before and after.
+
+Rotate after every finished deletion (see "Backups and restoring"): `prune` removes the key that
+wrapped the deleted workspace's data keys from the live keyring, so older database copies no
+longer open with it.
 
 ## Adding an approver
 
@@ -341,6 +367,84 @@ the payment. Such a transaction can still be cancelled: the cancel request is ne
 does not refuse it. The chain is not part of a backup; whatever attempt was mined meanwhile is
 found again by its hash.
 
+## Retiring wallets and deleting workspaces
+
+An owner can retire one wallet, or delete a paused workspace with every wallet in it. Both end
+with the signer destroying keys, so people approve them on the confirmation page at the
+workspace's admin threshold, like a policy change. The page lists the wallets and addresses the
+signer holds and the time it destroys the keys. From that approval the wallets sign nothing and
+their mandates end. Until the destroy time any member can cancel a deletion, and an owner or
+approver a retirement, with no passkey: the keys stay. A cancelled retirement leaves the wallet
+`held`, signing nothing until people approve a new policy for it; a cancelled deletion puts each
+wallet back as it was and leaves the workspace paused until people approve resuming it. Ended
+mandates stay ended.
+
+Once the destroy time has passed by the signer's clock, the server's sweeper (once a minute)
+finishes it. It waits while any transaction of the wallet or workspace could still be mined:
+one signed, sent or stuck, or one given up on whose nonce no later transaction has used. People
+clear a stuck one with its cancel, which still works while the workspace is being deleted (see
+"Stuck transactions"). Then the signer deletes each key from the vault and empties the signed
+transactions it kept. For a workspace it also deletes its confirmations and blanks its mandate
+texts, and the server shreds the workspace's data key and the key of every workflow run of it,
+and leaves a tombstone: names cleared, members removed. Former members then get `not_found`.
+
+**The signer cannot see balances.** It destroys keys whatever the wallets still hold. The list
+the web app shows before a deletion is the server's reading of the native coin of each chain in
+`deploy/chains.json` and of the assets each wallet's policy lists: partial, and only as honest as
+the control plane. Empty the wallets first with a sweep. A token nothing lists is lost with the
+key.
+
+Two settings in `.env`, both optional; Compose passes them to the signer:
+
+| Setting                            | Meaning                                                                                                                                                                                                          |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SIGNER_MIN_DESTROY_DELAY_SECONDS` | The shortest time between a request being opened and its keys being destroyed: 0 to 7776000 seconds, default 604800 (seven days). The server reads it from the signer and refuses an earlier time before asking. |
+| `SIGNER_MAX_DESTROY_DELAY_SECONDS` | The longest: 1 to 31536000 seconds, at least the minimum, default 7776000 (90 days).                                                                                                                             |
+
+The signer refuses a request outside these bounds (`destroy_delay_out_of_range`). Changing them
+does not move a destroy time already approved. A minimum of 0 suits only a test stack.
+
+Two webhook events and push notices announce a scheduled destruction: `lifecycle.scheduled` when
+people approved it and `lifecycle.due_soon` 24 hours before the keys go (see "What the server
+sends"). The server logs `lifecycle.finalize_skipped` with the reason (`unmined_transactions`,
+`unfinished_runs`, `destroy_not_due`, `not_scheduled`) while it waits, `lifecycle.finalize_failed`
+on an error, and `lifecycle.finalized` when done; every step is safe to repeat, so the next round
+finishes what a crash interrupted. The signer's decision log records `retire-wallet`,
+`delete-workspace`, `cancel-retire-wallet`, `cancel-delete-workspace` and `destroy-wallet`.
+
+**Taking a key out.** No route exports a wallet key. On the signer host, before its destroy time:
+
+    docker compose exec signer node src/admin.ts export-wallet \
+      --workspace <workspace id> --wallet <wallet id> --out /tmp/<wallet id>.txt
+    docker compose exec -T signer cat /tmp/<wallet id>.txt > <wallet id>.txt
+    docker compose exec signer rm /tmp/<wallet id>.txt
+
+It writes the wallet's mnemonic to a new file readable by its user only, refuses a path that
+exists (`out_exists`) and a destroyed wallet (`wallet_retired`), and prints one line with the
+address, never the secret. `/tmp` in the signer's container is in memory; never write the file
+under `/data`, which is the backed-up `signer-data` volume. The export is recorded as
+`export-wallet-by-operator` in the workspace's decision log. Whoever holds the file holds the
+wallet: move its funds and destroy the file.
+
+**Shredding by hand.** The sweeper shreds a deleted workspace's keys itself. To shred every data
+key of one tenant by hand, for example the run keys of a workspace:
+
+    docker compose exec server node packages/keys/src/cli.ts shred-tenant run <workspace id>
+
+It prints `{"event":"keys.shred_tenant",…,"shredded":<n>}` and exits 0, also when nothing was
+left to shred. Data under those keys can never be read again, and a workflow run still going
+retries forever, so shred only after its runs have finished. Other processes keep a cached key
+for up to one minute.
+
+**What a compromised control plane can do with this.** Ask for a retirement or deletion people
+did not want, describe it falsely in its own pages, or show false balances; cancel any of them,
+or never finish one, which only delays it. It cannot destroy a key without passkeys at the admin
+threshold over the exact wallet set, before the destroy time, or with a delay outside the
+signer's bounds (`docs/threat-model.md`, "Retiring a wallet and deleting a workspace").
+
+None of this has run on the real stack yet: the signer's and the server's tests cover it, and the
+release gates are being written.
+
 ## When no approver is left
 
 Who may approve for a workspace is recorded in the signer, and normally changes only with a
@@ -372,7 +476,17 @@ file was not restored: approvals waiting at that moment must be proposed again. 
 to start on a database written by a newer signer (`schema_too_new`). Do not go back to a v0.1
 signer image after upgrading: it does not know the fence and would ignore it.
 
-The signer's schema is now version 6: version 6 adds the table `signature_attempts`, one row per
+The signer's schema is now version 7: version 7 adds lifecycle columns to `workspaces` and
+`wallets` (state, destroy time, a wallet's state before a deletion), all with defaults, so every
+existing workspace and wallet starts `active`. The signer also turns on SQLite's `secure_delete`.
+A signer image from before it refuses to start on the migrated file with `schema_too_new`, so
+roll the signer back only together with the `signer-data` backup taken before the upgrade: that
+is a restore, fenced as above, and it forgets every retirement and deletion since, bringing back
+the keys of any finished one. The control plane's migration
+`0008_lifecycle` adds the mirrored `lifecycle`, `destroy_after` and `deleted_at` columns. Upgrade
+the signer and `approve` first, then the server.
+
+Version 6 added the table `signature_attempts`, one row per
 reprice or cancel the signer signed. The migration only creates it; a transaction signed before
 the upgrade can be repriced and cancelled like a new one. A signer image from before it refuses
 to start on the migrated file with `schema_too_new`, so a rollback of the signer means fixing
@@ -419,11 +533,13 @@ unsigned. A receiver built for that one must verify the signature and dedupe, as
 
 ### What the server sends
 
-| `event`             | When                                                                                                                               | Body keys                                                                            |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `approval.opened`   | A request people decide on opens: a payment, a policy or approver change, the admin threshold, a resume, a sweep, a mandate grant. | `approvalId`, `deliveryId`, `event`, `expiresAt`, `kind`, `link`, `v`, `workspaceId` |
-| `approval.reminder` | Not sent to the webhook today: reminders go only to Web Push devices (see "Reminders" below). The format keeps the event.          | The same                                                                             |
-| `mandate.used`      | A payment a mandate covers goes to the signer with no person asked.                                                                | `approvalId`, `deliveryId`, `event`, `link`, `mandateId`, `v`, `workspaceId`         |
+| `event`               | When                                                                                                                                | Body keys                                                                                                                 |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `approval.opened`     | A request people decide on opens: a payment, a policy or approver change, the admin threshold, a resume, a sweep, a mandate grant.  | `approvalId`, `deliveryId`, `event`, `expiresAt`, `kind`, `link`, `v`, `workspaceId`                                      |
+| `approval.reminder`   | Not sent to the webhook today: reminders go only to Web Push devices (see "Reminders" below). The format keeps the event.           | The same                                                                                                                  |
+| `mandate.used`        | A payment a mandate covers goes to the signer with no person asked.                                                                 | `approvalId`, `deliveryId`, `event`, `link`, `mandateId`, `v`, `workspaceId`                                              |
+| `lifecycle.scheduled` | People approved retiring a wallet or deleting the workspace; the signer destroys the keys at `destroyAfter` unless someone cancels. | `approvalId`, `deliveryId`, `destroyAfter`, `event`, `kind`, `link`, `v`, `walletId` (null for a deletion), `workspaceId` |
+| `lifecycle.due_soon`  | 24 hours before `destroyAfter`, when that is later than the approval. Dropped if the destruction was cancelled meanwhile.           | The same                                                                                                                  |
 
 One request, as it arrives:
 

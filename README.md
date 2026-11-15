@@ -174,15 +174,30 @@ if the chain mines the payment first, the payment stands. Either way the payment
 the wallet's daily limit. The settings and what they cannot do are in
 [`deploy/README.md`](deploy/README.md#stuck-transactions).
 
+## Retire a wallet or delete a workspace
+
+An owner can retire a wallet, or delete a paused workspace with all its wallets. People approve
+it on the confirmation page with passkeys at the workspace's admin threshold; the page lists the
+wallets and the time the signer destroys their keys, seven days later at the least by default
+(`SIGNER_MIN_DESTROY_DELAY_SECONDS`). From that approval the wallets sign nothing and their
+mandates end. Until the destroy time any member can cancel a deletion, and an owner or approver
+a retirement; the keys stay. Then the signer destroys the keys, and for a deleted workspace the
+server shreds its data keys, so nothing it stored can be read with the live keyring, and former
+members no longer see it. The signer cannot see balances: empty the wallets first with a sweep.
+Backups taken before a deletion still hold everything until you destroy them; the deploy guide
+says how long to keep them and to rotate the keyring after each deletion
+([`deploy/README.md`](deploy/README.md#retiring-wallets-and-deleting-workspaces)).
+Its unit tests pass; it has not yet run on the full stack.
+
 ## What this protects, and what it does not
 
-| If this is compromised       | The attacker can                                                                                                                                                              | The attacker cannot                                                                                                                                                  |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| An agent or its token        | Propose operations; spend inside its live mandates                                                                                                                            | Approve, sign, change limits, reach the signer; pay outside a mandate's list or caps; speed up or cancel a payment                                                   |
-| The control plane's database | Read names, ids, statuses, addresses, limits                                                                                                                                  | Read sealed content; forge an approval                                                                                                                               |
-| The control plane itself     | Ask the signer; show a person a misleading card; have the signer sign transfers that fit a live mandate; raise a sent payment's network fee up to the ceiling people approved | Get an approval the signer accepts; change the confirmation page; exceed limits or a mandate; reuse an approval; change a stuck payment's recipient, amount or nonce |
-| The confirmation service     | Show a person a misleading page                                                                                                                                               | Sign or read a key; reach a signer route but its four; approve unaided                                                                                               |
-| The signer's machine         | Everything for the wallets on it                                                                                                                                              |                                                                                                                                                                      |
+| If this is compromised       | The attacker can                                                                                                                                                                                                                                       | The attacker cannot                                                                                                                                                                                                                   |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| An agent or its token        | Propose operations; spend inside its live mandates                                                                                                                                                                                                     | Approve, sign, change limits, reach the signer; pay outside a mandate's list or caps; speed up or cancel a payment                                                                                                                    |
+| The control plane's database | Read names, ids, statuses, addresses, limits                                                                                                                                                                                                           | Read sealed content; forge an approval                                                                                                                                                                                                |
+| The control plane itself     | Ask the signer; show a person a misleading card; have the signer sign transfers that fit a live mandate; raise a sent payment's network fee up to the ceiling people approved; ask for a deletion and show false balances beside it; cancel a deletion | Get an approval the signer accepts; change the confirmation page; exceed limits or a mandate; reuse an approval; change a stuck payment's recipient, amount or nonce; destroy a key without passkeys or before its time; export a key |
+| The confirmation service     | Show a person a misleading page                                                                                                                                                                                                                        | Sign or read a key; reach a signer route but its four; approve unaided                                                                                                                                                                |
+| The signer's machine         | Everything for the wallets on it                                                                                                                                                                                                                       |                                                                                                                                                                                                                                       |
 
 Two limits are worth knowing before you rely on this:
 
@@ -199,6 +214,10 @@ Two limits are worth knowing before you rely on this:
 - A live mandate is spent with no person asked. A stolen agent token, or a compromised control
   plane, can make the signer pay the mandate's recipients up to its remaining caps, choosing
   when. Grant mandates with short lives and tight caps, and revoke them when they are not needed.
+- Deleting a workspace destroys keys whatever their wallets hold. The balances the web app shows
+  come from the control plane and are partial; the signer sees none. A deletion people were
+  misled into loses funds, and a compromised control plane can delay any deletion by cancelling
+  it.
 - Running every service on one machine gives no protection against that machine.
 
 The full list is in [`docs/threat-model.md`](docs/threat-model.md).
@@ -210,9 +229,11 @@ This is a first release (v0.1) and has not been audited. Use test funds.
 Scope: EVM chains; native transfers, ERC-20 transfers and allowlisted contract calls; one
 approval for one transaction, or a mandate for a bounded series of one agent's transfers; a
 stuck transaction repriced under its approval or cancelled with passkeys, tested against a local
-chain only. Not in this release: mandates for contract calls or trades, other chains, a bundled
-agent runtime, cloud key management. The
-[map of open questions](https://github.com/askgina/os/issues/1) lists what is planned and why.
+chain only; retiring a wallet and deleting a workspace, with keys destroyed after a delay, not yet
+run on the full stack. Not in this release: exporting or cloning a workspace, erasing a person,
+mandates for contract calls or trades, other chains, a bundled agent runtime, cloud key
+management. The [map of open questions](https://github.com/askgina/os/issues/1) lists what is
+planned and why.
 
 ## Documentation
 
@@ -220,7 +241,7 @@ agent runtime, cloud key management. The
 - [`docs/approval-protocol.md`](docs/approval-protocol.md): the exact formats, digests and checks.
 - [`docs/threat-model.md`](docs/threat-model.md): every attacker position and the known limits.
 - [`deploy/README.md`](deploy/README.md): services, networks, volumes, the confirmation page's
-  origin, backups, key rotation.
+  origin, backups, key rotation, retiring wallets and deleting workspaces.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`SECURITY.md`](SECURITY.md).
 - [`THIRD_PARTY.md`](THIRD_PARTY.md): dependencies whose licence is not MIT or Apache-2.0.
 
