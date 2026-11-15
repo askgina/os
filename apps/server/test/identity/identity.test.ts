@@ -307,6 +307,7 @@ describe("origin check", () => {
     "speedUp",
     "requestCancel",
     "requestSweepCancel",
+    "cancelOrder",
     "requestDeleteWorkspace",
     "cancelDeleteWorkspace",
     "cloneWorkspace",

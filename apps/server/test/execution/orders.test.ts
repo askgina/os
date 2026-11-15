@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { MandateDraft, PolicyDraft } from "@askgina/os-api";
+import { ApiErrorBody, type MandateDraft, type PolicyDraft, routes } from "@askgina/os-api";
 import type { AgentId, ApprovalId, IntentId, MandateId } from "@askgina/os-protocol";
 import { FakeHyperliquid } from "@askgina/os-testkit/fake-hyperliquid";
 import type { Client } from "@modelcontextprotocol/client";
@@ -369,6 +369,32 @@ describe("after approval", () => {
       status: "cancelled",
     });
     expect(posted("cancelByCloid")).toHaveLength(cancels + 1);
+  });
+
+  // The identity tests leave this to the execution tests: it is not on that test app.
+  it("cancelOrder refuses a write without a same-site Origin, and cancels nothing", async () => {
+    const row = await approvedOrder();
+    await followUp(row.approvalId);
+    expect(await status(row.id)).toBe("placed");
+    const cancels = posted("cancelByCloid").length;
+    const route = routes.cancelOrder;
+    const path = route.path.replace(":intentId", row.id);
+    const init = {
+      method: route.method,
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    };
+    const missing = await f.t.owner.browser.fetch(path, { ...init, origin: null });
+    const foreign = await f.t.owner.browser.fetch(path, {
+      ...init,
+      origin: "https://evil.example",
+    });
+    for (const response of [missing, foreign]) {
+      expect(response.status).toBe(403);
+      expect(ApiErrorBody.parse(await response.json()).error.code).toBe("forbidden");
+    }
+    expect(posted("cancelByCloid")).toHaveLength(cancels);
+    expect(await status(row.id)).toBe("placed");
   });
 
   it("lets a person cancel a resting order without a passkey", async () => {
