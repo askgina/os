@@ -438,8 +438,7 @@ Status: **testnet only, off by default.** The encoder and its signatures match t
 signed vectors and the signer's routes are unit-tested, both green in CI; the server's half is
 unit-tested against a fake venue, and the real-stack gate is pending. Nothing has run against
 the real Hyperliquid testnet yet: no funded testnet account is in hand. Mainnet is refused:
-whether and where it may ship is a legal and geographic question, to be looked at for the EU
-first, and it is open with the owner (D2). Nothing in this guide answers it.
+turning it on is the owner's open decision (D2).
 
 | Setting       | Service | Meaning                                                                                                                                                                                                                    |
 | ------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -646,8 +645,7 @@ remove them; an owner of each removes the person there (or makes them a viewer),
 it, then run the command again. Exit 2: refused, with the code above. Exit 1: usage.
 
 Backups taken before an erasure keep the person's name and everything else until they are
-destroyed. Whether keeping the user id satisfies GDPR Article 17 has not been reviewed by
-counsel; that review is still open, and this guide makes no legal claim about it.
+destroyed. The user id stays everywhere, so the audit logs still verify.
 
 Erasing has unit tests only; no release gate runs it on the stack.
 

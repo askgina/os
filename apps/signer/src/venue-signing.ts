@@ -53,8 +53,8 @@ import { encodeMsgpack, jsonToMsgpack, MsgpackMap, msgpackToJson } from "./venue
 export const VENUE_ACTIONS = { sign: "sign-venue", cancel: "cancel-venue-order" } as const;
 
 /**
- * The venue networks this signer signs for. Mainnet waits on owner decision D2 (legal and
- * geographic, `specs/non-evm-operations.md`): until it is answered, a mainnet venue intent is
+ * The venue networks this signer signs for. Mainnet waits on owner decision D2
+ * (`specs/non-evm-operations.md`): until it is answered, a mainnet venue intent is
  * refused as `policy_denied` with `venue_not_allowed`, whatever the wallet's policy names.
  */
 export const SIGNABLE_VENUE_NETWORKS: readonly VenueNetwork[] = ["hyperliquid:testnet"];

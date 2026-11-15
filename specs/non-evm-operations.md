@@ -71,7 +71,7 @@ Success means:
 - [x] (2026-11-15) Re-checked against main at `98cc6a1` (trusted display, v0.1 defect fixes,
       mandates and notifications landed); owner decisions are now D1 to D9.
 - [x] (2026-11-15) Owner decisions D1 and D3 to D9 taken by the lead under Eric's delegation,
-      each as the recommended option (see `Decision Log`). D2 (mainnet: legal and geographic)
+      each as the recommended option (see `Decision Log`). D2 (mainnet)
       stays open with Eric; until he answers, venues are testnet only and a mainnet venue is
       refused at boot.
 - [x] (2026-11-15) Milestone 1: protocol shapes, venue policy and evaluation, the order and
@@ -391,8 +391,8 @@ Success means:
 ## Decision Log
 
 Owner decisions D1 and D3 to D9 were taken on 2026-11-15 by the lead under Eric's delegation
-("delegate to you on decisions like a CTO"), each as the option this plan recommended. D2 is a
-legal and geographic question and stays open with Eric. Each was re-checked against main on
+("delegate to you on decisions like a CTO"), each as the option this plan recommended. D2
+(mainnet) stays open with Eric. Each was re-checked against main on
 2026-11-15; none is moot.
 
 - Decision (owner, D1, taken 2026-11-15 by the lead under Eric's delegation, as recommended):
@@ -405,13 +405,13 @@ legal and geographic question and stays open with Eric. Each was re-checked agai
   Re-check 2026-11-15: unchanged. Recommendation stands: still the smallest step that keeps
   "the signer builds what it signs".
   Date/Author: 2026-11-14 / research agent
-- Decision (owner, D2, **open: Eric's**, legal and geographic): whether and where mainnet venue
-  support may ship. Until Eric answers the questions in the research report ("Owner
-  questions"), the plan builds only the fail-closed default: venue support ships disabled (no
-  `VENUES_FILE`), testnet only, and the server refuses to start with a mainnet venue configured.
-  Rationale: the plan does not answer legal questions; it keeps the feature off until someone
-  who can answer them has. Not delegated: a legal and geographic call stays with Eric.
-  Re-check 2026-11-15: unchanged; nothing built since answers the legal questions.
+- Decision (owner, D2, **open: Eric's**): whether mainnet venue support ships. Until Eric
+  answers the questions in the research report ("Owner questions"), the plan builds only the
+  fail-closed default: venue support ships disabled (no `VENUES_FILE`), testnet only, and the
+  server refuses to start with a mainnet venue configured.
+  Rationale: mainnet moves real value at a venue; the feature stays off until the owner turns
+  it on. Not delegated.
+  Re-check 2026-11-15: unchanged.
   Date/Author: 2026-11-14 / research agent
 - Decision (owner, D3, taken 2026-11-15 by the lead under Eric's delegation, as recommended):
   Hyperliquid actions are signed by the wallet's own key; no API wallet is approved.
@@ -1488,7 +1488,7 @@ Regression checks:
 - Risk: a resting order signed after the last backup cannot be cancelled after a restore (D9).
   Mitigation: D9 (a), taken 2026-11-15: documented in the restore steps, and the default
   policy draft allows only `Ioc`.
-- Open question, **Eric's** (D2, legal and geographic, EU first): see the research report's
+- Open question, **Eric's** (D2, mainnet): see the research report's
   "Owner questions". Not delegated; nothing in this plan answers them; mainnet stays refused at
   boot.
 - Answered (2026-11-15, by the lead under Eric's delegation; no recommendation, so the

@@ -700,10 +700,8 @@ does not reuse a nonce while its clock is right.
 **Mainnet is refused (D2).** The signer signs only `hyperliquid:testnet`, a constant in its code
 (`SIGNABLE_VENUE_NETWORKS`), and refuses a mainnet intent with `venue_not_allowed` whatever the
 wallet's policy names. The server stops at boot when `VENUES_FILE` names `hyperliquid:mainnet` or
-the host `api.hyperliquid.xyz` ([`config.ts`](../apps/server/src/config.ts)). Whether and where
-mainnet venue support may ship is a legal and geographic question, to be looked at for the EU
-first. It is open with the owner; nothing in this repository answers it, and nothing here is a
-legal opinion.
+the host `api.hyperliquid.xyz` ([`config.ts`](../apps/server/src/config.ts)). Turning mainnet
+venue support on is the owner's open decision.
 
 **What is stored.** The signed request is sealed in `venue_orders.request`. The order's client
 order id, nonce, expiry, status, venue order id, filled size, average price and the venue's own
@@ -912,8 +910,6 @@ A clone or import no longer invites an erased person.
 **Not stopped:**
 
 - **The user id stays**, and links that person's history across every workspace they were in.
-  Whether keeping the id satisfies GDPR Article 17 is an open question for counsel; this
-  document makes no legal claim about it.
 - **Copies taken before erasure.** Backups keep the name and everything else until they are
   destroyed. Records and templates already downloaded keep the id.
 

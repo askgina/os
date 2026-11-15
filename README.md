@@ -189,8 +189,7 @@ notional caps, and the server posts it to the venue and follows it. The agent, o
 approver, can cancel that order with no passkey, also while the workspace is paused.
 
 Limits: testnet only. The signer signs nothing for mainnet, and the server does not start with a
-mainnet venue configured; whether and where mainnet may ship is a legal and geographic question,
-to be looked at for the EU first, that is open with the owner. The notional caps limit new
+mainnet venue configured; turning mainnet on is the owner's open decision. The notional caps limit new
 orders, not losses: what can be lost is the account's value at the venue. The signer never sees
 the venue, so fills, positions and the account's value are the venue's report. The encoder's
 signatures match the venue SDK's own vectors; everything else is unit-tested, with the
@@ -221,8 +220,7 @@ can be copied, or made from a template file. The copy gets new keys, new agent t
 invite links instead of members, and an admin threshold of 1; its limits wait for its approvers
 to approve them, and no mandate is copied. A person can erase themselves: their passkeys are
 first removed through requests people approve, then their name, passkeys, sessions and
-notification settings are deleted. Their user id stays, so the audit logs still verify; whether
-that satisfies GDPR Article 17 has not been reviewed by counsel. These have unit tests only
+notification settings are deleted. Their user id stays, so the audit logs still verify. These have unit tests only
 ([`deploy/README.md`](deploy/README.md#exporting-and-cloning-a-workspace)).
 
 ## What this protects, and what it does not
