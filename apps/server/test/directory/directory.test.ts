@@ -272,9 +272,10 @@ describe("agents and wallets", () => {
       .select()
       .from(agents)
       .where(eq(agents.id, agentId as never));
-    expect(JSON.stringify(row)).not.toContain(token.slice(31));
-    expect(t.log.lines.join("\n")).not.toContain(token.slice(31));
-    const secret = token.slice(token.lastIndexOf("_") + 1);
+    // `osa_<agent ulid>_<secret>`: the secret starts at 31, and may itself contain `_`.
+    const secret = token.slice(31);
+    expect(JSON.stringify(row)).not.toContain(secret);
+    expect(t.log.lines.join("\n")).not.toContain(secret);
     const dump = await t.ctx.pool.query("SELECT * FROM os.agents");
     expect(JSON.stringify(dump.rows)).not.toContain(secret);
   });

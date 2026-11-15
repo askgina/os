@@ -245,6 +245,13 @@ if [ "$split" != "1" ] && [ -z "$variant" ] && [ "$status" -eq 0 ]; then
     export NODE_EXTRA_CA_CERTS="$ca"
   fi
   if [ "$status" -eq 0 ]; then
+    # Chromium fails every request in flight with ERR_NETWORK_CHANGED when an address on this
+    # machine changes, and each container's interface gets its IPv6 address about a second after
+    # the container starts. Wait until no address is still being assigned.
+    for _ in $(seq 1 40); do
+      [ -z "$(ip -6 addr show tentative 2>/dev/null)" ] && break
+      sleep 0.5
+    done
     (cd e2e && E2E_PROJECT="${E2E_PROJECT}-ui" bunx playwright test browser.spec.ts) || status=$?
   fi
 fi

@@ -129,8 +129,13 @@ export async function holdBundleLock(
       retry = null;
       const held = client;
       client = null;
-      // Ending the session gives the lock back.
-      held?.release(true);
+      if (held === null) return;
+      // Give the lock back before this resolves: ending the session would too, but only once
+      // Postgres notices the closed socket, and a bundle starting right after would be refused.
+      await held
+        .query("SELECT pg_advisory_unlock_shared($1, $2)", [BUNDLE_LOCK_CLASS, bundleId])
+        .catch(() => undefined);
+      held.release(true);
     },
   };
 }
