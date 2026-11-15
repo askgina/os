@@ -132,8 +132,28 @@ Success means:
       platform, the Hub's own workflows on the vendored World, OTLP traces only when configured.
       As built: the tick route is `POST /api/cron/schedules/tick`; the ticker is a script in the
       hub image, not a new workspace. No real-stack gate for files and routines yet.
-- [ ] Milestone 7: the askgina/os wallet connection.
-- [ ] Milestone 8: switched-off features, documentation, threat model.
+- [x] (2026-11-15) Unit evidence for Milestones 5 to 8: `askgina/busy` `3c6f6e4`, `Ultracite`
+      run 43741182196 green (lint, typecheck, hub tests in four shards, bot tests, runner
+      tests, builds), and the full stack gate still green on that tree (`Fork` run
+      43741972434). Real-stack gates for files, routines, the refusals, the wallet connection
+      (against a stub gateway) and computers are written separately; see the lines below for
+      what each has proven.
+- [ ] Milestone 7: the askgina/os wallet connection. Built (2026-11-15): a per-bot connection
+      (`/api/bots/{slug}/askgina-os`, the agent token sealed and bound to the bot and the
+      gateway URL, handed to the runner as secret files, the bot on the agents network only
+      while it holds a token), the gateway's tools (eight, `propose_order` included) at eve
+      approval `never()` with unknown tools hidden, the wallet skill (only `confirmed` is paid;
+      the approval link as plain text), the D13 warning in the README. Unit-tested. No payment
+      by a Busy bot has run end to end: the fork's CI cannot start askgina/os.
+- [ ] Milestone 8: switched-off features, documentation, threat model. Built (2026-11-15):
+      code tasks, consultations, firesides and Desktop answer 404 `feature_disabled` on
+      self-hosted; the remaining Vercel ties are refused or shown unreachable (skills.sh, the dev
+      relay, AI Gateway catalog and embeddings, account usage); `docs/self-hosting.md`,
+      `docs/threat-model-selfhosted.md`, the Hub's `.env.example`, FORK.md. Also found and built
+      here: the bot template's half of Milestone 5 (`computer-provider.ts`, `sandbox.ts`
+      selection, the builder recording the provider's artifact) and `web_fetch` using the bot's
+      own model. The askgina/os side (threat model subsection, architecture paragraph, README
+      line) is in this repository.
 - [ ] Run validation and record evidence.
 
 ## Surprises & Discoveries
