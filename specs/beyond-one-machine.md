@@ -41,7 +41,7 @@ Success means:
 ## Progress
 
 - [x] (2026-11-14 21:38Z) Research current behavior and relevant code paths: [`specs/research/beyond-one-machine.md`](./research/beyond-one-machine.md).
-- [ ] Owner decisions D1 to D6 (see `Decision Log`). D5 is taken (2026-11-14): (a).
+- [x] (2026-11-15) Owner decisions D1 to D9 (see `Decision Log`). D5 was taken (2026-11-14): (a). D1 to D4 and D6 to D9 were taken 2026-11-15 by the lead under Eric's delegation, each as the recommended option (a).
 - [ ] Milestone 1: the signer on its own host.
 - [x] (2026-11-14) Milestone 2: the restore fence, built ahead of Milestone 1 as a fix to v0.1: `apps/signer/src/fence.ts`, the `fence` admin command, `envelope_fenced` for every envelope kind, a `PRAGMA user_version` migration step for the signer's SQLite (version 2 adds `signer_meta`), detection of a replaced database file, the rewritten restore gate and restore procedure. Proven locally: `apps/signer/test/fence.test.ts` (10 tests) and `apps/signer/test/admin.test.ts` (3 tests) pass, one file at a time.
 - [ ] Milestone 2 in CI: the restore gate in `e2e/test/release-gates.spec.ts` on a real stack (`stack (amd64)`, `stack (arm64)`), including `docker compose run --rm signer node src/admin.ts fence` on restored volumes. Written and type-checked, not run.
@@ -84,26 +84,26 @@ Success means:
 
 ## Decision Log
 
-Owner decisions. Each is open unless marked; the plan is written for the recommended option and every milestone that depends on one says so.
+Owner decisions. All are taken: D5 by Eric on 2026-11-14, the others on 2026-11-15 by the lead under Eric's delegation ("delegate to you on decisions like a CTO"), each as the option the plan recommended. The plan is written for the taken options, and every milestone that depends on one says so.
 
-- Decision D1 (owner, open): order of directions. Options: (a) signer split first (the fence is already built), then key provider, replicas, Kubernetes, HA Postgres; (b) Kubernetes first; (c) key provider first.
-  Recommended: (a). Rationale: it is still the only direction that changes what a compromised control-plane host can do; the rest is availability.
-- Decision D2 (owner, open): first non-file key provider. Options: (a) OpenBao Transit; (b) AWS KMS; (c) Google Cloud KMS; (d) none, file keyring only.
-  Recommended: (a). Rationale: self-hostable, MPL-licensed, a small HTTP API, and a real server can run in CI; cloud KMS cannot be proven without a cloud account.
-- Decision D3 (owner, open): Kubernetes packaging. Options: (a) Kustomize base and overlays; (b) Helm chart; (c) both; (d) documentation only.
-  Recommended: (a). Rationale: plain YAML that `kubectl` applies and `kubeconform` checks, with no release Secrets holding rendered values.
-- Decision D4 (owner, open): where the signer and the `approve` service may run when the control plane is on Kubernetes. Options: (a) outside the cluster only, on the signer's own host; (b) in a separate cluster; (c) in the same cluster, documented as "cluster administrators are the signer host".
-  Recommended: (a) for production; the in-cluster component exists for CI and evaluation only. Rationale: Secrets are unencrypted in etcd by default and cluster administration reaches every node, and an `approve` service in the cluster gives cluster administrators the confirmation page.
+- Decision D1 (owner, taken 2026-11-15 by the lead under Eric's delegation): order of directions. Options: (a) signer split first (the fence is already built), then key provider, replicas, Kubernetes, HA Postgres; (b) Kubernetes first; (c) key provider first.
+  Chosen: (a), the recommended option. Rationale: it is still the only direction that changes what a compromised control-plane host can do; the rest is availability.
+- Decision D2 (owner, taken 2026-11-15 by the lead under Eric's delegation): first non-file key provider. Options: (a) OpenBao Transit; (b) AWS KMS; (c) Google Cloud KMS; (d) none, file keyring only.
+  Chosen: (a), the recommended option. Rationale: self-hostable, MPL-licensed, a small HTTP API, and a real server can run in CI; cloud KMS cannot be proven without a cloud account.
+- Decision D3 (owner, taken 2026-11-15 by the lead under Eric's delegation): Kubernetes packaging. Options: (a) Kustomize base and overlays; (b) Helm chart; (c) both; (d) documentation only.
+  Chosen: (a), the recommended option. Rationale: plain YAML that `kubectl` applies and `kubeconform` checks, with no release Secrets holding rendered values.
+- Decision D4 (owner, taken 2026-11-15 by the lead under Eric's delegation): where the signer and the `approve` service may run when the control plane is on Kubernetes. Options: (a) outside the cluster only, on the signer's own host; (b) in a separate cluster; (c) in the same cluster, documented as "cluster administrators are the signer host".
+  Chosen: (a) for production, the recommended option; the in-cluster component exists for CI and evaluation only. Rationale: Secrets are unencrypted in etcd by default and cluster administration reaches every node, and an `approve` service in the cluster gives cluster administrators the confirmation page.
 - Decision D5 (owner, taken 2026-11-14, applied): what a restore promises. Options: (a) every restore is fenced, so approvals waiting at backup time must be proposed again; (b) keep the v0.1 promise that waiting approvals survive a restore.
   Chosen: (a). Rationale: the operator cannot know from the backup whether a payment happened after it; (b) can pay twice. Status 2026-11-15: built in `018d2f5`; `deploy/README.md:136-175`, `docs/approval-protocol.md:385-428` and `docs/threat-model.md:245-262` all say (a), so the earlier contradiction with the deploy guide is gone. Nothing left to decide.
-- Decision D6 (owner, open): Postgres durability on Kubernetes. Options: (a) CloudNativePG, 3 instances, `dataDurability: required`; (b) `preferred`; (c) asynchronous.
-  Recommended: (a). Rationale: no acknowledged audit entry, shred, mandate grant or notification row is ever lost; writes pause when no standby is available, which stalls approvals but loses nothing.
-- Decision D7 (owner, open, new 2026-11-15): where the confirmation page runs in a split deployment (the `approve` service, the edge that serves `APPROVE_ORIGIN`, its TLS certificate and the copy of the confirm secret). Options: (a) on the signer host, with its own small edge, the signer itself still unpublished except to the control host; (b) on a third host with its own administrators, reaching the signer over mutual TLS; (c) on the control host.
-  Recommended: (a). Rationale: (c) gives a control-host compromise the confirmation page and so reopens the display gap the trusted display closed (`specs/trusted-display.md`, "Risks", says it runs with the signer on split hosts), and (b) adds a third set of administrators without lowering the worst case, since root on the signer host already controls everything.
-- Decision D8 (owner, open, new 2026-11-15): server egress on Kubernetes when the signed webhook or Web Push is on. Options: (a) allow the server pods TCP 443 to any address while either is configured, and rely on the server's own checks (`NOTIFY_WEBHOOK_URL` is one fixed URL, `WEB_PUSH_ENDPOINT_HOSTS` limits push endpoints); (b) only the CIDRs the operator lists, which push services with changing addresses cannot meet; (c) no notifications on Kubernetes.
-  Recommended: (a). Rationale: a NetworkPolicy cannot name a host, and the Compose server already reaches the internet for RPC; the host checks stay in the server.
-- Decision D9 (owner, open, new 2026-11-15): whether a planned move of the signer to a new host may keep live mandates and waiting approvals. Options: (a) no: a move is a new database file, the signer fences itself and every live mandate ends (today's code); (b) add a hand-over command that lets the operator vouch that no copy is kept, and skip the fence.
-  Recommended: (a). Rationale: the signer cannot tell a move from a copy, and a kept copy plus a skipped fence is exactly the double payment the fence exists to stop; people grant mandates again.
+- Decision D6 (owner, taken 2026-11-15 by the lead under Eric's delegation): Postgres durability on Kubernetes. Options: (a) CloudNativePG, 3 instances, `dataDurability: required`; (b) `preferred`; (c) asynchronous.
+  Chosen: (a), the recommended option. Rationale: no acknowledged audit entry, shred, mandate grant or notification row is ever lost; writes pause when no standby is available, which stalls approvals but loses nothing.
+- Decision D7 (owner, new 2026-11-15, taken 2026-11-15 by the lead under Eric's delegation): where the confirmation page runs in a split deployment (the `approve` service, the edge that serves `APPROVE_ORIGIN`, its TLS certificate and the copy of the confirm secret). Options: (a) on the signer host, with its own small edge, the signer itself still unpublished except to the control host; (b) on a third host with its own administrators, reaching the signer over mutual TLS; (c) on the control host.
+  Chosen: (a), the recommended option. Rationale: (c) gives a control-host compromise the confirmation page and so reopens the display gap the trusted display closed (`specs/trusted-display.md`, "Risks", says it runs with the signer on split hosts), and (b) adds a third set of administrators without lowering the worst case, since root on the signer host already controls everything.
+- Decision D8 (owner, new 2026-11-15, taken 2026-11-15 by the lead under Eric's delegation): server egress on Kubernetes when the signed webhook or Web Push is on. Options: (a) allow the server pods TCP 443 to any address while either is configured, and rely on the server's own checks (`NOTIFY_WEBHOOK_URL` is one fixed URL, `WEB_PUSH_ENDPOINT_HOSTS` limits push endpoints); (b) only the CIDRs the operator lists, which push services with changing addresses cannot meet; (c) no notifications on Kubernetes.
+  Chosen: (a), the recommended option. Rationale: a NetworkPolicy cannot name a host, and the Compose server already reaches the internet for RPC; the host checks stay in the server.
+- Decision D9 (owner, new 2026-11-15, taken 2026-11-15 by the lead under Eric's delegation): whether a planned move of the signer to a new host may keep live mandates and waiting approvals. Options: (a) no: a move is a new database file, the signer fences itself and every live mandate ends (today's code); (b) add a hand-over command that lets the operator vouch that no copy is kept, and skip the fence.
+  Chosen: (a), the recommended option. Rationale: the signer cannot tell a move from a copy, and a kept copy plus a skipped fence is exactly the double payment the fence exists to stop; people grant mandates again.
 
 Plan decisions (taken here, reopen in review if wrong):
 
@@ -128,9 +128,9 @@ Plan decisions (taken here, reopen in review if wrong):
 - Decision: the control plane needs no special case. `envelope_fenced` is a permanent signer refusal like any other: the approval ends `failed` with that code, the intent ends `failed` with `failureCode: "envelope_fenced"` (not a new `approval_fenced`), and the nonce reservation is released by the existing path.
   Rationale: one code from the signer to the agent; nothing to translate.
   Date/Author: 2026-11-14 / FixSignerDefects
-- Decision: the signer's SQLite gets `PRAGMA user_version` migrations: version 1 is the v0.1 schema (idempotent, so a v0.1 file at `user_version` 0 is taken as version 1), version 2 adds `signer_meta`. Migrations run in one `BEGIN IMMEDIATE` transaction; a file at a newer version is refused (`schema_too_new`). On main the schema is at version 5 (3 confirmations, 4 possession challenges, 5 mandates); stuck-transaction repricing is adding version 6. Nothing in this plan adds a signer schema version.
+- Decision: the signer's SQLite gets `PRAGMA user_version` migrations: version 1 is the v0.1 schema (idempotent, so a v0.1 file at `user_version` 0 is taken as version 1), version 2 adds `signer_meta`. Migrations run in one `BEGIN IMMEDIATE` transaction; a file at a newer version is refused (`schema_too_new`). On main the schema is at version 6 (3 confirmations, 4 possession challenges, 5 mandates, 6 stuck-transaction repricing, built on main at `61d0326`). Nothing in this plan adds a signer schema version.
   Rationale: the fence needed a table, and later plans needed tables.
-  Date/Author: 2026-11-14 / FixSignerDefects; versions updated 2026-11-15
+  Date/Author: 2026-11-14 / FixSignerDefects; versions updated 2026-11-15 (twice: version 6 landed with repricing)
 - Decision: a Transit KEK id is `bao:<mount>/<key>@<version>`, and `wrap` passes that `key_version`.
   Rationale: rotation must change `kek_id`, or `DataKeyStore.rewrap` (`kek_id <> active`) never moves a row.
   Date/Author: 2026-11-14 / research agent
@@ -194,10 +194,10 @@ Current behavior (each line is source-read on main at `2911c20`):
 - One `init` container writes every trust domain's secrets on one host: the keyring, `notify-webhook-secret`, `vapid-key.pem`, the shared `signer-request-secret`, `confirm-request-secret` and its `approve` copy (rewritten whenever it differs from the signer's), `token-key`, `vault-passphrase` and the Postgres password (`deploy/init/init.mjs:45-92`).
 - The keyring is one JSON file read at boot by the server, the World target and the keys CLI (`apps/server/src/main.ts:30`; `packages/world/src/target.ts:53`; `packages/keys/src/cli.ts:59-68`). `KeyProvider` still has the four members the research found (`packages/keys/src/keyring.ts:8-15`), and `parseKeyringFile` still accepts any KEK id (`:36-39`).
 - Per-process state that decides something: rate limits (`apps/server/src/mcp/gateway.ts:413-471`, client key from the last `X-Forwarded-For` entry at `:423-424`); the setup token, re-minted on every boot before setup (`apps/server/src/identity/setup.ts:21-33`); the data-key cache, where a shred evicts only locally (`packages/keys/src/data-key-store.ts:264-266`). Caches that only save work: MCP handlers (`gateway.ts:414,505-519`), chain clients and token metadata (`apps/server/src/execution/chains.ts:57-60`), time-zone formatters (`apps/server/src/notify/schedule.ts:62`).
-- Coordinated in Postgres, so already shared by replicas: sessions and passkey sign-in ceremonies (`apps/server/src/identity/ceremonies.ts:42-56`); nonce reservations (`apps/server/src/execution/transactions.ts:109-165`); audit appends under `FOR NO KEY UPDATE` on the workspace row (`apps/server/src/audit.ts:55-72`); run starts (`apps/server/src/execution/approvals.ts:294`); opening a confirmation (`approvals.ts:452`); the setup step (`apps/server/src/identity/routes.ts:89`); migrations (`apps/server/src/db/migrate.ts:17-47`, now `0000` to `0006`, the last two being `0005_notifications` and `0006_push_subscriptions`); the notification outbox (`apps/server/src/notify/outbox.ts:162-196`).
+- Coordinated in Postgres, so already shared by replicas: sessions and passkey sign-in ceremonies (`apps/server/src/identity/ceremonies.ts:42-56`); nonce reservations (`apps/server/src/execution/transactions.ts:109-165`); audit appends under `FOR NO KEY UPDATE` on the workspace row (`apps/server/src/audit.ts:55-72`); run starts (`apps/server/src/execution/approvals.ts:294`); opening a confirmation (`approvals.ts:452`); the setup step (`apps/server/src/identity/routes.ts:89`); migrations (`apps/server/src/db/migrate.ts:17-47`, now `0000` to `0007`, the last three being `0005_notifications`, `0006_push_subscriptions` and `0007_transaction_attempts`); the notification outbox (`apps/server/src/notify/outbox.ts:162-196`); stuck-transaction repricing, speed-up and cancel, serialized per approval by `pg_advisory_xact_lock` on `attempts:<approvalId>` (`lockAttempts`, `apps/server/src/execution/transactions.ts:332-336`; `apps/server/src/execution/repricing.ts`, which keeps no module-level state).
 - One sweeper per process runs every 3 seconds: it wakes decided approvals, starts runs for orphaned requests and sends due notifications (`apps/server/src/execution/index.ts:23,57-127,144-151`).
 - The Workflow queue is Graphile Worker 0.16.6 with in-process delivery for the only queue prefix, `jobLockStaleSeconds: 30` (`apps/server/src/execution/index.ts:139`; `apps/server/src/execution/workflow-runtime.ts:128`).
-- Signer state is one SQLite file at schema version 5 (`apps/signer/src/db.ts`); mandates, their uses and the daily cap are counted there by the signer's clock (`apps/signer/src/mandates.ts:183-196`; `apps/signer/src/signer.ts:63,266`). The restore fence is built (`apps/signer/src/fence.ts`; `apps/signer/src/admin.ts` command `fence`; `signer.ts:381-386`).
+- Signer state is one SQLite file at schema version 6 (`apps/signer/src/db.ts`); mandates, their uses and the daily cap are counted there by the signer's clock (`apps/signer/src/mandates.ts:183-196`; `apps/signer/src/signer.ts:63,266`). The restore fence is built (`apps/signer/src/fence.ts`; `apps/signer/src/admin.ts` command `fence`; `signer.ts:381-386`).
 - The signer's operator commands are `enroll-approver`, `verify-log`, `fence`, `list-mandates` and `revoke-mandate` (`apps/signer/src/admin.ts:12-35`). The UI shows only `enroll-approver`, hard-coded to Compose (`apps/web/src/lib/operator.ts:25`; `apps/web/src/routes/members.tsx:234`), built from `pendingPasskeys` in the members response (`packages/api/src/dto.ts:160-173`).
 - The server reaches the internet for RPC, the notification webhook and Web Push (it sits on the non-internal `control` and `chain` networks, `compose.yaml:120`).
 
@@ -222,7 +222,7 @@ Assumptions:
 
 ## Plan of Work
 
-Milestones are ordered by the recommended D1. Milestone 2 is delivered. Milestones 3 and 4 are independent of each other. Milestone 5 depends on 1 (external signer and `approve`) and 4 (replicas). Milestone 6 depends on 5.
+Milestones are ordered by D1 (a), taken 2026-11-15. Milestone 2 is delivered. Milestones 3 and 4 are independent of each other. Milestone 5 depends on 1 (external signer and `approve`) and 4 (replicas). Milestone 6 depends on 5.
 
 ### Milestone 1: The signer and the confirmation page on their own host
 
@@ -271,7 +271,7 @@ What remains for the split: Milestone 1's move procedure relies on it (a moved d
 
 ### Milestone 3: Key providers and OpenBao Transit
 
-Scope: a provider interface that allows network providers, an OpenBao Transit provider, a composite for migration, and CI against a real OpenBao. Depends on D2. Unchanged by the work since the draft; the keyring still wraps only data keys, not the webhook secret or the VAPID key.
+Scope: a provider interface that allows network providers, an OpenBao Transit provider, a composite for migration, and CI against a real OpenBao. Depends on D2, taken as (a) OpenBao Transit. Unchanged by the work since the draft; the keyring still wraps only data keys, not the webhook secret or the VAPID key.
 
 Files and interfaces:
 
@@ -304,7 +304,7 @@ Files and interfaces:
 
 - `packages/keys/src/data-key-store.ts`: `shred()` issues `pg_notify('os_keys_shred', scope || ':' || key_id)` in the same transaction as the tombstone. New option `listen?: boolean`; with it, `start()` holds one dedicated client on `LISTEN os_keys_shred` and evicts the named entry; on that client's error it clears the whole cache and reconnects with backoff; `close()` releases it. The TTL stays the upper bound.
 - `apps/server/src/config.ts`: `DATA_KEY_CACHE_SECONDS` (default 60, 0 to 600), `FORWARDED_HOPS` (default 1, 1 to 5), `SETUP_TOKEN_IN_LOG` (default `true`; empty means unset).
-- A new migration after the last one on main (`0006_push_subscriptions`; stuck-transaction repricing may take the next number, so use the next free one when this is built, generated with the repository's Drizzle workflow) and `apps/server/src/db/schema.ts`: `CREATE UNLOGGED TABLE IF NOT EXISTS os.rate_limits (bucket text PRIMARY KEY, tokens double precision NOT NULL, at timestamptz NOT NULL)`.
+- A new migration after the last one on main (`0007_transaction_attempts`, from stuck-transaction repricing; so `0008` today, or the next free number when this is built, generated with the repository's Drizzle workflow) and `apps/server/src/db/schema.ts`: `CREATE UNLOGGED TABLE IF NOT EXISTS os.rate_limits (bucket text PRIMARY KEY, tokens double precision NOT NULL, at timestamptz NOT NULL)`.
 - `apps/server/src/rate-limit.ts` (new): `takeToken(db, bucket, perMinute): Promise<boolean>`, one `INSERT ... ON CONFLICT DO UPDATE ... WHERE <refilled tokens> >= 1 RETURNING tokens` statement; a missing row in the result means limited.
 - `apps/server/src/mcp/gateway.ts`: the `buckets` and `failures` maps (`:413,416`) are replaced with `takeToken` on `agent:<id>` (120 per minute) and `auth-fail:<client>` (10 per minute, checked before the database lookup as today); `clientOf` (`:423-424`) takes the entry `FORWARDED_HOPS` from the end of `X-Forwarded-For`.
 - `apps/server/src/identity/setup.ts`: `prepareSetup` mints only when no token row exists, inside `pg_advisory_xact_lock(SETUP_LOCK)` (the lock `apps/server/src/identity/routes.ts:89` already takes); it logs the token only when `SETUP_TOKEN_IN_LOG`, otherwise logs `setup.token_pending`. New `rotateSetupToken(ctx)`.
@@ -330,7 +330,7 @@ Acceptance:
 
 ### Milestone 5: Kubernetes manifests proven on kind
 
-Scope: Kustomize manifests for the control plane, NetworkPolicies, an e2e driver for Kubernetes, and a CI job on kind. Depends on D3, D4 and D8, and on milestones 1 and 4.
+Scope: Kustomize manifests for the control plane, NetworkPolicies, an e2e driver for Kubernetes, and a CI job on kind. Depends on D3 (a) Kustomize, D4 (a) signer and `approve` outside the cluster in production and D8 (a) TCP 443 egress while notifications are configured, all taken 2026-11-15, and on milestones 1 and 4.
 
 Files and interfaces (all new unless stated):
 
@@ -360,7 +360,7 @@ Acceptance:
 
 ### Milestone 6: HA Postgres with CloudNativePG
 
-Scope: a three-instance Postgres with synchronous replication on kind, and two gates on lost and kept commits. Depends on D6 and milestone 5.
+Scope: a three-instance Postgres with synchronous replication on kind, and two gates on lost and kept commits. Depends on D6 (a) CloudNativePG with `dataDurability: required`, taken 2026-11-15, and milestone 5.
 
 Files and interfaces:
 
@@ -541,8 +541,8 @@ The invariant holds in every row: whether a human approved is decided by the sig
 - Risk: the `k8s` CI job is slow.
   Mitigation: measure on the first run; if needed run it on pushes to `main`, nightly, and on pull requests that touch `deploy/k8s/**`.
 - Open question: whether the World's run-status and stream listeners reconnect after a Postgres failover. Owner/next step: milestone 6 gate.
-- Open question: whether stuck-transaction repricing, being built now, keeps any per-process state. Owner/next step: re-check when it lands, before Milestone 4.
-- Open questions D1 to D4 and D6 to D9: see `Decision Log`. Owner/next step: the owner.
+- Answered (2026-11-15): stuck-transaction repricing, built on main at `61d0326`, keeps no per-process state that decides anything. Repricing, speed-up and cancel take `pg_advisory_xact_lock` on `attempts:<approvalId>` (`apps/server/src/execution/transactions.ts:332-336`) and store attempts in `0007_transaction_attempts`, so replicas already serialize on it; Milestone 4 needs no change for it.
+- Answered (2026-11-15): D1 to D4 and D6 to D9 are taken as the recommended option (a) by the lead under Eric's delegation; see `Decision Log`.
 
 ## Artifacts and Notes
 
@@ -596,3 +596,8 @@ The invariant holds in every row: whether a human approved is decided by the sig
   `threat-model.md:564-566`). New owner decisions D7 (where the confirmation page runs), D8
   (server egress on Kubernetes) and D9 (whether a planned move keeps mandates). Stuck-transaction
   repricing is in flight and not cited. Still Draft.
+- 2026-11-15: D1 to D4 and D6 to D9 taken as the recommended options by the lead under Eric's
+  delegation; the Decision Log, the owner-decisions Progress line, the milestone dependencies and
+  the open questions say so. Repricing (#22) is built on main at `61d0326`: signer schema 6,
+  server migrations through `0007_transaction_attempts`; Milestone 4's migration is `0008` today,
+  and repricing's per-process-state question is answered (none; an advisory lock per approval).

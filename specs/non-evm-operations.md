@@ -43,8 +43,8 @@ changes; builder codes; API (agent) wallets; subaccounts and vaults; `usdSend`, 
 `sendAsset`, `vaultTransfer`, `approveAgent`, `approveBuilderFee`, `scheduleCancel`; Polymarket;
 Solana; signer-built EVM swaps (a separate ticket); trading mandates, that is orders signed
 under an approval in advance (ticket 19 built mandates for native and ERC-20 transfers only and
-left trading mandates to this ticket; this plan keeps them out, **(depends on owner decision
-D7)**); repricing and cancelling stuck EVM transactions (ticket 22, being built now; EVM only).
+left trading mandates to this ticket; this plan keeps them out, **(D7 (a), taken 2026-11-15)**);
+repricing and cancelling stuck EVM transactions (ticket 22, built on main at `61d0326`; EVM only).
 
 Success means:
 
@@ -69,13 +69,18 @@ Success means:
 - [x] (2026-11-14 21:44Z) Define the implementation approach and validation plan (this file).
 - [x] (2026-11-15) Re-checked against main at `98cc6a1` (trusted display, v0.1 defect fixes,
       mandates and notifications landed); owner decisions are now D1 to D9.
-- [ ] Owner decisions D1 to D6 answered (see `Decision Log`).
+- [x] (2026-11-15) Owner decisions D1 and D3 to D9 taken by the lead under Eric's delegation,
+      each as the recommended option (see `Decision Log`). D2 (mainnet: legal and geographic)
+      stays open with Eric; until he answers, venues are testnet only and a mainnet venue is
+      refused at boot.
 - [ ] Milestone 1: protocol shapes, venue policy and evaluation.
 - [ ] Milestone 2: the Hyperliquid encoder in the signer, proven against the SDK vectors.
 - [ ] Milestone 3: the vault's typed-data method, proven with real OWS.
 - [ ] Milestone 4: the signer's venue routes and records.
 - [ ] Milestone 5: control plane: venue client, MCP tool, approval card, follow-up.
-- [ ] Milestone 6: fake venue, release gates, documentation; manual testnet proof.
+- [ ] Milestone 6: fake venue, release gates, documentation.
+- [ ] Manual testnet proof (D6; not CI; needs a funded testnet account; required before any
+      mainnet decision under D2).
 
 ## Surprises & Discoveries
 
@@ -132,12 +137,14 @@ Success means:
 
 ## Decision Log
 
-Decisions marked "pending owner" are the research report's recommendation; the plan is written
-for them and changes if the owner chooses otherwise. Each was re-checked against main on
+Owner decisions D1 and D3 to D9 were taken on 2026-11-15 by the lead under Eric's delegation
+("delegate to you on decisions like a CTO"), each as the option this plan recommended. D2 is a
+legal and geographic question and stays open with Eric. Each was re-checked against main on
 2026-11-15; none is moot.
 
-- Decision (pending owner, D1): the first operation that is not an EVM transaction is a
-  Hyperliquid perpetual limit order on testnet.
+- Decision (owner, D1, taken 2026-11-15 by the lead under Eric's delegation, as recommended):
+  the first operation that is not an EVM transaction is a Hyperliquid perpetual limit order on
+  testnet.
   Rationale: the smallest venue whose guarantees the signer can make true by itself: one
   signature per approval, one placement (venue nonce set), unusable after `expiresAfter`, cancel
   by client order id. Polymarket V2 cannot bound a signature's lifetime; Solana is a whole chain
@@ -145,36 +152,38 @@ for them and changes if the owner chooses otherwise. Each was re-checked against
   Re-check 2026-11-15: unchanged. Recommendation stands: still the smallest step that keeps
   "the signer builds what it signs".
   Date/Author: 2026-11-14 / research agent
-- Decision (pending owner, D2): venue support ships disabled (no `VENUES_FILE`), testnet only;
-  the server refuses to start with a mainnet venue configured. Mainnet waits for the owner's
-  answers to the legal and geographic questions in the research report ("Owner questions").
+- Decision (owner, D2, **open: Eric's**, legal and geographic): whether and where mainnet venue
+  support may ship. Until Eric answers the questions in the research report ("Owner
+  questions"), the plan builds only the fail-closed default: venue support ships disabled (no
+  `VENUES_FILE`), testnet only, and the server refuses to start with a mainnet venue configured.
   Rationale: the plan does not answer legal questions; it keeps the feature off until someone
-  who can answer them has.
-  Re-check 2026-11-15: unchanged. Recommendation stands: nothing built since answers the legal
-  questions.
+  who can answer them has. Not delegated: a legal and geographic call stays with Eric.
+  Re-check 2026-11-15: unchanged; nothing built since answers the legal questions.
   Date/Author: 2026-11-14 / research agent
-- Decision (pending owner, D3): Hyperliquid actions are signed by the wallet's own key; no API
-  wallet is approved.
+- Decision (owner, D3, taken 2026-11-15 by the lead under Eric's delegation, as recommended):
+  Hyperliquid actions are signed by the wallet's own key; no API wallet is approved.
   Rationale: one signer process gains no isolation from a second key, `approveAgent` would be
   one more action to approve, and deregistered API wallets can be replayed against.
   Re-check 2026-11-15: unchanged. Recommendation stands for the same reason.
   Date/Author: 2026-11-14 / research agent
-- Decision (pending owner, D4): approving an order includes the right to cancel that one order.
+- Decision (owner, D4, taken 2026-11-15 by the lead under Eric's delegation, as recommended):
+  approving an order includes the right to cancel that one order.
   The signer signs `cancelByCloid` for an order it signed, on the control plane's request,
   without a passkey, also while the workspace is paused. The signer's confirmation view says so.
   Rationale: a cancel of a limit order moves no funds and only removes what the person approved.
   This plan has no stop orders; when they are added, cancelling one needs its own approval.
-  Re-check 2026-11-15: still open. The sweep built since (`sweep-wallet`, allowed while paused)
+  Re-check 2026-11-15: open at the time. The sweep built since (`sweep-wallet`, allowed while paused)
   is a precedent for an action that is safe while paused. Because the confirmation view is now
   built by the signer, the sentence "the agent may cancel this order" is shown by the signer and
   cannot be dropped by the control plane. Recommendation stands: cancelling only removes risk.
   Date/Author: 2026-11-14 / research agent
-- Decision (pending owner, D5): the protocol change is additive within version 1. Existing
+- Decision (owner, D5, taken 2026-11-15 by the lead under Eric's delegation: option (a),
+  widening, as recommended): the protocol change is additive within version 1. Existing
   digests and test vectors stay unchanged; `docs/approval-protocol.md` §12 is amended to allow
   new operation kinds in an existing union and new optional members that leave every existing
   digest unchanged and that an older verifier refuses.
   Rationale: v2 would rehash every structure and make the signer carry two versions.
-  Re-check 2026-11-15: still open, and now sharper. §12 (`docs/approval-protocol.md:899-916`)
+  Re-check 2026-11-15: open at the time, and sharper. §12 (`docs/approval-protocol.md:899-916`)
   already records three additive changes without a version bump (`sweep-wallet`, the possession
   challenge, mandates), but each was a new kind or structure under its own domain tag. This plan
   instead widens an existing hashed union (`Intent`, tag `askgina.os/v1/intent`) and adds an
@@ -185,15 +194,18 @@ for them and changes if the owner chooses otherwise. Each was re-checked against
   because orders then reuse the whole intent path (inbox, `get_intent`, `list_intents`,
   `cancel_intent`, follow-up); the cost is the explicit venue branches listed in Milestone 1.
   Date/Author: 2026-11-14 / research agent; re-checked 2026-11-15
-- Decision (pending owner, D6): the manual testnet proof is funded by a `usdSend` of testnet USDC
-  from an existing funded testnet account to the wallet's address (at least 11 USDC: 1 for
-  account activation, 10 for the minimum order).
+- Decision (owner, D6, taken 2026-11-15 by the lead under Eric's delegation, as recommended):
+  the manual testnet proof is funded by a `usdSend` of testnet USDC from an existing funded
+  testnet account to the wallet's address (at least 11 USDC: 1 for account activation, 10 for
+  the minimum order). No such funded testnet account is in hand on 2026-11-15; the proof runs
+  when one is, and nothing claims it before then.
   Rationale: the faucet requires a mainnet deposit from the same address; a mainnet deposit
   from a signer wallet would need a mainnet policy and real funds.
   Re-check 2026-11-15: unchanged (the faucet rule was not re-read on 2026-11-15).
   Recommendation stands.
   Date/Author: 2026-11-14 / research agent
-- Decision (pending owner, D7, new 2026-11-15): trading mandates. The mandates plan left
+- Decision (owner, D7, new 2026-11-15; taken 2026-11-15 by the lead under Eric's delegation:
+  option (a), as recommended): trading mandates. The mandates plan left
   "whether trading mandates (typed swaps) are wanted soon enough to change D3" to this ticket
   (`specs/approval-mandates.md:41-42`, `:996-997`); the owner chose transfers only for mandates.
   Options: (a) none in this plan: every order needs a passkey, `evaluateMandate` refuses a venue
@@ -203,7 +215,8 @@ for them and changes if the owner chooses otherwise. Each was re-checked against
   Recommendation: (a). A notional cap is not a loss cap at a venue, and the one-order path
   should be proven on testnet before anything is signed with no person asked.
   Date/Author: 2026-11-15 / plan refresh
-- Decision (pending owner, D8, new 2026-11-15): how a waiting order is announced. Options:
+- Decision (owner, D8, new 2026-11-15; taken 2026-11-15 by the lead under Eric's delegation:
+  option (c), as recommended): how a waiting order is announced. Options:
   (a) leave it: at the `summary` level an order reads "Payment waiting"; (b) relabel every
   `approve-intent` request with a neutral word ("Request waiting"); (c) give `PushFacts` one more
   field, `operation: "payment" | "order"`, derived from the intent's operation type, so an order
@@ -211,7 +224,8 @@ for them and changes if the owner chooses otherwise. Each was re-checked against
   Recommendation: (c). It tells the truth and adds no order detail: no market, side, size,
   price or notional ever reaches a notification.
   Date/Author: 2026-11-15 / plan refresh
-- Decision (pending owner, D9, new 2026-11-15): cancelling after a restore. After the operator
+- Decision (owner, D9, new 2026-11-15; taken 2026-11-15 by the lead under Eric's delegation:
+  option (a), as recommended): cancelling after a restore. After the operator
   restores the signer from a backup and sets the restore fence (`apps/signer/src/fence.ts`), an
   order signed after the backup is not in the restored `venue_signatures`, so the signer answers
   `not_found` to its cancel. An IOC order is already done; an ALO or GTC order can rest at the
@@ -333,8 +347,9 @@ Current behavior (main at `98cc6a1`, 2026-11-15; line numbers are at that commit
   `apps/signer/src/index.ts`.
 - The signer's SQLite schema is versioned with `PRAGMA user_version`: migration `n` takes the
   database from version `n − 1` to `n` (`MIGRATIONS`, `SCHEMA_VERSION` in `apps/signer/src/db.ts`).
-  Main is at version 5 (mandates). Repricing (ticket 22) is adding version 6 now; this plan's
-  tables are the next version after whatever is on main when it is built.
+  Main is at version 6 (5 mandates, 6 stuck-transaction attempts from repricing, ticket 22,
+  built at `61d0326`); this plan's tables are version 7, or the next version after whatever is
+  on main when it is built.
 - Confirmation views: the control plane's approval kind supplies a `confirmationSubject`
   (for `approve-intent`, `{ kind: "approve-intent", intent }`, `approveIntentKind` in
   `apps/server/src/execution/intents.ts:708-748`); the signer stores it with the envelope and
@@ -361,8 +376,8 @@ Current behavior (main at `98cc6a1`, 2026-11-15; line numbers are at that commit
   and Web Push. Neither can carry an amount, recipient, memo or any operation field (see
   Surprises). The push label of `approve-intent` is "Payment" (`content.ts:63`).
 - Control-plane migrations: `apps/server/src/db/migrations/0000_init.sql` to
-  `0006_push_subscriptions.sql`, generated with drizzle-kit (`bun run db:generate` in
-  `apps/server`). Repricing may take `0007`.
+  `0007_transaction_attempts.sql` (repricing took `0007`), generated with drizzle-kit
+  (`bun run db:generate` in `apps/server`).
 - `appendAudit` locks the workspace row `FOR NO KEY UPDATE` (`apps/server/src/audit.ts`); any
   new audited write must take the same lock order (proposals are audited).
 
@@ -412,8 +427,8 @@ the signer's confirmation view (Milestones 1 and 4).
 
 Scope: the hashed shapes, the pure policy evaluation and the pure confirmation view, so that
 the signer and the control plane share one definition of a venue intent, one answer to "does
-the policy allow it" and one text of what a person approves. **(depends on owner decisions D5
-and D7)**
+the policy allow it" and one text of what a person approves. **(D5 (a) widening and D7 (a) no
+trading mandates, both taken 2026-11-15)**
 
 Files and interfaces:
 
@@ -465,7 +480,7 @@ Files and interfaces:
     allow with the spend. `policy.chains` and `policy.fees` do not apply to a venue intent.
   - An `EvmIntent` whose `chainId` is a venue network, or a `VenueIntent` on an EVM chain, cannot
     exist (schema); keep a defensive `chain_not_allowed`.
-- `packages/protocol/src/mandate.ts` **(depends on owner decision D7)**: `evaluateMandate`
+- `packages/protocol/src/mandate.ts` **(D7 (a), taken 2026-11-15)**: `evaluateMandate`
   returns `mandate_operation_not_allowed` for a `VenueIntent` before reading `operation.to` or
   `maxFeeWei`, as it does for `evm.call` (`:308`). `MANDATE_DENY_CODES` is unchanged.
   `checkMandateAgainstPolicy` is unchanged (a mandate names only EVM chains and assets).
@@ -637,9 +652,10 @@ Files and interfaces:
 - `packages/protocol/src/signer/api.ts`:
   - Routes, both scope `control`: `signVenue: { method: "POST", path: "/v1/venue/sign", scope:
     "control" }`, `cancelVenueOrder: { method: "POST", path:
-    "/v1/venue/orders/:approvalId/cancel", scope: "control" }`. The repricing plan, being built
-    now, adds a cancel of a stuck EVM transaction under `/v1/approvals/:approvalId/...`; keep
-    the venue route, its decision-log action and its error texts distinct from it.
+    "/v1/venue/orders/:approvalId/cancel", scope: "control" }`. Repricing (built at `61d0326`)
+    added `reprice` (`/v1/approvals/:approvalId/reprice`) and `cancelTransaction`
+    (`/v1/approvals/:approvalId/cancel`) for stuck EVM transactions; keep the venue route, its
+    decision-log action and its error texts distinct from them.
   - `SignVenueRequest = z.strictObject({ intent: VenueIntent, authorization: Authorization })`.
     There is no caller-chosen parameter at all.
   - `HyperliquidRequest = z.strictObject({ action: HyperliquidAction, nonce: z.number().int(),
@@ -659,8 +675,8 @@ Files and interfaces:
     as `invalid_request`.
 - `packages/protocol/src/signer/client.ts`: `signVenue(request)`, `cancelVenueOrder(approvalId,
   request)`.
-- `apps/signer/src/db.ts`: a new migration appended to `MIGRATIONS` (the next schema version
-  after main's when this is built: 6 on main today, 7 if repricing lands its version 6 first),
+- `apps/signer/src/db.ts`: a new migration appended to `MIGRATIONS` (version 7 on main today,
+  after repricing's version 6; the next free version if another lands first),
   with a comment in the style of the existing ones:
 
   ```sql
@@ -773,7 +789,8 @@ Acceptance (CI job `test`):
 
 Scope: agents can propose and cancel orders, people see orders in the inbox and the venue
 rules in the policy editor, the control plane submits and reconciles, and a waiting order is
-announced without its details. **(depends on owner decisions D1, D2, D7 and D8)**
+announced without its details. **(D1, D7 (a) and D8 (c) taken 2026-11-15; D2 open with Eric,
+so only the testnet path is built and mainnet is refused at boot)**
 
 Files and interfaces:
 
@@ -816,8 +833,9 @@ Files and interfaces:
   `confirmationSubject` (unchanged: `{ kind: "approve-intent", intent }`) and `execute`, and the
   registered follow-up, dispatch on `isVenueIntent`; `describe` returns venue caps and
   spent-today for the inbox; `abandonIntent` needs no change.
-- `apps/server/src/db/schema.ts` and the next generated migration (`0007_venue_orders.sql` on
-  main today, `0008` if repricing takes `0007`; `bun run db:generate` in `apps/server`): table
+- `apps/server/src/db/schema.ts` and the next generated migration (`0008_venue_orders.sql` on
+  main today, after repricing's `0007_transaction_attempts`; `bun run db:generate` in
+  `apps/server`): table
   `venue_orders` (`approval_id` PK → `approvals`, `intent_id`, `wallet_id`, `network`, `cloid`
   nullable, `action_nonce` bigint, `expires_after` bigint nullable, `request` bytea sealed under
   the workspace key at location `venue_orders.request/<approvalId>`, `status` text `signed |
@@ -839,7 +857,7 @@ Files and interfaces:
   intent. `get_intent` and `list_intents` return `order`; `cancel_intent` cancels a `placed`
   order; `propose_transfer` accepts a venue network as above; `whoami` lists the wallet's venue
   markets and caps next to its mandates. Exactly eight tools.
-- `apps/server/src/notify/content.ts` **(depends on owner decision D8)**: `PushFacts` gains
+- `apps/server/src/notify/content.ts` **(D8 (c), taken 2026-11-15)**: `PushFacts` gains
   `operation: "payment" | "order"` for `approve-intent`, set from the intent's operation type;
   at the `summary` level an order reads "Order waiting". No other field is added; the webhook
   body (`webhook.ts`) is unchanged.
@@ -875,7 +893,9 @@ Acceptance (CI jobs `test` and `ui`):
 ### Milestone 6: Fake venue, release gates, documentation; manual testnet proof
 
 Scope: prove the whole path in the real stack, and update the documents that describe what the
-system protects. **(the manual proof depends on owner decision D6)**
+system protects. **(the manual proof is funded per D6, taken 2026-11-15; it is not a CI gate and
+Milestone 6 is called done on CI evidence, with the manual proof recorded on its own Progress
+line only when run)**
 
 Files and interfaces:
 
@@ -1049,10 +1069,10 @@ Dependencies on other plans:
   service except two warning texts.
 - Mandates (ticket 19, built for transfers only): this plan adds the explicit venue refusal in
   `evaluateMandate` and keeps orders out of mandates (D7).
-- Notifications (ticket 24, mostly built): orders reuse the `approve-intent` announcement; D8
-  decides the push label.
-- Repricing (ticket 22, being built): EVM only, no shared code; this plan's signer migration
-  and server migration take the next free numbers after it.
+- Notifications (ticket 24, built): orders reuse the `approve-intent` announcement; D8 (c) gives
+  them the push label "Order waiting".
+- Repricing (ticket 22, built on main at `61d0326`): EVM only, no shared code; this plan's
+  signer migration is version 7 and its server migration `0008`, the next free numbers after it.
 - v0.1 defect fixes (built): the restore fence applies to venue envelopes; a sweep does not
   reach venue balances.
 
@@ -1174,19 +1194,27 @@ Regression checks:
   `SignRequest` and `SignUnderMandateRequest` take `EvmIntent`; the type checker flags the rest;
   Milestone 1 and 5 tests cover each branch. (D5 option (b) avoids this at the cost of a
   parallel path.)
-- Risk: an order is announced as a payment (D8 unanswered). Mitigation: the announcement
-  carries no amount either way; D8 (c) fixes the word.
+- Risk: an order is announced as a payment. Mitigation: D8 (c), taken 2026-11-15, labels it
+  "Order waiting"; the announcement carries no amount either way.
 - Risk: the submit window is too short for a slow workflow, and orders expire. Mitigation: 60
   seconds by default; the follow-up posts before any other work after signing.
 - Risk: a resting order signed after the last backup cannot be cancelled after a restore (D9).
-- Open question (D2, legal and geographic, EU first): see the research report's "Owner
-  questions". Nothing in this plan answers them; mainnet stays refused at boot.
-- Open question: whether reduce-only orders should also bypass the per-order cap. This plan
-  keeps them under it.
-- Open question: whether the testnet manual proof is required before Milestone 6 is called done
-  (D6).
-- Unconfirmed on 2026-11-15: the Hyperliquid and OWS facts above were not re-read; the server
-  migration and signer schema numbers depend on what repricing lands first.
+  Mitigation: D9 (a), taken 2026-11-15: documented in the restore steps, and the default
+  policy draft allows only `Ioc`.
+- Open question, **Eric's** (D2, legal and geographic, EU first): see the research report's
+  "Owner questions". Not delegated; nothing in this plan answers them; mainnet stays refused at
+  boot.
+- Answered (2026-11-15, by the lead under Eric's delegation; no recommendation, so the
+  conservative option): reduce-only orders stay under the per-order cap. Reason: the smaller
+  change, and a cap that always applies fails closed.
+- Answered (2026-11-15, by the lead under Eric's delegation; no recommendation, so the
+  conservative option): the testnet manual proof is not required to call Milestone 6 done; it
+  is its own Progress line, ticked only when run, and required before any mainnet decision
+  (D2). Reason: CI proves the milestone; the manual proof needs funds not in hand, and no
+  status claims it until it runs.
+- Unconfirmed on 2026-11-15: the Hyperliquid and OWS facts above were not re-read. The migration
+  numbers are re-checked against main at `61d0326`: signer schema 6 (next 7), server
+  migrations through `0007_transaction_attempts` (next `0008`).
 
 ## Artifacts and Notes
 
@@ -1220,3 +1248,8 @@ spot, HIP-3 DEXs; mainnet.
   file and line references (gates, README, architecture, v0.1 gate text). D5 re-stated against
   the three additive precedents now in §12. Status stays Draft; still six milestones, none
   delivered by other plans.
+- 2026-11-15: D1 and D3 to D9 taken by the lead under Eric's delegation, each as recommended
+  (D5 (a), D7 (a), D8 (c), D9 (a)); D2 stays open with Eric, mainnet refused at boot. The two
+  open questions without a recommendation are answered with the conservative option. Repricing
+  is built at `61d0326`: the signer migration is version 7 and the server migration
+  `0008_venue_orders`; the repricing routes are named.
