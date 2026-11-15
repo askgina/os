@@ -109,7 +109,7 @@ a key (`docs/threat-model.md`).
 | Volume            | Holds                                                                                         | Read by  |
 | ----------------- | --------------------------------------------------------------------------------------------- | -------- |
 | `postgres-data`   | The database.                                                                                 | postgres |
-| `signer-data`     | The wallet vault and the signer's SQLite (used approvals, policies, audit, restore fence).    | signer   |
+| `signer-data`     | The wallet vault and the signer's SQLite (used approvals, policies, mandates and their counts, audit, restore fence). | signer   |
 | `server-secrets`  | `keyring.json` (key-encryption keys), `signer-request-secret`, a copy of `postgres-password`. | server   |
 | `signer-secrets`  | `signer-request-secret`, `confirm-request-secret`, `token-key`, `vault-passphrase`.           | signer   |
 | `approve-secrets` | A copy of `confirm-request-secret`, which `init` writes again whenever it differs.            | approve  |
@@ -145,6 +145,7 @@ To restore, every time, in this order:
     It prints one line, `{"ok":true,"action":"fence-set-by-operator","fenceAt":…}`.
 3. Start the stack as usual. `init` leaves existing secrets alone. Keep the same `PUBLIC_ORIGIN`:
    passkeys are bound to its host name.
+4. Grant again every mandate people still want. The fence ended all of them (below).
 
 Why every restore is fenced: a backup may be older than the last payment, and nothing in it says
 so. A restore puts the signer's record of used approvals back to the moment of the backup, so an
@@ -157,12 +158,24 @@ request shows no link at all. Reject them, and the agent proposes again. The sam
 proposal made in the first 30 seconds after the fence (the clock skew the signer allows).
 Approvals that were already used stay used. A chain is not part of a backup.
 
+The fence also ends every mandate that was still live, with reason `operator`, in the same
+signer transaction. A restored signer has forgotten the payments it counted under a mandate
+after the backup, so its counts would let more leave the wallet than people approved. Nothing
+brings an ended mandate back: people grant a new one. The control plane shows each ended mandate
+with reason `operator`, and with no usage when the restored signer never held it (the backup is
+older than the grant). The release gate "the operator's restore fence ends every live mandate"
+runs the `fence` command against a running stack and checks this; no gate restores a backup
+that holds a live mandate.
+
 The signer also fences itself when it opens a database file that is not the file it last opened:
 one extracted from an archive, copied, or moved to another host. It logs `restore fence set`
 with `reason: new_database_file`. It cannot notice a restore that rolls the same file back in
 place, for example a disk or filesystem snapshot, so the `fence` step stays part of every
 restore. The fence is kept in `signer-data` and survives restarts; each fence is recorded in
 every workspace's signer decision log.
+
+The fence is a time on the signer host's clock, and mandates start, end and count their
+windows by the same clock: keep it synchronized (see "Mandates").
 
 ## Rotating the keyring
 
@@ -200,6 +213,56 @@ Skip the comparison and the step proves only that someone holds the key: a compr
 plane could have put in a key it holds (`docs/threat-model.md`, "Limits"). The operator's
 `enroll-approver` command below has no such step, because the operator types the key.
 
+## Mandates
+
+A mandate lets one agent pay from one wallet, to the addresses it lists, within its caps (per
+payment, per rolling window, in total, number of payments, fee per payment) until its end time,
+with no passkey per payment. The wallet's policy still applies to every payment, and a mandate
+never covers a contract call. What it protects and what it does not is in
+`docs/threat-model.md`, "Mandates".
+
+- **Granting.** An owner asks for one for an agent's wallet (`POST
+  /api/v1/workspaces/:workspaceId/wallets/:walletId/mandates`). It is approved like every other
+  request, on the confirmation page, at the workspace's admin threshold. The server refuses a
+  draft the wallet's policy or the longest life would refuse; the signer checks again and its
+  answer decides.
+- **Using.** An agent proposes as usual. When a live mandate of that agent covers the payment,
+  the answer says `authorizedBy: "mandate"` with its `mandateId`, and the payment is signed and
+  sent with no person asked. Anything a mandate does not cover goes to the inbox. An agent may
+  name a mandate (`mandateId` on `propose_transfer`); one that does not cover the payment is
+  refused with its reason, for example `mandate_over_window_cap`. The signer counts every
+  payment it signs under a mandate, also one the network never includes, and gives nothing
+  back.
+- **Revoking.** Any owner or approver revokes a mandate with one click and no passkey
+  (`POST /api/v1/workspaces/:workspaceId/mandates/:mandateId/revoke`). It ends for good; a new
+  grant replaces it. The signer also ends mandates on its own: when a passkey that granted one
+  stops approving, when the agent is disabled (the control plane asks it to), when the restore
+  fence moves, and on the operator's command below.
+
+The operator's commands, on the signer host:
+
+    docker compose exec signer node src/admin.ts list-mandates --workspace <workspace id>
+    docker compose exec signer node src/admin.ts revoke-mandate --mandate <mandate id>
+    docker compose exec signer node src/admin.ts revoke-mandate --all --workspace <workspace id>
+
+`list-mandates` prints identifiers, status, times and use counts, never a purpose or a
+recipient. `revoke-mandate` ends one mandate, or every live mandate of a workspace, with reason
+`operator`, and prints the ids it ended. It does not depend on the control plane: use it when
+the control plane may be compromised, because a person's revocation goes through it.
+
+Two settings in `.env`, both optional:
+
+| Setting                               | Meaning                                                                                                                                                                                         |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MANDATE_MAX_SECONDS`                 | The longest life of a mandate: 3600 to 2592000 seconds, default 604800 (seven days). Compose gives it to the signer (`SIGNER_MAX_MANDATE_SECONDS`, which decides) and to the server, so they stay equal. |
+| `SIGNER_MAX_LIVE_MANDATES_PER_WALLET` | How many live mandates one wallet may hold: 1 to 64, default 16.                                                                                                                                 |
+
+**The signer host must keep its clock synchronized** (NTP, `chrony` or `systemd-timesyncd`). The
+signer decides by its own clock when a mandate starts and ends and which payments fall in its
+window, and the restore fence is a time on the same clock. A clock that runs behind keeps an
+ended mandate signing; one that runs ahead lets payments leave the window early. Nothing in the
+stack checks the clock.
+
 ## When no approver is left
 
 Who may approve for a workspace is recorded in the signer, and normally changes only with a
@@ -231,10 +294,17 @@ file was not restored: approvals waiting at that moment must be proposed again. 
 to start on a database written by a newer signer (`schema_too_new`). Do not go back to a v0.1
 signer image after upgrading: it does not know the fence and would ignore it.
 
-The signer's schema is now version 4: version 4 adds the table `possession_challenges` for a new
-approver's possession step. The migration only creates that table. A signer image from before
-it refuses to start on the migrated file with `schema_too_new`, so after this upgrade a rollback
-of the signer means fixing forward, not going back to the older image. An approver change that
+The signer's schema is now version 5: version 5 adds the tables `mandates`, `mandate_grantors`
+and `mandate_uses`. The migration only creates them, and nothing changes for a workspace until
+someone grants a mandate. A signer image from before it refuses to start on the migrated file
+with `schema_too_new`, so a rollback of the signer means fixing forward. The same holds for the
+control plane: its migration `0004_mandates` adds the `mandates` table and lets an approval be a
+mandate use; do not run an older control plane against a database that holds mandate uses.
+
+Version 4 added the table `possession_challenges` for a new approver's possession step. The
+migration only creates that table. A signer image from before it refuses to start on the
+migrated file with `schema_too_new`, so after that upgrade a rollback of the signer means fixing
+forward, not going back to the older image. An approver change that
 was waiting at the upgrade needs the possession step before anyone can approve it. One that had
 all its approvals but was not yet applied is refused by the signer with `possession_unproven`
 when the control plane applies it, ends `failed`, and must be proposed again.

@@ -8,15 +8,23 @@
  */
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
-import type { PolicyDraft, WalletSummary, WorkspaceDetail } from "@askgina/os-api";
+import {
+  type AgentSummary,
+  ApiError,
+  type MandateDraft,
+  type PolicyDraft,
+  type WalletSummary,
+  type WorkspaceDetail,
+} from "@askgina/os-api";
 import { keyFingerprint } from "@askgina/os-protocol";
+import type { SignerDecision } from "@askgina/os-protocol/signer";
 import { b64url, coseEc2, SoftAuthenticator } from "@askgina/os-protocol/testing";
 import { scanForMarkers } from "@askgina/os-testkit";
 import { expect, test } from "@playwright/test";
 import pg from "pg";
 import { createPublicClient, createTestClient, formatEther, http, parseEther } from "viem";
 import { foundry } from "viem/chains";
-import { type AgentConnection, connectAgent, ToolRefused } from "../src/agent.ts";
+import { type AgentConnection, connectAgent, type Proposal, ToolRefused } from "../src/agent.ts";
 import { ConfirmationRefused, Person } from "../src/person.ts";
 import {
   backUpInto,
@@ -85,9 +93,9 @@ function policy(extra: Partial<PolicyDraft> = {}): PolicyDraft {
 }
 
 /** Ask for a new policy and approve it on the signer's confirmation page. */
-async function setPolicy(draft: PolicyDraft): Promise<void> {
+async function setPolicy(draft: PolicyDraft, walletId: string = wallet.id): Promise<void> {
   const request = await ada.api.call("requestPolicy", {
-    params: { workspaceId: workspace.id, walletId: wallet.id },
+    params: { workspaceId: workspace.id, walletId },
     body: { draft },
   });
   expect(request.kind).toBe("set-policy");
@@ -133,6 +141,21 @@ async function intentSettles(intentId: string, timeoutMs = 120_000): Promise<str
     if (!pending.includes(status)) return status;
     if (Date.now() > deadline) throw new Error(`intent ${intentId} is still ${status}`);
     await delay(250);
+  }
+}
+
+/** The workspace's whole signer decision log, read to its end: a page holds the oldest 100. */
+async function signerDecisions(): Promise<SignerDecision[]> {
+  const decisions: SignerDecision[] = [];
+  for (let after = 0; ; ) {
+    const page = await ada.api.call("listSignerDecisions", {
+      params: { workspaceId: workspace.id },
+      query: { after: String(after) },
+    });
+    decisions.push(...page.items);
+    const last = page.items.at(-1);
+    if (!last || page.items.length < 100) return decisions;
+    after = last.seq;
   }
 }
 
@@ -767,19 +790,8 @@ test("a restored and fenced backup keeps wallets, refuses an approval used after
   expect(await chain.getTransactionCount({ address: wallet.address })).toBe(nonceBefore);
   expect(await chain.getBalance({ address: RECIPIENT })).toBe(before);
   // The restored file is a new file, so the signer may already have fenced it when the operator's
-  // command opened it; within the same second the operator's fence then changes nothing. The log
-  // is read to its end: a page holds the oldest 100 entries.
-  const actions: string[] = [];
-  for (let after = 0; ; ) {
-    const page = await ada.api.call("listSignerDecisions", {
-      params: { workspaceId: workspace.id },
-      query: { after: String(after) },
-    });
-    actions.push(...page.items.map((decision) => decision.action));
-    const last = page.items.at(-1);
-    if (!last || page.items.length < 100) break;
-    after = last.seq;
-  }
+  // command opened it; within the same second the operator's fence then changes nothing.
+  const actions = (await signerDecisions()).map((decision) => decision.action);
   expect(
     actions.some((action) =>
       ["fence-set-by-operator", "fence-set-on-new-database-file"].includes(action),
@@ -794,4 +806,726 @@ test("a restored and fenced backup keeps wallets, refuses an approval used after
   await ada.confirm(fresh.approvalId);
   expect(await intentSettles(fresh.intentId)).toBe("confirmed");
   expect(formatEther((await chain.getBalance({ address: RECIPIENT })) - before)).toBe("0.001");
+});
+
+// --- mandates ---------------------------------------------------------------------------------
+// These run on the restored stack, after every gate above. Each grants the mandates it needs; the
+// first five share one, which the fifth revokes.
+
+/** The one address the mandates below may pay. */
+const PAYEE = "0x000000000000000000000000000000000000b0b0";
+/** A person's reason for a mandate. It is sealed: none of it may be readable in the database. */
+const PURPOSE_MARKER = `PURPOSEMARK${run} pay the hosting invoices`;
+
+const wei = (amount: string) => parseEther(amount).toString();
+const nowSeconds = () => Math.floor(Date.now() / 1000);
+
+/** The agent the mandates below are for, with its own wallet. */
+let payerId: AgentSummary["id"];
+let payerToken: string;
+let payerWallet: WalletSummary;
+let payer: AgentConnection;
+/** The mandate the first gates grant and use, until one of them revokes it. */
+let mandateId: string;
+
+/**
+ * A wallet policy for `requester` with room for every mandate below and any recipient, so that
+ * only a mandate's own list limits where it pays.
+ */
+function payerPolicy(requester: AgentSummary["id"]): PolicyDraft {
+  return policy({
+    requesters: [requester],
+    assets: [{ chainId: CHAIN, asset: "native", maxPerTx: wei("0.05"), maxPerDay: wei("0.5") }],
+  });
+}
+
+/**
+ * Let `agent` pay PAYEE up to 0.01 ETH at a time, 0.03 ETH in any hour and 0.05 ETH in all, ten
+ * times at most, for a day. Every cap is below the policy's, so the mandate refuses first.
+ */
+function mandateDraft(agent: AgentSummary["id"], extra: Partial<MandateDraft> = {}): MandateDraft {
+  return {
+    agentId: agent,
+    assets: [
+      {
+        chainId: CHAIN,
+        asset: "native",
+        maxPerAction: wei("0.01"),
+        maxPerWindow: wei("0.03"),
+        maxTotal: wei("0.05"),
+      },
+    ],
+    windowSeconds: 3600,
+    recipients: [PAYEE],
+    maxUses: 10,
+    maxFeePerActionWei: wei("0.01"),
+    notAfter: nowSeconds() + 86_400,
+    purpose: "pay the hosting invoices this week",
+    ...extra,
+  };
+}
+
+/**
+ * Ada asks for `draft` on `walletId`, and `approver` approves it on the signer's confirmation
+ * page, which at the admin threshold of 1 grants it.
+ */
+async function grantMandate(
+  walletId: string,
+  draft: MandateDraft,
+  approver: Person = ada,
+): Promise<{ mandateId: string; grantId: string }> {
+  const grant = await ada.proposeMandate(workspace.id, walletId, draft);
+  expect(grant).toMatchObject({ kind: "grant-mandate", status: "pending" });
+  await approver.confirm(grant.id);
+  const granted = await ada.settled(grant.id);
+  expect(granted.status).toBe("executed");
+  if (granted.subject.kind !== "grant-mandate") throw new Error(`${grant.id} grants no mandate`);
+  return { mandateId: granted.subject.mandate.id, grantId: grant.id };
+}
+
+function getMandate(id: string) {
+  return ada.api.call("getMandate", { params: { workspaceId: workspace.id, mandateId: id } });
+}
+
+/** The ids of the live mandates `whoami` shows the payer. */
+async function payerMandates(): Promise<string[]> {
+  const { mandates } = await payer.call("whoami");
+  return (mandates as { mandateId: string }[]).map((mandate) => mandate.mandateId);
+}
+
+/** How many proposals the payer has made, as it lists them. */
+async function payerIntentCount(): Promise<number> {
+  const { intents } = await payer.call("list_intents", { limit: 50 });
+  return (intents as unknown[]).length;
+}
+
+/** The code and reason a tool refused `attempt` with; fails when it was not refused. */
+async function toolRefusal(
+  attempt: Promise<unknown>,
+): Promise<{ code: string | null; detail: string | null }> {
+  const outcome = await attempt.then(
+    () => null,
+    (error: unknown) => error,
+  );
+  if (!(outcome instanceof ToolRefused)) {
+    throw new Error(`expected the tool to refuse, got ${String(outcome)}`);
+  }
+  return { code: outcome.code, detail: outcome.detail };
+}
+
+/** The code and reason the API refused `attempt` with; fails when it was not refused. */
+async function apiRefusal(
+  attempt: Promise<unknown>,
+): Promise<{ code: string; detail: string | undefined }> {
+  const outcome = await attempt.then(
+    () => null,
+    (error: unknown) => error,
+  );
+  if (!(outcome instanceof ApiError)) {
+    throw new Error(`expected the API to refuse, got ${String(outcome)}`);
+  }
+  return { code: outcome.code, detail: outcome.detail };
+}
+
+/** A proposal no mandate covered waits for a person. Ada rejects it, so nothing moves. */
+async function rejectWaiting(proposal: Proposal): Promise<void> {
+  expect(proposal).toMatchObject({
+    authorizedBy: "person",
+    mandateId: null,
+    status: "pending_approval",
+  });
+  const approvalId = approvalIdOf(proposal);
+  const approval = await ada.api.call("getApproval", { params: { approvalId } });
+  expect(approval.subject.kind).toBe("approve-intent");
+  await ada.reject(approvalId);
+  expect(await intentSettles(proposal.intentId)).toBe("rejected");
+}
+
+/** Run one of the signer's operator commands on its host, as the deploy guide does. */
+async function signerAdmin(...args: string[]): Promise<Record<string, unknown>> {
+  const output = await exec("signer", "node", "src/admin.ts", ...args);
+  return JSON.parse(output.trim().split("\n").at(-1) ?? "") as Record<string, unknown>;
+}
+
+/** Run the example agent once, in a container on the agents network, to its end. */
+async function runExampleAgent(
+  env: Record<string, string>,
+): Promise<{ exitCode: number; output: string }> {
+  const variables = Object.entries(env).flatMap(([name, value]) => ["-e", `${name}=${value}`]);
+  try {
+    return { exitCode: 0, output: await compose("run", "--rm", ...variables, "scripted-agent") };
+  } catch (error) {
+    const failure = error as { code?: number; stdout?: string; stderr?: string };
+    return {
+      exitCode: typeof failure.code === "number" ? failure.code : 1,
+      output: `${failure.stdout ?? ""}${failure.stderr ?? ""}`,
+    };
+  }
+}
+
+test("a mandate approved on the confirmation page at the admin threshold lets its agent pay a listed recipient with no person asked", async () => {
+  const created = await ada.api.call("createAgent", {
+    params: { workspaceId: workspace.id },
+    body: { name: "Invoice payer" },
+  });
+  payerId = created.agent.id;
+  payerToken = created.token;
+  payerWallet = created.wallet;
+  await setPolicy(payerPolicy(payerId), payerWallet.id);
+  await chainAdmin.setBalance({ address: payerWallet.address, value: parseEther("1") });
+  payer = await connectAgent(`${stack.origin}/mcp`, payerToken);
+
+  // Compose sets the longest life to seven days: a longer mandate is refused before anyone is
+  // asked.
+  expect(
+    await apiRefusal(
+      ada.proposeMandate(
+        workspace.id,
+        payerWallet.id,
+        mandateDraft(payerId, { notAfter: nowSeconds() + 8 * 86_400 }),
+      ),
+    ),
+  ).toEqual({ code: "invalid_request", detail: "lifetime_too_long" });
+
+  const { adminThreshold } = await ada.api.call("getWorkspace", {
+    params: { workspaceId: workspace.id },
+  });
+  const grant = await ada.proposeMandate(
+    workspace.id,
+    payerWallet.id,
+    mandateDraft(payerId, { purpose: PURPOSE_MARKER }),
+  );
+  expect(grant).toMatchObject({
+    kind: "grant-mandate",
+    status: "pending",
+    threshold: adminThreshold,
+  });
+  const detail = await ada.api.call("getApproval", { params: { approvalId: grant.id } });
+  if (detail.subject.kind !== "grant-mandate") throw new Error("the request grants no mandate");
+  mandateId = detail.subject.mandate.id;
+
+  // The confirmation page shows the mandate as the signer holds it: the most that can leave the
+  // wallet, the agent, the one recipient, and the purpose as text nobody checked.
+  const link = await ada.confirmationLink(grant.id);
+  const view = await ada.readConfirmation(link);
+  expect(view).toMatchObject({ approvalId: grant.id, kind: "grant-mandate", state: "open" });
+  expect(view.envelope).toEqual(detail.envelope);
+  expect(view.title).toBe("Let an agent pay up to 0.05 ETH without asking");
+  const shown = view.lines.map((line) => line.value).join("\n");
+  expect(shown).toContain(PAYEE);
+  expect(shown).toContain(payerId);
+  expect(shown).toContain(mandateId);
+  expect(view.lines).toContainEqual(
+    expect.objectContaining({ value: PURPOSE_MARKER, kind: "unchecked" }),
+  );
+  expect(await ada.approveOnConfirmationPage(link, view)).toMatchObject({
+    collected: 1,
+    required: adminThreshold,
+  });
+  await ada.api.call("collectApproval", { params: { approvalId: grant.id }, body: {} });
+  expect((await ada.settled(grant.id)).status).toBe("executed");
+  const granted = await getMandate(mandateId);
+  expect(granted).toMatchObject({
+    status: "active",
+    endedReason: null,
+    grantApprovalId: grant.id,
+    walletId: payerWallet.id,
+    agent: { id: payerId, name: "Invoice payer" },
+    usage: { uses: 0, usesLeft: 10 },
+    intents: [],
+  });
+  expect(granted.grantedBy.map((person) => person.displayName)).toEqual(["Ada"]);
+  expect(await payerMandates()).toEqual([mandateId]);
+
+  // Covered: signed and sent with no person asked, and nothing waits in the inbox.
+  const { pendingApprovals } = await ada.api.call("getWorkspace", {
+    params: { workspaceId: workspace.id },
+  });
+  const before = await chain.getBalance({ address: PAYEE });
+  const nonceBefore = await chain.getTransactionCount({ address: payerWallet.address });
+  const paid = await payer.proposeTransfer({
+    chainId: CHAIN,
+    to: PAYEE,
+    amount: "0.01",
+    memo: "hosting invoice 1",
+  });
+  expect(paid).toMatchObject({
+    authorizedBy: "mandate",
+    mandateId,
+    approvalUrl: null,
+    expiresAt: null,
+  });
+  expect(await intentSettles(paid.intentId)).toBe("confirmed");
+  expect(formatEther((await chain.getBalance({ address: PAYEE })) - before)).toBe("0.01");
+  expect(await chain.getTransactionCount({ address: payerWallet.address })).toBe(nonceBefore + 1);
+  expect(await ada.api.call("getIntent", { params: { intentId: paid.intentId } })).toMatchObject({
+    approvalId: null,
+    mandateId,
+    transaction: { status: "confirmed" },
+  });
+
+  // The example agent is covered the same way, and says so.
+  const example = await runExampleAgent({
+    AGENT_TOKEN: payerToken,
+    TRANSFER_TO: PAYEE,
+    AMOUNT: "0.005",
+    MEMO: "hosting invoice 2, from the example agent",
+  });
+  expect(example.exitCode, example.output).toBe(0);
+  expect(example.output).toContain(`covered by mandate ${mandateId}`);
+  expect(example.output).toContain("status: confirmed");
+  expect(example.output).not.toMatch(/approvals\/apr_/);
+  expect(formatEther((await chain.getBalance({ address: PAYEE })) - before)).toBe("0.015");
+  expect(await chain.getTransactionCount({ address: payerWallet.address })).toBe(nonceBefore + 2);
+  expect(
+    (await ada.api.call("getWorkspace", { params: { workspaceId: workspace.id } }))
+      .pendingApprovals,
+  ).toBe(pendingApprovals);
+
+  const used = await getMandate(mandateId);
+  expect(used.usage).toMatchObject({
+    uses: 2,
+    usesLeft: 8,
+    assets: [{ usedTotal: wei("0.015"), usedInWindow: wei("0.015") }],
+  });
+  expect(used.intents.map((intent) => intent.id)).toContain(paid.intentId);
+  expect(used.intents).toHaveLength(2);
+  const decisions = await signerDecisions();
+  expect(decisions).toContainEqual(
+    expect.objectContaining({ action: "grant-mandate", approvalId: grant.id, outcome: "allowed" }),
+  );
+  expect(
+    decisions.some(
+      (decision) => decision.action === "sign-under-mandate" && decision.outcome === "allowed",
+    ),
+  ).toBe(true);
+});
+
+test("a mandate's purpose is in no column of the database in the clear, and in no log line", async () => {
+  // Stored, and readable to the workspace through the API: the scan looks for something there.
+  expect((await getMandate(mandateId)).mandate.purpose).toBe(PURPOSE_MARKER);
+  const url = await databaseUrl();
+  const scan = await scanForMarkers(url, [PURPOSE_MARKER, `PURPOSEMARK${run}`]);
+  expect(scan.hits).toEqual([]);
+  // The control: if the scanner cannot find a name a person typed, it is blind.
+  const control = await scanForMarkers(url, [WORKSPACE_NAME]);
+  expect(control.hits.length).toBeGreaterThan(0);
+
+  const logs = await compose("logs", "--no-color", "server", "signer", "approve");
+  expect(logs).not.toContain(`PURPOSEMARK${run}`);
+  // The operator's listing on the signer host names no purpose either.
+  const listed = await signerAdmin("list-mandates", "--workspace", workspace.id);
+  expect(listed.mandates).toContainEqual(
+    expect.objectContaining({ mandateId, status: "active", uses: 2, maxUses: 10 }),
+  );
+  expect(JSON.stringify(listed)).not.toContain(`PURPOSEMARK${run}`);
+});
+
+test("a payment over the mandate's per-payment cap, or to a recipient it does not list, waits for a person", async () => {
+  const before = await chain.getBalance({ address: PAYEE });
+  const elsewhere = await chain.getBalance({ address: RECIPIENT });
+  // The wallet's policy allows both: 0.02 is under its 0.05 per transaction, and it allows any
+  // recipient. The mandate covers neither.
+  await rejectWaiting(
+    await payer.proposeTransfer({
+      chainId: CHAIN,
+      to: PAYEE,
+      amount: "0.02",
+      memo: "over the mandate's per-payment cap",
+    }),
+  );
+  await rejectWaiting(
+    await payer.proposeTransfer({
+      chainId: CHAIN,
+      to: RECIPIENT,
+      amount: "0.005",
+      memo: "to an address the mandate does not list",
+    }),
+  );
+
+  // Named, the mandate refuses each with its reason, and nothing is recorded.
+  const count = await payerIntentCount();
+  expect(
+    await toolRefusal(
+      payer.proposeTransfer({
+        chainId: CHAIN,
+        to: PAYEE,
+        amount: "0.02",
+        memo: "over the cap, under the mandate",
+        mandateId,
+      }),
+    ),
+  ).toEqual({ code: "policy_denied", detail: "mandate_over_per_action_cap" });
+  expect(
+    await toolRefusal(
+      payer.proposeTransfer({
+        chainId: CHAIN,
+        to: RECIPIENT,
+        amount: "0.005",
+        memo: "unlisted, under the mandate",
+        mandateId,
+      }),
+    ),
+  ).toEqual({ code: "policy_denied", detail: "mandate_recipient_not_allowed" });
+  expect(await payerIntentCount()).toBe(count);
+
+  expect(await chain.getBalance({ address: PAYEE })).toBe(before);
+  expect(await chain.getBalance({ address: RECIPIENT })).toBe(elsewhere);
+  expect((await getMandate(mandateId)).usage).toMatchObject({ uses: 2 });
+});
+
+test("a server killed right after a payment under a mandate still ends in exactly one transaction, and the mandate keeps its counts", async () => {
+  const before = await chain.getBalance({ address: PAYEE });
+  const nonceBefore = await chain.getTransactionCount({ address: payerWallet.address });
+  // Named by the agent this time.
+  const paid = await payer.proposeTransfer({
+    chainId: CHAIN,
+    to: PAYEE,
+    amount: "0.005",
+    memo: "survives a restart",
+    mandateId,
+  });
+  expect(paid).toMatchObject({ authorizedBy: "mandate", mandateId });
+  await compose("kill", "server");
+  await compose("up", "-d", "--wait", "--wait-timeout", "300", "server");
+  await waitUntilHealthy();
+
+  expect(await intentSettles(paid.intentId, 200_000)).toBe("confirmed");
+  expect(formatEther((await chain.getBalance({ address: PAYEE })) - before)).toBe("0.005");
+  expect(await chain.getTransactionCount({ address: payerWallet.address })).toBe(nonceBefore + 1);
+  // The counts live in the signer, which kept running: every payment counted once.
+  expect(await getMandate(mandateId)).toMatchObject({
+    status: "active",
+    endedReason: null,
+    usage: {
+      uses: 3,
+      usesLeft: 7,
+      assets: [{ usedTotal: wei("0.02"), usedInWindow: wei("0.02") }],
+    },
+  });
+  payer = await connectAgent(`${stack.origin}/mcp`, payerToken);
+  const { mandates } = await payer.call("whoami");
+  expect(mandates).toEqual([
+    expect.objectContaining({
+      mandateId,
+      usesLeft: 7,
+      assets: [expect.objectContaining({ usedInWindow: wei("0.02"), usedTotal: wei("0.02") })],
+    }),
+  ]);
+});
+
+test("concurrent payments under one mandate never exceed its window cap, and the next is refused with mandate_over_window_cap", async () => {
+  // 0.02 of the 0.03 the mandate allows in any hour is used. Each payment fits alone; both do not.
+  const before = await chain.getBalance({ address: PAYEE });
+  const nonceBefore = await chain.getTransactionCount({ address: payerWallet.address });
+  const racing = await Promise.all(
+    ["first", "second"].map((which) =>
+      payer.proposeTransfer({
+        chainId: CHAIN,
+        to: PAYEE,
+        amount: "0.01",
+        memo: `racing for the window, ${which}`,
+      }),
+    ),
+  );
+  const outcomes: { authorizedBy: string; status: string; failureCode: string | null }[] = [];
+  for (const proposal of racing) {
+    // A proposal checked after the other was signed no longer fits, so it waits for a person.
+    if (proposal.authorizedBy === "person") await rejectWaiting(proposal);
+    else await intentSettles(proposal.intentId);
+    const { status, failureCode } = await ada.api.call("getIntent", {
+      params: { intentId: proposal.intentId },
+    });
+    outcomes.push({ authorizedBy: proposal.authorizedBy, status, failureCode });
+  }
+  // One is signed. When both were routed to the mandate, the signer refuses the other with the
+  // window's code.
+  const confirmed = outcomes.filter((outcome) => outcome.status === "confirmed");
+  expect(confirmed).toEqual([expect.objectContaining({ authorizedBy: "mandate" })]);
+  const other = outcomes.find((outcome) => outcome.status !== "confirmed");
+  if (other?.authorizedBy === "mandate") {
+    expect(other).toMatchObject({ status: "denied", failureCode: "mandate_over_window_cap" });
+  } else {
+    expect(other).toMatchObject({ authorizedBy: "person", status: "rejected" });
+  }
+  expect(formatEther((await chain.getBalance({ address: PAYEE })) - before)).toBe("0.01");
+  expect(await chain.getTransactionCount({ address: payerWallet.address })).toBe(nonceBefore + 1);
+  expect((await getMandate(mandateId)).usage).toMatchObject({
+    uses: 4,
+    usesLeft: 6,
+    assets: [{ usedInWindow: wei("0.03") }],
+  });
+
+  // The window is full. Named, the next payment is refused with the window's code and nothing
+  // is recorded; unnamed, it waits for a person.
+  const count = await payerIntentCount();
+  expect(
+    await toolRefusal(
+      payer.proposeTransfer({
+        chainId: CHAIN,
+        to: PAYEE,
+        amount: "0.01",
+        memo: "over the window, under the mandate",
+        mandateId,
+      }),
+    ),
+  ).toEqual({ code: "policy_denied", detail: "mandate_over_window_cap" });
+  expect(await payerIntentCount()).toBe(count);
+  await rejectWaiting(
+    await payer.proposeTransfer({
+      chainId: CHAIN,
+      to: PAYEE,
+      amount: "0.01",
+      memo: "over the window",
+    }),
+  );
+});
+
+test("a revoked mandate signs nothing, and the next payment waits for a person", async () => {
+  const revoked = await ada.revokeMandate(workspace.id, mandateId);
+  expect(revoked).toMatchObject({ id: mandateId, status: "revoked", endedReason: "revoked" });
+  expect(revoked.revokedAt).not.toBeNull();
+  // What it counted stays counted: nothing is given back.
+  expect(revoked.usage).toMatchObject({ uses: 4 });
+  // Revoking twice changes nothing.
+  expect(await ada.revokeMandate(workspace.id, mandateId)).toMatchObject({
+    status: "revoked",
+    endedReason: "revoked",
+    revokedAt: revoked.revokedAt,
+  });
+
+  expect(await payerMandates()).toEqual([]);
+  expect(
+    await toolRefusal(
+      payer.proposeTransfer({
+        chainId: CHAIN,
+        to: PAYEE,
+        amount: "0.001",
+        memo: "under a revoked mandate",
+        mandateId,
+      }),
+    ),
+  ).toEqual({ code: "policy_denied", detail: "mandate_revoked" });
+  await rejectWaiting(
+    await payer.proposeTransfer({
+      chainId: CHAIN,
+      to: PAYEE,
+      amount: "0.001",
+      memo: "after the revocation",
+    }),
+  );
+  expect(await signerDecisions()).toContainEqual(
+    expect.objectContaining({
+      action: "revoke-mandate",
+      approvalId: revoked.grantApprovalId,
+      outcome: "allowed",
+    }),
+  );
+  const ended = await ada.api.call("listMandates", {
+    params: { workspaceId: workspace.id },
+    query: { agentId: payerId, status: "ended" },
+  });
+  expect(ended.items.map((item) => item.id)).toContain(mandateId);
+});
+
+test("removing the approver who granted a mandate ends that mandate and no other", async () => {
+  // Lin joins as an approver, proves her passkey is hers, and Ada approves the change.
+  const lin = new Person(stack.origin, "Lin");
+  const invite = await ada.api.call("createInvite", {
+    params: { workspaceId: workspace.id },
+    body: { role: "approver" },
+  });
+  const { user } = await lin.join(invite.url);
+  if (!user) throw new Error("Lin did not join");
+  const pending = await ada.api.call("listApprovals", {
+    params: { workspaceId: workspace.id },
+    query: { status: "pending" },
+  });
+  let addLin: string | undefined;
+  for (const item of pending.items.filter((candidate) => candidate.kind === "add-approver")) {
+    const change = await ada.api.call("getApproval", { params: { approvalId: item.id } });
+    if (change.subject.kind === "add-approver" && change.subject.user.id === user.id) {
+      addLin = item.id;
+    }
+  }
+  if (!addLin) throw new Error("joining as an approver opened no approver change");
+  await lin.provePossession(addLin);
+  await ada.confirm(addLin);
+  expect((await ada.settled(addLin)).status).toBe("executed");
+
+  // Lin grants one mandate, Ada another, for the same agent and wallet.
+  const byLin = await grantMandate(payerWallet.id, mandateDraft(payerId), lin);
+  const byAda = await grantMandate(payerWallet.id, mandateDraft(payerId));
+  expect((await getMandate(byLin.mandateId)).grantedBy.map((person) => person.displayName)).toEqual(
+    ["Lin"],
+  );
+
+  // Lin stops approving: the signer removes her passkey and, in the same transaction, revokes
+  // what it granted.
+  const demoted = await ada.api.call("setMemberRole", {
+    params: { workspaceId: workspace.id, userId: user.id },
+    body: { role: "viewer" },
+  });
+  const removal = demoted.approvals.find((item) => item.kind === "remove-approver");
+  if (!removal) throw new Error("demoting Lin opened no approver removal");
+  await ada.confirm(removal.id);
+  expect((await ada.settled(removal.id)).status).toBe("executed");
+
+  expect(await getMandate(byLin.mandateId)).toMatchObject({
+    status: "revoked",
+    endedReason: "grantor_removed",
+  });
+  expect(await getMandate(byAda.mandateId)).toMatchObject({ status: "active", endedReason: null });
+  expect(await signerDecisions()).toContainEqual(
+    expect.objectContaining({
+      action: "revoke-mandate-on-grantor-removal",
+      approvalId: byLin.grantId,
+      outcome: "allowed",
+    }),
+  );
+  expect(
+    await toolRefusal(
+      payer.proposeTransfer({
+        chainId: CHAIN,
+        to: PAYEE,
+        amount: "0.001",
+        memo: "under the mandate Lin granted",
+        mandateId: byLin.mandateId,
+      }),
+    ),
+  ).toEqual({ code: "policy_denied", detail: "mandate_revoked" });
+  const paid = await payer.proposeTransfer({
+    chainId: CHAIN,
+    to: PAYEE,
+    amount: "0.001",
+    memo: "under the mandate Ada granted",
+  });
+  expect(paid).toMatchObject({ authorizedBy: "mandate", mandateId: byAda.mandateId });
+  expect(await intentSettles(paid.intentId)).toBe("confirmed");
+
+  // Nothing stays live for the gates that follow.
+  await ada.revokeMandate(workspace.id, byAda.mandateId);
+});
+
+test("disabling an agent revokes its mandates at the signer and cancels its waiting grants", async () => {
+  const created = await ada.api.call("createAgent", {
+    params: { workspaceId: workspace.id },
+    body: { name: "Contractor" },
+  });
+  await setPolicy(payerPolicy(created.agent.id), created.wallet.id);
+  const granted = await grantMandate(created.wallet.id, mandateDraft(created.agent.id));
+  const waiting = await ada.proposeMandate(
+    workspace.id,
+    created.wallet.id,
+    mandateDraft(created.agent.id),
+  );
+
+  await ada.api.call("disableAgent", {
+    params: { workspaceId: workspace.id, agentId: created.agent.id },
+    body: {},
+  });
+  expect(await getMandate(granted.mandateId)).toMatchObject({
+    status: "revoked",
+    endedReason: "agent_disabled",
+  });
+  expect((await ada.api.call("getApproval", { params: { approvalId: waiting.id } })).status).toBe(
+    "cancelled",
+  );
+  // The signer itself holds it revoked, as its operator's listing on its host shows.
+  const listed = await signerAdmin("list-mandates", "--workspace", workspace.id);
+  expect(listed.mandates).toContainEqual(
+    expect.objectContaining({
+      mandateId: granted.mandateId,
+      status: "revoked",
+      revokedReason: "requested",
+    }),
+  );
+  // The agent's token no longer opens the gateway.
+  const refused = await fetch(`${stack.origin}/mcp`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${created.token}`,
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  });
+  expect(refused.status).toBe(403);
+});
+
+test("the operator's revoke-mandate --all on the signer host ends every live mandate of the workspace", async () => {
+  const granted = await grantMandate(payerWallet.id, mandateDraft(payerId));
+  expect(await payerMandates()).toEqual([granted.mandateId]);
+
+  const revoked = await signerAdmin("revoke-mandate", "--all", "--workspace", workspace.id);
+  expect(revoked).toMatchObject({
+    ok: true,
+    action: "revoke-mandate-by-operator",
+    workspaceId: workspace.id,
+  });
+  expect(revoked.revoked).toContain(granted.mandateId);
+  // The control plane was not told; it follows the signer the next time it looks.
+  expect(await payerMandates()).toEqual([]);
+  expect(await getMandate(granted.mandateId)).toMatchObject({
+    status: "revoked",
+    endedReason: "operator",
+  });
+  expect(await signerDecisions()).toContainEqual(
+    expect.objectContaining({
+      action: "revoke-mandate-by-operator",
+      approvalId: granted.grantId,
+      outcome: "allowed",
+    }),
+  );
+  await rejectWaiting(
+    await payer.proposeTransfer({
+      chainId: CHAIN,
+      to: PAYEE,
+      amount: "0.001",
+      memo: "after the operator revoked it",
+    }),
+  );
+  // Once more changes nothing.
+  expect(await signerAdmin("revoke-mandate", "--mandate", granted.mandateId)).toMatchObject({
+    ok: true,
+    revoked: [],
+  });
+});
+
+// Last: the fence refuses every envelope issued before it, plus the clock skew, so nothing is
+// granted or approved after it in this file.
+test("the operator's restore fence ends every live mandate", async () => {
+  const granted = await grantMandate(payerWallet.id, mandateDraft(payerId));
+  const paid = await payer.proposeTransfer({
+    chainId: CHAIN,
+    to: PAYEE,
+    amount: "0.001",
+    memo: "before the fence",
+  });
+  expect(paid).toMatchObject({ authorizedBy: "mandate", mandateId: granted.mandateId });
+  expect(await intentSettles(paid.intentId)).toBe("confirmed");
+
+  // The fence step of every restore (deploy/README.md), run on the signer host while it serves.
+  expect(await signerAdmin("fence")).toMatchObject({ ok: true, action: "fence-set-by-operator" });
+  expect(await getMandate(granted.mandateId)).toMatchObject({
+    status: "revoked",
+    endedReason: "operator",
+    usage: { uses: 1 },
+  });
+  expect(await signerDecisions()).toContainEqual(
+    expect.objectContaining({
+      action: "revoke-mandate-on-fence",
+      approvalId: granted.grantId,
+      outcome: "allowed",
+    }),
+  );
+  expect(await payerMandates()).toEqual([]);
+  await rejectWaiting(
+    await payer.proposeTransfer({
+      chainId: CHAIN,
+      to: PAYEE,
+      amount: "0.001",
+      memo: "after the fence",
+    }),
+  );
 });

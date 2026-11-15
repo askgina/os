@@ -63,6 +63,10 @@ services:
       SIGNER_RETURN_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
       SIGNER_CHAINS_FILE: /etc/os/chains.json
       SIGNER_ASSETS_FILE: /etc/os/assets.json
+      # The longest life the signer grants a mandate, and how many live mandates one wallet may
+      # hold. `:-` also replaces an empty value: the signer refuses an empty number.
+      SIGNER_MAX_MANDATE_SECONDS: ${MANDATE_MAX_SECONDS:-604800}
+      SIGNER_MAX_LIVE_MANDATES_PER_WALLET: ${SIGNER_MAX_LIVE_MANDATES_PER_WALLET:-16}
     volumes:
       - signer-data:/data
       - signer-secrets:/run/secrets/signer:ro
@@ -102,6 +106,9 @@ services:
       CHAINS_FILE: /etc/os/chains.json
       WEB_DIST_DIR: /app/apps/web/dist
       NOTIFY_WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
+      # The same value as the signer's SIGNER_MAX_MANDATE_SECONDS, from the same .env setting:
+      # the server checks a draft against it early, and the signer's check decides.
+      MANDATE_MAX_SECONDS: ${MANDATE_MAX_SECONDS:-604800}
     volumes:
       - server-secrets:/run/secrets/server:ro
       - ./deploy/chains.json:/etc/os/chains.json:ro

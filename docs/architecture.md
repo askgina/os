@@ -30,6 +30,7 @@ Each term below has one meaning everywhere in this repository. The definitions f
 | Policy         | The rules for one wallet: chains, which agents may propose, caps, allowed recipients and contracts, fee ceiling, how many approvals. The signer holds it. |
 | Envelope       | A small statement of one thing a person authorizes, such as "sign this intent under this policy". Its digest is what the passkey signs.                   |
 | Authorization  | An envelope together with the passkey signatures (WebAuthn "assertions") over it.                                                                         |
+| Mandate        | An approval given once, in advance, for one agent's transfers from one wallet to listed recipients, within caps, until an end time. The signer holds it.  |
 | Signer         | The isolated service that holds the wallet keys and decides whether to sign.                                                                              |
 | Control plane  | The server that people and agents talk to. It can ask the signer. It cannot make the signer sign.                                                         |
 | World          | The Workflow SDK's name for its storage and job-queue backend.                                                                                            |
@@ -169,6 +170,49 @@ it with the fingerprint their page shows. The signer applies the change only whe
 recorded for that exact request
 ([the approval protocol, section 10](./approval-protocol.md#the-confirmation-routes)).
 
+## A payment under a mandate
+
+People can approve a series of one agent's transfers in advance with a mandate
+([`specs/approval-mandates.md`](../specs/approval-mandates.md)). An owner asks for it; approvers
+approve the `grant-mandate` request on the confirmation page at the workspace's admin threshold,
+as above, and the signer verifies their assertions and stores the mandate. From then on, when a
+proposal fits a live mandate of its agent, the control plane opens no request: it records the
+intent as approved and asks the signer to sign under the mandate. The signer checks the mandate
+and the wallet's policy against its own counts, signs, and counts the payment in the same
+database transaction. Anything the mandate does not cover goes to the inbox as before.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant P as Person (browser + passkey)
+  participant S as Server (control plane)
+  participant A as approve service
+  participant G as Signer
+  participant Ag as Agent (MCP client)
+  participant Ch as Chain
+  P->>S: propose a mandate for one agent and wallet (owner)
+  S->>S: check it against the signer's policy and the longest life, open a grant-mandate request
+  P->>A: approve the grant on the confirmation page, as for any request
+  A->>G: the assertion, verified and kept by the signer
+  S->>G: PUT /v1/mandates/:mandateId (mandate, authorization)
+  G->>G: verify the assertions at the admin threshold, check the mandate against the policy, store it
+  Ag->>S: propose_transfer
+  S->>S: a live mandate of this agent covers it: record the intent as approved, ask no one
+  S-->>Ag: authorizedBy mandate, mandateId, no approvalUrl
+  S->>G: POST /v1/mandates/:mandateId/sign (use id, intent, nonce and gas)
+  G->>G: one transaction: not revoked, in time, policy and mandate allow it, sign, count the use
+  G-->>S: signed transaction and its hash
+  S->>Ch: broadcast
+  Ag->>S: get_intent shows confirmed
+```
+
+Any owner or approver revokes a mandate without a passkey, because that only removes authority.
+The signer also ends mandates on its own: when a passkey that granted one is removed, when the
+restore fence moves, and on the operator's command on the signer host. The exact checks are in
+[the approval protocol, section 8](./approval-protocol.md#8-the-signing-rule); what a mandate
+lets a compromised control plane or a stolen agent token do is in
+[the threat model](./threat-model.md#mandates).
+
 ## Where state lives
 
 | State                                                                                                                                                                | Where                                                                                                        | Who can change it                                                                                              |
@@ -176,6 +220,7 @@ recorded for that exact request
 | Wallet private keys                                                                                                                                                  | OWS vault in the signer's data volume                                                                        | Only the signer                                                                                                |
 | Authoritative wallet policy, approver registry, admin threshold, paused flag                                                                                         | Signer's SQLite                                                                                              | Only the signer, on passkey authorization (pausing and revoking need none, because they only remove authority) |
 | Used envelope nonces, spend ledger, signed transactions, hash-chained decision log                                                                                   | Signer's SQLite                                                                                              | Only the signer                                                                                                |
+| Mandates, the people who granted each, and every use counted under them                                                                                              | Signer's SQLite                                                                                              | Only the signer, on passkey authorization of the grant (revoking needs none)                                   |
 | People, passkeys for sign-in, sessions, workspaces, memberships, agents, wallets (addresses and a mirror of the policy), approvals, intents, transactions, audit log | Postgres, schema `os` ([`apps/server/src/db/schema.ts`](../apps/server/src/db/schema.ts))                    | The server                                                                                                     |
 | Workflow runs, steps, events, hooks, streams                                                                                                                         | Postgres, schemas `workflow` and `graphile_worker`                                                           | The Workflow runtime                                                                                           |
 | Wrapped data keys and shred tombstones                                                                                                                               | Postgres, schema `os_keys` ([`packages/keys/src/data-key-store.ts`](../packages/keys/src/data-key-store.ts)) | The server                                                                                                     |
@@ -185,8 +230,8 @@ recorded for that exact request
 | Confirmation request secret                                                                                                                                          | A file read by the signer and, as a copy, by the `approve` service                                           | The operator                                                                                                   |
 
 Some rows in Postgres mirror the signer's state for display (the policy on `wallets`, the paused
-flag on `workspaces`, the `approver_credentials` table). The schema's comments say so. The
-signer's copy is the one that counts.
+flag on `workspaces`, the `approver_credentials` table, the `mandates` table). The schema's
+comments say so. The signer's copy is the one that counts.
 
 ### What is encrypted at rest
 
@@ -197,7 +242,7 @@ Two mechanisms, both rooted in the keyring file:
    Workflow SDK asks for, `getEncryptionKeyForRun()`. The SDK then encrypts inputs, outputs, hook
    payloads, stream chunks and step errors with AES-256-GCM under a key that exists once per run.
 2. **Application columns.** The server seals the intent, its presentation, approval details,
-   the confirmation page's link with its token, signed transactions and audit details into
+   the confirmation page's link with its token, mandates, signed transactions and audit details into
    `bytea` columns under a per-workspace data key
    ([`packages/keys/src/seal.ts`](../packages/keys/src/seal.ts),
    [`apps/server/src/db/sealed.ts`](../apps/server/src/db/sealed.ts)).

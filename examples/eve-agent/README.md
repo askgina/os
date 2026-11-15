@@ -2,8 +2,9 @@
 
 A real agent runtime, [vercel/eve](https://github.com/vercel/eve) `1.0.0-rc.17`, running with no
 Vercel service, whose one consequential ability is to **propose** a payment through the askgina/os
-MCP gateway. A person approves the proposal with a passkey in the askgina/os inbox; the signer
-verifies that passkey itself. The agent holds no key and cannot approve anything.
+MCP gateway. A person approves the proposal with a passkey on the askgina/os confirmation page,
+or approved it in advance with a mandate; the signer verifies the passkey and enforces the
+mandate itself. The agent holds no key and cannot approve anything.
 
 What it shows:
 

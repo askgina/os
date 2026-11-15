@@ -4,7 +4,7 @@ import { callGateway } from "../../lib/gateway.ts";
 
 /**
  * Proposes a transfer to the askgina/os control plane and returns at once with the intent id
- * and the link where a person approves it.
+ * and the link where a person approves it, or with the mandate that covered it and no link.
  *
  * There is deliberately no eve `approval` on this tool. eve's approval is consent inside eve's
  * own chat, answered over eve's HTTP API; it proves nothing to the signer. The approval that
@@ -14,7 +14,7 @@ import { callGateway } from "../../lib/gateway.ts";
  */
 export default defineTool({
   description:
-    "Propose sending the chain's native coin or an ERC-20 token from your wallet. Nothing is sent: a person must approve the proposal with their passkey. Tell the person the approvalUrl, then use check_intent with the intentId to follow it.",
+    'Propose sending the chain\'s native coin or an ERC-20 token from your wallet. If the answer says authorizedBy "person", nothing is sent yet: a person must approve the proposal with their passkey; tell them the approvalUrl. If it says authorizedBy "mandate", a mandate people approved in advance covers it and it is sent with no person asked. Either way, use check_intent with the intentId to follow it.',
   inputSchema: z.object({
     chainId: z.string().describe('The chain, as "eip155:<number>".'),
     to: z.string().describe("The recipient's 0x address."),

@@ -1,7 +1,8 @@
 /**
  * An agent with no model in it. It connects to the MCP gateway with an agent token, asks who it
- * is, proposes one transfer from its own wallet, and waits until a person has approved or
- * rejected it and the transaction has settled.
+ * is, proposes one transfer from its own wallet, and waits until the transaction has settled:
+ * after a person approved or rejected it, or at once when a mandate people granted in advance
+ * covers it.
  *
  * It shows everything an agent can do here: read its own state and propose. It holds no key, it
  * cannot approve, and it never sees the signer.
@@ -25,11 +26,14 @@ const Environment = z.object({
   MEMO: z.string().max(280).default("Example payment from the scripted agent"),
 });
 
+// Under a mandate there is no link to approve at and no expiry.
 const Proposal = z.object({
   intentId: z.string(),
   status: z.string(),
-  approvalUrl: z.string(),
-  expiresAt: z.number(),
+  authorizedBy: z.enum(["mandate", "person"]),
+  mandateId: z.string().nullable(),
+  approvalUrl: z.string().nullable(),
+  expiresAt: z.number().nullable(),
 });
 
 const IntentState = z.object({
@@ -85,7 +89,11 @@ async function main(): Promise<number> {
       }),
     );
     say(`proposed ${proposal.intentId}: ${proposal.status}`);
-    say(`a person must approve it here: ${proposal.approvalUrl}`);
+    if (proposal.authorizedBy === "mandate") {
+      say(`covered by mandate ${proposal.mandateId}: it is signed with no person asked`);
+    } else {
+      say(`a person must approve it here: ${proposal.approvalUrl}`);
+    }
 
     for (;;) {
       const state = IntentState.parse(

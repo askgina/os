@@ -5,8 +5,10 @@ Self-hosted workspaces where AI agents can hold and spend money without being tr
 An agent proposes a payment. A person reads it on the signer's own confirmation page and approves
 it there with a passkey. A separate signer service, the only component that can reach the wallet
 keys, checks that passkey approval itself, checks the wallet's limits, and signs exactly one
-transaction. Everything runs on your own machine: Postgres, a control plane, the signer, a keyless
-confirmation service and a reverse proxy in one Compose file. No hosted service is needed.
+transaction. For routine payments, people can instead approve once, in advance, a mandate: one
+agent may pay listed recipients from one wallet up to stated amounts until a stated time, and the
+signer enforces it. Everything runs on your own machine: Postgres, a control plane, the signer, a
+keyless confirmation service and a reverse proxy in one Compose file. No hosted service is needed.
 
 <p align="center">
   <img src="docs/images/approval-phone.png" width="320"
@@ -26,6 +28,11 @@ the address bar.
   page has its own origin, and the signer builds what it shows from its own records. The signer
   accepts a passkey approval only when the browser made it there: at that origin, top-level, as a
   `webauthn.get`.
+- **Approving in advance is bounded by the signer.** A mandate names one agent, one wallet, the
+  recipients, caps per payment, per window and in total, a number of payments and an end time.
+  People approve it once, on the confirmation page; the signer then signs each payment that fits
+  with no person asked, counts it itself, and sends everything else to the inbox. Anyone who
+  approves can revoke it with one click.
 - **What people and agents type about an operation is ciphertext at rest.** Workflow state is
   encrypted through our own storage backend for the Workflow SDK (the upstream Postgres backend
   stores it in plaintext), and the application's own content columns are sealed per workspace.
@@ -111,18 +118,37 @@ Any MCP client that supports Streamable HTTP with a bearer token works:
 ```
 
 The tools are `whoami`, `get_balances`, `propose_transfer`, `propose_contract_call`,
-`get_intent`, `list_intents` and `cancel_intent`. [`examples/scripted-agent`](examples/scripted-agent)
+`get_intent`, `list_intents` and `cancel_intent`. `whoami` lists the agent's live mandates with
+what is left of them. A propose tool answers with `authorizedBy`: `"mandate"` when a mandate
+covers the proposal (it is signed and sent with no person asked, and has no `approvalUrl`), or
+`"person"` when someone must approve it at `approvalUrl`. `propose_transfer` takes an optional
+`mandateId` to use exactly that mandate, or be refused with the reason.
+[`examples/scripted-agent`](examples/scripted-agent)
 is the smallest complete agent. [`examples/eve-agent`](examples/eve-agent) is a real agent
 runtime (vercel/eve, no Vercel service) that keeps its conversations encrypted in its own
 database.
+
+## Approve in advance with a mandate
+
+An owner asks for a mandate for one agent's wallet: the recipients, the caps per payment, per
+window (for example an hour or a day) and in total, how many payments, the fee per payment, the
+end time (seven days at most by default) and a purpose. Approvers approve it on the signer's
+confirmation page at the workspace's admin threshold; the page shows the most that can leave the
+wallet. From then on each payment of that agent that fits is signed with no passkey; anything
+else waits in the inbox. Every payment counts, also one the network never includes.
+
+Any owner or approver revokes a mandate with one click, without a passkey. It also ends when a
+passkey that granted it is removed, when its agent is disabled, at its end time, after a restore
+of the signer, and when the operator revokes it on the signer host
+(`node src/admin.ts revoke-mandate`, see [`deploy/README.md`](deploy/README.md#mandates)).
 
 ## What this protects, and what it does not
 
 | If this is compromised       | The attacker can                                | The attacker cannot                                                                                |
 | ---------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| An agent or its token        | Propose operations                              | Approve, sign, change limits, reach the signer                                                     |
+| An agent or its token        | Propose operations; spend inside its live mandates | Approve, sign, change limits, reach the signer; pay outside a mandate's list or caps            |
 | The control plane's database | Read names, ids, statuses, addresses, limits    | Read sealed content; forge an approval                                                             |
-| The control plane itself     | Ask the signer; show a person a misleading card | Get an approval the signer accepts; change the confirmation page; exceed limits; reuse an approval |
+| The control plane itself     | Ask the signer; show a person a misleading card; have the signer sign transfers that fit a live mandate | Get an approval the signer accepts; change the confirmation page; exceed limits or a mandate; reuse an approval |
 | The confirmation service     | Show a person a misleading page                 | Sign or read a key; reach a signer route but its four; approve unaided                             |
 | The signer's machine         | Everything for the wallets on it                |                                                                                                    |
 
@@ -138,6 +164,9 @@ Two limits are worth knowing before you rely on this:
   approve, but whoever holds a key a compromised control plane swapped in can pass that step
   too. Only comparing the key's fingerprint with the new person, over a call or in person,
   catches that. Add a second approver and raise the admin threshold to 2.
+- A live mandate is spent with no person asked. A stolen agent token, or a compromised control
+  plane, can make the signer pay the mandate's recipients up to its remaining caps, choosing
+  when. Grant mandates with short lives and tight caps, and revoke them when they are not needed.
 - Running every service on one machine gives no protection against that machine.
 
 The full list is in [`docs/threat-model.md`](docs/threat-model.md).
@@ -147,8 +176,9 @@ The full list is in [`docs/threat-model.md`](docs/threat-model.md).
 This is a first release (v0.1) and has not been audited. Use test funds.
 
 Scope: EVM chains; native transfers, ERC-20 transfers and allowlisted contract calls; one
-approval for one transaction. Not in this release: approvals that cover more than one action,
-other chains, a bundled agent runtime, cloud key management, push notifications. The
+approval for one transaction, or a mandate for a bounded series of one agent's transfers. Not in
+this release: mandates for contract calls or trades, other chains, a bundled agent runtime,
+cloud key management, push notifications. The
 [map of open questions](https://github.com/askgina/os/issues/1) lists what is planned and why.
 
 ## Documentation

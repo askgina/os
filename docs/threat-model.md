@@ -2,7 +2,8 @@
 
 This document says what the system protects, against whom, how, and where it does not. Each
 claim names the file that implements it or the plan section that fixes it. The plan is
-[`specs/agent-workspaces-v0.1.md`](../specs/agent-workspaces-v0.1.md). Components and terms are
+[`specs/agent-workspaces-v0.1.md`](../specs/agent-workspaces-v0.1.md); mandates follow
+[`specs/approval-mandates.md`](../specs/approval-mandates.md). Components and terms are
 introduced in [`architecture.md`](./architecture.md); the exact checks are in
 [`approval-protocol.md`](./approval-protocol.md).
 
@@ -58,7 +59,8 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
 
 - **Can:** propose any operation it likes, with any memo; read its own wallet's state and its own
   intents; fill the approval inbox with proposals.
-- **Stopped by:** a person must approve each intent with a passkey; the signer checks the policy
+- **Stopped by:** a person must approve each intent with a passkey, unless a live mandate people
+  granted that agent covers it (see "Mandates"); the signer checks the policy
   (requesters, chains, recipients, contract allowlist, per-transaction and daily caps, fee
   ceiling) on its own ledger ([`evaluate.ts`](../packages/protocol/src/evaluate.ts)). The agent
   has no tool that approves or signs. Memos may not contain control or bidirectional characters
@@ -66,7 +68,9 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
   ([`intent.ts`](../packages/protocol/src/intent.ts), `Memo`). On the network, the agent can
   reach only Caddy (plan, "How the pieces fit together").
 - **Not stopped:** a persuasive memo that talks a person into approving. Within its policy, an
-  approved intent spends real money. A raw contract call to an allowlisted contract can move
+  approved intent spends real money. Within a live mandate, the agent's transfers to the
+  mandate's recipients are signed with no person asked, until the mandate's caps are spent. A
+  raw contract call to an allowlisted contract can move
   things the caps cannot measure ([`policy.ts`](../packages/protocol/src/policy.ts),
   `CallOperation` comment in `intent.ts`). A capped token cannot itself be a call target (the
   policy schema refuses it), but an allowlisted contract that holds or can pull the wallet's
@@ -78,7 +82,8 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
 - **Stopped by:** the same approval and policy checks. Tokens are stored as SHA-256 hashes only
   (`agents` table), so reading the database does not yield them.
 - **Not stopped:** proposals that a person approves without noticing they did not come from the
-  real agent.
+  real agent; transfers inside that agent's live mandates, which no person sees before they are
+  signed. Disabling the agent stops its token at once and revokes its mandates (see "Mandates").
 
 ### Read access to the control plane's database
 
@@ -137,11 +142,13 @@ This covers code execution in the server and a script injected into a page on `P
   move the restore fence: that happens only on the signer host. It cannot have an approver
   change applied before someone proved on the confirmation page that they hold the new key: the
   signer refuses it with `possession_unproven`, and the named person's own passkey fails that
-  proof for a key that is not theirs.
+  proof for a key that is not theirs. It cannot grant a mandate: a grant needs passkey
+  approvals on the confirmation page like any other request.
 - **Not stopped:** a person who approves a true but harmful request because the control plane or
   an agent talked them into it; a person who approves without reading the confirmation page;
   denial of service; an `add-approver` request that carries a key the attacker holds under the
-  named person's credential id, when nobody compares the fingerprint (see "Limits"). The release
+  named person's credential id, when nobody compares the fingerprint (see "Limits"); transfers it
+  invents under a live mandate, which the signer signs with no person (see "Mandates"). The release
   gate "an approval made on the control plane's page is refused" and the browser gate "a script
   on the control plane's page cannot get an approval" test the refusal against the real stack;
   the release gate "an approver change whose key the new person does not hold cannot be
@@ -211,7 +218,7 @@ This covers code execution in the server and a script injected into a page on `P
   is not enough to sign, and since a wallet's threshold may never exceed the workspace's admin
   threshold, it is not enough to rewrite that wallet's policy either. Removing the approver
   invalidates pending authorizations they took part in, because every assertion must come from a
-  current approver.
+  current approver, and revokes every mandate their passkey granted (see "Mandates").
 
 ### A malicious member
 
@@ -244,7 +251,9 @@ This covers code execution in the server and a script injected into a page on `P
   approval paid after it would look unused. Every restore is fenced: the operator runs
   `admin.ts fence` before the signer serves, and the signer fences a database file it did not
   open last by itself. Then it refuses every envelope issued before the fence
-  ([`fence.ts`](../apps/signer/src/fence.ts); `approval-protocol.md`, section 8).
+  ([`fence.ts`](../apps/signer/src/fence.ts); `approval-protocol.md`, section 8). It has also
+  forgotten the payments it counted under a mandate after the backup, so every move of the
+  fence revokes every live mandate (see "Mandates").
 
 Back up each trust domain separately and protect the signer's backups as you would the funds.
 
@@ -258,6 +267,93 @@ Back up each trust domain separately and protect the signer's backups as you wou
   links 669 Rust crates whose licences and contents were not audited (finding F13 of the OWS
   research).
 
+## Mandates
+
+A mandate is approved once, at the workspace's admin threshold, on the signer's confirmation
+page like every other request. From then on the signer signs, with no person asked, each
+transfer of that one agent from that one wallet that fits all of it: a listed recipient, an
+asset it lists (the native coin or an ERC-20 token), each of its caps (per payment, per rolling
+window, in total, number of payments, fee per payment), the wallet's live policy, and the span
+between its start and its end by the signer's clock. It never covers a contract call, not even
+one that sends no coin. The signer verifies the grant's assertions itself, keeps the mandate,
+and counts every use in the same database transaction as the signature
+([`apps/signer/src/mandates.ts`](../apps/signer/src/mandates.ts); `approval-protocol.md`,
+sections 7 and 8). The control plane chooses which proposals go to a mandate, but cannot widen,
+extend, refund or revive one.
+
+| If this is compromised       | It can, while a mandate is live                                                                                                                                                                                                                                             | It cannot                                                                                                                                                                                                                                                                      |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The control plane            | Have the signer sign, with no person, any transfer that fits the mandate, choosing which and when, until its worst case is spent; invent the agent's proposals to do so; revoke any mandate (denial of service); ignore a person's revocation, which reaches the signer through it | Grant a mandate; have the signer sign a contract call, a recipient the mandate does not list, an amount over any cap of the mandate or the policy, before its start or from its end, after it was revoked, or past its number of payments or its total; move funds of another wallet |
+| An agent's token             | Propose transfers that the signer signs with no person, inside that agent's live mandates                                                                                                                                                                                  | Pay an address the mandate does not list; exceed a cap; use another agent's mandate (the control plane binds a token to its agent; a compromised control plane is the row above)                                                                                                |
+| One approver's passkey       | Grant a mandate where the admin threshold is 1, which is no more than it could approve one payment at a time; the mandate outlives the theft until it is revoked or ends                                                                                                     | Keep its mandates after its passkey is removed: removing it revokes them in the same signer transaction                                                                                                                                                                         |
+| The `approve` service        | Show a person one mandate and relay their approval for another, which the signer then grants                                                                                                                                                                                | Grant a mandate wider than the wallet's policy or longer than the signer's longest life; sign anything                                                                                                                                                                         |
+| The control plane's database | Read mandate ids, wallets, agents, status, start and end times, and hashes; corrupt the mirror the control plane keeps                                                                                                                                                      | Read a mandate's purpose, recipients or caps (sealed); change what the signer enforces                                                                                                                                                                                          |
+| The signer host              | Everything, as before                                                                                                                                                                                                                                                       |                                                                                                                                                                                                                                                                                 |
+
+**Worst case of one mandate, per asset:** at most `min(maxTotal, maxUses × maxPerAction)`, and
+at most the policy's 24-hour cap in any 24 hours, plus network fees of at most
+`maxUses × maxFeePerActionWei`. When it is granted, the signer refuses a mandate whose
+per-payment cap is above the policy's per-transaction cap, whose window cap is above the
+policy's 24-hour cap (for windows up to a day), whose recipients the policy's allowlist does
+not hold, whose fee cap is above the policy's, or whose life is longer than
+`SIGNER_MAX_MANDATE_SECONDS` (seven days by default). Mandated payments count against the
+policy's 24-hour cap. One misled grant therefore yields the whole worst case, where one misled
+payment approval yields one payment: read a grant on the confirmation page with that in mind.
+The page shows the most that can leave the wallet.
+
+**No refunds.** The signer counts every payment it signs under a mandate, also one the network
+never includes. Only the control plane could say a transaction failed, and it is not trusted.
+The mandate's budget is spent by the signature.
+
+**Ending a mandate.** It ends for good, with no resume, when a person revokes it (no passkey:
+revoking only removes authority), when a passkey that granted it is removed, when its agent is
+disabled, when the operator revokes it on the signer host, when the restore fence moves, at its
+end time, and when its payments or every asset's total are spent. A person's revocation and the
+agent's disabling go through the control plane; a compromised one can ignore them. The
+operator's `revoke-mandate` on the signer host does not depend on the control plane
+(`deploy/README.md`, "Mandates").
+
+**Restoring the signer.** A restored signer has forgotten the uses it counted after the backup,
+so its counts would let more leave the wallet than people approved. Every move of the restore
+fence revokes every live mandate in the same transaction, and people grant again
+([`fence.ts`](../apps/signer/src/fence.ts)). A restore that is not fenced keeps the old counts:
+the `fence` step is part of every restore.
+
+**The clock.** The signer's clock decides when a mandate starts and ends and which payments fall
+in its window. A clock that runs behind keeps an ended mandate signing; one that runs ahead lets
+payments leave the window early. The deploy guide requires time synchronization on the signer
+host; nothing in the stack checks it.
+
+**At rest.** The control plane seals the mandate, its purpose included, in `mandates.mandate`
+and in the grant's `approvals.detail`. The signer keeps the canonical mandate in plain text in
+its SQLite, as it keeps policies: the signer volume is the funds' trust domain already.
+
+What the release gates in [`e2e/test/release-gates.spec.ts`](../e2e/test/release-gates.spec.ts)
+check on the real stack, and what they do not:
+
+- "a mandate approved on the confirmation page at the admin threshold lets its agent pay a
+  listed recipient with no person asked": the grant, its view on the confirmation page, two
+  covered payments (one by the example agent) with nothing in the inbox, and the counts.
+- "a payment over the mandate's per-payment cap, or to a recipient it does not list, waits for a
+  person": both go to the inbox; named, the mandate refuses each with its reason.
+- "concurrent payments under one mandate never exceed its window cap, and the next is refused
+  with mandate_over_window_cap".
+- "a server killed right after a payment under a mandate still ends in exactly one transaction,
+  and the mandate keeps its counts".
+- "a revoked mandate signs nothing, and the next payment waits for a person".
+- "removing the approver who granted a mandate ends that mandate and no other".
+- "disabling an agent revokes its mandates at the signer and cancels its waiting grants".
+- "the operator's revoke-mandate --all on the signer host ends every live mandate of the
+  workspace" and "the operator's restore fence ends every live mandate": the second runs the
+  fence command on a running signer; no gate restores a backup that holds a live mandate.
+- "a mandate's purpose is in no column of the database in the clear, and in no log line".
+
+The signer's own tests ([`apps/signer/test/mandates.test.ts`](../apps/signer/test/mandates.test.ts))
+cover each grant refusal, each `mandate_denied` reason, the window sliding with time, the start
+and end times, the policy as the outer limit, a paused workspace, concurrent uses, raising the
+admin threshold above the grantors, the fence, and a repeated use. Nothing tests a wrong clock or
+a compromised control plane spending a mandate.
+
 ## What is encrypted at rest
 
 | Data                                                                                            | Where                                                        | Encrypted?                                                                                 | Why                                                                                                                  |
@@ -266,6 +362,7 @@ Back up each trust domain separately and protect the signer's backups as you wou
 | What the approval card shows, and the simulation result                                         | `intents.presentation`                                       | Sealed, workspace key                                                                      | Same                                                                                                                 |
 | What an approval kind needs to apply its effect: a proposed policy, a sweep's amount and target | `approvals.detail`                                           | Sealed, workspace key                                                                      | Same                                                                                                                 |
 | The confirmation page's link for a waiting request, with its token                              | `approvals.confirmation`                                     | Sealed, workspace key                                                                      | The token shows the request to whoever holds it; the signer stores only its SHA-256                                  |
+| A mandate: its caps, recipients and purpose                                                     | `mandates.mandate`, and the grant's `approvals.detail`       | Sealed, workspace key                                                                      | What a person typed about a standing grant; its id, wallet, agent, times, hash and status stay readable              |
 | The signed raw transaction                                                                      | `transactions.raw`                                           | Sealed, workspace key                                                                      | Kept only to rebroadcast; it contains the operation                                                                  |
 | Audit details                                                                                   | `audit_events.detail`                                        | Sealed, workspace key                                                                      | Free-form content; its digest stays readable so the chain verifies without the key                                   |
 | Workflow inputs, outputs, hook payloads, stream chunks, step errors                             | `workflow` schema                                            | AES-256-GCM, per-run key ([`packages/world/src/index.ts`](../packages/world/src/index.ts)) | The upstream Postgres World stores these in plaintext                                                                |
@@ -407,7 +504,9 @@ means the signer host's operator can always add an approver.
 
 From the map's "Not yet specified" list ([askgina/os#1](https://github.com/askgina/os/issues/1)):
 
-- Approvals wider than one action: session delegation and strategy mandates.
+- Approvals wider than one action, beyond transfers: mandates cover native and ERC-20 transfers
+  to listed recipients (see "Mandates"); contract calls, trades and session delegation are not
+  covered by anything but one approval per action.
 - Operations that are not EVM transactions: other chains, and off-chain venues.
 - Shipping agent runtimes or sandboxes.
 - Operating beyond one machine: KMS or OpenBao key providers, HA Postgres, Kubernetes.

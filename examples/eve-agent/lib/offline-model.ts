@@ -41,9 +41,11 @@ function respond(prompt: readonly Message[]): Part[] {
   if (toolResult) {
     const output = JSON.stringify(toolResult.content);
     const url = /"approvalUrl":"([^"]+)"/.exec(output)?.[1];
+    const mandate = /"mandateId":"(mnd_[^"]+)"/.exec(output)?.[1];
+    if (url) return reply(`I proposed it. Nothing is sent until a person approves it here: ${url}`);
     return reply(
-      url
-        ? `I proposed it. Nothing is sent until a person approves it here: ${url}`
+      mandate
+        ? `I proposed it. A mandate people approved in advance covers it (${mandate}), so it is being sent without asking again.`
         : "The proposal was refused.",
     );
   }

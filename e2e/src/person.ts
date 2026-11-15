@@ -2,7 +2,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   type ApiClient,
   type ApprovalDetail,
+  type ApprovalSummary,
   createApiClient,
+  type MandateDraft,
+  type MandateSummary,
   RegistrationResponse,
   type SessionInfo,
 } from "@askgina/os-api";
@@ -255,6 +258,24 @@ export class Person {
 
   async reject(approvalId: string): Promise<ApprovalDetail> {
     return this.api.call("reject", { params: { approvalId }, body: {} });
+  }
+
+  /**
+   * As an owner: ask to let one agent pay from `walletId` within `draft` with no person asked
+   * per payment. Opens a `grant-mandate` request at the workspace's admin threshold, approved
+   * like every other request on the signer's confirmation page ({@link confirm}).
+   */
+  async proposeMandate(
+    workspaceId: string,
+    walletId: string,
+    draft: MandateDraft,
+  ): Promise<ApprovalSummary> {
+    return this.api.call("proposeMandate", { params: { workspaceId, walletId }, body: draft });
+  }
+
+  /** As an owner or approver: end a mandate for good. No passkey: it only removes authority. */
+  async revokeMandate(workspaceId: string, mandateId: string): Promise<MandateSummary> {
+    return this.api.call("revokeMandate", { params: { workspaceId, mandateId }, body: {} });
   }
 
   /** Wait until an approval request leaves `pending`/`approved`, and return it. */
