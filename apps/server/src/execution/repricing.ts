@@ -1,6 +1,7 @@
 import type {
   ApprovalId,
   ApproveIntentEnvelope,
+  Authorization,
   ChainId,
   Intent,
   MandateId,
@@ -14,11 +15,12 @@ import {
   SignerError,
   type SignerErrorCode,
 } from "@askgina/os-protocol/signer";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { ApprovalRow } from "../approvals/kinds.ts";
 import { appendAudit } from "../audit.ts";
 import type { AppContext, Transaction } from "../context.ts";
 import {
+  approvalAssertions,
   approvals,
   intents,
   type StuckReason,
@@ -37,6 +39,7 @@ import {
   REPRICE_STOPPED,
   RETRYABLE_SIGNER_CODES,
   recordAttempt,
+  type TransactionRow,
 } from "./transactions.ts";
 
 /**
@@ -130,6 +133,139 @@ function bindingOf(approval: ApprovalRow): Binding | null {
     return { mandateId: approval.mandateId };
   }
   return null;
+}
+
+/** {@link catchUpAttempts} could not ask the signer; `cause` is what the call threw. */
+export class AttemptsUnreadable extends Error {
+  override readonly name = "AttemptsUnreadable";
+
+  constructor(cause: unknown) {
+    super("the signer could not be asked for the attempts it holds", { cause });
+  }
+}
+
+/**
+ * Store the attempts the signer holds of `transaction` and this record lacks: those it signed
+ * while the caller that asked for them stopped before storing them. Each is asked for again
+ * with exactly its number and fees, which the signer answers with the bytes it signed, also
+ * while paused, fenced or after the window: a payment's through its reprice route, a sweep's
+ * cancels through the cancel route with the stored approval of the `cancel-transaction`
+ * request that produced it. Runs in `tx`, which holds {@link lockAttempts}; `stored` runs for
+ * each attempt stored, in `tx`, with the request a cancel is under and, when that request's own
+ * signature produced it (not a reprice of it), `producedBy`. Returns how many were stored: 0
+ * means the signer holds no more attempts than this record. A signer that cannot be asked
+ * throws {@link AttemptsUnreadable}.
+ */
+export async function catchUpAttempts(
+  ctx: AppContext,
+  tx: Transaction,
+  input: {
+    workspaceId: WorkspaceId;
+    transaction: TransactionRow;
+    latest: Attempt;
+    stored(
+      response: AttemptResponse,
+      under: { cancelApprovalId: ApprovalId | null; producedBy: ApprovalId | null },
+    ): Promise<void>;
+  },
+): Promise<number> {
+  const { transaction, latest } = input;
+  const target = transaction.approvalId;
+  const asking = async <T>(call: () => Promise<T>): Promise<T> => {
+    try {
+      return await call();
+    } catch (error) {
+      throw new AttemptsUnreadable(error);
+    }
+  };
+  const missing = (await asking(() => ctx.signer.getApproval(target))).attempts
+    .filter((attempt) => attempt.attempt > latest.attempt)
+    .sort((a, b) => a.attempt - b.attempt);
+  if (missing.length === 0) return 0;
+
+  // Which `cancel-transaction` request produced each cancel the signer signed on passkeys: a
+  // request that reached the signer is approved, executed, or failed after it.
+  const producers = new Map<string, ApprovalId>();
+  if (missing.some((attempt) => attempt.kind === "cancel")) {
+    const cancels = await tx
+      .select({ id: approvals.id })
+      .from(approvals)
+      .where(
+        and(
+          eq(approvals.kind, "cancel-transaction"),
+          eq(approvals.subjectId, target),
+          inArray(approvals.status, ["approved", "executed", "failed"]),
+        ),
+      );
+    for (const { id } of cancels) {
+      const produced = await asking(() => ctx.signer.getApproval(id));
+      for (const attempt of produced.attempts) producers.set(attempt.transactionHash, id);
+    }
+  }
+  // A payment's attempts, cancels included, are all asked for again through its reprice route.
+  const [approval] = await tx.select().from(approvals).where(eq(approvals.id, target));
+  const binding = approval ? bindingOf(approval) : null;
+  let bound: (Binding & { intent: Intent }) | null = null;
+  if (binding !== null && transaction.intentId !== null) {
+    const [row] = await tx.select().from(intents).where(eq(intents.id, transaction.intentId));
+    if (!row) throw new Error("a transaction's intent no longer exists");
+    bound = { ...binding, intent: (await readIntent(ctx, row)).intent };
+  }
+
+  // A reprice of a cancel is under that cancel's request, as the signer records it.
+  let cancelApprovalId = latest.cancelApprovalId;
+  for (const attempt of missing) {
+    const fees = {
+      attempt: attempt.attempt,
+      maxFeePerGas: attempt.maxFeePerGas,
+      maxPriorityFeePerGas: attempt.maxPriorityFeePerGas,
+    };
+    const producer = producers.get(attempt.transactionHash);
+    let response: AttemptResponse;
+    if (bound !== null) {
+      const request: RepriceRequest = { ...bound, ...fees };
+      response = await asking(() => ctx.signer.reprice(target, request));
+    } else if (producer !== undefined) {
+      const [cancel] = await tx
+        .select({ envelope: approvals.envelope })
+        .from(approvals)
+        .where(eq(approvals.id, producer));
+      const assertions = await tx
+        .select()
+        .from(approvalAssertions)
+        .where(eq(approvalAssertions.approvalId, producer))
+        .orderBy(asc(approvalAssertions.createdAt));
+      if (!cancel?.envelope || assertions.length === 0) {
+        throw new Error("a cancel the signer signed has no approval stored here");
+      }
+      const authorization: Authorization = {
+        envelope: cancel.envelope,
+        assertions: assertions.map((assertion) => ({
+          userId: assertion.userId,
+          credentialId: assertion.credentialId,
+          response: assertion.response,
+        })),
+      };
+      response = await asking(() =>
+        ctx.signer.cancelTransaction(target, { authorization, ...fees }),
+      );
+    } else {
+      throw new Error("an attempt the signer holds cannot be asked for again");
+    }
+    if (response.attempt.transactionHash !== attempt.transactionHash) {
+      throw new Error("the signer answered with another attempt than the one it holds");
+    }
+    if (producer !== undefined) cancelApprovalId = producer;
+    const under = response.attempt.kind === "cancel" ? cancelApprovalId : null;
+    await recordAttempt(ctx, tx, {
+      workspaceId: input.workspaceId,
+      transaction,
+      response,
+      cancelApprovalId: under,
+    });
+    await input.stored(response, { cancelApprovalId: under, producedBy: producer ?? null });
+  }
+  return missing.length;
 }
 
 /**
@@ -306,17 +442,9 @@ async function reprice(
         maxFeePerGas: maxFee.toString(),
         maxPriorityFeePerGas: maxTip.toString(),
       });
-      // The signer gives a reprice of a cancel the cancel's request; so does this record.
-      let cancelApprovalId = latest.cancelApprovalId;
-      const store = async (response: AttemptResponse) => {
+      /** The audit event and log line of one attempt this reprice stored. */
+      const stored = async (response: AttemptResponse) => {
         const { attempt } = response;
-        await recordAttempt(ctx, tx, {
-          workspaceId,
-          transaction,
-          response,
-          cancelApprovalId: attempt.kind === "cancel" ? cancelApprovalId : null,
-        });
-        if (attempt.kind !== "cancel") cancelApprovalId = null;
         await appendAudit(
           ctx,
           {
@@ -363,40 +491,30 @@ async function reprice(
           return answer(reason);
         }
         // Another number than the next: the signer has attempts this record lacks.
-        let missing: AttemptResponse["attempt"][];
+        let caught: number;
         try {
-          missing = (await ctx.signer.getApproval(approvalId)).attempts
-            .filter((attempt) => attempt.attempt > latest.attempt)
-            .sort((a, b) => a.attempt - b.attempt);
+          caught = await catchUpAttempts(ctx, tx, { workspaceId, transaction, latest, stored });
         } catch (lookup) {
-          return unavailable(lookup);
+          if (lookup instanceof AttemptsUnreadable) return unavailable(lookup.cause);
+          throw lookup;
         }
-        if (missing.length === 0) {
+        if (caught === 0) {
           // Not a number conflict: the signer no longer accepts what binds this request.
           ctx.log.warn("reprice refused", { approvalId, code: "conflict" });
           await note("reprice_refused");
           return answer("reprice_refused");
         }
-        for (const attempt of missing) {
-          let replayed: AttemptResponse;
-          try {
-            replayed = await ctx.signer.reprice(
-              approvalId,
-              request(
-                attempt.attempt,
-                BigInt(attempt.maxFeePerGas),
-                BigInt(attempt.maxPriorityFeePerGas),
-              ),
-            );
-          } catch (replay) {
-            return unavailable(replay);
-          }
-          await store(replayed);
-        }
         await note();
         return answer("caught_up");
       }
-      await store(response);
+      // The signer gives a reprice of a cancel the cancel's request; so does this record.
+      await recordAttempt(ctx, tx, {
+        workspaceId,
+        transaction,
+        response,
+        cancelApprovalId: response.attempt.kind === "cancel" ? latest.cancelApprovalId : null,
+      });
+      await stored(response);
       await note();
       return answer("repriced");
     },

@@ -8,7 +8,7 @@ import type {
   WalletId,
   WorkspaceId,
 } from "@askgina/os-protocol";
-import { SignerError } from "@askgina/os-protocol/signer";
+import { type RepriceRequest, SignerError } from "@askgina/os-protocol/signer";
 import type { Client } from "@modelcontextprotocol/client";
 import { and, asc, eq } from "drizzle-orm";
 import { formatEther, type Hex } from "viem";
@@ -472,6 +472,71 @@ describe("cancelling a payment", () => {
         detail: "transaction_final",
       });
     });
+  });
+
+  it("stores an attempt the signer holds and this record lacks before its own, with automatic repricing off", async () => {
+    const sender = await agentClient("Caught up");
+    f.t.ctx.config.reprice.auto = false;
+    try {
+      await holding(async (sent) => {
+        const payment = await sendPayment(sender);
+        const params = { intentId: payment.intentId };
+        // A speed-up the signer signed, and the process died before storing it.
+        const signer = f.t.ctx.signer;
+        const real = signer.reprice.bind(signer);
+        pastSpacing();
+        await patched(
+          signer,
+          "reprice",
+          async (approvalId: ApprovalId, request: RepriceRequest) => {
+            await real(approvalId, request);
+            throw new Error("the process died before the attempt was stored");
+          },
+          async () => {
+            await expect(api().call("speedUp", { params, body: {} })).rejects.toMatchObject({
+              code: "internal",
+              detail: "retry_later",
+            });
+          },
+        );
+        const signerHashes = async () =>
+          (await signer.getApproval(payment.approvalId)).attempts.map(
+            (attempt) => attempt.transactionHash,
+          );
+        expect(await signerHashes()).toHaveLength(2);
+        // With automatic repricing off nobody else stores it.
+        await followUp(payment.approvalId);
+        expect(await attemptRows(payment.approvalId)).toEqual([]);
+
+        const opened = await api().call("requestCancel", { params, body: {} });
+        const cancelId = opened.id as ApprovalId;
+        expect((await f.t.approve(cancelId, [f.t.owner])).status).toBe("executed");
+        const rows = await attemptRows(payment.approvalId);
+        expect(
+          rows.map(({ attempt, kind, cancelApprovalId }) => ({ attempt, kind, cancelApprovalId })),
+        ).toEqual([
+          { attempt: 1, kind: "reprice", cancelApprovalId: null },
+          { attempt: 2, kind: "cancel", cancelApprovalId: cancelId },
+        ]);
+        const { hash } = await transactionRow(payment.approvalId);
+        expect(await signerHashes()).toEqual([hash, ...rows.map((row) => row.hash)]);
+        expect(sent.at(-1)).toBe(rows[1]?.hash);
+        expect(await auditActors(payment.approvalId, "transaction.repriced")).toEqual(["system:"]);
+        expect(await auditActors(payment.approvalId, "transaction.cancel_signed")).toEqual([
+          "system:",
+        ]);
+
+        await mine(payment.workspaceId, payment.approvalId, 2);
+        await followUntilDone(payment.approvalId);
+        expect(await intentOf(payment.intentId)).toMatchObject({
+          status: "voided",
+          failureCode: "transaction_cancelled",
+          transactionHash: rows[1]?.hash,
+        });
+      });
+    } finally {
+      f.t.ctx.config.reprice.auto = true;
+    }
   });
 
   it("is refused before anything was sent, and ends cleanly when the payment is mined first", async () => {

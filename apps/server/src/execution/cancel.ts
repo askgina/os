@@ -11,8 +11,9 @@ import { HttpError } from "../http/errors.ts";
 import { engineOf } from "./approvals.ts";
 import { chainAccess } from "./chains.ts";
 import { getIntentRow, intentDetail, intentTitle } from "./intents.ts";
-import { nextFees } from "./repricing.ts";
+import { catchUpAttempts, nextFees } from "./repricing.ts";
 import {
+  type Attempt,
   attemptsOf,
   broadcastNewest,
   lockAttempts,
@@ -226,6 +227,10 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
      * transaction that became final before the cancel could be signed ends the request
      * `failed` with `transaction_final`. Run again after a crash, the signer answers the same
      * envelope with the attempt it produced, and storing it again changes nothing.
+     *
+     * The signer's `conflict` means it holds attempts this record lacks (a reprice or another
+     * cancel whose caller stopped before storing it): they are stored here first, exactly as
+     * the signer signed them, and the cancel is asked for once more after the newest of them.
      */
     async execute(ctx, approval, authorization, detail) {
       const { targetApprovalId } = detail as CancelDetail;
@@ -238,74 +243,112 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
           .from(transactions)
           .where(eq(transactions.approvalId, targetApprovalId));
         if (!transaction) return { failure: "transaction_missing" };
-        const attempts = await attemptsOf(ctx, approval.workspaceId, transaction, tx);
+        let attempts: Attempt[] = await attemptsOf(ctx, approval.workspaceId, transaction, tx);
         if (attempts.some((attempt) => attempt.cancelApprovalId === approval.id)) {
           return { failure: null };
         }
         if (!SENT.includes(transaction.status)) return { failure: "transaction_final" };
-        const latest = attempts.at(-1);
-        if (!latest) throw new Error("a transaction without its first attempt");
         // A chain that cannot be read fails the step, which is tried again.
         const quote = await chainAccess(ctx).fees(transaction.chainId as ChainId);
-        const fees = nextFees({
-          latest,
-          gas: CANCEL_GAS,
-          ceilingWei: BigInt(envelope.maxFeeWei),
-          quote,
-          bumpPercent: ctx.config.reprice.bumpPercent,
-        });
-        if (fees.kind === "ceiling_reached") return { failure: "fee_ceiling_reached" };
 
-        let response: AttemptResponse;
-        try {
-          response = await ctx.signer.cancelTransaction(targetApprovalId, {
-            authorization,
-            attempt: latest.attempt + 1,
-            maxFeePerGas: fees.maxFeePerGas.toString(),
-            maxPriorityFeePerGas: fees.maxPriorityFeePerGas.toString(),
-          });
-        } catch (error) {
-          if (!(error instanceof SignerError) || RETRYABLE_SIGNER_CODES.includes(error.code)) {
-            throw error;
-          }
-          if (error.code === "conflict") {
-            // The signer holds an attempt this record lacks: a reprice or another cancel whose
-            // caller stopped before storing it. Its owner stores it when it runs again (the
-            // follow-up's next reprice, or that cancel's own step); this step is tried again.
-            throw new Error("the signer holds an attempt of this transaction not stored yet");
-          }
-          return { failure: error.code };
-        }
-        await recordAttempt(ctx, tx, {
-          workspaceId: approval.workspaceId,
-          transaction,
-          response,
-          cancelApprovalId: approval.id,
-        });
-        const { attempt } = response;
-        await appendAudit(
-          ctx,
-          {
-            workspaceId: approval.workspaceId,
-            actor: { type: "system", id: null },
-            action: "transaction.cancel_signed",
-            subject: { type: "approval", id: targetApprovalId },
-            detail: {
-              cancelApprovalId: approval.id,
-              attempt: attempt.attempt,
-              transactionHash: attempt.transactionHash,
-              maxFeePerGas: attempt.maxFeePerGas,
-              maxPriorityFeePerGas: attempt.maxPriorityFeePerGas,
+        /** The audit event and log line of one attempt stored here. */
+        const stored = async (
+          response: AttemptResponse,
+          under: { cancelApprovalId: ApprovalId | null; producedBy: ApprovalId | null },
+        ) => {
+          const { attempt } = response;
+          const fees = {
+            attempt: attempt.attempt,
+            transactionHash: attempt.transactionHash,
+            maxFeePerGas: attempt.maxFeePerGas,
+            maxPriorityFeePerGas: attempt.maxPriorityFeePerGas,
+          };
+          await appendAudit(
+            ctx,
+            {
+              workspaceId: approval.workspaceId,
+              actor: { type: "system", id: null },
+              subject: { type: "approval", id: targetApprovalId },
+              ...(under.producedBy === null
+                ? {
+                    // A reprice its caller did not store before it stopped.
+                    action: "transaction.repriced",
+                    detail: { trigger: "recovered", kind: attempt.kind, ...fees },
+                  }
+                : {
+                    action: "transaction.cancel_signed",
+                    detail: { cancelApprovalId: under.producedBy, ...fees },
+                  }),
             },
-          },
-          tx,
-        );
-        ctx.log.info("transaction cancel signed", {
-          approvalId: targetApprovalId,
-          cancelApprovalId: approval.id,
-          attempt: attempt.attempt,
-        });
-        return { failure: null };
+            tx,
+          );
+          ctx.log.info(
+            under.producedBy === null ? "transaction repriced" : "transaction cancel signed",
+            { approvalId: targetApprovalId, attempt: attempt.attempt },
+          );
+        };
+
+        for (let caughtUp = false; ; caughtUp = true) {
+          const latest = attempts.at(-1);
+          if (!latest) throw new Error("a transaction without its first attempt");
+          const fees = nextFees({
+            latest,
+            gas: CANCEL_GAS,
+            ceilingWei: BigInt(envelope.maxFeeWei),
+            quote,
+            bumpPercent: ctx.config.reprice.bumpPercent,
+          });
+          if (fees.kind === "ceiling_reached") return { failure: "fee_ceiling_reached" };
+
+          let response: AttemptResponse;
+          try {
+            response = await ctx.signer.cancelTransaction(targetApprovalId, {
+              authorization,
+              attempt: latest.attempt + 1,
+              maxFeePerGas: fees.maxFeePerGas.toString(),
+              maxPriorityFeePerGas: fees.maxPriorityFeePerGas.toString(),
+            });
+          } catch (error) {
+            if (!(error instanceof SignerError) || RETRYABLE_SIGNER_CODES.includes(error.code)) {
+              throw error;
+            }
+            if (error.code !== "conflict") return { failure: error.code };
+            // Asked once more only: a second conflict is a race the next try of the step wins.
+            if (caughtUp) throw new Error("the signer still holds attempts not stored here");
+            const caught = await catchUpAttempts(ctx, tx, {
+              workspaceId: approval.workspaceId,
+              transaction,
+              latest,
+              stored,
+            });
+            // Not about attempt numbers: the signer refuses this cancel for good.
+            if (caught === 0) return { failure: "conflict" };
+            attempts = await attemptsOf(ctx, approval.workspaceId, transaction, tx);
+            if (attempts.some((attempt) => attempt.cancelApprovalId === approval.id)) {
+              return { failure: null };
+            }
+            continue;
+          }
+          if (response.attempt.attempt !== latest.attempt + 1) {
+            // The signer answered with this cancel's own attempt, signed before attempts this
+            // record lacks: they are stored first, then it, under this request.
+            await catchUpAttempts(ctx, tx, {
+              workspaceId: approval.workspaceId,
+              transaction,
+              latest,
+              stored,
+            });
+            return { failure: null };
+          }
+          await recordAttempt(ctx, tx, {
+            workspaceId: approval.workspaceId,
+            transaction,
+            response,
+            cancelApprovalId: approval.id,
+          });
+          await stored(response, { cancelApprovalId: approval.id, producedBy: approval.id });
+          return { failure: null };
+        }
       });
       if (result.failure !== null) {
         if (result.failure === "attempts_exhausted") {
