@@ -3,6 +3,7 @@ import type { WalletPolicy } from "@askgina/os-protocol";
 import { assetInfo, chainName, formatAsset } from "@/lib/assets.ts";
 import { checksumAddress, formatDuration, formatUnits } from "@/lib/format.ts";
 import { cn } from "@/lib/utils.ts";
+import { venueRuleRows } from "@/lib/venue.ts";
 
 export interface PolicyContext {
   chains: readonly ChainInfo[];
@@ -54,6 +55,7 @@ export function policyRows(policy: WalletPolicy | null, context: PolicyContext):
     label: "Network fee ceiling",
     value: `${formatUnits(policy.fees.maxPerTxWei, 18)} per transaction (native coin)`,
   });
+  rows.push(...venueRuleRows(policy.venues?.hyperliquid));
   rows.push({
     label: "Approvals needed",
     value: `${policy.approvals.threshold} ${policy.approvals.threshold === 1 ? "person" : "people"}`,

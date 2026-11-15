@@ -4,6 +4,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { createTestClient, http, publicActions, walletActions } from "viem";
 import { foundry } from "viem/chains";
 import { z } from "zod";
+import type { Config } from "../../src/config.ts";
 import { registerExecution } from "../../src/execution/index.ts";
 import { mountMcp } from "../../src/mcp/gateway.ts";
 import {
@@ -98,12 +99,13 @@ export async function createFixture(
   label: string,
   pollSeconds = 1,
   signer: TestContextOptions["signer"] = {},
+  config: Partial<Config> = {},
 ): Promise<Fixture> {
   const t = await createTestContext({
     label,
     signer,
     // The test pool is small; Graphile needs a connection per concurrent delivery.
-    config: { workflowWorkerConcurrency: 4 },
+    config: { workflowWorkerConcurrency: 4, ...config },
     routes: (app, ctx) => {
       registerExecution(app, ctx, { pollSeconds });
       mountMcp(app, ctx);

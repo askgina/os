@@ -41,6 +41,7 @@ function policyTemplate(
     contractCalls: policy.contractCalls,
     fees: { maxPerTxWei: policy.fees.maxPerTxWei },
     approvals: { threshold: policy.approvals.threshold, ttlSeconds: policy.approvals.ttlSeconds },
+    ...(policy.venues === undefined ? {} : { venues: policy.venues }),
   };
 }
 

@@ -78,6 +78,13 @@
       "when": 1794759209133,
       "tag": "0010_rate_limits",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1794760781067,
+      "tag": "0011_venue_orders",
+      "breakpoints": true
     }
   ]
 }

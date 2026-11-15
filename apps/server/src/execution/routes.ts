@@ -14,6 +14,7 @@ import {
   openMandateGrant,
   revokeMandate,
 } from "./mandates.ts";
+import { cancelVenueOrder } from "./orders.ts";
 import { speedUpIntent } from "./repricing.ts";
 import { requestSweep } from "./sweeps.ts";
 
@@ -144,6 +145,14 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
     const row = await getIntentRow(ctx, params.intentId);
     await requireMember(ctx, session, row.workspaceId, "approver");
     await speedUpIntent(ctx, row, session.user.id);
+    return intentDetail(ctx, await getIntentRow(ctx, row.id));
+  });
+
+  // Approving an order includes the right to cancel it (D4): no passkey, also while paused.
+  handle(app, ctx, "cancelOrder", async ({ params, session }) => {
+    const row = await getIntentRow(ctx, params.intentId);
+    await requireMember(ctx, session, row.workspaceId, "approver");
+    await cancelVenueOrder(ctx, row, { type: "user", id: session.user.id });
     return intentDetail(ctx, await getIntentRow(ctx, row.id));
   });
 

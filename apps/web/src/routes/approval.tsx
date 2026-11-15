@@ -1,11 +1,18 @@
 import type {
   ApprovalDetail,
   ApprovalSubject,
+  OrderDisplay,
   TransactionInfo,
+  TransferDisplay,
   WalletSummary,
   WorkspaceDetail,
 } from "@askgina/os-api";
-import { canonicalJson, keyFingerprint } from "@askgina/os-protocol";
+import {
+  canonicalJson,
+  isVenueNetwork,
+  keyFingerprint,
+  VENUE_NETWORK_NAMES,
+} from "@askgina/os-protocol";
 import { useMutation } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import {
@@ -46,6 +53,7 @@ import { Alert } from "@/components/ui/alert.tsx";
 import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import { Dialog } from "@/components/ui/dialog.tsx";
 import { Progress } from "@/components/ui/progress.tsx";
+import { VenueOrderStatus } from "@/components/venue.tsx";
 import {
   api,
   keys,
@@ -62,6 +70,18 @@ import { formatEndTime, formatTimeLeft, formatWindow } from "@/lib/mandate.ts";
 import { intentSentence, transactionSentence } from "@/lib/statuses.ts";
 import { paymentTitle, transactionOpen } from "@/lib/transaction.ts";
 import { cn } from "@/lib/utils.ts";
+import {
+  formatDecimal,
+  formatUsd6,
+  isOrderIntent,
+  limitPriceText,
+  orderCaps,
+  orderFacts,
+  orderTitle,
+  timeInForceText,
+  VENUE_LOSS_BOUND,
+  VENUE_REPORTED,
+} from "@/lib/venue.ts";
 
 /**
  * The approval page is where a person reads what an agent or a member asked for, in words they
@@ -130,7 +150,7 @@ function ApprovalView({
       {open ? (
         <Decide approval={approval} expired={secondsLeft <= 0} />
       ) : (
-        <Outcome approval={approval} />
+        <Outcome approval={approval} workspace={workspace} />
       )}
 
       <SentTransaction approval={approval} workspace={workspace} />
@@ -168,8 +188,13 @@ function Subject({
 }) {
   const subject = approval.subject;
   switch (subject.kind) {
-    case "approve-intent":
-      return <IntentSubject subject={subject} workspace={workspace} />;
+    case "approve-intent": {
+      const display = subject.intent.display;
+      if (display.kind === "transfer") {
+        return <IntentSubject subject={subject} display={display} workspace={workspace} />;
+      }
+      return <OrderSubject subject={subject} display={display} />;
+    }
     case "set-policy":
       return <PolicySubject subject={subject} workspace={workspace} />;
     case "add-approver": {
@@ -368,7 +393,11 @@ function CancelSubject({
 }) {
   const { intent, sweep, wallet } = subject;
   const what = intent ? "payment" : "sweep";
-  const stops = intent ? paymentTitle(intent.display) : (sweep?.title ?? "");
+  const stops = intent
+    ? intent.display.kind === "transfer"
+      ? paymentTitle(intent.display)
+      : intent.display.title
+    : (sweep?.title ?? "");
   const chainId = cancelChainId(approval, subject);
   const chain = workspace.chains.find((item) => item.chainId === chainId);
   return (
@@ -626,18 +655,39 @@ function Fact({ label, children, wide }: { label: string; children: ReactNode; w
   );
 }
 
+type IntentSubjectData = Extract<ApprovalSubject, { kind: "approve-intent" }>;
+
+/** The agent's memo, shown literally: React escapes it, and it is never parsed as HTML or Markdown. */
+function AgentWords({ memo }: { memo: string }) {
+  return (
+    <figure className="rounded-md border-l-4 border-muted-foreground/40 bg-muted px-3 py-2">
+      <figcaption className="text-xs text-muted-foreground">
+        The agent's own words, not checked by anyone:
+      </figcaption>
+      <blockquote className="text-sm whitespace-pre-wrap wrap-anywhere">
+        {memo === "" ? <span className="text-muted-foreground">(no memo)</span> : memo}
+      </blockquote>
+    </figure>
+  );
+}
+
+/**
+ * A transfer, a contract call, or a withdrawal from a venue to the wallet's own address. A venue
+ * withdrawal pays no network fee and is not simulated.
+ */
 function IntentSubject({
   subject,
+  display,
   workspace,
 }: {
-  subject: Extract<ApprovalSubject, { kind: "approve-intent" }>;
+  subject: IntentSubjectData;
+  display: TransferDisplay;
   workspace: WorkspaceDetail;
 }) {
   const { intent, wallet, limits } = subject;
-  const display = intent.display;
+  const venue = isVenueNetwork(intent.chainId) ? intent.chainId : null;
   const chain = workspace.chains.find((item) => item.chainId === intent.chainId);
-  // A venue intent pays no network fee; this summary shows only EVM payments so far.
-  const fee = formatUnits("maxFeeWei" in intent.intent ? intent.intent.maxFeeWei : "0", 18);
+  const fee = "maxFeeWei" in intent.intent ? formatUnits(intent.intent.maxFeeWei, 18) : null;
   return (
     <Summary title={paymentTitle(display)}>
       {display.rawCall ? (
@@ -663,7 +713,8 @@ function IntentSubject({
 
       <div>
         <p className="text-xs text-muted-foreground">
-          {display.rawCall ? "Contract" : "Recipient"} (check every group)
+          {display.rawCall ? "Contract" : venue ? "To the wallet's own address" : "Recipient"}{" "}
+          (check every group)
         </p>
         <FullAddress address={display.to} className="text-base" />
       </div>
@@ -673,28 +724,22 @@ function IntentSubject({
           {wallet.label} <span className="font-mono text-xs">{shortAddress(wallet.address)}</span>
         </Fact>
         <Fact label="Requested by agent">{intent.agent.name}</Fact>
-        <Fact label="Network">{chainName(intent.chainId, workspace.chains)}</Fact>
-        <Fact label="Network fee, at most">
-          {fee} {chain?.nativeSymbol ?? ""}
+        <Fact label="Network">
+          {venue ? VENUE_NETWORK_NAMES[venue] : chainName(intent.chainId, workspace.chains)}
         </Fact>
-        <Fact label="Simulation" wide>
-          <Simulation simulation={intent.simulation} />
-        </Fact>
+        {fee === null ? null : (
+          <Fact label="Network fee, at most">
+            {fee} {chain?.nativeSymbol ?? ""}
+          </Fact>
+        )}
+        {venue ? null : (
+          <Fact label="Simulation" wide>
+            <Simulation simulation={intent.simulation} />
+          </Fact>
+        )}
       </Facts>
 
-      <figure className="rounded-md border-l-4 border-muted-foreground/40 bg-muted px-3 py-2">
-        <figcaption className="text-xs text-muted-foreground">
-          The agent's own words, not checked by anyone:
-        </figcaption>
-        {/* Plain text only: React escapes it, and it is never parsed as HTML or Markdown. */}
-        <blockquote className="text-sm whitespace-pre-wrap wrap-anywhere">
-          {intent.memo === "" ? (
-            <span className="text-muted-foreground">(no memo)</span>
-          ) : (
-            intent.memo
-          )}
-        </blockquote>
-      </figure>
+      <AgentWords memo={intent.memo} />
 
       {limits ? (
         <Limits
@@ -704,6 +749,125 @@ function IntentSubject({
           limits={limits}
         />
       ) : null}
+    </Summary>
+  );
+}
+
+/**
+ * An order at a venue, from the hashed intent and the wallet's policy: market, side, size, limit
+ * price, notional, time in force, reduce-only and the submit window, against the venue caps. A
+ * venue order pays no network fee, so none is shown. What can be lost is the account's value at
+ * the venue, not the notional, and the card says so. Approving still happens on the signer's
+ * page, which shows the same order as the signer builds it.
+ */
+function OrderSubject({ subject, display }: { subject: IntentSubjectData; display: OrderDisplay }) {
+  const { intent, wallet, venue } = subject;
+  const hashed = intent.intent;
+  if (!isOrderIntent(hashed) || !isVenueNetwork(hashed.chainId) || venue === null) {
+    // The server sends an order display only with a venue order intent and its venue facts.
+    return (
+      <Summary title={display.title}>
+        <p className="text-sm text-muted-foreground">
+          This order's details could not be read here. The signer's page shows it as signed.
+        </p>
+      </Summary>
+    );
+  }
+  const facts = orderFacts(hashed, wallet.policy);
+  const caps = orderCaps(facts, venue);
+  const coin = facts.coin ?? display.coin;
+  return (
+    <Summary title={orderTitle(facts)}>
+      {facts.coin === null ? (
+        <Alert tone="danger" className="py-2.5">
+          <OctagonAlert aria-hidden />
+          <p>
+            <strong>Market {facts.asset} is not in the wallet's limits.</strong> The signer would
+            refuse this order.
+          </p>
+        </Alert>
+      ) : null}
+
+      <div>
+        <p className="text-3xl font-semibold tracking-tight tabular-nums wrap-anywhere">
+          {formatUsd6(facts.notionalUsd6)}
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Notional at the limit price: size times limit price, the most this order can trade.
+        </p>
+      </div>
+
+      <Facts>
+        <Fact label="Market">
+          {coin} perpetual{" "}
+          <span className="font-mono text-xs text-muted-foreground">index {facts.asset}</span>
+        </Fact>
+        <Fact label="Side">{facts.side === "buy" ? "Buy" : "Sell"}</Fact>
+        <Fact label="Size">
+          {formatDecimal(facts.size)} {coin}
+        </Fact>
+        <Fact label="Limit price">{limitPriceText(facts)}</Fact>
+        <Fact label="Time in force" wide>
+          {timeInForceText[facts.timeInForce].name}: {timeInForceText[facts.timeInForce].effect}
+        </Fact>
+        <Fact label="Reduce-only">
+          {facts.reduceOnly ? "Yes: it can only make a position smaller" : "No"}
+        </Fact>
+        <Fact label="Submit window">
+          Must reach Hyperliquid within {venue.submitWindowSeconds} seconds of signing
+        </Fact>
+        <Fact label="From wallet">
+          {wallet.label} <span className="font-mono text-xs">{shortAddress(wallet.address)}</span>
+        </Fact>
+        <Fact label="Requested by agent">{intent.agent.name}</Fact>
+        <Fact label="Network">{VENUE_NETWORK_NAMES[facts.network]}</Fact>
+        <Fact label="Cancelling">The agent may cancel it without asking again</Fact>
+      </Facts>
+
+      <Alert tone="warning" className="items-start py-2.5">
+        <TriangleAlert aria-hidden />
+        <div className="grid min-w-0 grid-cols-1 gap-1">
+          <p>
+            <strong>
+              What can be lost:{" "}
+              {venue.accountValueUsd === null
+                ? "the whole account value at Hyperliquid, which this server could not read"
+                : `the whole account value at Hyperliquid, ${formatDecimal(venue.accountValueUsd)} USD`}
+              .
+            </strong>{" "}
+            {VENUE_LOSS_BOUND}
+          </p>
+          {venue.accountValueUsd === null ? null : <p className="text-xs">{VENUE_REPORTED}</p>}
+        </div>
+      </Alert>
+
+      <AgentWords memo={intent.memo} />
+
+      <div className="grid grid-cols-1 gap-2.5">
+        {caps.perOrder ? (
+          <CapBar
+            label="Of the market's limit per order"
+            barLabel="Share of the market's limit per order"
+            used={caps.perOrder.used}
+            cap={caps.perOrder.cap}
+            format={formatUsd6}
+          />
+        ) : null}
+        {caps.daily.counts ? (
+          <CapBar
+            label="Of the 24-hour notional limit, with this"
+            barLabel="Share of the 24-hour notional limit"
+            used={caps.daily.used}
+            cap={caps.daily.cap}
+            format={formatUsd6}
+          />
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Reduce-only: it does not count against the 24-hour limit ({formatUsd6(caps.daily.used)}{" "}
+            of {formatUsd6(caps.daily.cap)} used).
+          </p>
+        )}
+      </div>
     </Summary>
   );
 }
@@ -730,6 +894,35 @@ function Simulation({
   );
 }
 
+/** One cap as a bar: how much of it is used, with this request where it counts. */
+function CapBar({
+  label,
+  barLabel,
+  used,
+  cap,
+  format,
+}: {
+  label: string;
+  /** The bar's accessible name. */
+  barLabel: string;
+  used: string | bigint;
+  cap: string | bigint;
+  format: (value: string | bigint) => string;
+}) {
+  const share = percentOf(used, cap);
+  return (
+    <div className="grid grid-cols-1 gap-1">
+      <div className="flex flex-wrap justify-between gap-x-2 text-xs">
+        <span className="text-muted-foreground">{label}</span>
+        <span className="tabular-nums">
+          {format(used)} of {format(cap)}
+        </span>
+      </div>
+      <Progress value={share} label={barLabel} tone={share > 90 ? "warning" : "accent"} />
+    </div>
+  );
+}
+
 function Limits({
   amount,
   decimals,
@@ -741,38 +934,23 @@ function Limits({
   symbol: string;
   limits: { maxPerTx: string; maxPerDay: string; spentToday: string };
 }) {
-  const afterToday = BigInt(limits.spentToday) + BigInt(amount);
   const units = (value: string | bigint) => `${formatUnits(value, decimals)} ${symbol}`;
-  const txShare = percentOf(amount, limits.maxPerTx);
-  const dayShare = percentOf(afterToday, limits.maxPerDay);
   return (
     <div className="grid grid-cols-1 gap-2.5">
-      <div className="grid grid-cols-1 gap-1">
-        <div className="flex flex-wrap justify-between gap-x-2 text-xs">
-          <span className="text-muted-foreground">Of the per-transaction limit</span>
-          <span className="tabular-nums">
-            {units(amount)} of {units(limits.maxPerTx)}
-          </span>
-        </div>
-        <Progress
-          value={txShare}
-          label="Share of the per-transaction limit"
-          tone={txShare > 90 ? "warning" : "accent"}
-        />
-      </div>
-      <div className="grid grid-cols-1 gap-1">
-        <div className="flex flex-wrap justify-between gap-x-2 text-xs">
-          <span className="text-muted-foreground">Of the 24-hour limit, with this</span>
-          <span className="tabular-nums">
-            {units(afterToday)} of {units(limits.maxPerDay)}
-          </span>
-        </div>
-        <Progress
-          value={dayShare}
-          label="Share of the 24-hour limit"
-          tone={dayShare > 90 ? "warning" : "accent"}
-        />
-      </div>
+      <CapBar
+        label="Of the per-transaction limit"
+        barLabel="Share of the per-transaction limit"
+        used={amount}
+        cap={limits.maxPerTx}
+        format={units}
+      />
+      <CapBar
+        label="Of the 24-hour limit, with this"
+        barLabel="Share of the 24-hour limit"
+        used={BigInt(limits.spentToday) + BigInt(amount)}
+        cap={limits.maxPerDay}
+        format={units}
+      />
     </div>
   );
 }
@@ -1129,9 +1307,16 @@ function CancelOutcome({
 }
 
 /** Where a decided request ended up, followed until it is final. */
-function Outcome({ approval }: { approval: ApprovalDetail }) {
+function Outcome({
+  approval,
+  workspace,
+}: {
+  approval: ApprovalDetail;
+  workspace: WorkspaceDetail;
+}) {
   const subject = approval.subject;
   const intent = subject.kind === "approve-intent" ? subject.intent : null;
+  const orderDisplay = intent?.display.kind === "order" ? intent.display : null;
   const transaction =
     intent?.transaction ?? (subject.kind === "sweep-wallet" ? subject.transaction : null);
   const signs =
@@ -1195,13 +1380,21 @@ function Outcome({ approval }: { approval: ApprovalDetail }) {
                 Open the approval in advance
               </Link>
             ) : null}
-            {intent ? (
+            {intent && orderDisplay ? (
+              <VenueOrderStatus
+                intent={intent}
+                display={orderDisplay}
+                workspaceId={workspace.id}
+                role={workspace.role}
+              />
+            ) : null}
+            {intent && !orderDisplay ? (
               <div className="flex flex-wrap items-center gap-2">
                 <IntentStatusBadge status={intent.status} />
                 <span className="text-muted-foreground">{intentSentence[intent.status]}</span>
               </div>
             ) : null}
-            {intent?.failureCode ? (
+            {intent?.failureCode && !orderDisplay ? (
               <p className="text-muted-foreground">{explainCode(intent.failureCode)}</p>
             ) : null}
             {transaction && transaction.status !== intent?.status ? (

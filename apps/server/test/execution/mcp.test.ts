@@ -29,11 +29,12 @@ async function rawMcp(headers: Record<string, string>, url = `${TEST_ORIGIN}/mcp
 }
 
 describe("the MCP gateway", () => {
-  it("offers exactly the seven agent tools", async () => {
+  it("offers exactly the eight agent tools", async () => {
     const client = await f.mcp(f.agent.token);
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual([...MCP_TOOL_NAMES].sort());
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(8);
+    expect(MCP_TOOL_NAMES).toHaveLength(8);
   });
 
   it("tools/list carries annotations", async () => {
@@ -48,6 +49,7 @@ describe("the MCP gateway", () => {
       list_intents: { readOnlyHint: true },
       propose_transfer: proposes,
       propose_contract_call: proposes,
+      propose_order: proposes,
       cancel_intent: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     });
   });

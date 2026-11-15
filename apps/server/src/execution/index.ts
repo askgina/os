@@ -12,6 +12,7 @@ import { BundleMismatchError, holdBundleLock } from "./bundle-guard.ts";
 import { registerCancelKind } from "./cancel.ts";
 import { registerIntentKind } from "./intents.ts";
 import { registerMandateKinds } from "./mandates.ts";
+import { reconcileOpenOrders, venueHooks } from "./orders.ts";
 import { repriceAutomatically } from "./repricing.ts";
 import { registerApprovalAndIntentRoutes } from "./routes.ts";
 import { registerSteps, unregisterSteps } from "./steps.ts";
@@ -40,7 +41,7 @@ export function registerExecution(
   ctx: AppContext,
   options: ExecutionOptions = DEFAULT_OPTIONS,
 ): void {
-  registerIntentKind(ctx, options, repriceAutomatically);
+  registerIntentKind(ctx, options, repriceAutomatically, venueHooks);
   registerSweepKind(ctx, options);
   registerMandateKinds(ctx);
   registerCancelKind(ctx);
@@ -65,15 +66,18 @@ export function mountWorkflowDelivery(internal: Hono, ctx: AppContext): void {
 }
 
 /**
- * One pass of the sweeper: the workflow wake-up outbox, starts, the notification outbox, and at
- * most once a minute the retirements and deletions that are due (`lifecycle`, null in passes
- * that did not look). Exported so tests can run it without a timer.
+ * One pass of the sweeper: the workflow wake-up outbox, starts, the notification outbox, at most
+ * every five minutes the venue orders the follow-up stopped watching (`venueOrders`, how many
+ * were read back), and at most once a minute the retirements and deletions that are due
+ * (`lifecycle`); each null in passes that did not look. Exported so tests can run it without a
+ * timer.
  */
 export async function sweep(ctx: AppContext): Promise<{
   woken: number;
   started: number;
   abandoned: number;
   notifications: DeliveryCounts;
+  venueOrders: number | null;
   lifecycle: { finalized: number; skipped: number } | null;
 }> {
   const engine = engineOf(ctx);
@@ -136,10 +140,11 @@ export async function sweep(ctx: AppContext): Promise<{
   // A request recovered above was announced in the transaction that opened it, so its rows are
   // delivered here like any other.
   const notifications = await deliverDueNotifications(ctx);
+  const venueOrders = await reconcileOpenOrders(ctx);
   // Last: a request it cancels is recovered by the next pass above, and a deletion finishes
   // only once every run of the workspace has.
   const lifecycle = await finalizeIfDue(ctx);
-  return { woken, started, abandoned, notifications, lifecycle };
+  return { woken, started, abandoned, notifications, venueOrders, lifecycle };
 }
 
 /**

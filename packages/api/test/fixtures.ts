@@ -201,6 +201,7 @@ export const intentSummary: IntentSummary = {
   chainId: "eip155:8453",
   status: "pending_approval",
   display: {
+    kind: "transfer",
     title: "Send 0.000000000000000005 ETH",
     assetSymbol: "ETH",
     assetDecimals: 18,
@@ -216,6 +217,7 @@ export const intentSummary: IntentSummary = {
   mandateId: null,
   transactionHash: null,
   failureCode: null,
+  order: null,
 };
 
 /** A stuck payment repriced once: the shown hash is the newest attempt's. */
@@ -267,6 +269,58 @@ export const intentDetail: IntentDetail = {
   transaction: transactionInfo,
 };
 
+/** A resting Hyperliquid testnet order, cancelled by nobody yet. */
+export const orderDetail: IntentDetail = {
+  ...intentSummary,
+  chainId: "hyperliquid:testnet",
+  status: "placed",
+  display: {
+    kind: "order",
+    title: "Buy 0.01 BTC at 65000",
+    network: "hyperliquid:testnet",
+    coin: "BTC",
+    asset: 3,
+    side: "buy",
+    size: "0.01",
+    limitPrice: "65000",
+    notionalUsd: "650",
+    timeInForce: "Gtc",
+    reduceOnly: false,
+    cancellableByAgent: true,
+  },
+  order: {
+    cloid: "0xe5da13111af22225733abeac5ca991ba",
+    venueOrderId: 77738308,
+    filledSize: "0",
+    averagePrice: null,
+    submitBy: T0 + 660,
+    venueError: null,
+    canCancel: true,
+  },
+  intent: {
+    v: 1,
+    id: INTENT,
+    workspaceId: WS,
+    agentId: AGENT,
+    walletId: WALLET,
+    chainId: "hyperliquid:testnet",
+    operation: {
+      type: "hyperliquid.order",
+      asset: 3,
+      isBuy: true,
+      size: "0.01",
+      limitPx: "65000",
+      tif: "Gtc",
+      reduceOnly: false,
+    },
+    memo: "funding turned",
+    createdAt: T0,
+  },
+  intentHash: HASH,
+  simulation: null,
+  transaction: null,
+};
+
 export const approvalSummary: ApprovalSummary = {
   id: APPROVAL,
   workspaceId: WS,
@@ -305,6 +359,7 @@ export const approvalDetail: ApprovalDetail = {
     intent: intentDetail,
     wallet,
     limits: { maxPerTx: "10", maxPerDay: "20", spentToday: "1" },
+    venue: null,
   },
   confirmUrl: `https://approve.os.example.com/a/${APPROVAL}#AAAAAAAAAAAAAAAAAAAAAA`,
 };

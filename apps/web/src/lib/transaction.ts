@@ -1,9 +1,14 @@
-import type { IntentDisplay, Role, TransactionAttemptView, TransactionInfo } from "@askgina/os-api";
+import type {
+  Role,
+  TransactionAttemptView,
+  TransactionInfo,
+  TransferDisplay,
+} from "@askgina/os-api";
 import { formatUnits, shortAddress } from "./format.ts";
 
 /** A payment in one line, as its request's page heads it: "Send 0.015 ETH to 0x5290…". */
 export function paymentTitle(
-  display: Pick<IntentDisplay, "rawCall" | "amount" | "amountFormatted" | "assetSymbol" | "to">,
+  display: Pick<TransferDisplay, "rawCall" | "amount" | "amountFormatted" | "assetSymbol" | "to">,
 ): string {
   const amount = `${display.amountFormatted} ${display.assetSymbol}`;
   return display.rawCall

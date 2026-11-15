@@ -14,6 +14,7 @@ import type {
   NotificationDeliveryId,
   PushSubscriptionId,
   UserId,
+  VenueNetwork,
   WalletId,
   WalletPolicy,
   WorkspaceId,
@@ -487,7 +488,11 @@ export type IntentStatusColumn =
   | "cancelled"
   | "denied"
   | "failed"
-  | "voided";
+  | "voided"
+  | "submitted"
+  | "placed"
+  | "filled"
+  | "partially_filled";
 
 export const intents = os.table(
   "intents",
@@ -643,6 +648,72 @@ export const transactionAttempts = os.table(
     primaryKey({ columns: [table.approvalId, table.attempt] }),
     check("transaction_attempts_after_first", sql`${table.attempt} >= 1`),
   ],
+);
+
+/**
+ * Where a signed venue request is, as the venue last reported it.
+ * - `signed`: stored, never posted. `submitted`: posted at least once, the venue's answer not
+ *   known yet (a network failure, or a crash after posting).
+ * - `placed`: an order rests on the book. `filled` / `partially_filled`: it ended filled in full
+ *   or in part. `cancelled`: cancelled at the venue with nothing filled.
+ * - `failed`: the venue refused it. `expired`: its submit window passed before the venue had it.
+ * - `accepted`: a withdrawal the venue accepted.
+ */
+export type VenueOrderStatus =
+  | "signed"
+  | "submitted"
+  | "placed"
+  | "filled"
+  | "partially_filled"
+  | "cancelled"
+  | "failed"
+  | "expired"
+  | "accepted";
+
+/**
+ * The one venue request an approved venue intent's approval signed: an order or a withdrawal.
+ * The signer built and signed it; the control plane only posts it, unchanged, and records what
+ * the venue answered.
+ */
+export const venueOrders = os.table(
+  "venue_orders",
+  {
+    /** One approval signs at most one venue request. */
+    approvalId: text("approval_id")
+      .$type<ApprovalId>()
+      .primaryKey()
+      .references(() => approvals.id),
+    intentId: text("intent_id")
+      .$type<IntentId>()
+      .notNull()
+      .references(() => intents.id),
+    walletId: text("wallet_id")
+      .$type<WalletId>()
+      .notNull()
+      .references(() => wallets.id),
+    network: text("network").$type<VenueNetwork>().notNull(),
+    /** The order's client order id; null for a withdrawal. */
+    cloid: text("cloid"),
+    /** The request's nonce at the venue, in milliseconds, chosen by the signer. */
+    actionNonce: bigint("action_nonce", { mode: "number" }).notNull(),
+    /** In milliseconds: the venue refuses the request after it. Null for a withdrawal. */
+    expiresAfter: bigint("expires_after", { mode: "number" }),
+    /** Sealed. The exact body posted to the venue, as the signer returned it. */
+    request: bytea("request").notNull(),
+    status: text("status").$type<VenueOrderStatus>().notNull().default("signed"),
+    venueOrderId: bigint("venue_order_id", { mode: "number" }),
+    filledSize: text("filled_size"),
+    averagePrice: text("average_price"),
+    /** The venue's own text for a refusal or a cancel it made, at most 200 characters. */
+    venueError: text("venue_error"),
+    /** When the request was first posted. */
+    submittedAt: time("submitted_at"),
+    /** When the venue's state of the order was last read. */
+    checkedAt: time("checked_at"),
+    createdAt: createdAt(),
+    updatedAt: time("updated_at").notNull().defaultNow(),
+  },
+  (table) => [index("venue_orders_status_idx").on(table.status, table.submittedAt)],
 );
 
 // --- audit ------------------------------------------------------------------------------------

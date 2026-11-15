@@ -36,6 +36,12 @@ export interface PushFacts {
   /** Requests waiting for this person's passkey, this one included. */
   pendingCount: number;
   kind: ApprovalKind;
+  /**
+   * For `approve-intent`: whether the intent is a payment (a transfer, a contract call or a
+   * venue withdrawal) or a venue order (D8), so an order is not announced as a payment. Null for
+   * every other kind. No order field (market, side, size, price, notional) has a place here.
+   */
+  operation: "payment" | "order" | null;
   workspaceName: string;
   /** The agent's or the person's name. */
   requesterName: string;
@@ -165,7 +171,11 @@ export function pushMessage(input: {
   let title: string;
   let body: string;
   if (input.level === "summary") {
-    title = `${KIND_LABEL[facts.kind]} waiting`;
+    const label =
+      facts.kind === "approve-intent" && facts.operation === "order"
+        ? "Order"
+        : KIND_LABEL[facts.kind];
+    title = `${label} waiting`;
     body = `${facts.requesterName} in ${facts.workspaceName}`;
   } else {
     title = "Approval waiting";

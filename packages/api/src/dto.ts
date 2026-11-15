@@ -6,20 +6,26 @@ import {
   AssetRef,
   Base64Url,
   ChainId,
+  Cloid,
   Digest,
   Envelope,
   EpochSeconds,
   Hex32,
+  HyperliquidTimeInForce,
   Intent,
   IntentId,
   Mandate,
   MandateAssetLimit,
   MandateId,
   Memo,
+  Network,
   PositiveAmount,
+  PositiveDecimal,
   PushSubscriptionId,
   Sweep,
   UserId,
+  VenueNetwork,
+  VenueRules,
   WalletId,
   WalletPolicy,
   WorkspaceId,
@@ -373,6 +379,8 @@ export const PolicyDraft = z.strictObject({
     threshold: z.number().int().min(1).max(16),
     ttlSeconds: z.number().int().min(60).max(86_400),
   }),
+  /** What the wallet may do at venues; absent, nothing. A mainnet venue is refused (D2). */
+  venues: VenueRules.optional(),
 });
 export type PolicyDraft = z.infer<typeof PolicyDraft>;
 
@@ -383,11 +391,18 @@ export type PolicyDraft = z.infer<typeof PolicyDraft>;
  * - `pending_approval`: waiting for people.
  * - `approved`: enough people approved; signing is next.
  * - `signed`, `broadcast`: the transaction exists and is on its way.
- * - `confirmed` / `reverted`: mined, with that outcome.
+ * - `confirmed` / `reverted`: mined, with that outcome. A venue withdrawal is `confirmed` once
+ *   the venue accepted it.
+ * - `submitted`: a venue order was posted and the venue's answer is not known yet.
+ * - `placed`: a venue order rests on the book; it may still fill or be cancelled.
+ * - `filled` / `partially_filled`: a venue order ended filled in full, or in part (the rest was
+ *   cancelled, as an immediate-or-cancel order's is).
  * - `stuck`: signed and broadcast but not mined in time. It can still be mined later, or
  *   cancelled.
  * - `voided`: a cancel people approved was mined in its place; nothing moved, a fee was paid.
- * - `rejected`, `expired`, `cancelled`: ended without a signature.
+ * - `rejected`, `expired`, `cancelled`: ended without a signature. A venue order also ends
+ *   `expired` when the venue never received it within its submit window, and `cancelled` when
+ *   it was cancelled at the venue with nothing filled.
  * - `denied`: a policy or the signer refused it; `failureCode` says why.
  * - `failed`: something broke; `failureCode` says what.
  */
@@ -406,11 +421,20 @@ export const IntentStatus = z.enum([
   "denied",
   "failed",
   "voided",
+  "submitted",
+  "placed",
+  "filled",
+  "partially_filled",
 ]);
 export type IntentStatus = z.infer<typeof IntentStatus>;
 
-/** How to show an intent to a person. Derived, never hashed: the `Intent` itself is the truth. */
-export const IntentDisplay = z.strictObject({
+/**
+ * How to show a transfer, a contract call or a venue withdrawal to a person. Derived, never
+ * hashed: the `Intent` itself is the truth. A venue withdrawal shows the wallet's own address as
+ * `to`, the only destination the signer allows.
+ */
+export const TransferDisplay = z.strictObject({
+  kind: z.literal("transfer"),
   /** For example "Send 250 USDC". */
   title: z.string(),
   assetSymbol: z.string(),
@@ -426,13 +450,61 @@ export const IntentDisplay = z.strictObject({
   /** True for a raw contract call, whose effect per-asset caps cannot measure. */
   rawCall: z.boolean(),
 });
+export type TransferDisplay = z.infer<typeof TransferDisplay>;
+
+/** How to show a venue order to a person. Derived from the intent and the policy's market. */
+export const OrderDisplay = z.strictObject({
+  kind: z.literal("order"),
+  /** For example "Buy 0.01 BTC at 65000". */
+  title: z.string(),
+  network: VenueNetwork,
+  /** The name the wallet's policy binds to `asset`. */
+  coin: z.string(),
+  /** The perpetual's index at the venue: what is signed. */
+  asset: z.number().int().min(0),
+  side: z.enum(["buy", "sell"]),
+  size: PositiveDecimal,
+  limitPrice: PositiveDecimal,
+  /** The worst-case notional, size times limit price, in USD rounded up to micro-USD. */
+  notionalUsd: z.string(),
+  timeInForce: HyperliquidTimeInForce,
+  reduceOnly: z.boolean(),
+  /** Approving an order includes the right to cancel it, for the agent too (D4). */
+  cancellableByAgent: z.literal(true),
+});
+export type OrderDisplay = z.infer<typeof OrderDisplay>;
+
+export const IntentDisplay = z.discriminatedUnion("kind", [TransferDisplay, OrderDisplay]);
 export type IntentDisplay = z.infer<typeof IntentDisplay>;
+
+/**
+ * A venue order after its approval, as the venue last reported it through this server. Not
+ * verified by the signer: the control plane reads and could misreport the venue's state.
+ */
+export const VenueOrderView = z.strictObject({
+  /** The client order id the signer derived from the approval id. */
+  cloid: Cloid,
+  /** The venue's order id, once it reported one. */
+  venueOrderId: z.number().int().min(0).nullable(),
+  /** How much filled so far, as the venue reported it; null before it did. */
+  filledSize: z.string().nullable(),
+  /** The average fill price, when the venue reported one. */
+  averagePrice: z.string().nullable(),
+  /** The venue refuses the signed order after this time (its `expiresAfter`). */
+  submitBy: EpochSeconds,
+  /** The venue's own text for a refusal or a cancel it made, at most 200 characters. */
+  venueError: z.string().max(200).nullable(),
+  /** Whether a cancel can be asked for now: the order was posted and is not final. */
+  canCancel: z.boolean(),
+});
+export type VenueOrderView = z.infer<typeof VenueOrderView>;
 
 export const IntentSummary = z.strictObject({
   id: IntentId,
   agent: z.strictObject({ id: AgentId, name: z.string() }),
   walletId: WalletId,
-  chainId: ChainId,
+  /** An EVM chain, or a venue network for a venue intent. */
+  chainId: Network,
   status: IntentStatus,
   display: IntentDisplay,
   memo: z.string(),
@@ -446,6 +518,8 @@ export const IntentSummary = z.strictObject({
   mandateId: MandateId.nullable(),
   transactionHash: Hex32.nullable(),
   failureCode: z.string().nullable(),
+  /** The venue order once signed; null for anything else, a venue withdrawal included. */
+  order: VenueOrderView.nullable(),
 });
 export type IntentSummary = z.infer<typeof IntentSummary>;
 
@@ -742,8 +816,27 @@ export const ApprovalSubject = z.discriminatedUnion("kind", [
     kind: z.literal("approve-intent"),
     intent: IntentDetail,
     wallet: WalletSummary,
-    /** Where this transaction sits against the wallet's caps for its asset; null for a raw call that moves no native coin. */
+    /** Where this transaction sits against the wallet's caps for its asset; null for a raw call that moves no native coin, and for a venue intent. */
     limits: z.strictObject({ maxPerTx: Amount, maxPerDay: Amount, spentToday: Amount }).nullable(),
+    /** A venue intent's rules and where it stands against them; null for an EVM intent. */
+    venue: z
+      .strictObject({
+        network: VenueNetwork,
+        /** The market's cap on one order, in micro-USD; null for a withdrawal. */
+        maxPerOrderUsd6: Amount.nullable(),
+        maxNotionalPerDayUsd6: Amount,
+        /** The notional the signer counted against the daily cap in the last 24 hours. */
+        spentTodayUsd6: Amount,
+        submitWindowSeconds: z.number().int().min(1),
+        withdrawals: z.boolean(),
+        /**
+         * The account's value at the venue in USD, which bounds what can be lost there; as the
+         * venue reported it through this server, not verified by the signer. Null when it could
+         * not be read.
+         */
+        accountValueUsd: z.string().nullable(),
+      })
+      .nullable(),
   }),
   z.strictObject({
     kind: z.literal("set-policy"),

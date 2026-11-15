@@ -1,7 +1,7 @@
 import { createPrivateKey, createPublicKey } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { SignerAdminCommand } from "@askgina/os-api";
-import { ChainId } from "@askgina/os-protocol";
+import { ChainId, VenueNetwork } from "@askgina/os-protocol";
 import {
   readSignerTls,
   type SignerTls,
@@ -23,6 +23,21 @@ export const ChainConfig = z.strictObject({
   confirmations: z.number().int().min(1).max(64).default(1),
 });
 export type ChainConfig = z.infer<typeof ChainConfig>;
+
+/** One venue the control plane posts signed requests to and reads state from. */
+export const VenueConfig = z.strictObject({
+  network: VenueNetwork,
+  /** The venue's API base, for example `https://api.hyperliquid-testnet.xyz`. */
+  apiUrl: z.url({ protocol: /^https?$/ }),
+});
+export type VenueConfig = z.infer<typeof VenueConfig>;
+
+/**
+ * Hosts of Hyperliquid's mainnet API. Until the owner decides whether and where mainnet venue
+ * support may ship (D2 in `specs/non-evm-operations.md`), naming one stops the boot, whatever
+ * network the entry claims.
+ */
+const MAINNET_VENUE_HOSTS = ["api.hyperliquid.xyz"];
 
 const integer = (fallback: number, min: number, max: number) =>
   z.coerce.number().int().min(min).max(max).default(fallback);
@@ -129,6 +144,11 @@ const Environment = z
     ),
     /** JSON array of {@link ChainConfig}. */
     CHAINS_FILE: z.string().min(1),
+    /**
+     * JSON array of {@link VenueConfig}, at most one per network. Unset: venue features answer
+     * "not configured". Testnet only: a mainnet entry stops the boot (D2).
+     */
+    VENUES_FILE: optional(z.string().min(1)),
     /** Directory with the built UI (`apps/web/dist`). */
     WEB_DIST_DIR: z.string().min(1).optional(),
 
@@ -313,6 +333,8 @@ export interface Config {
   /** The prefix of the signer's admin commands on its host (`SIGNER_ADMIN_COMMAND`). */
   signerAdminCommand: string;
   chains: ChainConfig[];
+  /** The venues orders go to; empty when `VENUES_FILE` is unset. Never a mainnet venue (D2). */
+  venues: VenueConfig[];
   webDistDir: string | undefined;
   sessionTtlSeconds: number;
   adminApprovalTtlSeconds: number;
@@ -357,6 +379,34 @@ function vapidKeys(file: string): Pick<WebPushConfig, "vapidPrivateKey" | "vapid
       ]),
     ),
   };
+}
+
+/** Read the venues file; a mainnet venue, or a second entry for one network, stops the boot. */
+function venues(file: string | undefined): VenueConfig[] {
+  if (file === undefined) return [];
+  let entries: VenueConfig[];
+  try {
+    entries = z
+      .array(VenueConfig)
+      .max(2)
+      .parse(JSON.parse(readFileSync(file, "utf8")));
+  } catch {
+    throw new ConfigError(
+      "VENUES_FILE: expected a JSON array of { network, apiUrl } with network hyperliquid:testnet",
+    );
+  }
+  for (const entry of entries) {
+    const host = new URL(entry.apiUrl).hostname.toLowerCase();
+    if (entry.network === "hyperliquid:mainnet" || MAINNET_VENUE_HOSTS.includes(host)) {
+      throw new ConfigError(
+        "VENUES_FILE: Hyperliquid mainnet is refused until the owner decides D2 (whether and where mainnet venue support may ship); configure hyperliquid:testnet only",
+      );
+    }
+  }
+  if (new Set(entries.map((entry) => entry.network)).size !== entries.length) {
+    throw new ConfigError("VENUES_FILE: at most one entry per network");
+  }
+  return entries;
 }
 
 function signerTls(parsed: {
@@ -409,6 +459,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       .array(ChainConfig)
       .min(1)
       .parse(JSON.parse(readFileSync(parsed.CHAINS_FILE, "utf8"))),
+    venues: venues(parsed.VENUES_FILE),
     webDistDir: parsed.WEB_DIST_DIR,
     sessionTtlSeconds: parsed.SESSION_TTL_SECONDS,
     adminApprovalTtlSeconds: parsed.ADMIN_APPROVAL_TTL_SECONDS,

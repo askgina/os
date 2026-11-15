@@ -30,7 +30,7 @@ import {
 } from "../db/schema.ts";
 import { HttpError } from "../http/errors.ts";
 import { ChainError, chainAccess, type FeeQuote } from "./chains.ts";
-import { type IntentRow, readIntent } from "./intents.ts";
+import { type IntentRow, readEvmIntent } from "./intents.ts";
 import {
   type Attempt,
   attemptsOf,
@@ -209,7 +209,7 @@ export async function catchUpAttempts(
   if (binding !== null && transaction.intentId !== null) {
     const [row] = await tx.select().from(intents).where(eq(intents.id, transaction.intentId));
     if (!row) throw new Error("a transaction's intent no longer exists");
-    bound = { ...binding, intent: (await readIntent(ctx, row)).intent };
+    bound = { ...binding, intent: await readEvmIntent(ctx, row) };
   }
 
   // A reprice of a cancel is under that cancel's request, as the signer records it.
@@ -422,7 +422,7 @@ async function reprice(
         .from(intents)
         .where(eq(intents.id, transaction.intentId));
       if (!intentRow) throw new Error("a transaction's intent no longer exists");
-      const { intent } = await readIntent(ctx, intentRow);
+      const intent = await readEvmIntent(ctx, intentRow);
       const fees = nextFees({
         latest,
         gas: latest.gas,

@@ -413,6 +413,14 @@ export async function openPolicyRequest(
   if (unknownChain !== undefined) {
     throw new HttpError("invalid_request", "draft.chains: a chain is not configured here");
   }
+  // Until the owner decides whether and where mainnet venue support may ship (D2).
+  if (draft.venues?.hyperliquid?.network === "hyperliquid:mainnet") {
+    throw new HttpError(
+      "invalid_request",
+      "draft.venues: Hyperliquid mainnet is not supported; use hyperliquid:testnet",
+      "venue_not_allowed",
+    );
+  }
   if (draft.requesters.length > 0) {
     const found = await ctx.db
       .select({ id: agents.id })

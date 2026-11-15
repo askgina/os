@@ -1,27 +1,35 @@
 import type {
+  ApprovalSubject,
   IntentDetail,
   IntentDisplay,
   IntentStatus,
   IntentSummary,
   Simulation,
+  VenueOrderView,
   WalletSummary,
 } from "@askgina/os-api";
 import {
   type AgentId,
   type ApprovalId,
+  type Authorization,
   type ChainId,
+  type Cloid,
+  type Digest,
   EvmIntent,
   evaluateIntent,
   type Hex,
+  Intent,
   type IntentId,
   intentHash,
   intentSpend,
+  isVenueIntent,
   MANDATE_DENY_CODES,
   type MandateId,
   newId,
   type Operation,
   POLICY_DENY_CODES,
   PROTOCOL_VERSION,
+  type VenueIntent,
   type WalletId,
   type WalletPolicy,
   type WorkspaceId,
@@ -30,6 +38,7 @@ import {
   SignerError,
   type SignResponse,
   type TransactionParams,
+  type WalletState,
 } from "@askgina/os-protocol/signer";
 import { and, count, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import { encodeFunctionData, erc20Abi, formatUnits, type Hex as ViemHex } from "viem";
@@ -41,7 +50,7 @@ import {
 } from "../approvals/kinds.ts";
 import { appendAudit } from "../audit.ts";
 import type { AppContext, Executor } from "../context.ts";
-import { agents, intents, wallets, workspaces } from "../db/schema.ts";
+import { agents, intents, venueOrders, wallets, workspaces } from "../db/schema.ts";
 import { walletLifecycle } from "../directory/views.ts";
 import { HttpError } from "../http/errors.ts";
 import { approvalLink } from "../notify/content.ts";
@@ -64,7 +73,8 @@ type IntentRow = typeof intents.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
 type WalletRow = typeof wallets.$inferSelect;
 
-interface Presentation {
+/** What people are shown about an intent, sealed beside it. A venue intent has no simulation. */
+export interface Presentation {
   display: IntentDisplay;
   simulation: Simulation | null;
 }
@@ -87,12 +97,22 @@ const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
 export async function readIntent(
   ctx: AppContext,
   row: IntentRow,
-): Promise<{ intent: EvmIntent; presentation: Presentation }> {
-  const [intent, presentation] = await Promise.all([
+): Promise<{ intent: Intent; presentation: Presentation }> {
+  const [intent, opened] = await Promise.all([
     ctx.sealer.open(row.workspaceId, payloadLocation(row.id), row.payload),
     ctx.sealer.open(row.workspaceId, presentationLocation(row.id), row.presentation),
   ]);
-  return { intent: EvmIntent.parse(intent), presentation: presentation as Presentation };
+  const presentation = opened as Presentation;
+  // Displays stored before venue intents existed were all transfers and carry no `kind`.
+  const display = { kind: "transfer", ...(presentation.display as object) } as IntentDisplay;
+  return { intent: Intent.parse(intent), presentation: { ...presentation, display } };
+}
+
+/** An intent that can only be an EVM one here (a transaction's, a reprice's). */
+export async function readEvmIntent(ctx: AppContext, row: IntentRow): Promise<EvmIntent> {
+  const { intent } = await readIntent(ctx, row);
+  if (isVenueIntent(intent)) throw new Error("expected an EVM intent, found a venue intent");
+  return intent;
 }
 
 async function intentRow(ctx: AppContext, id: string, executor: Executor = ctx.db) {
@@ -104,11 +124,34 @@ async function intentRow(ctx: AppContext, id: string, executor: Executor = ctx.d
   return row;
 }
 
+/** The order a venue intent's approval signed, as the venue last reported it; null otherwise. */
+async function venueOrderView(
+  ctx: AppContext,
+  approvalId: ApprovalId | null,
+): Promise<VenueOrderView | null> {
+  if (approvalId === null) return null;
+  const [order] = await ctx.db
+    .select()
+    .from(venueOrders)
+    .where(eq(venueOrders.approvalId, approvalId));
+  if (!order || order.cloid === null || order.expiresAfter === null) return null;
+  return {
+    cloid: order.cloid as Cloid,
+    venueOrderId: order.venueOrderId,
+    filledSize: order.filledSize,
+    averagePrice: order.averagePrice,
+    submitBy: Math.floor(order.expiresAfter / 1000),
+    venueError: order.venueError,
+    canCancel: order.status === "submitted" || order.status === "placed",
+  };
+}
+
 export async function intentSummary(ctx: AppContext, row: IntentRow): Promise<IntentSummary> {
-  const [{ intent, presentation }, [agent], transaction] = await Promise.all([
+  const [{ intent, presentation }, [agent], transaction, order] = await Promise.all([
     readIntent(ctx, row),
     ctx.db.select({ name: agents.name }).from(agents).where(eq(agents.id, row.agentId)),
     transactionOf(ctx, row.approvalId),
+    venueOrderView(ctx, row.approvalId),
   ]);
   return {
     id: row.id,
@@ -124,6 +167,7 @@ export async function intentSummary(ctx: AppContext, row: IntentRow): Promise<In
     mandateId: row.mandateId,
     transactionHash: transaction ? await shownHash(ctx, transaction) : null,
     failureCode: row.failureCode,
+    order,
   };
 }
 
@@ -146,10 +190,12 @@ export async function getIntentRow(ctx: AppContext, id: string): Promise<IntentR
   return intentRow(ctx, id);
 }
 
-/** One line for an intent, for example "Send 0.01 ETH to 0x12ab…89ef". */
+/** One line for an intent, for example "Send 0.01 ETH to 0x12ab…89ef" or "Buy 0.01 BTC at 65000". */
 export async function intentTitle(ctx: AppContext, row: IntentRow): Promise<string> {
-  const { presentation } = await readIntent(ctx, row);
-  return `${presentation.display.title} to ${shortAddress(presentation.display.to)}`;
+  const { display } = (await readIntent(ctx, row)).presentation;
+  return display.kind === "order"
+    ? display.title
+    : `${display.title} to ${shortAddress(display.to)}`;
 }
 
 export async function listIntentRows(
@@ -198,7 +244,7 @@ export async function listIntentRows(
 // --- status changes ---------------------------------------------------------------------------
 
 /** Move an intent from one of `from` to `to`, with an audit event. False when it was elsewhere. */
-async function moveIntent(
+export async function moveIntent(
   ctx: AppContext,
   row: Pick<IntentRow, "id" | "workspaceId">,
   from: readonly IntentRow["status"][],
@@ -287,33 +333,26 @@ export function toBaseUnits(amount: string, decimals: number): bigint {
 
 const shortAddress = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;
 
-async function propose(
+/** What every proposal is checked against: the wallet, and its policy as the signer holds it. */
+export interface ProposalBasis {
+  wallet: WalletRow;
+  state: WalletState;
+  policy: WalletPolicy;
+  policyHash: Digest;
+}
+
+/**
+ * The wallet an agent proposes from, refused while the workspace is paused (the signer would
+ * refuse every signature; say so now rather than after someone approved) or while the wallet
+ * has no approved policy. The signer's copy of the policy is the one that will decide, so it is
+ * the one returned.
+ */
+export async function proposalBasis(
   ctx: AppContext,
   agent: AgentRow,
-  input: {
-    chainId: string;
-    walletId?: WalletId | undefined;
-    /** Use exactly this mandate of the agent, or refuse. */
-    mandateId?: MandateId | undefined;
-    memo: string;
-    build: (
-      wallet: WalletRow,
-      chainId: ChainId,
-    ) => Promise<{
-      operation: Operation;
-      display: IntentDisplay;
-      call: { to: `0x${string}`; value: bigint; data: ViemHex | undefined };
-    }>;
-  },
-): Promise<ProposalResult> {
-  const chains = chainAccess(ctx);
-  if (!chains.has(input.chainId)) {
-    throw new HttpError("invalid_request", "this chain is not configured");
-  }
-  const chainId = input.chainId;
-  const wallet = await resolveWallet(ctx, agent, input.walletId);
-  // The signer refuses every signature while the workspace is paused; say so now rather than
-  // after someone approved.
+  walletId: WalletId | undefined,
+): Promise<ProposalBasis> {
+  const wallet = await resolveWallet(ctx, agent, walletId);
   const [workspace] = await ctx.db
     .select({ paused: workspaces.paused })
     .from(workspaces)
@@ -321,7 +360,6 @@ async function propose(
   if (workspace?.paused) {
     throw new HttpError("conflict", "this workspace is paused", "workspace_paused");
   }
-  // The signer's copy of the policy is the one that will decide, so it is the one checked here.
   const state = await ctx.signer.getWallet(wallet.id).catch((error: unknown) => {
     throw new HttpError(
       "internal",
@@ -329,65 +367,48 @@ async function propose(
       error instanceof SignerError ? error.code : undefined,
     );
   });
-  const policy: WalletPolicy | null = state.policy;
-  if (policy === null || state.policyHash === null) {
+  if (state.policy === null || state.policyHash === null) {
     throw new HttpError(
       "policy_denied",
       "this wallet has no approved policy yet",
       "policy_missing",
     );
   }
-  const read = async () => {
-    const built = await input.build(wallet, chainId);
-    const simulated = await chains.simulate({
-      chainId,
-      from: wallet.address,
-      to: built.call.to,
-      value: built.call.value,
-      data: built.call.data,
-    });
-    return { ...built, simulated, fees: await chains.fees(chainId) };
-  };
-  const { operation, display, simulated, fees } = await read().catch((error: unknown) => {
-    if (error instanceof ChainError) {
-      throw new HttpError("internal", "the chain could not be read", error.code);
-    }
-    throw error;
-  });
-  const gas = ((simulated.gasEstimate ?? FALLBACK_GAS) * GAS_MARGIN_PERCENT) / 100n;
-  const wanted = 2n * gas * (2n * fees.baseFeePerGas + fees.maxPriorityFeePerGas);
-  const ceiling = BigInt(policy.fees.maxPerTxWei);
-  // biome-ignore lint/complexity/useMathMinMax: Math.min does not take bigints
-  const maxFeeWei = wanted < ceiling ? wanted : ceiling;
-  const id = newId("int");
-  const intent = EvmIntent.parse({
-    v: PROTOCOL_VERSION,
-    id,
-    workspaceId: agent.workspaceId,
-    agentId: agent.id,
-    walletId: wallet.id,
-    chainId,
-    operation,
-    maxFeeWei: maxFeeWei.toString(),
-    memo: input.memo,
-    createdAt: ctx.now(),
-  });
-  const spent = new Map(state.spent.map((entry) => [`${entry.chainId}|${entry.asset}`, entry]));
-  const decision = evaluateIntent(policy, intent, (chain, asset) =>
-    BigInt(spent.get(`${chain}|${asset}`)?.amount ?? "0"),
+  return { wallet, state, policy: state.policy, policyHash: state.policyHash };
+}
+
+/** The policy's verdict on `intent`, with what the signer counted in the last 24 hours. */
+export function checkPolicy(basis: ProposalBasis, intent: Intent): void {
+  const spent = new Map<string, string>();
+  for (const entry of [...basis.state.spent, ...basis.state.venueSpent]) {
+    spent.set(`${entry.chainId}|${entry.asset}`, entry.amount);
+  }
+  const decision = evaluateIntent(basis.policy, intent, (chain, asset) =>
+    BigInt(spent.get(`${chain}|${asset}`) ?? "0"),
   );
   if (!decision.allowed) {
     throw new HttpError("policy_denied", "the wallet's policy would refuse this", decision.code);
   }
-  const presentation: Presentation = {
-    display,
-    simulation: {
-      ok: simulated.ok,
-      blockNumber: simulated.blockNumber,
-      gasEstimate: simulated.gasEstimate?.toString() ?? null,
-      error: simulated.error,
-    },
-  };
+}
+
+/**
+ * Record a checked intent and what people are shown about it: as a use of `mandateId`, already
+ * approved and on its way to the signer, or as an `approve-intent` request people decide on,
+ * with its audit entry and its notifications in the same transaction.
+ */
+export async function recordProposal(
+  ctx: AppContext,
+  agent: AgentRow,
+  input: {
+    basis: ProposalBasis;
+    intent: Intent;
+    presentation: Presentation;
+    mandateId: MandateId | null;
+  },
+): Promise<ProposalResult> {
+  const { basis, intent, presentation, mandateId } = input;
+  const { wallet } = basis;
+  const id = intent.id;
   const hash = intentHash(intent);
   // The intent's sealed columns, in whichever transaction records it below.
   const sealed = async () => ({
@@ -395,7 +416,6 @@ async function propose(
     presentation: await ctx.sealer.seal(agent.workspaceId, presentationLocation(id), presentation),
   });
 
-  const mandateId = await findCoveringMandate(ctx, agent, wallet.id, intent, input.mandateId);
   if (mandateId !== null) {
     // Covered: no person is asked. The use runs through the same workflow as an approved
     // request, and the signer decides whether the mandate covers it when it signs.
@@ -411,7 +431,7 @@ async function propose(
           workspaceId: agent.workspaceId,
           agentId: agent.id,
           walletId: wallet.id,
-          chainId,
+          chainId: intent.chainId,
           status: "approved",
           intentHash: hash,
           ...(await sealed()),
@@ -455,11 +475,11 @@ async function propose(
       intentHash: hash,
       walletId: wallet.id,
       agentId: agent.id,
-      chainId,
-      policyHash: state.policyHash,
+      chainId: intent.chainId,
+      policyHash: basis.policyHash,
     },
-    threshold: policy.approvals.threshold,
-    ttlSeconds: policy.approvals.ttlSeconds,
+    threshold: basis.policy.approvals.threshold,
+    ttlSeconds: basis.policy.approvals.ttlSeconds,
     detail: { intentId: id } satisfies IntentApprovalDetail,
     requestedBy: { type: "agent", id: agent.id },
     alongside: async (tx, approvalId) => {
@@ -483,7 +503,7 @@ async function propose(
         workspaceId: agent.workspaceId,
         agentId: agent.id,
         walletId: wallet.id,
-        chainId,
+        chainId: intent.chainId,
         status: "pending_approval",
         intentHash: hash,
         ...(await sealed()),
@@ -518,6 +538,81 @@ async function propose(
   };
 }
 
+async function propose(
+  ctx: AppContext,
+  agent: AgentRow,
+  input: {
+    chainId: string;
+    walletId?: WalletId | undefined;
+    /** Use exactly this mandate of the agent, or refuse. */
+    mandateId?: MandateId | undefined;
+    memo: string;
+    build: (
+      wallet: WalletRow,
+      chainId: ChainId,
+    ) => Promise<{
+      operation: Operation;
+      display: IntentDisplay;
+      call: { to: `0x${string}`; value: bigint; data: ViemHex | undefined };
+    }>;
+  },
+): Promise<ProposalResult> {
+  const chains = chainAccess(ctx);
+  if (!chains.has(input.chainId)) {
+    throw new HttpError("invalid_request", "this chain is not configured");
+  }
+  const chainId = input.chainId;
+  const basis = await proposalBasis(ctx, agent, input.walletId);
+  const { wallet, policy } = basis;
+  const read = async () => {
+    const built = await input.build(wallet, chainId);
+    const simulated = await chains.simulate({
+      chainId,
+      from: wallet.address,
+      to: built.call.to,
+      value: built.call.value,
+      data: built.call.data,
+    });
+    return { ...built, simulated, fees: await chains.fees(chainId) };
+  };
+  const { operation, display, simulated, fees } = await read().catch((error: unknown) => {
+    if (error instanceof ChainError) {
+      throw new HttpError("internal", "the chain could not be read", error.code);
+    }
+    throw error;
+  });
+  const gas = ((simulated.gasEstimate ?? FALLBACK_GAS) * GAS_MARGIN_PERCENT) / 100n;
+  const wanted = 2n * gas * (2n * fees.baseFeePerGas + fees.maxPriorityFeePerGas);
+  const ceiling = BigInt(policy.fees.maxPerTxWei);
+  // biome-ignore lint/complexity/useMathMinMax: Math.min does not take bigints
+  const maxFeeWei = wanted < ceiling ? wanted : ceiling;
+  const id = newId("int");
+  const intent = EvmIntent.parse({
+    v: PROTOCOL_VERSION,
+    id,
+    workspaceId: agent.workspaceId,
+    agentId: agent.id,
+    walletId: wallet.id,
+    chainId,
+    operation,
+    maxFeeWei: maxFeeWei.toString(),
+    memo: input.memo,
+    createdAt: ctx.now(),
+  });
+  checkPolicy(basis, intent);
+  const presentation: Presentation = {
+    display,
+    simulation: {
+      ok: simulated.ok,
+      blockNumber: simulated.blockNumber,
+      gasEstimate: simulated.gasEstimate?.toString() ?? null,
+      error: simulated.error,
+    },
+  };
+  const mandateId = await findCoveringMandate(ctx, agent, wallet.id, intent, input.mandateId);
+  return recordProposal(ctx, agent, { basis, intent, presentation, mandateId });
+}
+
 export function proposeTransfer(
   ctx: AppContext,
   agent: AgentRow,
@@ -546,6 +641,7 @@ export function proposeTransfer(
         return {
           operation: { type: "evm.transfer", to, valueWei: value.toString() },
           display: {
+            kind: "transfer",
             title: `Send ${formatUnits(value, 18)} ${symbol}`,
             assetSymbol: symbol,
             assetDecimals: 18,
@@ -565,6 +661,7 @@ export function proposeTransfer(
       return {
         operation: { type: "evm.erc20.transfer", token: asset, to, amount: amount.toString() },
         display: {
+          kind: "transfer",
           title: `Send ${formatUnits(amount, token.decimals)} ${token.symbol}`,
           assetSymbol: token.symbol,
           assetDecimals: token.decimals,
@@ -608,6 +705,7 @@ export function proposeContractCall(
       return {
         operation: { type: "evm.call", to, valueWei: value.toString(), data },
         display: {
+          kind: "transfer",
           title: `Call contract ${shortAddress(to)}`,
           assetSymbol: symbol,
           assetDecimals: 18,
@@ -671,8 +769,12 @@ async function executeIntent(
 ): Promise<void> {
   const row = await intentRow(ctx, detail.intentId);
   if (await transactionOf(ctx, approval.id)) return;
-  await moveIntent(ctx, row, ["pending_approval"], "approved");
   const { intent, presentation } = await readIntent(ctx, row);
+  // A venue intent is signed through its own route, and never under a mandate (D7).
+  if (isVenueIntent(intent)) {
+    throw new ApprovalFailure("invalid_request", "a venue intent is never a transaction");
+  }
+  await moveIntent(ctx, row, ["pending_approval"], "approved");
   const [wallet] = await ctx.db.select().from(wallets).where(eq(wallets.id, row.walletId));
   if (!wallet) throw new ApprovalFailure("wallet_missing", "the wallet no longer exists");
   await signOnce(ctx, {
@@ -690,6 +792,33 @@ async function executeIntent(
 
 /** Asks for a reprice of an approval's transaction when one is due (`repricing.ts`). */
 export type Reprice = (ctx: AppContext, approvalId: ApprovalId) => Promise<unknown>;
+
+/** The approval page's section for a venue intent. */
+export type VenueSubject = Extract<ApprovalSubject, { kind: "approve-intent" }>["venue"];
+
+/**
+ * What `orders.ts` does for a venue intent, passed in so this module does not import it back.
+ */
+export interface VenueHooks {
+  /** Have the signer sign the one venue request and store it. A workflow step: safe twice. */
+  execute(
+    ctx: AppContext,
+    approval: ApprovalRow,
+    authorization: Authorization,
+    row: IntentRow,
+    intent: VenueIntent,
+  ): Promise<void>;
+  /** Post and follow the stored request; null when the approval signed no venue request. */
+  followUp(
+    ctx: AppContext,
+    approval: ApprovalRow,
+  ): Promise<{ done: boolean; waitSeconds: number } | null>;
+  /**
+   * The venue's rules and where the intent stands against them, for the approval page; null
+   * when the wallet's policy has no rules for the intent's venue (the signer will refuse it).
+   */
+  describe(ctx: AppContext, intent: VenueIntent, wallet: WalletSummary): Promise<VenueSubject>;
+}
 
 /**
  * After signing: broadcast and watch the transaction, moving the intent along with it in the
@@ -748,7 +877,7 @@ async function followUpIntent(
   });
 }
 
-export function approveIntentKind(): ApprovalKindHandler<"approve-intent"> {
+export function approveIntentKind(venue: VenueHooks): ApprovalKindHandler<"approve-intent"> {
   return {
     kind: "approve-intent",
     async title(ctx, _approval, detail) {
@@ -760,13 +889,18 @@ export function approveIntentKind(): ApprovalKindHandler<"approve-intent"> {
         intentDetail(ctx, row),
         walletSummary(ctx, row.walletId),
       ]);
+      if (isVenueIntent(intent.intent)) {
+        const subject = await venue.describe(ctx, intent.intent, wallet);
+        return { kind: "approve-intent", intent, wallet, limits: null, venue: subject };
+      }
       const spend = intentSpend(intent.intent);
       const limit = wallet.policy?.assets.find(
         (candidate) =>
           candidate.chainId === intent.intent.chainId && candidate.asset === spend.asset,
       );
       let limits: { maxPerTx: string; maxPerDay: string; spentToday: string } | null = null;
-      if (limit && !(intent.display.rawCall && spend.amount === 0n)) {
+      const rawCall = intent.display.kind === "transfer" && intent.display.rawCall;
+      if (limit && !(rawCall && spend.amount === 0n)) {
         const state = await ctx.signer.getWallet(row.walletId).catch(() => null);
         const spentToday =
           state?.spent.find(
@@ -774,7 +908,7 @@ export function approveIntentKind(): ApprovalKindHandler<"approve-intent"> {
           )?.amount ?? "0";
         limits = { maxPerTx: limit.maxPerTx, maxPerDay: limit.maxPerDay, spentToday };
       }
-      return { kind: "approve-intent", intent, wallet, limits };
+      return { kind: "approve-intent", intent, wallet, limits, venue: null };
     },
     async confirmationSubject(ctx, _approval, detail) {
       const row = await intentRow(ctx, (detail as IntentApprovalDetail).intentId);
@@ -782,8 +916,14 @@ export function approveIntentKind(): ApprovalKindHandler<"approve-intent"> {
       return { kind: "approve-intent", intent };
     },
     async execute(ctx, approval, authorization, detail) {
-      await executeIntent(ctx, approval, detail as IntentApprovalDetail, (intent, transaction) =>
-        ctx.signer.sign({ intent, authorization, transaction }),
+      const row = await intentRow(ctx, (detail as IntentApprovalDetail).intentId);
+      const { intent } = await readIntent(ctx, row);
+      if (isVenueIntent(intent)) {
+        await venue.execute(ctx, approval, authorization, row, intent);
+        return;
+      }
+      await executeIntent(ctx, approval, detail as IntentApprovalDetail, (evm, transaction) =>
+        ctx.signer.sign({ intent: evm, authorization, transaction }),
       );
     },
     abandon: abandonIntent,
@@ -838,19 +978,25 @@ async function abandonIntent(
 
 /**
  * `approve-intent` and `mandate-use`: both sign an intent and follow its transaction, which
- * `reprice` (`repricing.ts`, passed in so this module does not import it back) prices up.
+ * `reprice` (`repricing.ts`, passed in so this module does not import it back) prices up. A venue
+ * intent's request is signed, posted and followed by `venue` (`orders.ts`, passed in likewise).
  */
 export function registerIntentKind(
   ctx: AppContext,
   options: ExecutionOptions,
   reprice: Reprice,
+  venue: VenueHooks,
 ): void {
   const engine = engineOf(ctx);
-  engine.register(approveIntentKind());
+  engine.register(approveIntentKind(venue));
   engine.registerUse(mandateUseKind());
   const followUp = (context: AppContext, approval: ApprovalRow) =>
     followUpIntent(context, approval, options, reprice);
-  engine.registerFollowUp("approve-intent", followUp);
+  engine.registerFollowUp(
+    "approve-intent",
+    async (context, approval) =>
+      (await venue.followUp(context, approval)) ?? followUp(context, approval),
+  );
   engine.registerFollowUp("mandate-use", followUp);
 }
 

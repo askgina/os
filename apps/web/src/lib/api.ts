@@ -166,7 +166,8 @@ const ACTIVE_APPROVAL = new Set(["pending", "approved"]);
 /**
  * An approval page follows its request to the end: it polls until the status is final, and then
  * while the transaction it signed (or, for a cancel, the one it stops) may still change on chain.
- * A stuck one can be mined, sped up or cancelled at any time.
+ * A stuck one can be mined, sped up or cancelled at any time; an order resting at a venue can
+ * fill or be cancelled at any time.
  */
 export const useApproval = (approvalId: string) =>
   useQuery({
@@ -179,8 +180,15 @@ export const useApproval = (approvalId: string) =>
       const subject = data.subject;
       if (subject.kind === "approve-intent") {
         const status = subject.intent.status;
-        if (status === "approved" || status === "signed" || status === "broadcast") return 3_000;
-        if (status === "stuck") return 5_000;
+        if (
+          status === "approved" ||
+          status === "signed" ||
+          status === "broadcast" ||
+          status === "submitted"
+        ) {
+          return 3_000;
+        }
+        if (status === "stuck" || status === "placed") return 5_000;
       }
       if (subject.kind === "sweep-wallet" || subject.kind === "cancel-transaction") {
         const status = subject.transaction?.status;
@@ -217,8 +225,19 @@ export const useMandates = (
     refetchInterval: status === "active" ? 5_000 : false,
   });
 
-/** A payment on its way to the chain, or stuck there: it can still be mined, sped up or cancelled. */
-const IN_FLIGHT = new Set(["proposed", "approved", "signed", "broadcast", "stuck"]);
+/**
+ * A payment on its way to the chain, or stuck there: it can still be mined, sped up or cancelled.
+ * An order on its way to a venue, or resting there: it can still fill or be cancelled.
+ */
+const IN_FLIGHT = new Set([
+  "proposed",
+  "approved",
+  "signed",
+  "broadcast",
+  "stuck",
+  "submitted",
+  "placed",
+]);
 
 /** One payment, followed while it is in flight. */
 export const useIntent = (intentId: string) =>
@@ -228,7 +247,7 @@ export const useIntent = (intentId: string) =>
     refetchInterval: (query) => {
       const status = query.state.data?.status;
       if (status === undefined || !IN_FLIGHT.has(status)) return false;
-      return status === "stuck" ? 5_000 : 3_000;
+      return status === "stuck" || status === "placed" ? 5_000 : 3_000;
     },
   });
 

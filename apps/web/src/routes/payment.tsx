@@ -15,17 +15,19 @@ import {
 import { TransactionPanel } from "@/components/transaction.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsx";
+import { VenueOrderStatus } from "@/components/venue.tsx";
 import { useIntent, useWorkspace } from "@/lib/api.ts";
 import { chainName } from "@/lib/assets.ts";
 import { explainCode } from "@/lib/codes.ts";
 import { formatTime, formatUnits, shortAddress } from "@/lib/format.ts";
-import { intentStatusSentence } from "@/lib/statuses.ts";
+import { intentSummarySentence } from "@/lib/statuses.ts";
 import { paymentTitle } from "@/lib/transaction.ts";
 
 /**
  * One payment and the transaction it sent, with every attempt. It is the page of a payment an
  * approval in advance covered, which has no request of its own: there, as on a request's page,
- * owners and approvers can speed up or cancel it while it is not mined.
+ * owners and approvers can speed up or cancel it while it is not mined. An order at a venue
+ * always has a request; read here, it shows where it stands and links its request.
  */
 export function PaymentPage() {
   const { workspaceId, intentId } = useParams({ from: "/w/$workspaceId/payments/$intentId" });
@@ -46,7 +48,7 @@ function PaymentView({ intent, workspace }: { intent: IntentDetail; workspace: W
   return (
     <div className="grid grid-cols-1 gap-6">
       <PageHeader
-        title={paymentTitle(display)}
+        title={display.kind === "transfer" ? paymentTitle(display) : display.title}
         back={
           intent.mandateId ? (
             <Link
@@ -70,14 +72,39 @@ function PaymentView({ intent, workspace }: { intent: IntentDetail; workspace: W
         actions={<IntentStatusBadge status={intent.status} />}
       />
 
-      <Alert className="items-start">
-        <div className="grid grid-cols-1 gap-1">
-          <p>{intentStatusSentence(intent.status, intent.mandateId !== null)}</p>
-          {intent.failureCode ? (
-            <p className="text-muted-foreground">{explainCode(intent.failureCode)}</p>
-          ) : null}
-        </div>
-      </Alert>
+      {display.kind === "transfer" ? (
+        <Alert className="items-start">
+          <div className="grid grid-cols-1 gap-1">
+            <p>{intentSummarySentence(intent)}</p>
+            {intent.failureCode ? (
+              <p className="text-muted-foreground">{explainCode(intent.failureCode)}</p>
+            ) : null}
+          </div>
+        </Alert>
+      ) : (
+        <Card>
+          <CardHeader>
+            <CardTitle>Order</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-1 gap-3 text-sm">
+            <VenueOrderStatus
+              intent={intent}
+              display={display}
+              workspaceId={workspace.id}
+              role={workspace.role}
+            />
+            {intent.approvalId ? (
+              <Link
+                to="/w/$workspaceId/approvals/$approvalId"
+                params={{ workspaceId: workspace.id, approvalId: intent.approvalId }}
+                className={linkClass}
+              >
+                Open its request
+              </Link>
+            ) : null}
+          </CardContent>
+        </Card>
+      )}
 
       {intent.transaction ? (
         <TransactionPanel
@@ -89,65 +116,67 @@ function PaymentView({ intent, workspace }: { intent: IntentDetail; workspace: W
         />
       ) : null}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Payment</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <dl className="grid grid-cols-1 gap-3">
-            <Field label="Amount">
-              <span className="wrap-anywhere">
-                {display.amountFormatted} {display.assetSymbol}{" "}
-                <span className="font-mono text-xs text-muted-foreground">
-                  ({display.amount} base units)
+      {display.kind === "transfer" ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Payment</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <dl className="grid grid-cols-1 gap-3">
+              <Field label="Amount">
+                <span className="wrap-anywhere">
+                  {display.amountFormatted} {display.assetSymbol}{" "}
+                  <span className="font-mono text-xs text-muted-foreground">
+                    ({display.amount} base units)
+                  </span>
                 </span>
-              </span>
-            </Field>
-            <Field label={display.rawCall ? "Contract" : "Recipient"}>
-              <FullAddress address={display.to} />
-            </Field>
-            <Field label="From wallet">
-              {wallet?.label ?? intent.walletId}{" "}
-              {wallet ? (
-                <span className="font-mono text-xs">{shortAddress(wallet.address)}</span>
-              ) : null}
-            </Field>
-            <Field label="Network">{chainName(intent.chainId, workspace.chains)}</Field>
-            <Field label="Network fee, at most">
-              {formatUnits("maxFeeWei" in intent.intent ? intent.intent.maxFeeWei : "0", 18)}{" "}
-              {nativeSymbol}
-            </Field>
-            <Field label="Approved">
-              {intent.mandateId ? (
-                <Link
-                  to="/w/$workspaceId/mandates/$mandateId"
-                  params={{ workspaceId: workspace.id, mandateId: intent.mandateId }}
-                  className={linkClass}
-                >
-                  In advance: nobody was asked
-                </Link>
-              ) : intent.approvalId ? (
-                <Link
-                  to="/w/$workspaceId/approvals/$approvalId"
-                  params={{ workspaceId: workspace.id, approvalId: intent.approvalId }}
-                  className={linkClass}
-                >
-                  By people, on its request
-                </Link>
-              ) : null}
-            </Field>
-            <Field label="The agent's memo">
-              <span className="whitespace-pre-wrap wrap-anywhere">
-                {intent.memo === "" ? (
-                  <span className="text-muted-foreground">(no memo)</span>
-                ) : (
-                  intent.memo
-                )}
-              </span>
-            </Field>
-          </dl>
-        </CardContent>
-      </Card>
+              </Field>
+              <Field label={display.rawCall ? "Contract" : "Recipient"}>
+                <FullAddress address={display.to} />
+              </Field>
+              <Field label="From wallet">
+                {wallet?.label ?? intent.walletId}{" "}
+                {wallet ? (
+                  <span className="font-mono text-xs">{shortAddress(wallet.address)}</span>
+                ) : null}
+              </Field>
+              <Field label="Network">{chainName(intent.chainId, workspace.chains)}</Field>
+              <Field label="Network fee, at most">
+                {formatUnits("maxFeeWei" in intent.intent ? intent.intent.maxFeeWei : "0", 18)}{" "}
+                {nativeSymbol}
+              </Field>
+              <Field label="Approved">
+                {intent.mandateId ? (
+                  <Link
+                    to="/w/$workspaceId/mandates/$mandateId"
+                    params={{ workspaceId: workspace.id, mandateId: intent.mandateId }}
+                    className={linkClass}
+                  >
+                    In advance: nobody was asked
+                  </Link>
+                ) : intent.approvalId ? (
+                  <Link
+                    to="/w/$workspaceId/approvals/$approvalId"
+                    params={{ workspaceId: workspace.id, approvalId: intent.approvalId }}
+                    className={linkClass}
+                  >
+                    By people, on its request
+                  </Link>
+                ) : null}
+              </Field>
+              <Field label="The agent's memo">
+                <span className="whitespace-pre-wrap wrap-anywhere">
+                  {intent.memo === "" ? (
+                    <span className="text-muted-foreground">(no memo)</span>
+                  ) : (
+                    intent.memo
+                  )}
+                </span>
+              </Field>
+            </dl>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <details className="rounded-lg border bg-card">
         <summary className="cursor-pointer px-4 py-3 text-sm font-medium select-none">

@@ -4,9 +4,10 @@ import {
   type WalletDetail,
   type WorkspaceDetail,
 } from "@askgina/os-api";
+import type { HyperliquidRules } from "@askgina/os-protocol";
 import { useMutation } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { Clock, Plus, Trash2 } from "lucide-react";
+import { Clock, Plus, Trash2, TriangleAlert } from "lucide-react";
 import { type ReactNode, useId, useState } from "react";
 import {
   CopyButton,
@@ -50,6 +51,16 @@ import {
 } from "@/lib/format.ts";
 import { walletChangeable } from "@/lib/lifecycle.ts";
 import { sweepDestinations } from "@/lib/sweep.ts";
+import {
+  type MarketRow,
+  newMarketRow,
+  timeInForceText,
+  toVenueRules,
+  VENUE_LOSS_BOUND,
+  VenueRulesError,
+  type VenueRulesState,
+  venueRulesState,
+} from "@/lib/venue.ts";
 
 export function WalletPage() {
   const { workspaceId, walletId } = useParams({ from: "/w/$workspaceId/wallets/$walletId" });
@@ -337,6 +348,7 @@ interface EditorState {
   feeCeiling: string;
   threshold: string;
   ttlMinutes: string;
+  venue: VenueRulesState;
 }
 
 let nextRowKey = 1;
@@ -365,6 +377,7 @@ function initialState(wallet: WalletDetail, workspace: WorkspaceDetail): EditorS
       feeCeiling: "0.01",
       threshold: "1",
       ttlMinutes: "15",
+      venue: venueRulesState(undefined),
     };
   }
   return {
@@ -391,6 +404,7 @@ function initialState(wallet: WalletDetail, workspace: WorkspaceDetail): EditorS
     feeCeiling: formatUnits(policy.fees.maxPerTxWei, NATIVE_DECIMALS).replaceAll(",", ""),
     threshold: String(policy.approvals.threshold),
     ttlMinutes: String(Math.round(policy.approvals.ttlSeconds / 60)),
+    venue: venueRulesState(policy.venues?.hyperliquid),
   };
 }
 
@@ -460,6 +474,13 @@ function toDraft(state: EditorState): PolicyDraft {
   if (!Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 86_400) {
     throw new DraftError("An approval can stay valid from 1 to 1440 minutes.");
   }
+  let hyperliquid: HyperliquidRules | undefined;
+  try {
+    hyperliquid = toVenueRules(state.venue);
+  } catch (error) {
+    if (error instanceof VenueRulesError) throw new DraftError(error.message);
+    throw error;
+  }
   return {
     chains: state.chains as `eip155:${number}`[],
     requesters: state.requesters as PolicyDraft["requesters"],
@@ -474,6 +495,7 @@ function toDraft(state: EditorState): PolicyDraft {
         : { mode: "allowlist", targets: parseAddresses(state.targets, "Contracts") },
     fees: { maxPerTxWei: fee.toString() },
     approvals: { threshold, ttlSeconds },
+    ...(hyperliquid ? { venues: { hyperliquid } } : {}),
   };
 }
 
@@ -753,6 +775,11 @@ function PolicyEditor({ wallet, workspace }: { wallet: WalletDetail; workspace: 
             ) : null}
           </Group>
 
+          <VenueRulesFields
+            state={state.venue}
+            onChange={(patch) => update({ venue: { ...state.venue, ...patch } })}
+          />
+
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <Labelled id={`${id}-fee`} label="Network fee ceiling per transaction (native coin)">
               <Input
@@ -807,6 +834,163 @@ function PolicyEditor({ wallet, workspace }: { wallet: WalletDetail; workspace: 
         </form>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * What the wallet may do on Hyperliquid: which perpetuals, each with its own cap per order, a cap
+ * per 24 hours, which times in force, how long a signed order stays valid, and withdrawals. Off
+ * by default; the caps are said up front to limit new orders, never losses.
+ */
+function VenueRulesFields({
+  state,
+  onChange,
+}: {
+  state: VenueRulesState;
+  onChange: (patch: Partial<VenueRulesState>) => void;
+}) {
+  const id = useId();
+  const updateMarket = (key: number, patch: Partial<MarketRow>) =>
+    onChange({
+      markets: state.markets.map((row) => (row.key === key ? { ...row, ...patch } : row)),
+    });
+  return (
+    <Group
+      legend="Hyperliquid"
+      hint="Limit orders on Hyperliquid perpetuals, on testnet only. Every order still needs approval with a passkey."
+    >
+      <Check
+        label="Allow orders on Hyperliquid testnet"
+        checked={state.enabled}
+        onChange={() => onChange({ enabled: !state.enabled })}
+      />
+      {state.enabled ? (
+        <>
+          <Alert tone="warning">
+            <TriangleAlert aria-hidden />
+            <p>{VENUE_LOSS_BOUND}</p>
+          </Alert>
+          {state.markets.map((row, index) => (
+            <div
+              key={row.key}
+              className="grid grid-cols-1 gap-3 rounded-md border p-3 sm:grid-cols-3"
+            >
+              <div className="flex items-center justify-between sm:col-span-3">
+                <p className="text-sm font-medium">Market {index + 1}</p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    onChange({ markets: state.markets.filter((item) => item.key !== row.key) })
+                  }
+                  aria-label={`Remove market ${index + 1}`}
+                >
+                  <Trash2 aria-hidden />
+                  Remove
+                </Button>
+              </div>
+              <Labelled id={`${id}-coin-${row.key}`} label="Coin, as Hyperliquid names it">
+                <Input
+                  id={`${id}-coin-${row.key}`}
+                  value={row.coin}
+                  placeholder="BTC"
+                  autoCapitalize="characters"
+                  spellCheck={false}
+                  onChange={(event) => updateMarket(row.key, { coin: event.target.value })}
+                />
+              </Labelled>
+              <Labelled id={`${id}-index-${row.key}`} label="Market index at Hyperliquid">
+                <Input
+                  id={`${id}-index-${row.key}`}
+                  inputMode="numeric"
+                  value={row.asset}
+                  placeholder="0"
+                  onChange={(event) => updateMarket(row.key, { asset: event.target.value })}
+                />
+              </Labelled>
+              <Labelled id={`${id}-order-${row.key}`} label="Most notional per order (USD)">
+                <Input
+                  id={`${id}-order-${row.key}`}
+                  inputMode="decimal"
+                  value={row.maxPerOrder}
+                  placeholder="50"
+                  onChange={(event) => updateMarket(row.key, { maxPerOrder: event.target.value })}
+                />
+              </Labelled>
+            </div>
+          ))}
+          <p className="text-xs text-muted-foreground">
+            The index is what the signer signs; the coin is how people and agents name it. Check the
+            pair against Hyperliquid's own list of perpetuals.
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-fit"
+            onClick={() => onChange({ markets: [...state.markets, newMarketRow()] })}
+          >
+            <Plus aria-hidden />
+            Add a market
+          </Button>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Labelled id={`${id}-day`} label="Most notional per 24 hours (USD)">
+              <Input
+                id={`${id}-day`}
+                inputMode="decimal"
+                value={state.maxPerDay}
+                placeholder="100"
+                aria-describedby={`${id}-day-rule`}
+                onChange={(event) => onChange({ maxPerDay: event.target.value })}
+              />
+              <p id={`${id}-day-rule`} className="text-xs text-muted-foreground">
+                Counted when the signer signs. Orders that can only make a position smaller do not
+                count, so a position can still be closed when this is used up.
+              </p>
+            </Labelled>
+            <Labelled id={`${id}-window`} label="Submit window (seconds)">
+              <Input
+                id={`${id}-window`}
+                type="number"
+                min={5}
+                max={300}
+                value={state.submitWindowSeconds}
+                aria-describedby={`${id}-window-rule`}
+                onChange={(event) => onChange({ submitWindowSeconds: event.target.value })}
+              />
+              <p id={`${id}-window-rule`} className="text-xs text-muted-foreground">
+                How long after signing Hyperliquid still accepts the order, from 5 to 300.
+              </p>
+            </Labelled>
+          </div>
+          <fieldset className="grid grid-cols-1 gap-2">
+            <legend className="mb-1 text-sm font-medium">Time in force</legend>
+            {(["Ioc", "Gtc", "Alo"] as const).map((tif) => (
+              <Check
+                key={tif}
+                label={`${timeInForceText[tif].name}: ${timeInForceText[tif].effect}`}
+                checked={state.timeInForce.includes(tif)}
+                onChange={() =>
+                  onChange({
+                    timeInForce: state.timeInForce.includes(tif)
+                      ? state.timeInForce.filter((item) => item !== tif)
+                      : [...state.timeInForce, tif],
+                  })
+                }
+              />
+            ))}
+            <p className="text-xs text-muted-foreground">
+              An order that rests on the book can be left behind if the signer is restored from a
+              backup, because the restored signer cannot cancel it.
+            </p>
+          </fieldset>
+          <Check
+            label="Allow withdrawing USDC from Hyperliquid, to this wallet's own address only"
+            checked={state.withdrawals}
+            onChange={() => onChange({ withdrawals: !state.withdrawals })}
+          />
+        </>
+      ) : null}
+    </Group>
   );
 }
 

@@ -263,8 +263,14 @@ function Payment({
           intent={intent}
           className="min-w-0 font-medium wrap-anywhere underline-offset-4 hover:underline"
         >
-          {intent.display.title} to{" "}
-          <span className="font-mono text-sm">{shortAddress(intent.display.to)}</span>
+          {intent.display.title}
+          {/* A mandate covers transfers only; an order never runs under one. */}
+          {intent.display.kind === "transfer" ? (
+            <>
+              {" "}
+              to <span className="font-mono text-sm">{shortAddress(intent.display.to)}</span>
+            </>
+          ) : null}
         </IntentLink>
         <IntentStatusBadge status={intent.status} />
       </div>

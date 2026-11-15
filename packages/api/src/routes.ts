@@ -460,6 +460,14 @@ export const routes = {
    * attempt); with `policy_denied` and `policy_missing` for a wallet without a policy.
    */
   requestCancel: post("/api/v1/intents/:intentId/cancel-transaction", NoBody, ApprovalSummary),
+  /**
+   * Owners and approvers, with no passkey, also while the workspace is paused: approving a venue
+   * order includes the right to cancel it (D4). Asks the signer for the cancel of the order by
+   * its client order id and posts it to the venue. Answers the intent as the venue then reports
+   * it. Refused with `conflict` and `not_cancellable` when the order was not posted or is final;
+   * with `internal` and `venue_unreachable` when the venue could not be reached.
+   */
+  cancelOrder: post("/api/v1/intents/:intentId/cancel-order", NoBody, IntentDetail),
 
   // --- audit ----------------------------------------------------------------------------------
   listAudit: list("/api/v1/workspaces/:workspaceId/audit", cursorQuery, page(AuditEvent)),

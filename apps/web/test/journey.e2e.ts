@@ -1577,3 +1577,119 @@ test("export, copy and import a workspace; erase a person", async ({
 
   expect(problems).toEqual([]);
 });
+
+/**
+ * An order on Hyperliquid testnet, on a fresh server. The owner turns on the wallet's venue
+ * rules in the policy editor, which says up front that notional caps are not loss caps, and
+ * approves them on the signer's page. The agent proposes a good-till-cancelled order: its
+ * request shows market, side, size, limit price, notional, time in force, reduce-only and the
+ * submit window, with the venue account's value as what can be lost, and no network fee. It is
+ * approved on the signer's page, rests at the stand-in venue, and is cancelled with no passkey.
+ *
+ * The agent's order is proposed through the fixture's `/__fixture/propose`, so this runs against
+ * the fixture only.
+ */
+test("an order on Hyperliquid testnet: venue rules, the order, where it rests, its cancel", async ({
+  page,
+  request,
+  baseURL,
+  widerText,
+}, testInfo) => {
+  test.skip(Boolean(process.env.OS_WEB_BASE_URL), "orders are proposed with the fixture only");
+  test.setTimeout(240_000);
+  const shot = (name: string, target: { element?: Locator; viewport?: true } = {}) =>
+    capture(page, testInfo, `order-${name}`, target);
+  const problems = watchConsole(page);
+  await request.post(`${baseURL}/__fixture/reset`);
+  if (widerText) await widenText(page.context());
+  await addAuthenticator(page);
+
+  let token = "";
+  await test.step("the wallet's venue rules are set, with the caps said not to be loss caps", async () => {
+    await setUpServer(page, "Ada Owner");
+    await page.getByLabel("New workspace").fill("Trading desk");
+    await page.getByRole("button", { name: "Create workspace" }).click();
+    await expect(page.getByText("Next: add an agent")).toBeVisible();
+    await page.getByLabel("Agent name").fill("Market maker");
+    await page.getByRole("button", { name: "Add an agent" }).click();
+    token = (await page.locator("code", { hasText: /^osa_/ }).first().textContent()) ?? "";
+    expect(token).toMatch(/^osa_/);
+    await page.getByRole("link", { name: "Overview" }).click();
+    await page.getByRole("link", { name: "Set this wallet's policy" }).click();
+    await expect(page.getByRole("heading", { name: "Set this wallet's limits" })).toBeVisible();
+    await page.getByLabel("Most per transaction ETH").fill("0.05");
+    await page.getByLabel("Most per 24 hours ETH").fill("0.2");
+    await page.getByLabel("Allow orders on Hyperliquid testnet").check();
+    await expect(page.getByText(/limit the notional of new orders, not losses/)).toBeVisible();
+    await page.getByLabel("Coin, as Hyperliquid names it").fill("BTC");
+    await page.getByLabel("Market index at Hyperliquid").fill("0");
+    await page.getByLabel("Most notional per order (USD)").fill("1000");
+    await page.getByLabel("Most notional per 24 hours (USD)").fill("2000");
+    await page
+      .getByLabel("good till cancelled: rests on the book until filled or cancelled")
+      .check();
+    await shot("01-editor", { element: page.locator("#policy") });
+    await page.getByRole("button", { name: "Submit for approval" }).click();
+    await expect(page.getByRole("heading", { name: /Change the limits of/ })).toBeVisible();
+    await expect(page.getByText("Hyperliquid BTC (index 0): per order")).toBeVisible();
+    await expect(page.getByText("1,000 USD notional")).toBeVisible();
+    await shot("02-approval-policy");
+    await approveOnSignerPage(page);
+    await expect(page.getByText("Done. The change is in effect.")).toBeVisible();
+  });
+
+  await test.step("an order shows what is signed and what can be lost, and no network fee", async () => {
+    const proposed = await request.post(`${baseURL}/__fixture/propose`, {
+      headers: { authorization: `Bearer ${token}` },
+      data: {
+        kind: "order",
+        coin: "BTC",
+        side: "buy",
+        size: "0.01",
+        limitPrice: "65000",
+        timeInForce: "Gtc",
+        memo: "Funding turned",
+      },
+    });
+    expect(proposed.ok()).toBe(true);
+    const { approvalId } = (await proposed.json()) as { approvalId: string };
+    await page.goto(page.url().replace(/[^/]+$/, approvalId));
+    await expect(page.getByRole("heading", { name: "Buy 0.01 BTC perpetual" })).toBeVisible();
+    await expect(page.getByText("650 USD", { exact: true })).toBeVisible();
+    await expect(page.getByText("65,000 USD, the most it pays")).toBeVisible();
+    await expect(
+      page.getByText("good till cancelled: rests on the book until filled or cancelled"),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Must reach Hyperliquid within 60 seconds of signing"),
+    ).toBeVisible();
+    await expect(
+      page.getByText(/What can be lost: the whole account value at Hyperliquid, 250 USD/),
+    ).toBeVisible();
+    await expect(page.getByText("The agent may cancel it without asking again")).toBeVisible();
+    await expect(page.getByText(/Network fee/)).toHaveCount(0);
+    await expect(page.locator("blockquote")).toHaveText("Funding turned");
+    // Approving happens only on the signer's page: nothing here asks for a passkey.
+    await expect(page.getByRole("button", { name: /passkey/i })).toHaveCount(0);
+    await shot("03-approval-order-viewport", { viewport: true });
+    await shot("04-approval-order");
+    await approveOnSignerPage(page);
+    await expect(page.getByText("Approved.", { exact: true })).toBeVisible();
+    await expect(page.getByText("Resting at the venue", { exact: true })).toBeVisible();
+    await expect(page.getByText("Venue order id", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Cancel order" })).toBeVisible();
+    await shot("05-order-resting");
+  });
+
+  await test.step("the resting order is cancelled with no passkey", async () => {
+    await page.getByRole("button", { name: "Cancel order" }).click();
+    await expect(page.getByText("Cancelled", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("It was cancelled at the venue before any of it filled."),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Cancel order" })).toHaveCount(0);
+    await shot("06-order-cancelled");
+  });
+
+  expect(problems).toEqual([]);
+});

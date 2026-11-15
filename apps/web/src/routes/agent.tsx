@@ -35,7 +35,7 @@ import { explainCode } from "@/lib/codes.ts";
 import { formatRelative } from "@/lib/format.ts";
 import { walletLifecycleLabel } from "@/lib/lifecycle.ts";
 import { type RevealedToken, takeRevealedToken } from "@/lib/reveal.ts";
-import { intentStatusSentence } from "@/lib/statuses.ts";
+import { intentSummarySentence } from "@/lib/statuses.ts";
 
 export function AgentPage() {
   const { workspaceId, agentId } = useParams({ from: "/w/$workspaceId/agents/$agentId" });
@@ -359,8 +359,7 @@ function RecentIntents({ workspaceId, agentId }: { workspaceId: string; agentId:
                     </p>
                   ) : null}
                   <p className="text-xs text-muted-foreground">
-                    {formatRelative(intent.createdAt, now)} ·{" "}
-                    {intentStatusSentence(intent.status, intent.mandateId !== null)}
+                    {formatRelative(intent.createdAt, now)} · {intentSummarySentence(intent)}
                   </p>
                   {intent.failureCode ? (
                     <p className="text-xs text-muted-foreground">

@@ -1,5 +1,5 @@
 import { ApiError, type StuckReason } from "@askgina/os-api";
-import type { MandateDenyCode, MandateGrantRefusal } from "@askgina/os-protocol";
+import type { MandateDenyCode, MandateGrantRefusal, PolicyDenyCode } from "@askgina/os-protocol";
 import { PushSetupError, type PushSetupFailure } from "./push.ts";
 import { stuckReasonSentence } from "./statuses.ts";
 
@@ -100,6 +100,34 @@ const cancelRefusals: Record<
 };
 
 /**
+ * Why the wallet's limits refuse an order or a withdrawal at a venue. Typed against the
+ * protocol's codes, so a renamed code fails the type check here.
+ */
+const venueDenials: Record<
+  Extract<
+    PolicyDenyCode,
+    "venue_not_allowed" | "market_not_allowed" | "order_type_not_allowed" | "withdrawal_not_allowed"
+  >,
+  string
+> = {
+  venue_not_allowed:
+    "The wallet's limits have no rules for this venue, or the venue is not allowed at all, so it may not act there.",
+  market_not_allowed: "The wallet's limits do not list this market, so it may not trade it.",
+  order_type_not_allowed: "The wallet's limits do not allow this time in force.",
+  withdrawal_not_allowed: "The wallet's limits do not allow withdrawals from this venue.",
+};
+
+/**
+ * Why the server refused to cancel an order at a venue (`cancelOrder`): the refusal's `detail`.
+ */
+const cancelOrderRefusals: Record<"not_cancellable" | "venue_unreachable", string> = {
+  not_cancellable:
+    "This order cannot be cancelled now: it is not resting at the venue, or it was never sent.",
+  venue_unreachable:
+    "This server could not reach Hyperliquid, so the cancel was not sent. Try again in a moment.",
+};
+
+/**
  * Why the server refused to open a request to retire a wallet or delete the workspace: the
  * refusal's `detail`.
  */
@@ -114,6 +142,16 @@ const lifecycleRefusals: Record<"destroy_delay_out_of_range", string> = {
  */
 const meanings: Record<string, string> = {
   ...mandateDenials,
+  ...venueDenials,
+  market_metadata_mismatch:
+    "Hyperliquid does not list this market under the name and index the wallet's limits give it, or it is delisted, so nothing was asked.",
+  invalid_tick: "The price or the size has more digits than Hyperliquid accepts for this market.",
+  venue_unreachable: "This server could not reach Hyperliquid.",
+  venue_refused: "Hyperliquid refused the order. Its own reason is shown with it.",
+  venue_cancelled:
+    "Hyperliquid cancelled the order itself, for example because the account lacked margin.",
+  venue_not_configured:
+    "This server is not set up to reach Hyperliquid, so it cannot place or follow orders.",
   mandate_revoked: "The approval in advance was revoked, so the signer signed nothing under it.",
   mandate_expired: "The approval in advance had ended, so the signer signed nothing under it.",
   mandate_not_yet_valid: "The approval in advance had not started yet.",
@@ -241,6 +279,11 @@ export function explainSpeedUpError(error: unknown): string | null {
 /** Plain words for a refused request to cancel; null leaves it to the API's own message. */
 export function explainCancelError(error: unknown): string | null {
   return refusalDetail(error, cancelRefusals);
+}
+
+/** Plain words for a refused cancel of an order; null leaves it to the API's own message. */
+export function explainCancelOrderError(error: unknown): string | null {
+  return refusalDetail(error, cancelOrderRefusals);
 }
 
 /** Plain words for a refused retirement or deletion; null leaves it to the API's own message. */

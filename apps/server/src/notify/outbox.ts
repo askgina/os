@@ -2,6 +2,8 @@ import type { ApprovalKind } from "@askgina/os-api";
 import {
   type AgentId,
   type ApprovalId,
+  Intent,
+  isVenueNetwork,
   newId,
   type PushSubscriptionId,
   type UserId,
@@ -13,6 +15,7 @@ import type { AppContext, Transaction } from "../context.ts";
 import {
   agents,
   approvals,
+  intents,
   type NotificationEvent,
   notificationDeliveries,
   pushSubscriptions,
@@ -399,6 +402,7 @@ async function deliverPush(
           pendingCount,
           // Only kinds people decide on have push rows: a mandate's use never does.
           kind: approval.kind as ApprovalKind,
+          operation: await operationOf(ctx, approval),
           workspaceName: workspace.name,
           requesterName: await requesterName(ctx, approval),
         },
@@ -438,6 +442,32 @@ async function deliverPush(
     });
   }
   return retry(ctx, row, lease, until, result.reason, result.retryAfter);
+}
+
+/**
+ * For an `approve-intent` request: a venue order, or a payment (D8). Only a venue intent can be
+ * an order, so only its sealed payload (`intents.payload:<intentId>`) is opened, for its
+ * operation's type and nothing else.
+ */
+async function operationOf(
+  ctx: AppContext,
+  approval: ApprovalRow,
+): Promise<"payment" | "order" | null> {
+  if (approval.kind !== "approve-intent") return null;
+  const [intent] = await ctx.db
+    .select({
+      id: intents.id,
+      workspaceId: intents.workspaceId,
+      chainId: intents.chainId,
+      payload: intents.payload,
+    })
+    .from(intents)
+    .where(eq(intents.approvalId, approval.id));
+  if (!intent || !isVenueNetwork(intent.chainId)) return "payment";
+  const opened = Intent.parse(
+    await ctx.sealer.open(intent.workspaceId, `intents.payload:${intent.id}`, intent.payload),
+  );
+  return opened.operation.type === "hyperliquid.order" ? "order" : "payment";
 }
 
 /** The name of whoever asked: the agent's or the person's, as stored. */

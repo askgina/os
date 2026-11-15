@@ -173,6 +173,7 @@ const examples: { [N in RouteName]: { body?: unknown; query?: unknown; response:
   },
   getIntent: { response: f.intentDetail },
   speedUp: { body: {}, response: f.intentDetail },
+  cancelOrder: { body: {}, response: f.orderDetail },
   requestCancel: {
     body: {},
     response: { ...f.approvalSummary, id: f.CANCEL_APPROVAL, kind: "cancel-transaction" },

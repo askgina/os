@@ -1,7 +1,15 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { IntentStatus } from "@askgina/os-api";
-import { type AgentId, type MandateId, Memo, type WalletId } from "@askgina/os-protocol";
+import {
+  type AgentId,
+  HyperliquidTimeInForce,
+  isVenueNetwork,
+  type MandateId,
+  Memo,
+  VENUE_NETWORK_NAMES,
+  type WalletId,
+} from "@askgina/os-protocol";
 import { createMcpHandler, type McpHttpHandler, McpServer } from "@modelcontextprotocol/server";
 import { and, eq, isNull, lt, or } from "drizzle-orm";
 import type { Hono } from "hono";
@@ -10,7 +18,6 @@ import type { AppContext } from "../context.ts";
 import { agents, wallets, workspaces } from "../db/schema.ts";
 import { chainAccess } from "../execution/chains.ts";
 import {
-  cancelIntent,
   getIntentRow,
   type IntentRow,
   intentSummary,
@@ -19,6 +26,7 @@ import {
   proposeTransfer,
 } from "../execution/intents.ts";
 import { activeMandatesOf } from "../execution/mandates.ts";
+import { cancelIntentOrOrder, proposeOrder, proposeVenueWithdrawal } from "../execution/orders.ts";
 import { attemptViews, transactionOf } from "../execution/transactions.ts";
 import { HttpError } from "../http/errors.ts";
 import { hasToken, takeToken } from "../rate-limit.ts";
@@ -42,6 +50,8 @@ const TERMINAL: readonly IntentRow["status"][] = [
   "denied",
   "failed",
   "voided",
+  "filled",
+  "partially_filled",
 ];
 
 // Tool inputs are published as JSON Schema, which the protocol package's custom validators
@@ -75,6 +85,7 @@ export const MCP_TOOL_NAMES = [
   "get_balances",
   "propose_transfer",
   "propose_contract_call",
+  "propose_order",
   "get_intent",
   "list_intents",
   "cancel_intent",
@@ -136,7 +147,9 @@ async function walletsFor(ctx: AppContext, agent: AgentRow) {
 
 /**
  * One intent as an agent sees it: what it is, where it stands, and every attempt of its
- * transaction. Nothing here is an action: people speed up and cancel, never an agent.
+ * transaction, or for a venue order its fields and what the venue reported. Nothing here is an
+ * action: people speed up and cancel transactions, never an agent; an agent may cancel an order
+ * it was approved to place.
  */
 async function intentView(ctx: AppContext, row: IntentRow) {
   const [summary, transaction] = await Promise.all([
@@ -145,6 +158,8 @@ async function intentView(ctx: AppContext, row: IntentRow) {
   ]);
   const attempts = transaction ? await attemptViews(ctx, row.workspaceId, transaction) : [];
   const sent = transaction?.status === "broadcast" || transaction?.status === "stuck";
+  const { display } = summary;
+  const transfer = display.kind === "transfer" ? display : null;
   return {
     intentId: summary.id,
     status: summary.status,
@@ -152,15 +167,34 @@ async function intentView(ctx: AppContext, row: IntentRow) {
     mandateId: summary.mandateId,
     walletId: summary.walletId,
     chainId: summary.chainId,
-    title: summary.display.title,
-    to: summary.display.to,
-    amount: summary.display.amountFormatted,
-    asset: summary.display.assetSymbol,
+    title: display.title,
+    to: transfer?.to ?? null,
+    amount: transfer?.amountFormatted ?? null,
+    asset: transfer?.assetSymbol ?? null,
+    order:
+      display.kind === "order"
+        ? {
+            coin: display.coin,
+            side: display.side,
+            size: display.size,
+            limitPrice: display.limitPrice,
+            notionalUsd: display.notionalUsd,
+            timeInForce: display.timeInForce,
+            reduceOnly: display.reduceOnly,
+            cloid: summary.order?.cloid ?? null,
+            venueOrderId: summary.order?.venueOrderId ?? null,
+            filledSize: summary.order?.filledSize ?? null,
+            averagePrice: summary.order?.averagePrice ?? null,
+            venueError: summary.order?.venueError ?? null,
+            submitBy: summary.order?.submitBy ?? null,
+            canCancel: summary.order?.canCancel ?? false,
+          }
+        : null,
     memo: summary.memo,
     createdAt: summary.createdAt,
     transactionHash: summary.transactionHash,
     explorerUrl:
-      summary.transactionHash === null
+      summary.transactionHash === null || isVenueNetwork(summary.chainId)
         ? null
         : chainAccess(ctx).explorerLink(summary.chainId, summary.transactionHash),
     failureCode: summary.failureCode,
@@ -199,7 +233,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
     "whoami",
     {
       description:
-        "Describe who you are in this system: your agent id and name, your workspace, the wallets you may propose from, with their addresses, the chains they work on and their per-transaction and daily limits, and your live mandates: what people approved in advance, which the signer signs with no person asked (recipients, caps per payment, per window and in total in base units, what was used, payments left, end time). Call this first.",
+        "Describe who you are in this system: your agent id and name, your workspace, the wallets you may propose from, with their addresses, the chains they work on and their per-transaction and daily limits, the venue markets they may trade (Hyperliquid testnet: coin, asset index, notional cap per order and per day in micro-USD, time in force, submit window, whether withdrawals are allowed), and your live mandates: what people approved in advance, which the signer signs with no person asked (recipients, caps per payment, per window and in total in base units, what was used, payments left, end time). Mandates never cover orders. Call this first.",
       inputSchema: z.object({}),
       annotations: READ_ONLY,
     },
@@ -215,6 +249,10 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
           agent: { id: agent.id, name: agent.name },
           workspaceId: agent.workspaceId,
           chains: chainAccess(ctx).list(),
+          venues: ctx.config.venues.map((venue) => ({
+            network: venue.network,
+            name: VENUE_NETWORK_NAMES[venue.network],
+          })),
           wallets: usable.map((wallet) => ({
             walletId: wallet.id,
             kind: wallet.kind,
@@ -229,6 +267,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
                     limits: wallet.policy.assets,
                     recipients: wallet.policy.recipients,
                     contractCalls: wallet.policy.contractCalls,
+                    venues: wallet.policy.venues ?? null,
                     approvalsNeeded: wallet.policy.approvals.threshold,
                   },
           })),
@@ -296,18 +335,22 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
   server.registerTool(
     "propose_transfer",
     {
-      description: `Propose sending the chain's native coin or an ERC-20 token from one of your wallets. ${APPROVAL_NOTE} If the wallet's policy would refuse the transfer, you get a policy_denied error with a reason code and nothing is recorded. Name a mandateId to use exactly that mandate: if it does not cover the transfer you get a policy_denied error with its reason code (for example mandate_over_window_cap or mandate_expired) and nothing is recorded.`,
+      description: `Propose sending the chain's native coin or an ERC-20 token from one of your wallets. ${APPROVAL_NOTE} If the wallet's policy would refuse the transfer, you get a policy_denied error with a reason code and nothing is recorded. Name a mandateId to use exactly that mandate: if it does not cover the transfer you get a policy_denied error with its reason code (for example mandate_over_window_cap or mandate_expired) and nothing is recorded. With a venue network as chainId ("hyperliquid:testnet"), this withdraws USDC from the wallet's venue account: asset "usdc", to the wallet's own address only; a person always approves it, and it ends confirmed once the venue accepted it.`,
       inputSchema: z.object({
-        chainId: z.string().describe('The chain, as "eip155:<number>", from whoami.'),
+        chainId: z
+          .string()
+          .describe('The chain, as "eip155:<number>", or a venue network, from whoami.'),
         to: EvmAddress.describe("The recipient's address."),
         amount: z
           .string()
           .regex(/^\d+(\.\d+)?$/)
           .describe('How much, in whole units of the asset, for example "0.05" or "250".'),
         asset: z
-          .union([z.literal("native"), EvmAddress])
+          .union([z.literal("native"), z.literal("usdc"), EvmAddress])
           .optional()
-          .describe('"native" (the default) or the ERC-20 token contract address.'),
+          .describe(
+            '"native" (the default) or the ERC-20 token contract address; "usdc" for a venue withdrawal.',
+          ),
         memo: MemoInput.describe(
           "Why you want this, in one or two sentences. People read it before approving.",
         ),
@@ -319,7 +362,15 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
       annotations: PROPOSES,
     },
     async (input) =>
-      answer(ctx, "propose_transfer", async () => json(await proposeTransfer(ctx, agent, input))),
+      answer(ctx, "propose_transfer", async () => {
+        if (isVenueNetwork(input.chainId)) {
+          return json(await proposeVenueWithdrawal(ctx, agent, input));
+        }
+        if (input.asset === "usdc") {
+          throw new HttpError("invalid_request", 'asset "usdc" is only for a venue withdrawal');
+        }
+        return json(await proposeTransfer(ctx, agent, { ...input, asset: input.asset }));
+      }),
   );
 
   server.registerTool(
@@ -346,6 +397,46 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
       answer(ctx, "propose_contract_call", async () =>
         json(await proposeContractCall(ctx, agent, input)),
       ),
+  );
+
+  server.registerTool(
+    "propose_order",
+    {
+      description:
+        "Propose a limit order on a Hyperliquid perpetual market from one of your wallets (testnet only). The market must be one the wallet's policy lists (see whoami); the order's worst-case notional, size times limit price, counts against the policy's caps per order and per day. A person always approves an order with their passkey, at approvalUrl before expiresAt: no mandate covers one, so the answer always says authorizedBy \"person\" and mandateId null. Nothing is sent before that. Once approved, the server submits the order exactly once, within the policy's submit window. Call get_intent with the returned intentId and waitSeconds (up to 50); the status moves through approved, signed, submitted and placed (resting on the book) to filled, partially_filled (the rest was cancelled), cancelled, expired (the venue did not get it within its submit window) or failed (failureCode venue_refused, with the venue's own text in order.venueError); rejected, expired or cancelled before signing mean people did not approve it in time. You may cancel a submitted or placed order with cancel_intent. If the policy would refuse the order you get a policy_denied error with a reason code (market_not_allowed, over_per_order_cap, over_daily_cap, order_type_not_allowed, …) and nothing is recorded; market_metadata_mismatch means the venue no longer lists the market at the policy's index, and invalid_tick that the size or price has too many digits for the market.",
+      inputSchema: z.object({
+        network: z
+          .string()
+          .describe('The venue network from whoami, for example "hyperliquid:testnet".'),
+        coin: z
+          .string()
+          .regex(/^[A-Za-z0-9]{1,16}$/)
+          .describe('The market\'s coin as the wallet policy names it, for example "BTC".'),
+        side: z.enum(["buy", "sell"]),
+        size: z
+          .string()
+          .regex(/^\d+(\.\d+)?$/)
+          .describe('How much of the coin, for example "0.01".'),
+        limitPrice: z
+          .string()
+          .regex(/^\d+(\.\d+)?$/)
+          .describe('The worst price you accept, in USD, for example "65000".'),
+        timeInForce: HyperliquidTimeInForce.optional().describe(
+          '"Ioc" (the default): fill what can be filled now and cancel the rest; "Gtc": rest on the book until filled or cancelled; "Alo": add liquidity only. The policy lists which are allowed.',
+        ),
+        reduceOnly: z
+          .boolean()
+          .optional()
+          .describe("Only reduce an existing position. Defaults to false."),
+        memo: MemoInput.describe(
+          "Why you want this order, in one or two sentences. People read it before approving.",
+        ),
+        walletId: WalletIdInput.optional().describe("A wallet id from whoami; defaults to yours."),
+      }),
+      annotations: PROPOSES,
+    },
+    async (input) =>
+      answer(ctx, "propose_order", async () => json(await proposeOrder(ctx, agent, input))),
   );
 
   server.registerTool(
@@ -411,7 +502,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
     "cancel_intent",
     {
       description:
-        "Withdraw one of your proposals while it still waits for approval. Once people approved it, it can no longer be cancelled; the answer then carries its current status.",
+        "Withdraw one of your proposals while it still waits for approval, or cancel an order of yours that was submitted to the venue and is not final (approving an order includes your right to cancel it). Once people approved anything else, it can no longer be cancelled; the answer then carries its current status.",
       inputSchema: z.object({
         intentId: z.string().describe("The intentId a propose tool returned."),
       }),
@@ -420,7 +511,8 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
     async ({ intentId }) =>
       answer(ctx, "cancel_intent", async () => {
         const row = await ownIntent(intentId);
-        return json({ intentId: row.id, status: await cancelIntent(ctx, row) });
+        const status = await cancelIntentOrOrder(ctx, row, { type: "agent", id: agent.id });
+        return json({ intentId: row.id, status });
       }),
   );
 

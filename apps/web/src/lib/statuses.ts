@@ -1,4 +1,4 @@
-import type { IntentDetail, IntentStatus, StuckReason } from "@askgina/os-api";
+import type { IntentDetail, IntentStatus, IntentSummary, StuckReason } from "@askgina/os-api";
 
 export type TransactionStatus = NonNullable<IntentDetail["transaction"]>["status"];
 
@@ -12,6 +12,10 @@ export const intentSentence: Record<IntentStatus, string> = {
   approved: "Enough people approved it. The signer is signing it next.",
   signed: "The signer signed it. It is about to be sent to the network.",
   broadcast: "Sent to the network and waiting to be included in a block.",
+  submitted: "Signed and sent to the venue; waiting for its answer.",
+  placed: "Resting on the venue's order book until it fills or is cancelled.",
+  filled: "The venue filled the whole order.",
+  partially_filled: "The venue filled part of the order. The rest will not fill.",
   confirmed: "Included in a block. The payment went through.",
   reverted:
     "Included in a block, but the contract refused it. Nothing moved, but the network fee was paid.",
@@ -39,6 +43,40 @@ export function intentStatusSentence(status: IntentStatus, mandated: boolean): s
     return "The approval in advance or the wallet's limits did not cover it at the signer. Nothing was signed.";
   }
   return intentSentence[status];
+}
+
+/**
+ * The sentence for an order at a venue. An order can end `expired` or `cancelled` after it was
+ * signed (its submit window passed, or it was cancelled at the venue), and `failed` at the venue,
+ * so those say what that means once `signed` (the order's venue record exists only once the
+ * signer signed it); before, an order reads like any request.
+ */
+export function orderStatusSentence(status: IntentStatus, signed: boolean): string {
+  if (status === "approved") return "Enough people approved it. The signer is signing it next.";
+  if (status === "signed") return "The signer signed it. It is about to be sent to the venue.";
+  if (!signed) return intentSentence[status];
+  switch (status) {
+    case "expired":
+      return "It did not reach the venue within its submit window, so the venue refuses it for good. Nothing was traded.";
+    case "cancelled":
+      return "It was cancelled at the venue before any of it filled.";
+    case "failed":
+      return "The venue did not take it, and it will not be sent again.";
+    default:
+      return intentSentence[status];
+  }
+}
+
+/**
+ * The sentence for any intent, as a list or a page shows it: an order's, a payment's, or that of
+ * a payment an approval in advance covered.
+ */
+export function intentSummarySentence(
+  intent: Pick<IntentSummary, "status" | "mandateId" | "display" | "order">,
+): string {
+  return intent.display.kind === "order"
+    ? orderStatusSentence(intent.status, intent.order !== null)
+    : intentStatusSentence(intent.status, intent.mandateId !== null);
 }
 
 export const transactionSentence: Record<TransactionStatus, string> = {

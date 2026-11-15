@@ -122,6 +122,29 @@ Success means:
       the protocol `signer-client` and `lifecycle-envelopes` tests, each file alone; Biome clean
       on the changed files.
 - [ ] Milestone 5: control plane: venue client, MCP tool, approval card, follow-up.
+  - [x] (2026-11-15) Server half. `VENUES_FILE` (`apps/server/src/config.ts`, `VenueConfig`; a
+        `hyperliquid:mainnet` entry or an `api.hyperliquid.xyz` URL stops the boot naming D2);
+        `apps/server/src/execution/venues/hyperliquid.ts` (`createHyperliquidClient`: `meta`,
+        `orderStatus`, `post`, `accountValue`; 10-second timeout; an unreadable or lost answer is
+        `VenueError` `venue_unreachable`, never a refusal); `apps/server/src/execution/orders.ts`
+        (`proposeOrder`, `proposeVenueWithdrawal`, the signer call and sealed `venue_orders` row,
+        the follow-up, `cancelVenueOrder`, `cancelIntentOrOrder`, `reconcileOpenOrders` in the
+        sweeper every 5 minutes, `venueHooks` passed to `registerIntentKind`); migration
+        `0011_venue_orders`; MCP `propose_order` (eight tools), `intentView.order`,
+        `whoami.venues`, `propose_transfer` with a venue network (withdrawal, `asset: "usdc"`),
+        `cancel_intent` on a posted order; `POST /api/v1/intents/:intentId/cancel-order`
+        (`cancelOrder`, owners and approvers, no passkey); the approval subject's `venue`
+        section; `PushFacts.operation` (D8); a draft naming mainnet is refused; workspace
+        templates carry `venues`. DTOs in `packages/api`: `IntentStatus` + `submitted`,
+        `placed`, `filled`, `partially_filled`; `IntentDisplay` = `TransferDisplay` |
+        `OrderDisplay`; `IntentSummary.chainId: Network`, `IntentSummary.order:
+        VenueOrderView | null`; `ApprovalSubject["approve-intent"].venue`; `PolicyDraft.venues`.
+        Local checks only, CI pending: `tsc --noEmit` clean in `apps/server`, `packages/api` and
+        `apps/web`; `orders.test.ts` (9 tests, against the testkit's `FakeHyperliquid` served on
+        loopback, which recovers the signer itself), `mcp`, `engine`, `cancel`, `mandates`,
+        `repricing`, `confirmation`, `directory`, `export`, `clone`, notify `content` and `push`
+        tests and the `packages/api` tests pass, each file alone; Biome clean on the changed
+        files.
 - [ ] Milestone 6: fake venue, release gates, documentation.
 - [ ] Manual testnet proof (D6; not CI; needs a funded testnet account; required before any
       mainnet decision under D2).
@@ -240,6 +263,30 @@ Success means:
   requests and cancels as it empties signed transactions. A reprice of a venue approval, or a
   `/v1/sign` repeat of its envelope, is `conflict`. The request body is checked before signing:
   the action, read back from its JSON as the venue would, must encode to the hashed bytes.
+- Observation (Milestone 5): migration `0011_venue_orders`, not `0008` as the plan said: the
+  lifecycle, erasure and rate-limit plans took `0008` to `0010` first. Its `venue_orders` has
+  `venue_error`, `submitted_at` and `checked_at` beyond the plan's columns and a status
+  `accepted` for a withdrawal (the intent ends `confirmed`); the sealed body is stored as the
+  exact JSON text the signer returned (location `venue_orders.request:<approvalId>`) and posted
+  byte for byte.
+- Observation (Milestone 5): the venue's refusal text goes into `venue_orders.venue_error` (cut to
+  200 characters) and `VenueOrderView.venueError`, and `failureCode` is the stable
+  `venue_refused` (or `venue_cancelled` when the venue cancelled it, for example
+  `marginCanceled`), not the venue's text as the plan said: a code agents act on must be stable.
+- Observation (Milestone 5): `market_metadata_mismatch` is `conflict`, `invalid_tick`
+  `invalid_request`, and a network that is not configured `invalid_request` with
+  `venue_not_configured`; a mainnet request therefore answers `venue_not_configured`, because the
+  boot refuses a mainnet venue.
+- Observation (Milestone 5): `orderStatus` reports remaining and original size but no average
+  price, so `averagePrice` is only known when the post's own answer was `filled`; a resting
+  order that fills later shows its filled size and no average price.
+- Observation (Milestone 5): a withdrawal has no client order id, so after a lost answer it is
+  posted again; if the first copy had been accepted, the venue refuses the copy for its nonce
+  and the intent ends `failed` (`venue_refused`) although the money moved. Not reachable in the
+  tests; a withdrawal's outcome would need the venue's ledger (`userNonFundingLedgerUpdates`).
+- Observation (Milestone 5): the follow-up watches a posted order for one hour (5 to 60 seconds
+  apart), then `reconcileOpenOrders` reads it every 5 minutes; a venue removed from
+  `VENUES_FILE` after signing ends an unposted request `expired` once its window passed.
 - Observation (Milestone 2): the SDK writes `r` and `s` with `to_hex`, which drops leading zero
   digits (three of the vector values have 63 digits); the tests compare them as numbers. The SDK
   signs `withdraw3` with `signatureChainId` `0x66eee` on both networks; this plan uses `0xa4b1`

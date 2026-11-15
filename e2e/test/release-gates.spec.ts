@@ -73,6 +73,7 @@ const AGENT_TOOLS = [
   "get_intent",
   "list_intents",
   "propose_contract_call",
+  "propose_order",
   "propose_transfer",
   "whoami",
 ];

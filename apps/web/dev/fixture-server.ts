@@ -31,6 +31,11 @@
  * transfer that one of the agent's live mandates covers is sent with no request, checked against
  * the wallet's limits too and counted for good; anything else opens a request as usual.
  *
+ * An agent can also propose an order on Hyperliquid testnet (`kind: "order"`), checked against
+ * the wallet's venue rules. No mandate ever covers one. Once approved, an immediate-or-cancel
+ * order fills at its limit price at once; any other rests on the stand-in venue's book until
+ * `cancelOrder` cancels it, with no passkey.
+ *
  * Retiring a wallet and deleting a workspace wait out the signer's shortest delay (7 days) like
  * the real ones, and can be cancelled until then. `/__fixture/due` makes one due at once, as if
  * its delay had passed; the next request then finishes it as the server's sweeper would, unless
@@ -84,6 +89,8 @@ import {
   type EvmIntent,
   envelopeChallenge,
   evaluateMandate,
+  type HyperliquidOrderOperation,
+  HyperliquidTimeInForce,
   intentHash,
   keyFingerprint,
   type Mandate,
@@ -94,10 +101,12 @@ import {
   newId,
   normalizeMandate,
   normalizePolicy,
+  orderNotionalUsd6,
   policyHash,
   type SignerDecision,
   type Sweep,
   sweepHash,
+  type VenueIntent,
   type WalletPolicy,
 } from "@askgina/os-protocol";
 import { z } from "zod";
@@ -1008,6 +1017,7 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
     throw new Refusal("forbidden", "This wallet is retired or its workspace is being deleted.");
   if (!wallet.policy || !wallet.policyHash)
     throw new Refusal("policy_denied", "This wallet has no policy yet.", "policy_missing");
+  if (body.kind === "order") return proposeOrder(workspace, agent, wallet, body);
   const chainId = wallet.policy.chains[0] ?? "eip155:31337";
   const to = (body.to ?? fakeAddress()) as `0x${string}`;
   const amount = body.amount ?? "15000000000000000";
@@ -1053,6 +1063,7 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
     status: "pending_approval",
     mandateId: null,
     display: {
+      kind: "transfer",
       title: kind === "call" ? `Call contract ${short(to)}` : `Send ${formatted} ${symbol}`,
       assetSymbol: symbol,
       assetDecimals: decimals,
@@ -1067,6 +1078,7 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
     approvalId: null,
     transactionHash: null,
     failureCode: null,
+    order: null,
     intent,
     intentHash: intentHash(intent),
     simulation: {
@@ -1136,6 +1148,7 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
             spentToday: (state.spent.get(spentKey) ?? 0n).toString(),
           }
         : null,
+      venue: null,
     },
     apply: () => {
       const live = state.intents.get(intent.id);
@@ -1158,6 +1171,187 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
       live.transactionHash = live.transaction.hash;
       state.sentAt.set(live.id, now());
       decide(workspace, approval?.summary.id ?? null, "sign_transaction", null);
+    },
+  });
+  detail.approvalId = approval.summary.id;
+  if (approval.subject.kind === "approve-intent")
+    approval.subject.intent.approvalId = approval.summary.id;
+  return stripIntent(detail);
+}
+
+/** What the stand-in venue reports an account holds, in USD: the bound on what can be lost. */
+const VENUE_ACCOUNT_VALUE_USD = "250";
+
+/** The stand-in venue's next order id. */
+let nextVenueOrderId = 9_000_001;
+
+/**
+ * An order at Hyperliquid testnet, as `propose_order` opens it on the real server: the coin is
+ * named through the wallet's venue rules, which bind it to the index that is signed; the caps
+ * are checked first; and people approve every order (no mandate covers one).
+ */
+function proposeOrder(
+  workspace: Workspace,
+  agent: { id: EvmIntent["agentId"]; name: string },
+  wallet: WalletSummary,
+  body: Record<string, string>,
+): IntentDetail {
+  const policy = wallet.policy;
+  const rules = policy?.venues?.hyperliquid;
+  if (!policy || !wallet.policyHash || !rules) {
+    throw new Refusal(
+      "policy_denied",
+      "This wallet's limits have no rules for Hyperliquid.",
+      "venue_not_allowed",
+    );
+  }
+  const coin = body.coin ?? "BTC";
+  const market = rules.markets.find((item) => item.coin === coin);
+  if (!market) {
+    throw new Refusal(
+      "policy_denied",
+      `The wallet's limits do not list ${coin}.`,
+      "market_not_allowed",
+    );
+  }
+  const tif = HyperliquidTimeInForce.parse(body.timeInForce ?? "Ioc");
+  if (!rules.timeInForce.includes(tif)) {
+    throw new Refusal(
+      "policy_denied",
+      "The wallet's limits do not allow this time in force.",
+      "order_type_not_allowed",
+    );
+  }
+  const operation: HyperliquidOrderOperation = {
+    type: "hyperliquid.order",
+    asset: market.asset,
+    isBuy: body.side !== "sell",
+    size: body.size ?? "0.01",
+    limitPx: body.limitPrice ?? "65000",
+    tif,
+    reduceOnly: body.reduceOnly === "true",
+  };
+  const notional = orderNotionalUsd6(operation.size, operation.limitPx);
+  const spentKey = `${wallet.id}|${rules.network}|usd6`;
+  const spent = state.spent.get(spentKey) ?? 0n;
+  if (notional > BigInt(market.maxNotionalPerOrderUsd6)) {
+    throw new Refusal("policy_denied", "The order is over its market's cap.", "over_per_tx_cap");
+  }
+  if (!operation.reduceOnly && spent + notional > BigInt(rules.maxNotionalPerDayUsd6)) {
+    throw new Refusal("policy_denied", "The order is over the daily cap.", "over_daily_cap");
+  }
+  const intent: VenueIntent = {
+    v: 1,
+    id: newId("int"),
+    workspaceId: workspace.id as VenueIntent["workspaceId"],
+    agentId: agent.id,
+    walletId: wallet.id,
+    chainId: rules.network,
+    operation,
+    memo: body.memo ?? "",
+    createdAt: now(),
+  };
+  const side = operation.isBuy ? "buy" : "sell";
+  const title = `${operation.isBuy ? "Buy" : "Sell"} ${operation.size} ${coin} at ${operation.limitPx}`;
+  const detail: IntentDetail & { workspaceId: string } = {
+    id: intent.id,
+    workspaceId: workspace.id,
+    agent: { id: agent.id, name: agent.name },
+    walletId: wallet.id,
+    chainId: intent.chainId,
+    status: "pending_approval",
+    mandateId: null,
+    display: {
+      kind: "order",
+      title,
+      network: rules.network,
+      coin,
+      asset: market.asset,
+      side,
+      size: operation.size,
+      limitPrice: operation.limitPx,
+      notionalUsd: formatAmount(notional.toString(), 6),
+      timeInForce: tif,
+      reduceOnly: operation.reduceOnly,
+      cancellableByAgent: true,
+    },
+    memo: intent.memo,
+    createdAt: intent.createdAt,
+    approvalId: null,
+    transactionHash: null,
+    failureCode: null,
+    order: null,
+    intent,
+    intentHash: intentHash(intent),
+    simulation: null,
+    transaction: null,
+  };
+  state.intents.set(intent.id, detail);
+  audit(workspace, { type: "agent", id: agent.id, name: agent.name }, "intent.proposed", {
+    type: "intent",
+    id: intent.id,
+  });
+  const policyAtProposal = wallet.policyHash;
+  const approval = openApproval({
+    workspace,
+    kind: "approve-intent",
+    title,
+    requestedBy: { type: "agent", id: agent.id, name: agent.name },
+    threshold: policy.approvals.threshold,
+    ttl: policy.approvals.ttlSeconds,
+    envelope: {
+      intentHash: detail.intentHash,
+      walletId: wallet.id,
+      agentId: agent.id,
+      chainId: rules.network,
+      policyHash: wallet.policyHash,
+    },
+    subject: {
+      kind: "approve-intent",
+      intent: stripIntent(detail),
+      wallet,
+      limits: null,
+      venue: {
+        network: rules.network,
+        maxPerOrderUsd6: market.maxNotionalPerOrderUsd6,
+        maxNotionalPerDayUsd6: rules.maxNotionalPerDayUsd6,
+        spentTodayUsd6: spent.toString(),
+        submitWindowSeconds: rules.submitWindowSeconds,
+        withdrawals: rules.withdrawals,
+        accountValueUsd: VENUE_ACCOUNT_VALUE_USD,
+      },
+    },
+    apply: () => {
+      const live = state.intents.get(intent.id);
+      if (!live) return;
+      const current = state.approvals.get(live.approvalId ?? "");
+      const fail = (code: string) => {
+        live.status = "failed";
+        live.failureCode = code;
+        if (current) {
+          current.summary.status = "failed";
+          current.summary.failureCode = code;
+        }
+        decide(workspace, current?.summary.id ?? null, "sign-venue", code);
+      };
+      if (workspace.paused) return fail("workspace_paused");
+      if (wallet.policyHash !== policyAtProposal) return fail("policy_changed");
+      if (!operation.reduceOnly) {
+        state.spent.set(spentKey, (state.spent.get(spentKey) ?? 0n) + notional);
+      }
+      const signedAt = now();
+      const rests = tif !== "Ioc";
+      live.order = {
+        cloid: `0x${randomBytes(16).toString("hex")}`,
+        venueOrderId: nextVenueOrderId++,
+        filledSize: rests ? "0" : operation.size,
+        averagePrice: rests ? null : operation.limitPx,
+        submitBy: signedAt + rules.submitWindowSeconds,
+        venueError: null,
+        canCancel: rests,
+      };
+      live.status = rests ? "placed" : "filled";
+      decide(workspace, current?.summary.id ?? null, "sign-venue", null);
     },
   });
   detail.approvalId = approval.summary.id;
@@ -1195,6 +1389,7 @@ function policyFromDraft(
     contractCalls: draft.contractCalls,
     fees: draft.fees,
     approvals: draft.approvals,
+    ...(draft.venues ? { venues: draft.venues } : {}),
   } as WalletPolicy);
 }
 
@@ -2240,6 +2435,14 @@ const handlers: Record<RouteName, Handler> = {
         `Approvals needed per payment can be at most ${workspace.adminThreshold}, the number needed for admin changes.`,
       );
     }
+    // Mirrors the server: mainnet venue support waits on its owner's decision.
+    if (draft.venues?.hyperliquid?.network === "hyperliquid:mainnet") {
+      throw new Refusal(
+        "invalid_request",
+        "Hyperliquid mainnet is not allowed on this server.",
+        "venue_not_allowed",
+      );
+    }
     let proposed: WalletPolicy;
     try {
       proposed = policyFromDraft(workspace, wallet, draft);
@@ -2720,7 +2923,10 @@ const handlers: Record<RouteName, Handler> = {
       target,
       walletId: intent.walletId,
       chainId: intent.chainId,
-      title: `${intent.display.title} to ${short(intent.display.to)}`,
+      title:
+        intent.display.kind === "transfer"
+          ? `${intent.display.title} to ${short(intent.display.to)}`
+          : intent.display.title,
       intent,
       transaction: () => intent.transaction,
       update: (transaction) => {
@@ -2729,6 +2935,30 @@ const handlers: Record<RouteName, Handler> = {
         state.sentAt.set(intent.id, now());
       },
     });
+  },
+  cancelOrder: ({ params, userId }) => {
+    const id = signedIn(userId);
+    const intent = state.intents.get(params.intentId ?? "");
+    if (!intent) throw new Refusal("not_found", "This request does not exist.");
+    const workspace = workspaceOf(intent.workspaceId);
+    if (memberOf(workspace, id).role === "viewer") {
+      throw new Refusal("forbidden", "Only an owner or an approver can do this.");
+    }
+    const order = intent.order;
+    if (!order?.canCancel) {
+      throw new Refusal(
+        "conflict",
+        "This order is not resting at the venue, so there is nothing to cancel.",
+        "not_cancellable",
+      );
+    }
+    // Approving the order included the right to cancel it: no passkey, also while paused (D4).
+    const filled = order.filledSize !== null && order.filledSize !== "0";
+    intent.order = { ...order, canCancel: false };
+    intent.status = filled ? "partially_filled" : "cancelled";
+    decide(workspace, intent.approvalId, "cancel-venue-order", null);
+    audit(workspace, userActor(id), "order.cancelled", { type: "intent", id: intent.id });
+    return stripIntent(intent);
   },
   requestSweepCancel: ({ params, userId }) => {
     const id = signedIn(userId);
@@ -3333,6 +3563,40 @@ function confirmationLines(approval: Approval): { label: string; value: string }
   switch (subject.kind) {
     case "approve-intent": {
       const { display, chainId } = subject.intent;
+      if (display.kind === "order") {
+        const venue = subject.venue;
+        const tif = {
+          Alo: "add liquidity only",
+          Gtc: "good till cancelled",
+          Ioc: "immediate or cancel",
+        };
+        return [
+          { label: "Market", value: `${display.coin} perpetual, as named in the wallet's policy` },
+          { label: "Market index", value: String(display.asset) },
+          { label: "Side", value: display.side },
+          { label: "Size", value: `${display.size} ${display.coin}` },
+          { label: "Limit price", value: `${display.limitPrice} USD` },
+          { label: "Notional at the limit price", value: `${display.notionalUsd} USD` },
+          { label: "Time in force", value: tif[display.timeInForce] },
+          {
+            label: "Reduce-only",
+            value: display.reduceOnly ? "yes: it can only make a position smaller" : "no",
+          },
+          { label: "Cancelling", value: "the agent may cancel this order without asking again" },
+          {
+            label: "Submit window",
+            value: `must reach the venue within ${venue?.submitWindowSeconds ?? 0} seconds of signing`,
+          },
+          {
+            label: "Funds at the venue",
+            value: "held by Hyperliquid; these caps limit new orders, not losses",
+          },
+          { label: "Network", value: `Hyperliquid testnet (${chainId})` },
+          { label: "From wallet", value: `${subject.wallet.label} ${subject.wallet.address}` },
+          { label: "Agent", value: subject.intent.agent.name },
+          { label: "The agent's note", value: subject.intent.memo || "(none)" },
+        ];
+      }
       return [
         { label: "Amount", value: `${display.amountFormatted} ${display.assetSymbol}` },
         { label: display.rawCall ? "Contract" : "Recipient", value: display.to },
@@ -3360,12 +3624,30 @@ function confirmationLines(approval: Approval): { label: string; value: string }
             subject.sweep.chainId,
         },
       ];
-    case "set-policy":
+    case "set-policy": {
+      const rules = subject.proposed.venues?.hyperliquid;
       return [
         { label: "Wallet", value: `${subject.wallet.label} ${subject.wallet.address}` },
         { label: "Policy revision", value: String(subject.proposed.revision) },
         { label: "Approvals per payment", value: String(subject.proposed.approvals.threshold) },
+        ...(rules
+          ? [
+              ...rules.markets.map((market) => ({
+                label: "Market allowed",
+                value: `${market.coin} (index ${market.asset}): up to ${formatAmount(market.maxNotionalPerOrderUsd6, 6)} USD per order`,
+              })),
+              {
+                label: "Hyperliquid notional per 24 hours",
+                value: `${formatAmount(rules.maxNotionalPerDayUsd6, 6)} USD`,
+              },
+              {
+                label: "Funds at the venue",
+                value: "held by Hyperliquid; these caps limit new orders, not losses",
+              },
+            ]
+          : []),
       ];
+    }
     case "add-approver": {
       const envelope = approval.envelope;
       return [
@@ -3394,9 +3676,11 @@ function confirmationLines(approval: Approval): { label: string; value: string }
     case "resume-workspace":
       return [{ label: "Workspace", value: workspaceOf(approval.summary.workspaceId).name }];
     case "cancel-transaction": {
-      const stops = subject.intent
-        ? `${subject.intent.display.amountFormatted} ${subject.intent.display.assetSymbol} to ${subject.intent.display.to}`
-        : (subject.sweep?.title ?? "");
+      const display = subject.intent?.display;
+      const stops =
+        display?.kind === "transfer"
+          ? `${display.amountFormatted} ${display.assetSymbol} to ${display.to}`
+          : (display?.title ?? subject.sweep?.title ?? "");
       return [
         { label: "Stop this transaction", value: stops },
         { label: "From wallet", value: `${subject.wallet.label} ${subject.wallet.address}` },
