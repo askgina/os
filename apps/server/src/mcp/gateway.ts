@@ -21,6 +21,7 @@ import {
 import { activeMandatesOf } from "../execution/mandates.ts";
 import { attemptViews, transactionOf } from "../execution/transactions.ts";
 import { HttpError } from "../http/errors.ts";
+import { hasToken, takeToken } from "../rate-limit.ts";
 
 type AgentRow = typeof agents.$inferSelect;
 
@@ -445,36 +446,29 @@ function deny(status: number, code: string, message: string): Response {
  */
 export function mountMcp(app: Hono, ctx: AppContext): void {
   const publicUrl = new URL(ctx.config.publicOrigin);
-  const buckets = new Map<string, { tokens: number; at: number }>();
+  /** Saves building a handler per request; it holds nothing about the agent but its id. */
   const handlers = new Map<string, McpHttpHandler>();
-  /** Recent failed authentications per client, as timestamps in milliseconds. */
-  const failures = new Map<string, number[]>();
 
   /**
-   * The client a failed authentication is charged to. Behind the bundled proxy that is the
-   * address the proxy appended last to `X-Forwarded-For`; a request without one is charged to a
-   * shared bucket.
+   * The client a failed authentication is charged to: the address `FORWARDED_HOPS` entries from
+   * the end of `X-Forwarded-For`, which the proxies in front of the server appended (the bundled
+   * one appends the last). Fewer entries than that means a proxy was bypassed, and the first is
+   * the peer that did it. A request without the header is charged to a shared bucket.
    */
-  const clientOf = (request: Request) =>
-    request.headers.get("x-forwarded-for")?.split(",").at(-1)?.trim() || "direct";
-
-  const recentFailures = (client: string, now: number) => {
-    const recent = (failures.get(client) ?? []).filter((at) => now - at < 60_000);
-    if (recent.length === 0) failures.delete(client);
-    else failures.set(client, recent);
-    return recent;
+  const clientOf = (request: Request) => {
+    const entries = request.headers.get("x-forwarded-for")?.split(",") ?? [];
+    return entries[Math.max(0, entries.length - ctx.config.forwardedHops)]?.trim() || "direct";
   };
 
+  // Both limits are buckets in the database, so every replica counts against the same ones.
   const authenticate = async (request: Request): Promise<AgentRow | Response> => {
-    const client = clientOf(request);
-    const now = Date.now();
-    const recent = recentFailures(client, now);
-    // Checked before the database is read, so guessing tokens costs no lookups.
-    if (recent.length >= FAILED_AUTH_PER_MINUTE) {
+    const bucket = `auth-fail:${clientOf(request)}`;
+    // Checked before the agents are read, so guessing tokens costs no lookup there.
+    if (!(await hasToken(ctx.db, bucket, FAILED_AUTH_PER_MINUTE))) {
       return deny(429, "rate_limited", "too many failed authentications; slow down");
     }
-    const fail = () => {
-      failures.set(client, [...recent, now]);
+    const fail = async () => {
+      await takeToken(ctx.db, bucket, FAILED_AUTH_PER_MINUTE);
       return deny(401, "unauthenticated", "a valid agent token is required");
     };
     const header = request.headers.get("authorization") ?? "";
@@ -497,23 +491,6 @@ export function mountMcp(app: Hono, ctx: AppContext): void {
     return agent;
   };
 
-  const allow = (agentId: string): boolean => {
-    const now = Date.now();
-    const bucket = buckets.get(agentId) ?? { tokens: REQUESTS_PER_MINUTE, at: now };
-    bucket.tokens = Math.min(
-      REQUESTS_PER_MINUTE,
-      bucket.tokens + ((now - bucket.at) * REQUESTS_PER_MINUTE) / 60_000,
-    );
-    bucket.at = now;
-    if (bucket.tokens < 1) {
-      buckets.set(agentId, bucket);
-      return false;
-    }
-    bucket.tokens -= 1;
-    buckets.set(agentId, bucket);
-    return true;
-  };
-
   app.all("/mcp", async (c) => {
     const request = c.req.raw;
     // DNS rebinding and cross-site requests: the SDK checks neither, so this does.
@@ -528,7 +505,9 @@ export function mountMcp(app: Hono, ctx: AppContext): void {
     }
     const agent = await authenticate(request);
     if (agent instanceof Response) return agent;
-    if (!allow(agent.id)) return deny(429, "rate_limited", "too many requests; slow down");
+    if (!(await takeToken(ctx.db, `agent:${agent.id}`, REQUESTS_PER_MINUTE))) {
+      return deny(429, "rate_limited", "too many requests; slow down");
+    }
 
     const now = ctx.now();
     await ctx.db

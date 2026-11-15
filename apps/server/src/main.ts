@@ -19,10 +19,12 @@ import { createLogger } from "./log.ts";
 async function main(): Promise<void> {
   const log = createLogger("server");
   const config = loadConfig();
-  // Each workflow worker holds a connection while it runs a step; the rest serve requests.
+  // Each workflow worker holds a connection while it runs a step; two are held for good, one
+  // listening for data-key shreds and one holding the workflow-bundle lock; the rest serve
+  // requests and the World's own listeners.
   const pool = new pg.Pool({
     connectionString: config.databaseUrl,
-    max: config.workflowWorkerConcurrency + 12,
+    max: config.workflowWorkerConcurrency + 14,
   });
   // An idle client losing its connection must not take the process down; the pool reconnects.
   pool.on("error", (error) => log.warn("idle database connection failed", { name: error.name }));
@@ -33,8 +35,15 @@ async function main(): Promise<void> {
     // `event` is keys.provider_unavailable or keys.provider_refresh_failed, with ids and counts.
     onEvent: (event) => log.warn("key provider", { ...event }),
   });
-  const keys = new DataKeyStore({ pool, provider: keyProvider });
+  // Listening, so a shred in any replica (or the operator's CLI) reaches this cache at once.
+  const keys = new DataKeyStore({
+    pool,
+    provider: keyProvider,
+    cacheTtlMs: config.dataKeyCacheSeconds * 1000,
+    listen: true,
+  });
   await keys.ensureMigrated();
+  await keys.start();
 
   const db = drizzle(pool, { schema });
   const now = () => Math.floor(Date.now() / 1000);
@@ -79,12 +88,16 @@ async function main(): Promise<void> {
     port: config.internalPort,
   });
   await prepareSetup(ctx);
-  // Migrates and starts the World, loads the workflow bundle, starts the sweepers.
-  const background = await startBackground(ctx);
+  // Migrates and starts the World, loads the workflow bundle, starts the sweepers. Another
+  // bundle found running later stops this process, so its orchestrator starts it again and
+  // the boot check refuses it until the other is gone.
+  const background = await startBackground(ctx, {
+    onFatal: () => void stop("workflow.bundle_mismatch", 1),
+  });
   log.info("listening", { event: "server.started", port: config.port });
 
   let stopping = false;
-  const stop = async (signal: string) => {
+  const stop = async (signal: string, exitCode = 0) => {
     if (stopping) return;
     stopping = true;
     log.info("stopping", { event: "server.stopping", signal });
@@ -96,10 +109,11 @@ async function main(): Promise<void> {
     // Stop taking requests, let in-flight work settle, then let go of the database.
     await Promise.all([closed(publicServer), closed(internalServer)]);
     await background.stop();
+    await keys.close();
     await keyProvider.close();
     await pool.end();
     log.info("stopped", { event: "server.stopped" });
-    process.exit(0);
+    process.exit(exitCode);
   };
   process.on("SIGTERM", () => void stop("SIGTERM"));
   process.on("SIGINT", () => void stop("SIGINT"));

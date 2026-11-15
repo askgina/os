@@ -42,7 +42,14 @@ Success means:
 
 - [x] (2026-11-14 21:38Z) Research current behavior and relevant code paths: [`specs/research/beyond-one-machine.md`](./research/beyond-one-machine.md).
 - [x] (2026-11-15) Owner decisions D1 to D9 (see `Decision Log`). D5 was taken (2026-11-14): (a). D1 to D4 and D6 to D9 were taken 2026-11-15 by the lead under Eric's delegation, each as the recommended option (a).
-- [ ] Milestone 1: the signer on its own host. First half built and green in CI (2026-11-15,
+- [x] (2026-11-15) Milestone 1 in CI: `stack (split)` passed on its first run (run 43733608692
+      at `8510295`): every release gate through two Compose projects joined only by the wire
+      network, and `split.spec.ts` (3 tests: no signer secret or service on the control side,
+      the handshake refused without the control certificate, no outbound route from the signer
+      under the example nftables rules). Found by that run's `test` job and fixed: the enroll
+      command now attaches the passkey values with `=`, because one base64url value in 64
+      starts with a dash and was read as an option.
+- [x] Milestone 1: the signer on its own host. First half built and green in CI (2026-11-15,
       `8e78b3f`, run 43727759164): signer mutual TLS with each client certificate bound to its
       scope, the loopback health listener, the expiry check at boot, `createSignerFetch`
       (`@askgina/os-protocol/signer-transport`), the `approve` service's TLS client,
@@ -65,7 +72,28 @@ Success means:
       provider outage; `@askgina/os-keys` 0.2.0; the test services gain a development OpenBao;
       `deploy/openbao/policy.hcl`. Left: the World ciphertext test on both providers with the
       20-second outage, and the `stack (openbao)` CI entry.
-- [ ] Milestone 4: a replica-safe control plane.
+- [ ] Milestone 4: a replica-safe control plane. Server and key-store half written (2026-11-15),
+      local checks only, CI pending: `os.rate_limits` (UNLOGGED, migration
+      `0010_rate_limits`) with `takeToken`/`hasToken` (`apps/server/src/rate-limit.ts`) behind
+      the gateway's agent and failed-authentication limits and `FORWARDED_HOPS`; the setup token
+      minted once per installation under `SETUP_LOCK`, `SETUP_TOKEN_IN_LOG`, and
+      `node apps/server/src/cli.ts setup-token`; the lifecycle finalize throttle shared through a
+      bucket (`sweep:lifecycle-finalize`) instead of a per-process map; `DataKeyStore` announcing
+      every shred and `shredTenant` key on `os_keys_shred` with the `listen` option, `start()` and
+      `close()`, used by the server with `DATA_KEY_CACHE_SECONDS`; the workflow-bundle guard
+      (`apps/server/src/execution/bundle-guard.ts`, classes `18680`/`18681`) before the World
+      starts; `GET /readyz`; `step.started` with `replica` in `signOnce`;
+      `rotate-keyring.mjs add --inactive` and `activate <id>`. Local, one file at a time:
+      `packages/keys/test/data-key-store.test.ts` (25), `packages/keys/test/cli.test.ts` (17),
+      `apps/server/test/support/rate-limit.test.ts` (5, two gateways on one database),
+      `apps/server/test/execution/bundle-guard.test.ts` (3),
+      `apps/server/test/support/public-app.test.ts` (3),
+      `apps/server/test/identity/identity.test.ts` (43), and unchanged `hardening` (19), `mcp`
+      (9), `engine` (17), `sweep` (4), `lifecycle/delete` (3), `lifecycle/retire` (3),
+      `notify/outbox` (11); type checks of `apps/server` and `packages/keys` clean. Left:
+      `deploy/README.md` (two-phase rotation, setup token, the three
+      variables, `/readyz`); Caddy's `dynamic a` upstreams; `e2e/compose.replicas.yaml`,
+      `e2e/test/replicas.spec.ts` and the `stack (replicas)` CI entry.
 - [ ] Milestone 5: Kubernetes manifests proven on kind.
 - [ ] Milestone 6: HA Postgres with CloudNativePG.
 - [ ] Milestone 7: documentation matches the code.
@@ -100,6 +128,48 @@ Success means:
   Evidence: `apps/server/src/notify/outbox.ts:28-39,162-196,399-420`; `deploy/README.md:403-419`.
 - Observation (2026-11-15): two transactions that inserted rows referring to one workspace and then appended to its audit chain deadlocked under `FOR UPDATE` on the workspace row; `appendAudit` now takes `FOR NO KEY UPDATE`. Concurrent proposals on several replicas meet the same lock, so the fix is a precondition for Milestone 4, already met.
   Evidence: `apps/server/src/audit.ts:61-70`; commit `307c404`.
+- Observation (2026-11-15, Milestone 4): the research's list of per-process state missed one
+  decider: the lifecycle finalize step (`apps/server/src/lifecycle/finalize.ts`) was throttled to
+  once a minute by a per-process `WeakMap`, so N replicas finalized N times a minute, each calling
+  the signer. It is now one bucket in `os.rate_limits` (one token a minute, burst 1) on the
+  database's clock. The 3-second sweep itself stays in every replica, as planned: wake-ups only
+  resume a hook, starts are serialized per request, the outbox leases rows.
+  Evidence: `apps/server/test/support/rate-limit.test.ts`, "retirements and deletions are
+  finished at most once a minute across replicas".
+- Observation (2026-11-15, Milestone 4): a token bucket cannot be "checked before the lookup"
+  without a read, so the failed-authentication limit reads its bucket (`hasToken`, one primary-key
+  read in `os.rate_limits`) before the agents table, and takes a token only on a failure.
+  Evidence: `apps/server/src/mcp/gateway.ts`, `authenticate`.
+- Observation (2026-11-15, Milestone 4): a listening key store must not cache while its
+  `LISTEN` connection is down, or a shred made in that gap stays cached until the TTL; and a key
+  read just before a shred is heard must not be cached after it. The store therefore caches only
+  while listening, forgets everything when the connection drops and again when it listens anew,
+  and does not cache a read that an eviction overtook.
+  Evidence: `packages/keys/src/data-key-store.ts` (`#evictions`, `#lost`);
+  `packages/keys/test/data-key-store.test.ts`, "a listening store forgets its cache when its
+  connection is lost, and listens again".
+- Observation (2026-11-15, Milestone 4): changing `rotate-keyring.mjs add` to add an inactive key,
+  as planned, would break the CI-green lifecycle gate that rotates "exactly as the deploy guide
+  gives it" (`e2e/test/lifecycle.spec.ts:1317-1345`) and the guide itself
+  (`deploy/README.md:213-217`). So `add` still adds and activates (one machine), and the replica
+  procedure uses `add --inactive`, restart every replica, `activate <id>`, restart every replica,
+  rewrap, prune, restart. The guide's replica section (Milestone 7) gives that order.
+- Observation (2026-11-15, Milestone 4): a setup token is minted once per installation, so a
+  restart before setup no longer replaces it and logs `setup.token_pending` instead; the token
+  in the first boot's log keeps working, and `cli.ts setup-token` replaces it. `deploy/README.md`
+  ("The setup token", which says every start prints a new one) must follow.
+  Evidence: `apps/server/src/identity/setup.ts`; `apps/server/test/identity/identity.test.ts`,
+  "two boots at once mint one setup token …".
+- Observation (2026-11-15, Milestone 4): connections per replica, re-counted. Everything the
+  server, the World, Graphile and the key store use comes from one pool of
+  `WORKFLOW_WORKER_CONCURRENCY + 14` (24 by default, up from 22): one connection per workflow
+  worker, two held for good (the shred listener and the bundle lock), Graphile's `LISTEN`, the
+  World's run-status and run-events listeners when used, and requests. The World opens no pool of
+  its own (`pool` is passed) and no client of its own unless `WORKFLOW_POSTGRES_INVOKE=1`. The
+  operator's commands add 1 (`cli.ts`) or 2 (`erase-cli.ts`) while they run. Postgres needs at
+  least `replicas × (WORKFLOW_WORKER_CONCURRENCY + 14)` plus headroom.
+  Evidence: `apps/server/src/main.ts`; `@workflow/world-postgres` 5.2.0 `dist/index.js:39-60`,
+  `dist/invocation-notifications.js:55`.
 - Observation (2026-11-15): Compose `extends` resolves the base file's relative paths (build
   context, bind mounts) against the base file's directory and keeps its `depends_on`, so each split
   file extends the services of `compose.yaml` and changes only what a second host needs, with

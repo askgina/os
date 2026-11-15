@@ -297,6 +297,104 @@ describe("cache", () => {
     await expect(holder.getOrCreate("run", id)).rejects.toBeInstanceOf(DataKeyUnavailableError);
   });
 
+  test("a shred in one store is seen by another within one second", async () => {
+    const listening = new DataKeyStore({
+      pool: pool(),
+      provider: new LocalKeyring(k1),
+      cacheTtlMs: 60_000,
+      listen: true,
+    });
+    await listening.start();
+    try {
+      const workspace = newId("ws_");
+      const [run1, run2] = [newId(), newId()];
+      await listening.getOrCreate("workspace", workspace, workspace);
+      await listening.getOrCreate("run", run1, workspace);
+      await listening.getOrCreate("run", run2, workspace);
+
+      const shredder = store();
+      const started = Date.now();
+      expect(await shredder.shred("workspace", workspace)).toBe(true);
+      await vi.waitFor(
+        () =>
+          expect(listening.getOrCreate("workspace", workspace)).rejects.toBeInstanceOf(
+            DataKeyUnavailableError,
+          ),
+        { timeout: 1_000, interval: 25 },
+      );
+      expect(Date.now() - started).toBeLessThan(1_000);
+
+      // Every key a tenant shred destroys is announced, one by one.
+      expect(await shredder.shredTenant("run", workspace)).toEqual({ shredded: 2 });
+      await vi.waitFor(
+        async () => {
+          for (const id of [run1, run2]) {
+            await expect(listening.getOrCreate("run", id)).rejects.toBeInstanceOf(
+              DataKeyUnavailableError,
+            );
+          }
+        },
+        { timeout: 1_000, interval: 25 },
+      );
+    } finally {
+      await listening.close();
+    }
+  });
+
+  test("a listening store forgets its cache when its connection is lost, and listens again", async () => {
+    const events: string[] = [];
+    const listening = new DataKeyStore({
+      pool: pool(),
+      provider: new LocalKeyring(k1),
+      cacheTtlMs: 60_000,
+      listen: true,
+      onEvent: (event) => events.push(event),
+    });
+    const id = newId();
+    // Before `start` it does not listen, so it does not cache either.
+    await listening.getOrCreate("run", id);
+    await listening.getOrCreate("run", id);
+    expect(events.filter((e) => e === "cache-hit")).toHaveLength(0);
+    await listening.start();
+    try {
+      await listening.getOrCreate("run", id);
+      await listening.getOrCreate("run", id);
+      expect(events.filter((e) => e === "cache-hit")).toHaveLength(1);
+
+      // The listening connection dies: the cached key goes with it.
+      const listener =
+        "SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND query = 'LISTEN os_keys_shred'";
+      const [killed] = await query<{ pid: number }>(listener);
+      await query("SELECT pg_terminate_backend($1)", [killed?.pid]);
+      await vi.waitFor(async () => {
+        const before = events.filter((e) => e === "unwrap").length;
+        await listening.getOrCreate("run", id);
+        expect(events.filter((e) => e === "unwrap")).toHaveLength(before + 1);
+      });
+
+      // It listens again on a new connection, caches again, and hears the next shred.
+      await vi.waitFor(
+        async () => {
+          const rows = await query<{ pid: number }>(listener);
+          expect(rows).toHaveLength(1);
+          expect(rows[0]?.pid).not.toBe(killed?.pid);
+          const hits = events.filter((e) => e === "cache-hit").length;
+          await listening.getOrCreate("run", id);
+          expect(events.filter((e) => e === "cache-hit").length).toBeGreaterThan(hits);
+        },
+        { timeout: 5_000, interval: 50 },
+      );
+      expect(await store().shred("run", id)).toBe(true);
+      await vi.waitFor(
+        () =>
+          expect(listening.getOrCreate("run", id)).rejects.toBeInstanceOf(DataKeyUnavailableError),
+        { timeout: 1_000, interval: 25 },
+      );
+    } finally {
+      await listening.close();
+    }
+  });
+
   test("a cache TTL of 0 reads the database every time; evict drops the cache", async () => {
     const events: string[] = [];
     const id = newId();

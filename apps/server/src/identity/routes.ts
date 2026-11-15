@@ -23,12 +23,9 @@ import {
 import { eraseOnRequest } from "./erase.ts";
 import { revokePasskey } from "./passkeys.ts";
 import { clearSessionCookie, endSession, issueSession, requireRecentSignIn } from "./sessions.ts";
-import { checkSetupToken, setupRequired, setupTokenKey } from "./setup.ts";
+import { checkSetupToken, SETUP_LOCK, setupRequired, setupTokenKey } from "./setup.ts";
 
 const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
-
-/** Arbitrary constant: serializes the creation of the first owner. */
-const SETUP_LOCK = 0x05_0a_77_10;
 
 export async function sessionInfo(
   ctx: AppContext,

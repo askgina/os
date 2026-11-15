@@ -25,6 +25,7 @@ import {
   boolean,
   check,
   customType,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -808,3 +809,16 @@ export const notificationPreferences = os.table(
   },
   (table) => [primaryKey({ columns: [table.userId, table.workspaceId] })],
 );
+
+// --- limits every replica shares --------------------------------------------------------------
+
+/**
+ * Token buckets shared by every server replica (`src/rate-limit.ts`): `tokens` left at `at`.
+ * UNLOGGED, which the migration says and Drizzle cannot: a crash or a failover empties the
+ * table, and that only resets the limits. Any row may be deleted at any time.
+ */
+export const rateLimits = os.table("rate_limits", {
+  bucket: text("bucket").primaryKey(),
+  tokens: doublePrecision("tokens").notNull(),
+  at: time("at").notNull(),
+});

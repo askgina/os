@@ -107,6 +107,11 @@ export class Engine implements ApprovalEngine {
     this.#useHandler = handler;
   }
 
+  /** Whether this process started its World and delivers runs: from start until stopping. */
+  get delivering(): boolean {
+    return this.#runtime !== null;
+  }
+
   attachRuntime(runtime: WorkflowRuntime | null): void {
     this.#runtime = runtime;
   }

@@ -1,11 +1,19 @@
 import { randomBytes } from "node:crypto";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { type KeyProvider, KeyProviderRefusedError } from "./keyring.ts";
 
 export const KEYS_SCHEMA = "os_keys";
 const TABLE = `${KEYS_SCHEMA}.data_keys`;
 /** Arbitrary constant; serializes concurrent migrations. */
 const MIGRATION_LOCK = 0x05_0a_77_01;
+/**
+ * Every shred announces each key it destroyed here, in the transaction that destroys it, with
+ * the payload `<scope>:<keyId>`; stores started with `listen` evict that key at once.
+ */
+export const SHRED_CHANNEL = "os_keys_shred";
+/** Delays before the listening connection is opened again after it was lost, doubling. */
+const LISTEN_RETRY_FIRST_MS = 100;
+const LISTEN_RETRY_MAX_MS = 30_000;
 
 /**
  * What a data key protects. `run` keys encrypt one workflow run's payloads; `workspace` keys seal
@@ -76,6 +84,14 @@ export interface DataKeyStoreOptions {
   provider: KeyProvider;
   /** How long unwrapped keys stay in process memory. 0 disables the cache. Default one minute. */
   cacheTtlMs?: number;
+  /**
+   * Hear the shreds of every process on this database: after {@link DataKeyStore.start}, one
+   * connection of the pool stays on `LISTEN os_keys_shred` and each key named there leaves the
+   * cache at once. While that connection is down, nothing is cached or served from the cache,
+   * and it is opened again with backoff. Without this, another process's shred reaches this
+   * cache only when the TTL runs out.
+   */
+  listen?: boolean;
   /** Counts store operations, for measurement. */
   onEvent?: (event: "cache-hit" | "db-read" | "created" | "unwrap") => void;
 }
@@ -100,14 +116,106 @@ export class DataKeyStore {
     { key: Uint8Array; tenantId: string | null; expires: number }
   >();
   readonly #onEvent: DataKeyStoreOptions["onEvent"];
+  readonly #listen: boolean;
   #table: Promise<void> | undefined;
   #migrated: Promise<void> | undefined;
+  /** The connection on `LISTEN`, while it is up. */
+  #listener: PoolClient | null = null;
+  #connecting: Promise<void> | null = null;
+  #retry: NodeJS.Timeout | null = null;
+  #retryMs = LISTEN_RETRY_FIRST_MS;
+  #closed = false;
+  /**
+   * Counts evictions. A key read before an eviction is not cached after it, so a shred heard
+   * while a read was in flight cannot leave the destroyed key in the cache.
+   */
+  #evictions = 0;
 
   constructor(options: DataKeyStoreOptions) {
     this.#pool = options.pool;
     this.#provider = options.provider;
     this.#ttl = options.cacheTtlMs ?? 60_000;
     this.#onEvent = options.onEvent;
+    this.#listen = options.listen ?? false;
+  }
+
+  /**
+   * With `listen`, open the listening connection; resolves once it listens and rejects when the
+   * first attempt fails. Later losses are retried by the store itself. Without `listen`, does
+   * nothing.
+   */
+  async start(): Promise<void> {
+    if (!this.#listen || this.#closed || this.#listener !== null) return;
+    await this.#connect();
+  }
+
+  /** Let go of the listening connection and forget every cached key. Idempotent. */
+  async close(): Promise<void> {
+    this.#closed = true;
+    clearTimeout(this.#retry ?? undefined);
+    this.#retry = null;
+    await this.#connecting?.catch(() => {});
+    const client = this.#listener;
+    this.#listener = null;
+    // Destroyed rather than returned, so no pooled connection keeps listening.
+    client?.release(true);
+    this.evict();
+  }
+
+  #connect(): Promise<void> {
+    this.#connecting ??= (async () => {
+      const client = await this.#pool.connect();
+      const lost = () => this.#lost(client);
+      client.on("error", lost);
+      client.on("end", lost);
+      client.on("notification", (message) => {
+        if (message.channel !== SHRED_CHANNEL || !message.payload) return;
+        const separator = message.payload.indexOf(":");
+        if (separator < 0) return;
+        const scope = message.payload.slice(0, separator);
+        this.#cache.delete(`${scope}\n${message.payload.slice(separator + 1)}`);
+        this.#evictions += 1;
+      });
+      try {
+        await client.query(`LISTEN ${SHRED_CHANNEL}`);
+      } catch (error) {
+        client.removeAllListeners("notification");
+        client.release(true);
+        throw error;
+      }
+      if (this.#closed) {
+        client.release(true);
+        return;
+      }
+      // Whatever was cached before listening may have missed a shred.
+      this.evict();
+      this.#listener = client;
+      this.#retryMs = LISTEN_RETRY_FIRST_MS;
+    })().finally(() => {
+      this.#connecting = null;
+    });
+    return this.#connecting;
+  }
+
+  #lost(client: PoolClient): void {
+    if (this.#listener !== client) return;
+    this.#listener = null;
+    // Shreds made while nobody listens are never heard: forget everything, cache nothing.
+    this.evict();
+    client.removeAllListeners("notification");
+    client.release(true);
+    this.#scheduleReconnect();
+  }
+
+  #scheduleReconnect(): void {
+    if (this.#closed || this.#retry !== null) return;
+    const delay = this.#retryMs;
+    this.#retryMs = Math.min(this.#retryMs * 2, LISTEN_RETRY_MAX_MS);
+    this.#retry = setTimeout(() => {
+      this.#retry = null;
+      this.#connect().catch(() => this.#scheduleReconnect());
+    }, delay);
+    this.#retry.unref();
   }
 
   /** Create the key table and wait for the key provider to be ready. Retried after a failure. */
@@ -152,6 +260,7 @@ export class DataKeyStore {
       return cached.key;
     }
     await this.ensureMigrated();
+    const evictions = this.#evictions;
     let row = await this.#read(scope, keyId);
     if (!row) {
       const kekId = this.#provider.activeKekId();
@@ -176,7 +285,9 @@ export class DataKeyStore {
     if (tenantId !== null && row.tenant_id !== tenantId) {
       throw new DataKeyTenantMismatchError(scope, keyId);
     }
-    if (this.#ttl > 0) {
+    // Never kept while a listening store is not listening, or after an eviction during the read.
+    const listening = !this.#listen || this.#listener !== null;
+    if (this.#ttl > 0 && listening && this.#evictions === evictions) {
       this.#cache.set(cacheKey, {
         key,
         tenantId: row.tenant_id,
@@ -276,18 +387,25 @@ export class DataKeyStore {
 
   /**
    * Destroy the key for (scope, id) and leave a tombstone, so a later request fails instead of
-   * minting a new key. Everything that was encrypted under it becomes unreadable. Other
-   * processes may keep serving the key from their cache until their TTL runs out.
+   * minting a new key. Everything that was encrypted under it becomes unreadable. The shred is
+   * announced on {@link SHRED_CHANNEL} in the same transaction: listening stores drop the key at
+   * once, others keep serving it from their cache until their TTL runs out.
    * Returns whether a live key was destroyed.
    */
   async shred(scope: KeyScope, keyId: string): Promise<boolean> {
     await this.#ensureTable();
     this.#cache.delete(`${scope}\n${keyId}`);
-    const result = await this.#pool.query<{ existed: boolean }>(
-      `INSERT INTO ${TABLE} (scope, key_id, shredded_at) VALUES ($1, $2, now())
-       ON CONFLICT (scope, key_id) DO UPDATE SET kek_id = NULL, wrapped_key = NULL, shredded_at = now()
-       WHERE ${TABLE}.shredded_at IS NULL
-       RETURNING (xmax <> 0) AS existed`,
+    this.#evictions += 1;
+    // Announced even when the key was gone already: announcing again costs nothing.
+    const result = await this.#pool.query<{ existed: boolean | null }>(
+      `WITH shredded AS (
+         INSERT INTO ${TABLE} (scope, key_id, shredded_at) VALUES ($1, $2, now())
+         ON CONFLICT (scope, key_id) DO UPDATE SET kek_id = NULL, wrapped_key = NULL, shredded_at = now()
+         WHERE ${TABLE}.shredded_at IS NULL
+         RETURNING (xmax <> 0) AS existed
+       )
+       SELECT (SELECT existed FROM shredded) AS existed,
+              pg_notify('${SHRED_CHANNEL}', $1 || ':' || $2) AS notified`,
       [scope, keyId],
     );
     return result.rows[0]?.existed === true;
@@ -296,16 +414,22 @@ export class DataKeyStore {
   /**
    * Destroy every live key of one tenant in one scope, for example every run key of a workspace
    * that is being deleted, leaving each as a tombstone the way {@link shred} does. Only keys
-   * created with that `tenantId` are found; a key created without a tenant is not. Other
-   * processes may keep serving these keys from their cache until their TTL runs out. Returns how
-   * many live keys were destroyed; a repeat finds none and returns 0.
+   * created with that `tenantId` are found; a key created without a tenant is not. Each key is
+   * announced on {@link SHRED_CHANNEL} as {@link shred} announces one; stores that do not listen
+   * may keep serving these keys from their cache until their TTL runs out. Returns how many live
+   * keys were destroyed; a repeat finds none and returns 0.
    */
   async shredTenant(scope: KeyScope, tenantId: string): Promise<{ shredded: number }> {
     await this.#ensureTable();
+    this.#evictions += 1;
     const { rows } = await this.#pool.query<{ key_id: string }>(
-      `UPDATE ${TABLE} SET kek_id = NULL, wrapped_key = NULL, shredded_at = now()
-       WHERE scope = $1 AND tenant_id = $2 AND shredded_at IS NULL
-       RETURNING key_id`,
+      `WITH shredded AS (
+         UPDATE ${TABLE} SET kek_id = NULL, wrapped_key = NULL, shredded_at = now()
+         WHERE scope = $1 AND tenant_id = $2 AND shredded_at IS NULL
+         RETURNING key_id
+       )
+       SELECT key_id, pg_notify('${SHRED_CHANNEL}', $1 || ':' || key_id) AS notified
+       FROM shredded`,
       [scope, tenantId],
     );
     for (const row of rows) this.#cache.delete(`${scope}\n${row.key_id}`);
@@ -321,5 +445,6 @@ export class DataKeyStore {
   /** Drop unwrapped keys from this process's memory. */
   evict(): void {
     this.#cache.clear();
+    this.#evictions += 1;
   }
 }

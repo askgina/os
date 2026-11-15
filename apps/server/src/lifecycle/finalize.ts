@@ -18,6 +18,7 @@ import {
   wallets,
   workspaces,
 } from "../db/schema.ts";
+import { takeToken } from "../rate-limit.ts";
 import {
   cancelRequests,
   hasUnfinishedRuns,
@@ -43,16 +44,22 @@ const REMOVED_AGENT_NAME = "Removed agent";
 type SkipCode = "unmined_transactions" | "unfinished_runs" | "destroy_not_due" | "not_scheduled";
 
 const systemActor = { type: "system", id: null } as const;
-const lastRun = new WeakMap<AppContext, number>();
 
-/** {@link finalizeDue}, at most once per {@link FINALIZE_INTERVAL_SECONDS}: for the sweeper. */
+/**
+ * {@link finalizeDue}, at most once per {@link FINALIZE_INTERVAL_SECONDS} across every replica
+ * on the database: for the sweeper, which runs in each. A round that outlasts the interval may
+ * meet the next one; every step is safe to repeat.
+ */
 export async function finalizeIfDue(
   ctx: AppContext,
 ): Promise<{ finalized: number; skipped: number } | null> {
-  const last = lastRun.get(ctx);
-  if (last !== undefined && ctx.now() - last < FINALIZE_INTERVAL_SECONDS) return null;
-  lastRun.set(ctx, ctx.now());
-  return finalizeDue(ctx);
+  const due = await takeToken(
+    ctx.db,
+    "sweep:lifecycle-finalize",
+    60 / FINALIZE_INTERVAL_SECONDS,
+    1,
+  );
+  return due ? finalizeDue(ctx) : null;
 }
 
 /**

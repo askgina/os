@@ -10,6 +10,12 @@
 // `prune` removes every key except the active one. Run it only after rewrap reported no failures:
 // a data key that is still wrapped under a removed key can never be read again.
 //
+// With several server replicas, a replica restarted after `add` wraps new data keys under a key
+// the others do not have yet, and they fail every read of those keys until they restart too. So
+// there the rotation has two phases: `add --inactive` puts the new key in without activating it;
+// once every replica restarted with it, `activate <id>` makes it the active one, and every replica
+// restarts again before rewrap.
+//
 // Nothing is printed except key ids. deploy/README.md has the whole procedure.
 import { randomBytes } from "node:crypto";
 import { chmodSync, chownSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -53,16 +59,32 @@ const [command, flag] = process.argv.slice(2);
 const keyring = read();
 
 if (command === "add") {
+  if (flag !== undefined && flag !== "--inactive") fail("add takes only --inactive");
   const numbers = Object.keys(keyring.keys)
     .map((id) => /^k([0-9]+)$/.exec(id)?.[1])
     .filter((digits) => digits !== undefined)
     .map(Number);
   const id = `k${Math.max(0, ...numbers) + 1}`;
   keyring.keys[id] = randomBytes(32).toString("base64");
-  keyring.active = id;
+  if (flag === undefined) keyring.active = id;
   write(keyring);
   process.stdout.write(
-    `${JSON.stringify({ event: "keyring.added", active: id, keys: Object.keys(keyring.keys) })}\n`,
+    `${JSON.stringify({
+      event: "keyring.added",
+      added: id,
+      active: keyring.active,
+      keys: Object.keys(keyring.keys),
+    })}\n`,
+  );
+} else if (command === "activate") {
+  if (typeof flag !== "string" || !Object.hasOwn(keyring.keys, flag)) {
+    fail("activate needs the id of a key in the keyring, as add printed it");
+  }
+  const previous = keyring.active;
+  keyring.active = flag;
+  if (previous !== flag) write(keyring);
+  process.stdout.write(
+    `${JSON.stringify({ event: "keyring.activated", active: flag, previous, keys: Object.keys(keyring.keys) })}\n`,
   );
 } else if (command === "prune") {
   if (flag !== "--confirm-rewrapped") {
@@ -76,5 +98,5 @@ if (command === "add") {
     `${JSON.stringify({ event: "keyring.pruned", active: keyring.active, removed })}\n`,
   );
 } else {
-  fail("usage: rotate-keyring.mjs add | prune --confirm-rewrapped");
+  fail("usage: rotate-keyring.mjs add [--inactive] | activate <id> | prune --confirm-rewrapped");
 }

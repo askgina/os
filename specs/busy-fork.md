@@ -102,9 +102,29 @@ Success means:
       Unproven: a real endpoint end to end (Milestone 4's stub-model stack).
 - [x] (2026-11-15) `@askgina/os-world` and `@askgina/os-keys` 0.1.0 published privately to
       GitHub Packages from tag `world-v0.1.0` (askgina/os run 43727574831).
-- [ ] Milestone 4: bot runner, bot identity, bots on the encrypting World.
-- [ ] Milestone 5: computers on gVisor with per-bot volumes.
+- [ ] Milestone 4: bot runner, bot identity, bots on the encrypting World. Built (2026-11-15),
+      `askgina/busy` `c07f727` (`Ultracite` run 43731297018, with the runner's own test job).
+      First real stack run green: `Fork` run 43732818581 at `0023585`, job `selfhosted-stack`:
+      the three images build, the stack starts, a bot is created through the Hub, built and
+      promoted by the runner on `@askgina/os-world/target`, and answers through the stub model.
+      As built, against the plan: the World and key packages are vendored as digest-checked
+      tarballs (`vendor/askgina/`), because the fork's CI has no token that reads private
+      packages; token hashes live in a table `bot_hub_tokens` (one row per token, bound to its
+      build, older ones revoked at promotion); the runner commits the finished builder
+      container as the bot image and runs the World's `bootstrap` at promotion; the runner API
+      gains `GET /v1/bots/{slug}`. Left for this box: the full gate (ciphertext scan with a
+      plaintext control bot, session round trip, token rules, redeploy, delete and shred, DNS),
+      written and pushed, CI pending.
+- [ ] Milestone 5: computers on gVisor with per-bot volumes. Built (2026-11-15), CI pending:
+      the runner's computer broker (`runsc` by default, refused when the runtime is absent),
+      per-bot drives, a live-view proxy with single-use tokens, the Hub's `selfhosted`
+      computers seam. No real-stack gate yet; a hosted CI runner has no gVisor.
 - [ ] Milestone 6: Hub on the encrypting World; storage, schedules, queues, observability.
+      Built (2026-11-15), CI pending: schedules on Postgres with a ticker service, an S3 object
+      store on Garage with uploads by descriptor, bot deletion completing on the self-hosted
+      platform, the Hub's own workflows on the vendored World, OTLP traces only when configured.
+      As built: the tick route is `POST /api/cron/schedules/tick`; the ticker is a script in the
+      hub image, not a new workspace. No real-stack gate for files and routines yet.
 - [ ] Milestone 7: the askgina/os wallet connection.
 - [ ] Milestone 8: switched-off features, documentation, threat model.
 - [ ] Run validation and record evidence.

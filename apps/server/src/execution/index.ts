@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { and, eq, inArray, isNull, lt, or } from "drizzle-orm";
 import type { Hono } from "hono";
 import type { AppContext } from "../context.ts";
@@ -7,6 +8,7 @@ import { registerLifecycleKinds } from "../lifecycle/kinds.ts";
 import { registerLifecycleRoutes } from "../lifecycle/routes.ts";
 import { type DeliveryCounts, deliverDueNotifications } from "../notify/outbox.ts";
 import { engineOf } from "./approvals.ts";
+import { BundleMismatchError, holdBundleLock } from "./bundle-guard.ts";
 import { registerCancelKind } from "./cancel.ts";
 import { registerIntentKind } from "./intents.ts";
 import { registerMandateKinds } from "./mandates.ts";
@@ -15,7 +17,7 @@ import { registerApprovalAndIntentRoutes } from "./routes.ts";
 import { registerSteps, unregisterSteps } from "./steps.ts";
 import { registerSweepKind } from "./sweeps.ts";
 import type { ExecutionOptions } from "./transactions.ts";
-import { loadGenerated, migrateWorld, workflowRuntime } from "./workflow-runtime.ts";
+import { GENERATED_DIR, loadGenerated, migrateWorld, workflowRuntime } from "./workflow-runtime.ts";
 
 export { mountMcp } from "../mcp/gateway.ts";
 export { createApprovalEngine } from "./approvals.ts";
@@ -143,11 +145,37 @@ export async function sweep(ctx: AppContext): Promise<{
 /**
  * Start the Workflow runtime and the sweeper. The World's tables are migrated first, the step
  * implementations registered, and runs delivered in this process.
+ *
+ * Every replica runs the sweeper. That is safe: a wake-up only resumes a hook and marks the
+ * outbox done when it worked, starts are serialized per request, notification rows are claimed
+ * with `SKIP LOCKED` under a lease, and retirements and deletions are finished at most once a
+ * minute across all replicas, by steps that may repeat. N replicas poll N times as often.
+ *
+ * Before the queue starts, this process takes the workflow-bundle lock: while another process
+ * on the database delivers runs from a different bundle, it refuses with
+ * {@link BundleMismatchError}, since runs are not pinned to a bundle. Should that lock be lost
+ * and another bundle be running when it is taken again, this process stops delivering and
+ * `onFatal` hears it.
  */
-export async function startBackground(ctx: AppContext): Promise<{ stop(): Promise<void> }> {
+export async function startBackground(
+  ctx: AppContext,
+  options: { onFatal?: (error: Error) => void } = {},
+): Promise<{ stop(): Promise<void> }> {
   const runtime = workflowRuntime(ctx);
   const generated = await loadGenerated();
   await migrateWorld(ctx.pool);
+  const mismatch = (error: BundleMismatchError) =>
+    ctx.log.error("another workflow bundle runs on this database", {
+      event: "workflow.bundle_mismatch",
+      bundleId: error.bundleId,
+    });
+  const bundle = await holdBundleLock(ctx.pool, join(GENERATED_DIR, "flow.mjs"), (error) => {
+    mismatch(error);
+    void stop().then(() => options.onFatal?.(error));
+  }).catch((error: unknown) => {
+    if (error instanceof BundleMismatchError) mismatch(error);
+    throw error;
+  });
   const steps = engineOf(ctx).steps();
   registerSteps(steps);
   runtime.world.registerHandler("__wkf_workflow_", generated.flow);
@@ -164,13 +192,17 @@ export async function startBackground(ctx: AppContext): Promise<{ stop(): Promis
   }, SWEEP_INTERVAL_MS);
   timer.unref();
 
-  return {
-    async stop() {
+  let stopped: Promise<void> | undefined;
+  const stop = () => {
+    stopped ??= (async () => {
       clearInterval(timer);
       await running;
       engineOf(ctx).attachRuntime(null);
       await runtime.world.close?.();
       unregisterSteps(steps);
-    },
+      await bundle.release();
+    })();
+    return stopped;
   };
+  return { stop };
 }

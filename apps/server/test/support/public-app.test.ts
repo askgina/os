@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ApiErrorBody } from "@askgina/os-api";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { engineOf } from "../../src/execution/approvals.ts";
+import { workflowRuntime } from "../../src/execution/workflow-runtime.ts";
 import { createPublicApp } from "../../src/http/app.ts";
 import { createTestContext, TEST_ORIGIN, type TestContext } from "./context.ts";
 
@@ -16,6 +18,31 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await t?.close();
+});
+
+describe("readiness", () => {
+  const ready = async (ctx = t.ctx) => {
+    const response = await createPublicApp(ctx).fetch(new Request(new URL("/readyz", TEST_ORIGIN)));
+    return { status: response.status, body: await response.json() };
+  };
+
+  it("is ready only while the World delivers runs and the database answers; health stays up", async () => {
+    // The test context never starts the World.
+    expect(await ready()).toEqual({ status: 503, body: { ok: false } });
+    const engine = engineOf(t.ctx);
+    engine.attachRuntime(workflowRuntime(t.ctx));
+    try {
+      expect(await ready()).toEqual({ status: 200, body: { ok: true } });
+      const down = { ...t.ctx, db: { execute: () => Promise.reject(new Error("down")) } as never };
+      expect(await ready(down)).toEqual({ status: 503, body: { ok: false } });
+    } finally {
+      engine.attachRuntime(null);
+    }
+    const health = await createPublicApp(t.ctx).fetch(
+      new Request(new URL("/healthz", TEST_ORIGIN)),
+    );
+    expect(health.status).toBe(200);
+  });
 });
 
 // The Workflow runtime's delivery routes are unauthenticated upstream: anyone who could reach

@@ -1,7 +1,9 @@
 import { type ApiErrorBody, CONTENT_SECURITY_POLICY } from "@askgina/os-api";
+import { sql } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppContext } from "../context.ts";
 import { registerDirectory } from "../directory/index.ts";
+import { engineOf } from "../execution/approvals.ts";
 import { mountMcp, mountWorkflowDelivery, registerExecution } from "../execution/index.ts";
 import { registerIdentity } from "../identity/index.ts";
 import { registerNotify } from "../notify/routes.ts";
@@ -30,6 +32,16 @@ export function createPublicApp(ctx: AppContext): Hono {
     return c.json(body, 404);
   });
   app.get("/healthz", (c) => c.json({ ok: true }));
+  // For load balancers and Kubernetes: ready once the database answers and the World started.
+  app.get("/readyz", async (c) => {
+    const ok =
+      engineOf(ctx).delivering &&
+      (await ctx.db.execute(sql`SELECT 1`).then(
+        () => true,
+        () => false,
+      ));
+    return c.json({ ok }, ok ? 200 : 503);
+  });
   registerIdentity(app, ctx);
   registerDirectory(app, ctx);
   registerExecution(app, ctx);

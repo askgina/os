@@ -43,6 +43,9 @@ controls a running server process.
   scope (`run` or `workspace`), the id, the tenant and the KEK id, so a wrapped key copied to
   another row does not unwrap. A call that names a different tenant than the key was created
   for is refused (`DataKeyTenantMismatchError`). Every failure throws; there is no "no key" value.
+  Every shred is announced on `LISTEN` channel `os_keys_shred` in its own transaction; a store
+  created with `listen: true` and started with `start()` drops each announced key from its cache
+  at once, and caches nothing while its listening connection is down. `close()` lets it go.
 - `seal(key, bytes, context)` / `open`, `sealJson` / `openJson` (also at `@askgina/os-keys/seal`):
   AES-256-GCM, layout `version(1) || iv(12) || ciphertext || tag(16)`. `context` (for example
   `intents.payload:int_…`) is authenticated, so a sealed value moved to another row or column
@@ -110,8 +113,9 @@ Shred (crypto-erase) one run or one workspace:
 The wrapped key is destroyed and a tombstone stays, so the id can never get a new key and
 everything encrypted under the old one is unreadable for good. Exit code 3 means there was no
 live key (already shredded, or never created); the tombstone is in place either way.
-Processes that already hold the key in memory keep it for up to their cache TTL (one minute by
-default); a shred is complete across the fleet only after that.
+Processes that already hold the key in memory and listen (the server does) drop it at once;
+others keep it for up to their cache TTL (one minute by default), so a shred is complete across
+the fleet only after that.
 
 Shred every run key of one workspace (each key that was created with that tenant id):
 

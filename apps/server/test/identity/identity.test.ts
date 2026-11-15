@@ -1,9 +1,15 @@
 import { ApiError, ApiErrorBody, routes } from "@askgina/os-api";
 import type { AssertionResponse } from "@askgina/os-protocol";
+import { createTestDatabase } from "@askgina/os-testkit";
 import { eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
+import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { main as cli } from "../../src/cli.ts";
+import { migrateDatabase } from "../../src/db/migrate.ts";
+import * as schema from "../../src/db/schema.ts";
 import { credentials, installation, sessions } from "../../src/db/schema.ts";
-import { prepareSetup } from "../../src/identity/setup.ts";
+import { checkSetupToken, prepareSetup } from "../../src/identity/setup.ts";
 import { createTestContext, TEST_ORIGIN, type TestContext } from "../support/context.ts";
 
 let t: TestContext;
@@ -60,6 +66,65 @@ describe("first-run setup", () => {
     });
     await fresh.close();
     expect(seen).toEqual({ required: true, code: "forbidden" });
+  });
+
+  it("two boots at once mint one setup token; the command replaces it; the log can keep it out", async () => {
+    const database = await createTestDatabase("identity_boots");
+    const pools = [0, 1].map(() => new pg.Pool({ connectionString: database.url, max: 2 }));
+    try {
+      await migrateDatabase(pools[0] as pg.Pool);
+      const lines: string[] = [];
+      const log = {
+        info: (message: string, fields: object = {}) =>
+          lines.push(JSON.stringify({ message, ...fields })),
+        warn: () => {},
+        error: () => {},
+      };
+      // Two replicas on one fresh database, each its own process with its own pool.
+      const replicas = pools.map((pool) => ({
+        db: drizzle(pool, { schema }),
+        log,
+        config: t.ctx.config,
+      }));
+      const minted = await Promise.all(replicas.map((replica) => prepareSetup(replica)));
+      const tokens = minted.filter((token) => token !== null);
+      expect(tokens).toHaveLength(1);
+      expect(lines.filter((line) => line.includes('"setup.token_issued"'))).toHaveLength(1);
+      expect(lines.filter((line) => line.includes('"setup.token_pending"'))).toHaveLength(1);
+      const [first] = replicas;
+      if (!first) throw new Error("no replica");
+      expect(await checkSetupToken(first, tokens[0] ?? "")).toBe(true);
+      // A restart keeps the token an operator may be typing.
+      expect(await prepareSetup(first)).toBeNull();
+      expect(await checkSetupToken(first, tokens[0] ?? "")).toBe(true);
+
+      // The operator's command replaces it, on stdout and not in the log.
+      const printed: object[] = [];
+      expect(await cli(["setup-token"], first, (line) => printed.push(line))).toBe(0);
+      const rotated = (printed[0] as { setupToken?: string } | undefined)?.setupToken ?? "";
+      expect(printed).toEqual([{ ok: true, setupToken: rotated }]);
+      expect(await checkSetupToken(first, rotated)).toBe(true);
+      expect(await checkSetupToken(first, tokens[0] ?? "")).toBe(false);
+      expect(lines.join("\n")).not.toContain(rotated);
+
+      // With SETUP_TOKEN_IN_LOG=false a boot logs no token and replaces none.
+      lines.length = 0;
+      const quiet = { ...first, config: { ...t.ctx.config, setupTokenInLog: false } };
+      expect(await prepareSetup(quiet)).toBeNull();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('"setup.token_pending"');
+      expect(await checkSetupToken(first, rotated)).toBe(true);
+    } finally {
+      await Promise.all(pools.map((pool) => pool.end()));
+      await database.drop();
+    }
+  });
+
+  it("the setup-token command refuses once the first owner exists", async () => {
+    const printed: object[] = [];
+    expect(await cli(["setup-token"], t.ctx, (line) => printed.push(line))).toBe(3);
+    expect(printed).toEqual([{ ok: false, code: "setup_done" }]);
+    expect(await t.ctx.db.select().from(installation)).toEqual([]);
   });
 
   it("reports who is signed in", async () => {

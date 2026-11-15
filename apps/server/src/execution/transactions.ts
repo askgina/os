@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import type { TransactionAttemptView, TransactionInfo } from "@askgina/os-api";
 import type { ApprovalId, ChainId, IntentId, WorkspaceId } from "@askgina/os-protocol";
 import {
@@ -554,6 +555,13 @@ export async function signOnce(
   },
 ): Promise<void> {
   const { approval, wallet, chainId } = input;
+  // Which replica runs the step, so an operator (or the replica gate) can find it: ids only.
+  ctx.log.info("signing step started", {
+    event: "step.started",
+    approvalId: approval.id,
+    step: "sign",
+    replica: hostname(),
+  });
   const nonce = await reserveNonce(ctx, approval.id, wallet, chainId);
   const quote = await chainAccess(ctx).fees(chainId);
   let chosen: FeeChoice;

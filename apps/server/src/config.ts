@@ -156,6 +156,29 @@ const Environment = z
     REPRICE_BUMP_PERCENT: integer(12, 10, 100),
     WORKFLOW_WORKER_CONCURRENCY: integer(10, 1, 200),
     /**
+     * How long an unwrapped data key stays in this process's memory, 0 to 600 seconds. A shred in
+     * any replica reaches every replica's cache at once (`LISTEN os_keys_shred`); this is the
+     * upper bound while that connection is down, when nothing is cached anyway.
+     */
+    DATA_KEY_CACHE_SECONDS: optional(z.coerce.number().int().min(0).max(600)).transform(
+      (value) => value ?? 60,
+    ),
+    /**
+     * How many proxies append to `X-Forwarded-For` in front of the server, 1 to 5: the address
+     * this many entries from the end is the client a failed agent authentication is charged to.
+     * 1 behind the bundled Caddy; 2 with one load balancer in front of it.
+     */
+    FORWARDED_HOPS: optional(z.coerce.number().int().min(1).max(5)).transform(
+      (value) => value ?? 1,
+    ),
+    /**
+     * `false` (or `0`) keeps the setup token out of the server's log: boots then mint none, and
+     * the operator gets one from `node apps/server/src/cli.ts setup-token`. On unless set.
+     */
+    SETUP_TOKEN_IN_LOG: optional(z.enum(["0", "1", "false", "true"])).transform(
+      (value) => value !== "0" && value !== "false",
+    ),
+    /**
      * If set, receives a signed POST with identifiers only when an approval waits and when a
      * mandate is used, retried until it is accepted (see `src/notify/webhook.ts`).
      */
@@ -297,6 +320,12 @@ export interface Config {
   reconcileTimeoutSeconds: number;
   reprice: RepriceConfig;
   workflowWorkerConcurrency: number;
+  /** Seconds an unwrapped data key may stay in memory; 0 caches nothing. */
+  dataKeyCacheSeconds: number;
+  /** Which `X-Forwarded-For` entry, counted from the end, names the client. */
+  forwardedHops: number;
+  /** Whether a boot before setup mints the setup token and logs it. */
+  setupTokenInLog: boolean;
   notify: NotifyConfig;
 }
 
@@ -391,6 +420,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       bumpPercent: parsed.REPRICE_BUMP_PERCENT,
     },
     workflowWorkerConcurrency: parsed.WORKFLOW_WORKER_CONCURRENCY,
+    dataKeyCacheSeconds: parsed.DATA_KEY_CACHE_SECONDS,
+    forwardedHops: parsed.FORWARDED_HOPS,
+    setupTokenInLog: parsed.SETUP_TOKEN_IN_LOG,
     notify: {
       webhook:
         parsed.NOTIFY_WEBHOOK_URL !== undefined && parsed.NOTIFY_WEBHOOK_SECRET_FILE !== undefined
