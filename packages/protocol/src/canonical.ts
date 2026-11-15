@@ -15,6 +15,10 @@ export const DomainTag = {
   sweep: "askgina.os/v1/sweep",
   /** The challenge of the step where a new approver proves they hold the passkey being added. */
   possession: "askgina.os/v1/possession",
+  /** A mandate: what people approve once for a series of an agent's transfers. */
+  mandate: "askgina.os/v1/mandate",
+  /** One use of a mandate, the signer's record of a transfer it signed under that mandate. */
+  mandateUse: "askgina.os/v1/mandate-use",
 } as const;
 export type DomainTag = (typeof DomainTag)[keyof typeof DomainTag];
 

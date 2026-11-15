@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { mandateHash } from "../src/index.ts";
 import {
   CONFIRM_TOKEN_HEADER,
   createConfirmClient,
@@ -12,7 +13,19 @@ import {
   TIMESTAMP_HEADER,
   verifyRequestSignature,
 } from "../src/signer/index.ts";
-import { APPROVAL, approveIntent, intent, sweep, sweepWallet, T0, WALLET, WS } from "./fixtures.ts";
+import {
+  APPROVAL,
+  approveIntent,
+  grantMandate,
+  intent,
+  MANDATE,
+  mandate,
+  sweep,
+  sweepWallet,
+  T0,
+  WALLET,
+  WS,
+} from "./fixtures.ts";
 
 const SECRET = new Uint8Array(32).fill(7);
 const encode = (text: string) => new TextEncoder().encode(text);
@@ -202,6 +215,110 @@ describe("signer client", () => {
     );
     expect(JSON.parse(new TextDecoder().decode(call?.init.body as Uint8Array))).toEqual(request);
     expect(verifyRecorded(call as Recorded)).toBe(true);
+  });
+
+  it("sends each mandate call to its route, signed, with its body, and parses the answer", async () => {
+    const state = {
+      mandate: mandate(),
+      mandateHash: mandateHash(mandate()),
+      status: "active",
+      grantApprovalId: APPROVAL,
+      grantedAt: T0,
+      grantedBy: ["usr_01jd0000000000000000000006"],
+      revokedAt: null,
+      revokedReason: null,
+      usage: { uses: 0, assets: [] },
+    };
+    const signed = {
+      approvalId: APPROVAL,
+      walletId: WALLET,
+      from: "0x1111111111111111111111111111111111111111",
+      signedTransaction: "0x02",
+      transactionHash: `0x${"ab".repeat(32)}`,
+    };
+    const { signer, calls } = client((url) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/sign")) return { status: 200, body: signed };
+      if (path.endsWith("/mandates") && path.startsWith("/v1/wallets/")) {
+        return { status: 200, body: { mandates: [state] } };
+      }
+      return { status: 200, body: state };
+    });
+    const grant = {
+      mandate: mandate(),
+      authorization: { envelope: grantMandate(), assertions: [] },
+    };
+    const use = {
+      approvalId: APPROVAL,
+      intent: intent(),
+      transaction: { nonce: 0, gas: "21000", maxFeePerGas: "1", maxPriorityFeePerGas: "1" },
+    };
+
+    expect(await signer.grantMandate(MANDATE, grant as never)).toEqual(state);
+    expect(await signer.getMandate(MANDATE)).toEqual(state);
+    expect(await signer.listMandates(WALLET)).toEqual({ mandates: [state] });
+    expect(await signer.revokeMandate(MANDATE, WS)).toEqual(state);
+    expect(await signer.signUnderMandate(MANDATE, use)).toEqual(signed);
+
+    expect(calls.map((c) => `${c.init.method} ${new URL(c.url).pathname}`)).toEqual([
+      `PUT /v1/mandates/${MANDATE}`,
+      `GET /v1/mandates/${MANDATE}`,
+      `GET /v1/wallets/${WALLET}/mandates`,
+      `POST /v1/mandates/${MANDATE}/revoke`,
+      `POST /v1/mandates/${MANDATE}/sign`,
+    ]);
+    for (const name of [
+      "grantMandate",
+      "getMandate",
+      "listMandates",
+      "revokeMandate",
+      "signUnderMandate",
+    ] as const) {
+      expect(signerRoutes[name].scope).toBe("control");
+    }
+    for (const call of calls) expect(verifyRecorded(call)).toBe(true);
+    const body = (call: Recorded | undefined) =>
+      call?.init.body === undefined
+        ? undefined
+        : JSON.parse(new TextDecoder().decode(call.init.body as Uint8Array));
+    expect(calls.map(body)).toEqual([grant, undefined, undefined, { workspaceId: WS }, use]);
+  });
+
+  it("passes a mandate refusal on with its code and detail, and refuses a state with another hash", async () => {
+    const { signer } = client(() => ({
+      status: 403,
+      body: {
+        error: { code: "mandate_denied", message: "denied", detail: "mandate_over_window_cap" },
+      },
+    }));
+    const use = {
+      approvalId: APPROVAL,
+      intent: intent(),
+      transaction: { nonce: 0, gas: "21000", maxFeePerGas: "1", maxPriorityFeePerGas: "1" },
+    };
+    await expect(signer.signUnderMandate(MANDATE, use)).rejects.toMatchObject({
+      name: "SignerError",
+      code: "mandate_denied",
+      status: 403,
+      detail: "mandate_over_window_cap",
+    });
+    const forged = client(() => ({
+      status: 200,
+      body: {
+        mandate: mandate(),
+        mandateHash: "a".repeat(64),
+        status: "active",
+        grantApprovalId: APPROVAL,
+        grantedAt: T0,
+        grantedBy: ["usr_01jd0000000000000000000006"],
+        revokedAt: null,
+        revokedReason: null,
+        usage: { uses: 0, assets: [] },
+      },
+    }));
+    const error = await forged.signer.getMandate(MANDATE).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(SignerError);
   });
 
   it("gives up on a signer that never answers", async () => {

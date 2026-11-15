@@ -135,6 +135,7 @@ function walletIdOf(envelope: Envelope): WalletId | null {
     case "approve-intent":
     case "set-policy":
     case "sweep-wallet":
+    case "grant-mandate":
       return envelope.walletId;
     default:
       return null;

@@ -3,6 +3,7 @@ export * from "./confirmation.ts";
 export * from "./envelopes.ts";
 export * from "./evaluate.ts";
 export * from "./intent.ts";
+export * from "./mandate.ts";
 export * from "./policy.ts";
 export * from "./primitives.ts";
 export { SignerDecision } from "./signer/api.ts";

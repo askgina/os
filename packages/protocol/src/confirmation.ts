@@ -7,10 +7,12 @@ import {
   type ApproveIntentEnvelope,
   Envelope,
   type EnvelopeType,
+  type GrantMandateEnvelope,
   type SetPolicyEnvelope,
   type SweepWalletEnvelope,
 } from "./envelopes.ts";
 import { Intent, intentHash, intentSpend } from "./intent.ts";
+import { Mandate, mandateHash, mandateWorstCase } from "./mandate.ts";
 import { assetLimitKey, policyHash, WalletPolicy } from "./policy.ts";
 import {
   Address,
@@ -92,6 +94,7 @@ export const ConfirmationSubject = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("approve-intent"), intent: Intent }),
   z.strictObject({ kind: z.literal("set-policy"), policy: WalletPolicy }),
   z.strictObject({ kind: z.literal("sweep-wallet"), sweep: Sweep }),
+  z.strictObject({ kind: z.literal("grant-mandate"), mandate: Mandate }),
   z.strictObject({ kind: z.literal("envelope-only") }),
 ]);
 export type ConfirmationSubject = z.infer<typeof ConfirmationSubject>;
@@ -99,13 +102,17 @@ export type ConfirmationSubject = z.infer<typeof ConfirmationSubject>;
 /** Why a subject is not what an envelope names. The signer refuses with the same code. */
 export type SubjectMismatch = Extract<SignerErrorCode, "envelope_mismatch" | "intent_mismatch">;
 
-type EnvelopeOnly = Exclude<Envelope, { type: "approve-intent" | "set-policy" | "sweep-wallet" }>;
+type EnvelopeOnly = Exclude<
+  Envelope,
+  { type: "approve-intent" | "set-policy" | "sweep-wallet" | "grant-mandate" }
+>;
 
 /** An envelope paired with its validated subject. */
 type Matched =
   | { kind: "approve-intent"; envelope: ApproveIntentEnvelope; intent: Intent }
   | { kind: "set-policy"; envelope: SetPolicyEnvelope; policy: WalletPolicy }
   | { kind: "sweep-wallet"; envelope: SweepWalletEnvelope; sweep: Sweep }
+  | { kind: "grant-mandate"; envelope: GrantMandateEnvelope; mandate: Mandate }
   | { kind: "envelope-only"; envelope: EnvelopeOnly };
 
 // The fields are compared before the hash, in the same order as the signer's own checks, so a
@@ -158,6 +165,22 @@ function matchSubject(envelope: Envelope, subject: ConfirmationSubject): Matched
         return "envelope_mismatch";
       }
       return { kind: "sweep-wallet", envelope, sweep };
+    }
+    case "grant-mandate": {
+      if (subject.kind !== "grant-mandate") return "envelope_mismatch";
+      const parsed = Mandate.safeParse(subject.mandate);
+      if (!parsed.success) return "envelope_mismatch";
+      const mandate = parsed.data;
+      if (
+        mandate.id !== envelope.mandateId ||
+        mandate.workspaceId !== envelope.workspaceId ||
+        mandate.walletId !== envelope.walletId ||
+        mandate.agentId !== envelope.agentId ||
+        mandateHash(mandate) !== envelope.mandateHash
+      ) {
+        return "envelope_mismatch";
+      }
+      return { kind: "grant-mandate", envelope, mandate };
     }
     case "add-approver":
     case "remove-approver":
@@ -307,6 +330,7 @@ export type RenderedConfirmation = {
 };
 
 const AGENT_NOTE = "Agent's note, not checked";
+const PURPOSE = "Purpose, not checked";
 const WALLET_NAME = "Wallet name, not checked";
 const ADMIN_THRESHOLD = "Approvals needed for workspace changes";
 
@@ -347,6 +371,8 @@ function renderMatched(out: Output, matched: Matched): string {
       return renderPolicy(out, matched.policy);
     case "sweep-wallet":
       return renderSweep(out, matched.sweep);
+    case "grant-mandate":
+      return renderMandate(out, matched.mandate);
     case "envelope-only":
       return renderEnvelopeOnly(out, matched.envelope);
   }
@@ -371,7 +397,7 @@ function renderOperation(out: Output, intent: Intent): string {
     case "evm.transfer": {
       const amount = amountText(unitOf(out, chainId, "native"), operation.valueWei);
       push(out, "Amount", amount, "amount");
-      recipientLines(out, operation.to);
+      recipientLines(out, "To", operation.to);
       return `Send ${amount}`;
     }
     case "evm.erc20.transfer": {
@@ -379,7 +405,7 @@ function renderOperation(out: Output, intent: Intent): string {
       const amount = amountText(unit, operation.amount);
       push(out, "Amount", amount, "amount");
       tokenLines(out, unit, operation.token);
-      recipientLines(out, operation.to);
+      recipientLines(out, "To", operation.to);
       return unit.known ? `Send ${amount}` : `Send ${amount} of an unknown token`;
     }
     case "evm.call": {
@@ -395,8 +421,8 @@ function renderOperation(out: Output, intent: Intent): string {
   }
 }
 
-function recipientLines(out: Output, to: Address): void {
-  addressLines(out, "To", to);
+function recipientLines(out: Output, label: string, to: Address): void {
+  addressLines(out, label, to);
   const policy = out.input.currentPolicy;
   if (policy === null) return;
   if (policy.recipients.mode === "any") {
@@ -492,6 +518,95 @@ function renderSweep(out: Output, sweep: Sweep): string {
   walletLines(out, sweep.walletId);
   const moved = unit.known ? amount : `${amount} of an unknown token`;
   return `Move ${moved} out of the wallet`;
+}
+
+// --- mandates ---------------------------------------------------------------------------------
+
+function renderMandate(out: Output, mandate: Mandate): string {
+  push(out, "Agent that may pay", mandate.agentId, "code");
+  walletLines(out, mandate.walletId);
+  const policy = out.input.currentPolicy;
+  push(
+    out,
+    "Wallet policy",
+    policy === null
+      ? "none is set for this wallet"
+      : "still applies: each payment must also fit it",
+    "text",
+  );
+
+  const worstCase = new Map(
+    mandateWorstCase(mandate).map((worst) => [assetLimitKey(worst), worst.amount]),
+  );
+  const window = formatDuration(mandate.windowSeconds);
+  let title = "Let an agent pay without asking, up to the amounts below";
+  for (const limit of mandate.assets) {
+    const key = assetLimitKey(limit);
+    const unit = unitOf(out, limit.chainId, limit.asset);
+    push(out, "Asset", assetOnChain(out, unit, limit.chainId, limit.asset), "text");
+    if (limit.asset !== "native") addressLines(out, "Token contract", limit.asset);
+    push(out, "Most per payment", amountText(unit, limit.maxPerAction), "amount");
+    push(out, `Most in any ${window}`, amountText(unit, limit.maxPerWindow), "amount");
+    push(out, "Most in total", amountText(unit, limit.maxTotal), "amount");
+    const worst = amountText(unit, worstCase.get(key) ?? 0n);
+    push(out, "Most that can leave the wallet", worst, "amount");
+    if (policy !== null) {
+      const cap = policy.assets.find((candidate) => assetLimitKey(candidate) === key);
+      if (cap === undefined) {
+        push(out, "Wallet's limits", "none: the wallet's policy does not let it leave", "text");
+      } else {
+        push(
+          out,
+          "Wallet's limits",
+          `${amountText(unit, cap.maxPerTx)} per transaction, ${amountText(unit, cap.maxPerDay)} per 24 hours`,
+          "amount",
+        );
+      }
+    }
+    if (mandate.assets.length === 1) {
+      const named = unit.known || limit.asset === "native" ? worst : `${worst} of an unknown token`;
+      title = `Let an agent pay up to ${named} without asking`;
+    }
+  }
+
+  const count = mandate.recipients.length;
+  push(
+    out,
+    "Recipients",
+    count === 1 ? "only this address" : `only these ${count} addresses`,
+    "text",
+  );
+  for (const to of mandate.recipients) recipientLines(out, "May pay", to);
+  push(
+    out,
+    "Payments at most",
+    mandate.maxUses === 1 ? "1 payment" : `${mandate.maxUses} payments`,
+    "text",
+  );
+  const fee = BigInt(mandate.maxFeePerActionWei);
+  push(
+    out,
+    "Network fee ceiling per payment",
+    `${formatUnits(fee, 18)} of the native coin`,
+    "amount",
+  );
+  push(
+    out,
+    "Network fees at most, in total",
+    `${formatUnits(fee * BigInt(mandate.maxUses), 18)} of the native coin`,
+    "amount",
+  );
+  push(out, "Starts", formatUtc(mandate.notBefore), "text");
+  push(out, "Ends", formatUtc(mandate.notAfter), "text");
+  push(
+    out,
+    "What counts",
+    "every payment the signer signs, also one the network never includes",
+    "text",
+  );
+  push(out, "Mandate id", mandate.id, "code");
+  if (mandate.purpose !== "") push(out, PURPOSE, uncheckedText(mandate.purpose), "unchecked");
+  return title;
 }
 
 function renderEnvelopeOnly(out: Output, envelope: EnvelopeOnly): string {
@@ -670,12 +785,7 @@ function policyLimitLines(out: Output, current: WalletPolicy | null, next: Walle
     const limit = now ?? was;
     if (limit === undefined) continue;
     const unit = unitOf(out, limit.chainId, limit.asset);
-    const asset = unit.known
-      ? unit.symbol
-      : limit.asset === "native"
-        ? "the native coin"
-        : `token ${limit.asset}`;
-    const name = `${asset} on ${chainName(out, limit.chainId)}`;
+    const name = assetOnChain(out, unit, limit.chainId, limit.asset);
     if (was === undefined && now !== undefined) {
       changed += 1;
       push(
@@ -754,6 +864,12 @@ function unitOf(out: Output, chainId: ChainId, asset: AssetRef): Unit {
   return { known: true, symbol: label.symbol, decimals: label.decimals };
 }
 
+/** How a policy or a mandate names one of its assets: "USDC on Base (eip155:8453)". */
+function assetOnChain(out: Output, unit: Unit, chainId: ChainId, asset: AssetRef): string {
+  const name = unit.known ? unit.symbol : asset === "native" ? "the native coin" : `token ${asset}`;
+  return `${name} on ${chainName(out, chainId)}`;
+}
+
 function amountText(unit: Unit, amount: bigint | string): string {
   const value = BigInt(amount);
   return unit.known
@@ -818,6 +934,8 @@ function formatUtc(epochSeconds: number): string {
 }
 
 function formatDuration(seconds: number): string {
+  // Above a day only, so the policy's longest approval lifetime stays "24 hours".
+  if (seconds > 86_400 && seconds % 86_400 === 0) return `${seconds / 86_400} days`;
   if (seconds % 3600 === 0) return `${seconds / 3600} hour${seconds === 3600 ? "" : "s"}`;
   if (seconds % 60 === 0) return `${seconds / 60} minute${seconds === 60 ? "" : "s"}`;
   return `${seconds} seconds`;

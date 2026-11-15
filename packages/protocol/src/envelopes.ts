@@ -7,6 +7,7 @@ import {
   ChainId,
   Digest,
   EpochSeconds,
+  MandateId,
   Nonce,
   PROTOCOL_VERSION,
   UserId,
@@ -100,6 +101,21 @@ export const SweepWalletEnvelope = z.strictObject({
 });
 export type SweepWalletEnvelope = z.infer<typeof SweepWalletEnvelope>;
 
+/**
+ * Let one agent transfer from one wallet without a passkey per payment, within the `Mandate`
+ * whose hash is `mandateHash`. Approved at the admin threshold; the wallet's policy still applies
+ * to every payment.
+ */
+export const GrantMandateEnvelope = z.strictObject({
+  ...envelopeHeader,
+  type: z.literal("grant-mandate"),
+  mandateId: MandateId,
+  walletId: WalletId,
+  agentId: AgentId,
+  mandateHash: Digest,
+});
+export type GrantMandateEnvelope = z.infer<typeof GrantMandateEnvelope>;
+
 export const Envelope = z
   .discriminatedUnion("type", [
     ApproveIntentEnvelope,
@@ -109,6 +125,7 @@ export const Envelope = z
     SetAdminThresholdEnvelope,
     ResumeWorkspaceEnvelope,
     SweepWalletEnvelope,
+    GrantMandateEnvelope,
   ])
   .refine((envelope) => envelope.expiresAt > envelope.issuedAt, {
     path: ["expiresAt"],

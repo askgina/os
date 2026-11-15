@@ -1,3 +1,4 @@
+import type { ApprovalKind } from "@askgina/os-api";
 import type {
   AgentId,
   ApprovalId,
@@ -282,7 +283,8 @@ export const approvals = os.table(
       .$type<WorkspaceId>()
       .notNull()
       .references(() => workspaces.id),
-    kind: text("kind").$type<Envelope["type"]>().notNull(),
+    /** The kinds this control plane opens, a subset of the envelope kinds the signer knows. */
+    kind: text("kind").$type<ApprovalKind>().notNull(),
     /** What the request is about: an intent id, a wallet id, a credential id or the workspace id. */
     subjectId: text("subject_id").notNull(),
     status: text("status").$type<ApprovalStatusColumn>().notNull().default("pending"),

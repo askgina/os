@@ -6,6 +6,10 @@ import {
   envelopeChallenge,
   type Intent,
   intentHash,
+  type Mandate,
+  mandateHash,
+  mandateUseDigest,
+  normalizeMandate,
   policyHash,
   possessionChallenge,
   type Sweep,
@@ -19,9 +23,13 @@ import {
   BOB,
   changedEnvelopes,
   envelopeVariants,
+  grantMandate,
   INTENT,
   intent,
   MAINNET,
+  MANDATE,
+  mandate,
+  mandateAsset,
   OTHER_AGENT,
   policy,
   sweep,
@@ -62,6 +70,14 @@ const POSSESSION = {
 } as const;
 const POSSESSION_JSON = `{"approvalId":"${APPROVAL}","credentialId":"Y3JlZC1h","nonce":"AAAAAAAAAAAAAAAAAAAAAA","v":1}`;
 const POSSESSION_CHALLENGE = "7voVoMiWeZwDat_WCB8R-xOqaIfjygPAYO7xmCsm8ec";
+
+// Added with mandates. The vectors above did not change.
+const MANDATE_JSON = `{"agentId":"${AGENT}","assets":[{"asset":"0x833589fcd6edb6e08f4c7c32d4f71b54bda02913","chainId":"eip155:8453","maxPerAction":"100000000","maxPerWindow":"500000000","maxTotal":"1000000000"}],"id":"${MANDATE}","maxFeePerActionWei":"2000000000000000","maxUses":20,"notAfter":1700604000,"notBefore":1700000000,"purpose":"pay supplier invoices this week","recipients":["${ALICE}","${BOB}","${TOKEN}"],"v":1,"walletId":"${WALLET}","windowSeconds":86400,"workspaceId":"${WS}"}`;
+const MANDATE_HASH = "368a65426f5e33c8fa92c281a9a2d600328b39635fea2d60e67400c5cb65d7d4";
+const GRANT_MANDATE_JSON = `{"agentId":"${AGENT}","approvalId":"${APPROVAL}","expiresAt":1700000600,"issuedAt":1700000000,"mandateHash":"${MANDATE_HASH}","mandateId":"${MANDATE}","nonce":"AAAAAAAAAAAAAAAAAAAAAA","type":"grant-mandate","v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+const GRANT_MANDATE_CHALLENGE = "TjkhTXhNOAPy5fq2YK8479_qPLBCg1DFmvX1g0zX55c";
+const MANDATE_USE_JSON = `{"approvalId":"${APPROVAL}","intentHash":"${INTENT_HASH}","mandateId":"${MANDATE}","v":1}`;
+const MANDATE_USE_DIGEST = "96fe14af43d24b9388d45b9f7a478c48a1d37c944056f9b5319ddad6bd990cd7";
 
 describe("pinned digest vectors", () => {
   it("intentHash", () => {
@@ -108,6 +124,32 @@ describe("pinned digest vectors", () => {
     expect(() => possessionChallenge({ ...POSSESSION, nonce: "short" })).toThrow();
   });
 
+  it("mandateHash and the grant-mandate envelope's challenge", () => {
+    expect(canonicalJson(mandate())).toBe(MANDATE_JSON);
+    expect(mandateHash(mandate())).toBe(MANDATE_HASH);
+    const envelope = grantMandate({ mandateHash: MANDATE_HASH });
+    expect(canonicalJson(envelope)).toBe(GRANT_MANDATE_JSON);
+    expect(Buffer.from(envelopeChallenge(envelope)).toString("base64url")).toBe(
+      GRANT_MANDATE_CHALLENGE,
+    );
+  });
+
+  it("mandateUseDigest", () => {
+    const use = { approvalId: APPROVAL, mandateId: MANDATE, intentHash: INTENT_HASH };
+    expect(canonicalJson({ v: 1, ...use })).toBe(MANDATE_USE_JSON);
+    expect(mandateUseDigest(use)).toBe(MANDATE_USE_DIGEST);
+    for (const change of [
+      { approvalId: "apr_01jd000000000000000000000z" as const },
+      { mandateId: "mnd_01jd000000000000000000000z" as const },
+      { intentHash: POLICY_HASH },
+    ]) {
+      expect(mandateUseDigest({ ...use, ...change })).not.toBe(MANDATE_USE_DIGEST);
+    }
+    expect(() => mandateUseDigest({ ...use, intentHash: "short" })).toThrow();
+    // The same three identifiers under the envelope tag are not a use, and the reverse.
+    expect(digestHex(DomainTag.authorize, { v: 1, ...use })).not.toBe(MANDATE_USE_DIGEST);
+  });
+
   it("domain tags", () => {
     expect(DomainTag).toEqual({
       intent: "askgina.os/v1/intent",
@@ -116,6 +158,8 @@ describe("pinned digest vectors", () => {
       audit: "askgina.os/v1/audit",
       sweep: "askgina.os/v1/sweep",
       possession: "askgina.os/v1/possession",
+      mandate: "askgina.os/v1/mandate",
+      mandateUse: "askgina.os/v1/mandate-use",
     });
     expect(digestHex(DomainTag.intent, policy())).toBe(POLICY_UNDER_INTENT_TAG);
   });
@@ -140,6 +184,47 @@ describe("every sweep field is bound", () => {
         .filter((key) => key !== "v")
         .sort(),
     );
+  });
+});
+
+describe("every mandate field is bound", () => {
+  const changes: { [K in keyof Mandate]?: Mandate[K] } = {
+    id: `mnd_01jd000000000000000000000z`,
+    workspaceId: `ws_01jd000000000000000000000b`,
+    walletId: `wal_01jd000000000000000000000c`,
+    agentId: OTHER_AGENT,
+    assets: [mandateAsset({ maxTotal: "1000000001" })],
+    windowSeconds: 86_401,
+    recipients: [ALICE, BOB],
+    maxUses: 21,
+    maxFeePerActionWei: "2000000000000001",
+    notBefore: T0 + 1,
+    notAfter: T0 + 604_001,
+    purpose: "pay supplier invoices next week",
+  };
+  it.each(Object.entries(changes))("%s", (field, value) => {
+    expect(mandateHash({ ...mandate(), [field]: value })).not.toBe(MANDATE_HASH);
+  });
+  it("covers every field except the version", () => {
+    expect(Object.keys(changes).sort()).toEqual(
+      Object.keys(mandate())
+        .filter((key) => key !== "v")
+        .sort(),
+    );
+  });
+  it.each([
+    ["chainId", { chainId: MAINNET }],
+    ["asset", { asset: TOKEN }],
+    ["maxPerAction", { maxPerAction: "100000001" }],
+    ["maxPerWindow", { maxPerWindow: "500000001" }],
+    ["maxTotal", { maxTotal: "1000000001" }],
+  ] as const)("asset %s", (_field, change) => {
+    expect(mandateHash(mandate({ assets: [mandateAsset(change)] }))).not.toBe(MANDATE_HASH);
+  });
+  it("is stable under normalizeMandate", () => {
+    const shuffled = mandate({ recipients: [TOKEN, ALICE, BOB, ALICE] });
+    expect(mandateHash(normalizeMandate(shuffled))).toBe(MANDATE_HASH);
+    expect(normalizeMandate(mandate())).toEqual(mandate());
   });
 });
 

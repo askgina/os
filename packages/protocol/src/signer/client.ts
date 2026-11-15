@@ -1,7 +1,7 @@
 import type { z } from "zod";
 import { ConfirmationView } from "../confirmation.ts";
 import type { AssertionResponse, Authorization } from "../envelopes.ts";
-import type { ApprovalId, WalletId, WorkspaceId } from "../primitives.ts";
+import type { ApprovalId, MandateId, WalletId, WorkspaceId } from "../primitives.ts";
 import {
   type AddApproverRequest,
   ApprovalState,
@@ -9,9 +9,12 @@ import {
   type CreateWalletRequest,
   type CreateWorkspaceRequest,
   GetPossessionResponse,
+  type GrantMandateRequest,
   HealthResponse,
   ListConfirmationAssertionsResponse,
   ListDecisionsResponse,
+  ListMandatesResponse,
+  MandateState,
   type OpenConfirmationRequest,
   OpenConfirmationResponse,
   type SetPolicyRequest,
@@ -19,6 +22,7 @@ import {
   type SignerErrorCode,
   type SignRequest,
   SignResponse,
+  type SignUnderMandateRequest,
   SubmitConfirmationResponse,
   SubmitPossessionResponse,
   type SweepRequest,
@@ -93,6 +97,12 @@ export interface SignerClient {
   sweep(walletId: WalletId, request: SweepRequest): Promise<SignResponse>;
   revokeApproval(approvalId: ApprovalId, workspaceId: WorkspaceId): Promise<ApprovalState>;
   getApproval(approvalId: ApprovalId): Promise<ApprovalState>;
+
+  grantMandate(mandateId: MandateId, request: GrantMandateRequest): Promise<MandateState>;
+  getMandate(mandateId: MandateId): Promise<MandateState>;
+  listMandates(walletId: WalletId): Promise<ListMandatesResponse>;
+  revokeMandate(mandateId: MandateId, workspaceId: WorkspaceId): Promise<MandateState>;
+  signUnderMandate(mandateId: MandateId, request: SignUnderMandateRequest): Promise<SignResponse>;
 
   /** Open, or reopen with a fresh token, the confirmation page for a pending approval. */
   openConfirmation(
@@ -243,6 +253,20 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
       }),
     getApproval: (approvalId: ApprovalId) =>
       call(signerRoutes.getApproval, ApprovalState, { params: { approvalId } }),
+
+    grantMandate: (mandateId: MandateId, request: GrantMandateRequest) =>
+      call(signerRoutes.grantMandate, MandateState, { params: { mandateId }, body: request }),
+    getMandate: (mandateId: MandateId) =>
+      call(signerRoutes.getMandate, MandateState, { params: { mandateId } }),
+    listMandates: (walletId: WalletId) =>
+      call(signerRoutes.listMandates, ListMandatesResponse, { params: { walletId } }),
+    revokeMandate: (mandateId: MandateId, workspaceId: WorkspaceId) =>
+      call(signerRoutes.revokeMandate, MandateState, {
+        params: { mandateId },
+        body: { workspaceId },
+      }),
+    signUnderMandate: (mandateId: MandateId, request: SignUnderMandateRequest) =>
+      call(signerRoutes.signUnderMandate, SignResponse, { params: { mandateId }, body: request }),
 
     openConfirmation: (approvalId: ApprovalId, request: OpenConfirmationRequest) =>
       call(signerRoutes.openConfirmation, OpenConfirmationResponse, {

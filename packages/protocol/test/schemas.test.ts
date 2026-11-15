@@ -6,10 +6,13 @@ import {
   ChainId,
   Envelope,
   evmChainNumber,
+  GrantMandateEnvelope,
   Hex,
   Intent,
   isSortedUnique,
+  MandateId,
   Memo,
+  mandateHash,
   Nonce,
   newId,
   normalizePolicy,
@@ -21,7 +24,13 @@ import {
   WalletPolicy,
   WorkspaceId,
 } from "../src/index.ts";
-import { OpenConfirmationResponse, SubmitConfirmationResponse } from "../src/signer/index.ts";
+import {
+  GrantMandateRequest,
+  MandateState,
+  OpenConfirmationResponse,
+  SignUnderMandateRequest,
+  SubmitConfirmationResponse,
+} from "../src/signer/index.ts";
 import {
   AGENT,
   ALICE,
@@ -30,8 +39,10 @@ import {
   BASE,
   BOB,
   DIGEST_A,
+  grantMandate,
   intent,
   MAINNET,
+  mandate,
   OTHER_AGENT,
   policy,
   ROUTER,
@@ -388,6 +399,76 @@ describe("sweeps", () => {
     expect(ok(Sweep, { ...sweep(), v: 2 })).toBe(false);
     expect(ok(Envelope, { ...sweepWallet(), amount: "1" })).toBe(false);
     expect(ok(Envelope, { ...sweepWallet(), type: "approve-intent" })).toBe(false);
+  });
+});
+
+describe("mandates in the envelope and the signer contract", () => {
+  const state = {
+    mandate: mandate(),
+    mandateHash: mandateHash(mandate()),
+    status: "active",
+    grantApprovalId: APPROVAL,
+    grantedAt: T0,
+    grantedBy: ["usr_01jd0000000000000000000006"],
+    revokedAt: null,
+    revokedReason: null,
+    usage: {
+      uses: 2,
+      assets: [{ chainId: BASE, asset: TOKEN, total: "200000000", inWindow: "200000000" }],
+    },
+  };
+
+  it("a grant-mandate envelope is an envelope, with its own fields only", () => {
+    expect(ok(Envelope, grantMandate())).toBe(true);
+    expect(ok(GrantMandateEnvelope, grantMandate({ expiresAt: T0 }))).toBe(true);
+    expect(ok(Envelope, grantMandate({ expiresAt: T0 }))).toBe(false);
+    expect(ok(Envelope, { ...grantMandate(), chainId: BASE })).toBe(false);
+    expect(ok(Envelope, { ...grantMandate(), mandateId: newId("int") })).toBe(false);
+    expect(ok(Envelope, { ...grantMandate(), type: "sweep-wallet" })).toBe(false);
+    expect(ok(MandateId, newId("mnd"))).toBe(true);
+  });
+
+  it("requests are strict", () => {
+    const assertion = {
+      userId: "usr_01jd0000000000000000000006",
+      credentialId: "Y3JlZC1h",
+      response: {
+        id: "Y3JlZC1h",
+        rawId: "Y3JlZC1h",
+        type: "public-key",
+        response: { clientDataJSON: "e30", authenticatorData: "AA", signature: "AA" },
+        clientExtensionResults: {},
+      },
+    };
+    const authorization = { envelope: grantMandate(), assertions: [assertion] };
+    expect(ok(GrantMandateRequest, { mandate: mandate(), authorization })).toBe(true);
+    expect(ok(GrantMandateRequest, { mandate: mandate(), authorization, policy: policy() })).toBe(
+      false,
+    );
+    expect(
+      ok(GrantMandateRequest, { mandate: { ...mandate(), recipients: [] }, authorization }),
+    ).toBe(false);
+    const use = {
+      approvalId: APPROVAL,
+      intent: intent(),
+      transaction: { nonce: 0, gas: "21000", maxFeePerGas: "1", maxPriorityFeePerGas: "1" },
+    };
+    expect(ok(SignUnderMandateRequest, use)).toBe(true);
+    expect(ok(SignUnderMandateRequest, { ...use, authorization })).toBe(false);
+    expect(ok(SignUnderMandateRequest, { ...use, approvalId: newId("mnd") })).toBe(false);
+  });
+
+  it("a mandate's state names its own hash and is revoked exactly when it says so", () => {
+    expect(ok(MandateState, state)).toBe(true);
+    expect(ok(MandateState, { ...state, mandateHash: DIGEST_A })).toBe(false);
+    expect(ok(MandateState, { ...state, grantedBy: [] })).toBe(false);
+    const revoked = { ...state, status: "revoked", revokedAt: T0 + 1, revokedReason: "requested" };
+    expect(ok(MandateState, revoked)).toBe(true);
+    expect(ok(MandateState, { ...revoked, status: "active" })).toBe(false);
+    expect(ok(MandateState, { ...revoked, revokedReason: null })).toBe(false);
+    expect(ok(MandateState, { ...revoked, revokedAt: null })).toBe(false);
+    expect(ok(MandateState, { ...revoked, revokedReason: "expired" })).toBe(false);
+    expect(ok(MandateState, { ...state, status: "paused" })).toBe(false);
   });
 });
 

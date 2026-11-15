@@ -2,7 +2,10 @@ import type {
   AddApproverEnvelope,
   ApproveIntentEnvelope,
   Envelope,
+  GrantMandateEnvelope,
   Intent,
+  Mandate,
+  MandateAssetLimit,
   RemoveApproverEnvelope,
   ResumeWorkspaceEnvelope,
   SetAdminThresholdEnvelope,
@@ -23,11 +26,14 @@ export const USER_A = `usr_${ULID}6` as const;
 export const USER_B = `usr_${ULID}7` as const;
 export const USER_C = `usr_${ULID}8` as const;
 export const OTHER_AGENT = `agt_${ULID}9` as const;
+export const MANDATE = `mnd_${ULID}6` as const;
 
 export const ALICE = "0x1111111111111111111111111111111111111111" as const;
 export const BOB = "0x2222222222222222222222222222222222222222" as const;
 export const TOKEN = "0x3333333333333333333333333333333333333333" as const;
 export const ROUTER = "0x4444444444444444444444444444444444444444" as const;
+/** USDC on Base, the asset of the fixture mandate. */
+export const USDC_BASE = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" as const;
 export const BASE = "eip155:8453" as const;
 export const MAINNET = "eip155:1" as const;
 export const NONCE = "AAAAAAAAAAAAAAAAAAAAAA";
@@ -160,6 +166,48 @@ export const sweepWallet = (o: Partial<SweepWalletEnvelope> = {}): SweepWalletEn
 });
 
 /**
+ * The fixture mandate of `specs/approval-mandates.md` (Artifacts and Notes): USDC in base units,
+ * 100 per payment, 500 in any 24 hours, 1,000 in total, 20 payments, three recipients, for
+ * 604000 seconds.
+ */
+export const mandate = (o: Partial<Mandate> = {}): Mandate => ({
+  v: 1,
+  id: MANDATE,
+  workspaceId: WS,
+  walletId: WALLET,
+  agentId: AGENT,
+  assets: [mandateAsset()],
+  windowSeconds: 86_400,
+  recipients: [ALICE, BOB, TOKEN],
+  maxUses: 20,
+  maxFeePerActionWei: "2000000000000000",
+  notBefore: T0,
+  notAfter: T0 + 604_000,
+  purpose: "pay supplier invoices this week",
+  ...o,
+});
+
+/** The fixture mandate's one asset limit. */
+export const mandateAsset = (o: Partial<MandateAssetLimit> = {}): MandateAssetLimit => ({
+  chainId: BASE,
+  asset: USDC_BASE,
+  maxPerAction: "100000000",
+  maxPerWindow: "500000000",
+  maxTotal: "1000000000",
+  ...o,
+});
+
+export const grantMandate = (o: Partial<GrantMandateEnvelope> = {}): GrantMandateEnvelope => ({
+  ...header,
+  type: "grant-mandate",
+  mandateId: MANDATE,
+  walletId: WALLET,
+  agentId: AGENT,
+  mandateHash: DIGEST_A,
+  ...o,
+});
+
+/**
  * For every field of every envelope type, a replacement value that is still valid. Each entry is
  * one way a compromised control plane could try to reuse an approval for something else.
  */
@@ -228,6 +276,17 @@ export const envelopeVariants: {
       walletId: `wal_${ULID}c`,
       chainId: MAINNET,
       sweepHash: DIGEST_B,
+    },
+  },
+  {
+    name: "grant-mandate",
+    base: grantMandate(),
+    changes: {
+      ...headerChanges,
+      mandateId: `mnd_${ULID}d`,
+      walletId: `wal_${ULID}c`,
+      agentId: OTHER_AGENT,
+      mandateHash: DIGEST_B,
     },
   },
 ];

@@ -35,7 +35,10 @@ export type IntentId = z.infer<typeof IntentId>;
 export const ApprovalId = prefixedId("apr");
 export type ApprovalId = z.infer<typeof ApprovalId>;
 
-const ID_PREFIXES = ["ws", "usr", "agt", "wal", "int", "apr"] as const;
+export const MandateId = prefixedId("mnd");
+export type MandateId = z.infer<typeof MandateId>;
+
+const ID_PREFIXES = ["ws", "usr", "agt", "wal", "int", "apr", "mnd"] as const;
 export type IdPrefix = (typeof ID_PREFIXES)[number];
 
 /** Mint a new identifier, for example `newId("wal")` gives `wal_01k…`. */
@@ -142,3 +145,10 @@ export function isSortedUnique(values: readonly string[]): boolean {
 export function sortedUnique<T extends string>(values: readonly T[]): T[] {
   return [...new Set(values)].sort();
 }
+
+/** A set as hashed structures store it: an array of at most `max` items in that one order. */
+export const sortedSet = <T extends z.ZodType<string>>(item: T, max: number) =>
+  z
+    .array(item)
+    .max(max)
+    .refine((values) => isSortedUnique(values), "must be sorted ascending without duplicates");

@@ -4,10 +4,13 @@ import {
   type Envelope,
   envelopeChallenge,
   type Intent,
+  type Mandate,
+  mandateHash,
   newId,
   policyHash,
   type Sweep,
   sweepHash,
+  type WalletId,
   type WalletPolicy,
 } from "@askgina/os-protocol";
 import { createConfirmClient, createSignerClient } from "@askgina/os-protocol/signer";
@@ -188,6 +191,63 @@ describe("opening a confirmation", () => {
     t.clock.value += 1;
     t.signer.fence();
     await refused(open(t, fenced.envelope, fenced.subject), "envelope_fenced");
+  });
+
+  it("a mandate grant is shown with its wallet and that wallet's policy, and only for its own workspace's wallet", async () => {
+    const t = startSigner();
+    const world = await setUpWorld(t);
+    const grant = (owner: World, walletId: WalletId) => {
+      const mandate: Mandate = {
+        v: 1,
+        id: newId("mnd"),
+        workspaceId: owner.workspaceId,
+        walletId,
+        agentId: owner.agentId,
+        assets: [
+          {
+            chainId: CHAIN,
+            asset: "native",
+            maxPerAction: String(ETH),
+            maxPerWindow: String(ETH),
+            maxTotal: String(2n * ETH),
+          },
+        ],
+        windowSeconds: 86_400,
+        recipients: [RECIPIENT],
+        maxUses: 2,
+        maxFeePerActionWei: String(10n ** 15n),
+        notBefore: t.clock.value,
+        notAfter: t.clock.value + 86_400,
+        purpose: "pay the invoices",
+      };
+      const envelope: Envelope = {
+        ...header(t.clock, newId("apr"), owner.workspaceId),
+        type: "grant-mandate",
+        mandateId: mandate.id,
+        walletId,
+        agentId: owner.agentId,
+        mandateHash: mandateHash(mandate),
+      };
+      return { envelope, subject: { kind: "grant-mandate", mandate } as ConfirmationSubject };
+    };
+
+    const own = grant(world, world.walletId);
+    const view = await t.confirm.getConfirmation(
+      own.envelope.approvalId,
+      await open(t, own.envelope, own.subject),
+    );
+    const line = (label: string) =>
+      view.lines.find((candidate) => candidate.label === label)?.value;
+    expect(view.kind).toBe("grant-mandate");
+    expect(view.state).toBe("open");
+    expect(line("Wallet address")).toBe(world.address);
+    expect(line("Wallet policy")).toBe("still applies: each payment must also fit it");
+    expect(view.approvals.required).toBe(1);
+
+    // Another workspace's wallet, named by this workspace's grant.
+    const elsewhere = await setUpWorld(t);
+    const foreign = grant(world, elsewhere.walletId);
+    await refused(open(t, foreign.envelope, foreign.subject), "envelope_mismatch");
   });
 });
 

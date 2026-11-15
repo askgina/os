@@ -9,16 +9,11 @@ import {
   isSortedUnique,
   PositiveAmount,
   PROTOCOL_VERSION,
+  sortedSet,
   sortedUnique,
   WalletId,
   WorkspaceId,
 } from "./primitives.ts";
-
-const sortedSet = <T extends z.ZodType<string>>(item: T, max: number) =>
-  z
-    .array(item)
-    .max(max)
-    .refine((values) => isSortedUnique(values), "must be sorted ascending without duplicates");
 
 /** Caps for one asset on one chain. An asset with no entry cannot leave the wallet. */
 export const AssetLimit = z.strictObject({

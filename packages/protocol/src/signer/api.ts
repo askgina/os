@@ -8,6 +8,7 @@ import {
   Envelope,
 } from "../envelopes.ts";
 import { Intent } from "../intent.ts";
+import { Mandate, mandateHash } from "../mandate.ts";
 import { WalletPolicy } from "../policy.ts";
 import {
   Address,
@@ -72,6 +73,11 @@ export const signerRoutes = {
   sweep: { method: "POST", path: "/v1/wallets/:walletId/sweep", scope: "control" },
   revokeApproval: { method: "POST", path: "/v1/approvals/:approvalId/revoke", scope: "control" },
   getApproval: { method: "GET", path: "/v1/approvals/:approvalId", scope: "control" },
+  grantMandate: { method: "PUT", path: "/v1/mandates/:mandateId", scope: "control" },
+  getMandate: { method: "GET", path: "/v1/mandates/:mandateId", scope: "control" },
+  listMandates: { method: "GET", path: "/v1/wallets/:walletId/mandates", scope: "control" },
+  revokeMandate: { method: "POST", path: "/v1/mandates/:mandateId/revoke", scope: "control" },
+  signUnderMandate: { method: "POST", path: "/v1/mandates/:mandateId/sign", scope: "control" },
   openConfirmation: {
     method: "POST",
     path: "/v1/approvals/:approvalId/confirmation",
@@ -261,6 +267,99 @@ export const ApprovalState = z.strictObject({
 });
 export type ApprovalState = z.infer<typeof ApprovalState>;
 
+// --- mandates ---------------------------------------------------------------------------------
+
+/**
+ * Grant a mandate. Carries a `grant-mandate` envelope whose `mandateId`, wallet, agent and
+ * workspace are the mandate's and whose `mandateHash` is its hash, approved at the workspace's
+ * admin threshold. The signer refuses a mandate that does not fit the wallet's current policy
+ * or its own lifetime ceiling (`mandate_invalid`). Repeating the identical grant returns the
+ * stored state.
+ */
+export const GrantMandateRequest = z.strictObject({
+  mandate: Mandate,
+  authorization: Authorization,
+});
+export type GrantMandateRequest = z.infer<typeof GrantMandateRequest>;
+
+/**
+ * End a mandate for good. Needs no passkey, because it only removes authority; names the
+ * workspace, so the revocation is recorded in that workspace's decision log. Revoking twice
+ * changes nothing.
+ */
+export const RevokeMandateRequest = z.strictObject({ workspaceId: WorkspaceId });
+export type RevokeMandateRequest = z.infer<typeof RevokeMandateRequest>;
+
+/**
+ * Sign one EIP-1559 transaction for an intent under a mandate, with no passkey. `approvalId` is
+ * the control plane's id for this one use. The signer checks the mandate and the wallet's policy
+ * against its own records and counts the use in the same database transaction as the signature.
+ * Repeating the request for a use that was already signed returns the same signed transaction.
+ */
+export const SignUnderMandateRequest = z.strictObject({
+  approvalId: ApprovalId,
+  intent: Intent,
+  transaction: TransactionParams,
+});
+export type SignUnderMandateRequest = z.infer<typeof SignUnderMandateRequest>;
+
+/**
+ * Where a mandate stands, computed by the signer when it answers.
+ * - `revoked`: ended for good.
+ * - `not_yet_valid`, `expired`: the signer's clock is before `notBefore`, or at or after `notAfter`.
+ * - `exhausted`: `maxUses` uses were made, or every asset reached its `maxTotal`.
+ * - `active`: none of the above; a use can still be refused by its caps or the wallet's policy.
+ */
+export const MandateStatus = z.enum(["active", "not_yet_valid", "expired", "exhausted", "revoked"]);
+export type MandateStatus = z.infer<typeof MandateStatus>;
+
+/**
+ * Why a mandate was revoked: someone asked (`requested`), an approver who granted it was removed
+ * (`grantor_removed`), or the operator ended it on the signer host (`operator`).
+ */
+export const MandateRevokedReason = z.enum(["requested", "grantor_removed", "operator"]);
+export type MandateRevokedReason = z.infer<typeof MandateRevokedReason>;
+
+/** A mandate as the signer holds it, with what was signed under it so far. */
+export const MandateState = z
+  .strictObject({
+    mandate: Mandate,
+    mandateHash: Digest,
+    status: MandateStatus,
+    /** The approval id of the `grant-mandate` envelope. */
+    grantApprovalId: ApprovalId,
+    grantedAt: EpochSeconds,
+    /** The people whose assertions granted it. */
+    grantedBy: z.array(UserId).min(1).max(16),
+    revokedAt: EpochSeconds.nullable(),
+    revokedReason: MandateRevokedReason.nullable(),
+    usage: z.strictObject({
+      uses: z.number().int().min(0),
+      /** One entry per asset of the mandate: all-time and in the last `windowSeconds`. */
+      assets: z
+        .array(
+          z.strictObject({ chainId: ChainId, asset: AssetRef, total: Amount, inWindow: Amount }),
+        )
+        .max(16),
+    }),
+  })
+  .refine(
+    (state) =>
+      (state.status === "revoked") === (state.revokedAt !== null) &&
+      (state.revokedAt === null) === (state.revokedReason === null),
+    { path: ["revokedAt"], message: "only a revoked mandate has a revocation time and reason" },
+  )
+  .refine(
+    (state) =>
+      Mandate.safeParse(state.mandate).success && mandateHash(state.mandate) === state.mandateHash,
+    { path: ["mandateHash"], message: "mandateHash must be the mandate's hash" },
+  );
+export type MandateState = z.infer<typeof MandateState>;
+
+/** Every mandate of a wallet the signer holds, live or ended. */
+export const ListMandatesResponse = z.strictObject({ mandates: z.array(MandateState) });
+export type ListMandatesResponse = z.infer<typeof ListMandatesResponse>;
+
 // --- confirmations ----------------------------------------------------------------------------
 
 /**
@@ -389,6 +488,13 @@ export const SignerErrorCode = z.enum([
   "threshold_unreachable",
   /** A sweep to an address that is neither allowlisted for the wallet nor its workspace's treasury. */
   "sweep_destination_not_allowed",
+  "mandate_revoked",
+  "mandate_expired",
+  "mandate_not_yet_valid",
+  /** The mandate does not cover the intent; `detail` is a `MandateDenyCode`. */
+  "mandate_denied",
+  /** The mandate cannot be granted; `detail` is a `MandateGrantRefusal`. */
+  "mandate_invalid",
   // 500
   "vault_error",
   "internal",
@@ -422,6 +528,11 @@ export const signerErrorStatus: Record<SignerErrorCode, 400 | 401 | 403 | 404 | 
   approver_unknown: 403,
   threshold_unreachable: 403,
   sweep_destination_not_allowed: 403,
+  mandate_revoked: 403,
+  mandate_expired: 403,
+  mandate_not_yet_valid: 403,
+  mandate_denied: 403,
+  mandate_invalid: 403,
   vault_error: 500,
   internal: 500,
 };
@@ -430,7 +541,10 @@ export const SignerErrorBody = z.strictObject({
   error: z.strictObject({
     code: SignerErrorCode,
     message: z.string(),
-    /** For `policy_denied`: the policy engine's reason code. Never secret material. */
+    /**
+     * The reason code for `policy_denied` (a `PolicyDenyCode`), `mandate_denied` (a
+     * `MandateDenyCode`) and `mandate_invalid` (a `MandateGrantRefusal`). Never secret material.
+     */
     detail: z.string().optional(),
   }),
 });

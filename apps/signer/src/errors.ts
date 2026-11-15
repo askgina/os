@@ -29,6 +29,11 @@ const MESSAGES: Record<SignerErrorCode, string> = {
   threshold_unreachable: "the change would leave a threshold that cannot be met",
   sweep_destination_not_allowed:
     "a sweep may only go to an address on the wallet's allowlist or to the workspace's treasury",
+  mandate_revoked: "the mandate was revoked",
+  mandate_expired: "the mandate has expired",
+  mandate_not_yet_valid: "the mandate is not valid yet",
+  mandate_denied: "the mandate does not cover this",
+  mandate_invalid: "the mandate cannot be granted",
   vault_error: "the key store failed",
   internal: "internal error",
 };

@@ -16,9 +16,12 @@ import {
 import {
   type Envelope,
   envelopeChallenge,
+  type GrantMandateEnvelope,
   type Intent,
   intentHash,
+  type Mandate,
   Memo,
+  mandateHash,
   policyHash,
   type SweepWalletEnvelope,
   type WalletPolicy,
@@ -33,8 +36,12 @@ import {
   BASE,
   BOB,
   DIGEST_A,
+  grantMandate,
   intent,
   MAINNET,
+  MANDATE,
+  mandate,
+  mandateAsset,
   NONCE,
   OTHER_AGENT,
   policy,
@@ -45,6 +52,7 @@ import {
   setPolicy,
   T0,
   TOKEN,
+  USDC_BASE,
   USER_B,
   WALLET,
   WS,
@@ -123,6 +131,16 @@ function sweep(overrides: Partial<Sweep> = {}): Sweep {
   };
 }
 
+function mandateEnvelope(subject: Mandate): GrantMandateEnvelope {
+  return grantMandate({
+    workspaceId: subject.workspaceId,
+    mandateId: subject.id,
+    walletId: subject.walletId,
+    agentId: subject.agentId,
+    mandateHash: mandateHash(subject),
+  });
+}
+
 function sweepEnvelope(subject: Sweep): SweepWalletEnvelope {
   return {
     v: 1,
@@ -184,6 +202,9 @@ describe("checkSubject", () => {
     expect(checkSubject(sweepEnvelope(sweep()), { kind: "sweep-wallet", sweep: sweep() })).toBe(
       null,
     );
+    expect(
+      checkSubject(mandateEnvelope(mandate()), { kind: "grant-mandate", mandate: mandate() }),
+    ).toBe(null);
     for (const envelope of [
       addApprover(),
       removeApprover(),
@@ -284,17 +305,51 @@ describe("checkSubject", () => {
     );
   });
 
+  it("refuses a mandate that is not the envelope's", () => {
+    const envelope = mandateEnvelope(mandate());
+    for (const other of [
+      mandate({ assets: [mandateAsset({ maxTotal: "1000000001" })] }),
+      mandate({ recipients: [ALICE, BOB] }),
+      mandate({ maxUses: 21 }),
+      mandate({ notAfter: T0 + 604_001 }),
+      mandate({ purpose: "something else" }),
+    ]) {
+      expect(checkSubject(envelope, { kind: "grant-mandate", mandate: other })).toBe(
+        "envelope_mismatch",
+      );
+    }
+    // The envelope names the other mandate's hash, but its own id, wallet, agent and workspace.
+    for (const other of [
+      mandate({ id: `mnd_${"0".repeat(25)}9` }),
+      mandate({ walletId: `wal_${"0".repeat(25)}9` }),
+      mandate({ agentId: OTHER_AGENT }),
+      mandate({ workspaceId: `ws_${"0".repeat(25)}9` }),
+    ]) {
+      const named = grantMandate({ mandateHash: mandateHash(other) });
+      expect(checkSubject(named, { kind: "grant-mandate", mandate: other })).toBe(
+        "envelope_mismatch",
+      );
+    }
+    // A mandate that fails its schema is refused, not thrown on.
+    const empty = { ...mandate(), recipients: [] };
+    expect(checkSubject(envelope, { kind: "grant-mandate", mandate: empty })).toBe(
+      "envelope_mismatch",
+    );
+  });
+
   it("refuses a subject of the wrong kind for every envelope", () => {
     const subjects: ConfirmationSubject[] = [
       { kind: "approve-intent", intent: intent() },
       { kind: "set-policy", policy: policy() },
       { kind: "sweep-wallet", sweep: sweep() },
+      { kind: "grant-mandate", mandate: mandate() },
       envelopeOnly,
     ];
     const envelopes: Envelope[] = [
       envelopeFor(intent()),
       policyEnvelope(policy()),
       sweepEnvelope(sweep()),
+      mandateEnvelope(mandate()),
       addApprover(),
       removeApprover(),
       setAdminThreshold(),
@@ -966,6 +1021,238 @@ describe("sweeps", () => {
     });
     expect(value(view, "Destination")).toBe("the wallet itself");
     expect(view.warnings).toEqual(["recipient_not_allowlisted"]);
+  });
+});
+
+describe("mandates", () => {
+  const USDC_ON_BASE: AssetLabel = { chainId: BASE, asset: USDC_BASE, symbol: "USDC", decimals: 6 };
+  const usdcPolicy = policy({
+    assets: [
+      { chainId: BASE, asset: USDC_BASE, maxPerTx: "100000000", maxPerDay: "500000000" },
+      ...policy().assets,
+    ],
+  });
+  const ETH_LIMIT = mandateAsset({
+    asset: "native",
+    maxPerAction: "100000000000000000",
+    maxPerWindow: "500000000000000000",
+    maxTotal: "1000000000000000000",
+  });
+  const renderMandate = (subject: Mandate, overrides: Partial<RenderInput> = {}) =>
+    render(
+      mandateEnvelope(subject),
+      { kind: "grant-mandate", mandate: subject },
+      { assets: [USDC, USDC_ON_BASE], currentPolicy: usdcPolicy, ...overrides },
+    );
+  const PURPOSE = "Purpose, not checked";
+
+  it("shows the wallet, the agent, every cap, every recipient, the end time and the worst case", () => {
+    const view = renderMandate(mandate());
+    expect(view.title).toBe("Let an agent pay up to 1,000 USDC without asking");
+    expect(view.lines).toEqual([
+      { label: "Agent that may pay", value: AGENT, kind: "code" },
+      { label: "Wallet", value: WALLET, kind: "code" },
+      { label: "Wallet address", value: WALLET_ADDRESS, kind: "address" },
+      { label: "Wallet name, not checked", value: "Operations", kind: "unchecked" },
+      {
+        label: "Wallet policy",
+        value: "still applies: each payment must also fit it",
+        kind: "text",
+      },
+      { label: "Asset", value: "USDC on Base (eip155:8453)", kind: "text" },
+      { label: "Token contract", value: USDC_BASE, kind: "address" },
+      {
+        label: "Token contract, checksummed (EIP-55)",
+        value: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        kind: "address",
+      },
+      { label: "Most per payment", value: "100 USDC", kind: "amount" },
+      { label: "Most in any 24 hours", value: "500 USDC", kind: "amount" },
+      { label: "Most in total", value: "1,000 USDC", kind: "amount" },
+      { label: "Most that can leave the wallet", value: "1,000 USDC", kind: "amount" },
+      {
+        label: "Wallet's limits",
+        value: "100 USDC per transaction, 500 USDC per 24 hours",
+        kind: "amount",
+      },
+      { label: "Recipients", value: "only these 3 addresses", kind: "text" },
+      ...[ALICE, BOB, TOKEN].flatMap((address) => [
+        { label: "May pay", value: address, kind: "address" },
+        { label: "May pay, checksummed (EIP-55)", value: address, kind: "address" },
+        {
+          label: "Recipient allowlist",
+          value: "the wallet's policy allows any recipient",
+          kind: "text",
+        },
+      ]),
+      { label: "Payments at most", value: "20 payments", kind: "text" },
+      {
+        label: "Network fee ceiling per payment",
+        value: "0.002 of the native coin",
+        kind: "amount",
+      },
+      { label: "Network fees at most, in total", value: "0.04 of the native coin", kind: "amount" },
+      { label: "Starts", value: "2023-11-14 22:13:20 UTC", kind: "text" },
+      { label: "Ends", value: "2023-11-21 22:00:00 UTC", kind: "text" },
+      {
+        label: "What counts",
+        value: "every payment the signer signs, also one the network never includes",
+        kind: "text",
+      },
+      { label: "Mandate id", value: MANDATE, kind: "code" },
+      { label: PURPOSE, value: "pay supplier invoices this week", kind: "unchecked" },
+      { label: "Workspace", value: WS, kind: "code" },
+      { label: "Request id", value: APPROVAL, kind: "code" },
+      { label: "Valid until", value: "2023-11-14 22:23:20 UTC", kind: "text" },
+      { label: "Approvals so far", value: "0 of 1", kind: "text" },
+    ]);
+    expect(view.warnings).toEqual([]);
+  });
+
+  it("every field that changes what is approved changes what is shown", () => {
+    const baseline = renderMandate(mandate());
+    const changes: Partial<Mandate>[] = [
+      { id: `mnd_${"0".repeat(25)}9` },
+      { workspaceId: `ws_${"0".repeat(25)}9` },
+      { walletId: `wal_${"0".repeat(25)}9` },
+      { agentId: OTHER_AGENT },
+      { assets: [mandateAsset({ chainId: MAINNET })] },
+      { assets: [mandateAsset({ asset: TOKEN })] },
+      { assets: [mandateAsset({ maxPerAction: "100000001" })] },
+      { assets: [mandateAsset({ maxPerWindow: "500000001" })] },
+      { assets: [mandateAsset({ maxTotal: "1000000001" })] },
+      { windowSeconds: 86_401 },
+      { recipients: [ALICE, BOB] },
+      { maxUses: 21 },
+      { maxFeePerActionWei: "2000000000000001" },
+      { notBefore: T0 + 1 },
+      { notAfter: T0 + 604_001 },
+      { purpose: "pay supplier invoices next week" },
+    ];
+    expect(new Set(changes.flatMap((change) => Object.keys(change)))).toEqual(
+      new Set(Object.keys(mandate()).filter((key) => key !== "v")),
+    );
+    for (const change of changes) {
+      const view = renderMandate(mandate(change));
+      expect(view.lines, JSON.stringify(change)).not.toEqual(baseline.lines);
+    }
+  });
+
+  it("names the worst case by the uses when they bound it, and counts payments in words", () => {
+    const usesBound = renderMandate(mandate({ maxUses: 5 }));
+    expect(usesBound.title).toBe("Let an agent pay up to 500 USDC without asking");
+    expect(value(usesBound, "Most that can leave the wallet")).toBe("500 USDC");
+    expect(value(usesBound, "Payments at most")).toBe("5 payments");
+    expect(value(usesBound, "Network fees at most, in total")).toBe("0.01 of the native coin");
+    expect(value(renderMandate(mandate({ maxUses: 1 })), "Payments at most")).toBe("1 payment");
+    const one = renderMandate(mandate({ recipients: [BOB] }));
+    expect(value(one, "Recipients")).toBe("only this address");
+    expect(values(one, "May pay")).toEqual([BOB]);
+  });
+
+  it("names the window in the signer's words", () => {
+    const label = (windowSeconds: number) =>
+      renderMandate(mandate({ windowSeconds })).lines.find((line) =>
+        line.label.startsWith("Most in any "),
+      )?.label;
+    expect(label(3600)).toBe("Most in any 1 hour");
+    expect(label(86_400)).toBe("Most in any 24 hours");
+    expect(label(172_800)).toBe("Most in any 2 days");
+    expect(label(604_800)).toBe("Most in any 7 days");
+  });
+
+  it("a native coin needs no token lines, and several assets each get their caps", () => {
+    const native = renderMandate(mandate({ assets: [ETH_LIMIT] }));
+    expect(native.title).toBe("Let an agent pay up to 1 ETH without asking");
+    expect(value(native, "Asset")).toBe("ETH on Base (eip155:8453)");
+    expect(values(native, "Token contract")).toEqual([]);
+    expect(value(native, "Wallet's limits")).toBe("1 ETH per transaction, 5 ETH per 24 hours");
+
+    const both = renderMandate(mandate({ assets: [mandateAsset(), ETH_LIMIT] }));
+    expect(both.title).toBe("Let an agent pay without asking, up to the amounts below");
+    expect(values(both, "Asset")).toEqual([
+      "USDC on Base (eip155:8453)",
+      "ETH on Base (eip155:8453)",
+    ]);
+    expect(values(both, "Most that can leave the wallet")).toEqual(["1,000 USDC", "1 ETH"]);
+    expect(values(both, "Most per payment")).toEqual(["100 USDC", "0.1 ETH"]);
+  });
+
+  it("an unknown token or chain is shown in base units with its warning", () => {
+    const token = renderMandate(mandate(), { assets: [] });
+    expect(token.title).toBe(
+      "Let an agent pay up to 1,000,000,000 base units of an unknown token without asking",
+    );
+    expect(value(token, "Asset")).toBe(`token ${USDC_BASE} on Base (eip155:8453)`);
+    expect(token.warnings).toEqual(["unknown_token"]);
+
+    const chain = renderMandate(mandate({ assets: [ETH_LIMIT] }), { chains: [] });
+    expect(chain.title).toBe("Let an agent pay up to 1,000,000,000,000,000,000 wei without asking");
+    expect(value(chain, "Asset")).toBe("the native coin on eip155:8453");
+    expect(chain.warnings).toEqual(["unknown_chain"]);
+  });
+
+  it("shows the wallet's policy as the outer limit, and warns for recipients it does not allow", () => {
+    const allowlisted = renderMandate(mandate(), {
+      currentPolicy: { ...usdcPolicy, recipients: { mode: "allowlist", addresses: [ALICE] } },
+    });
+    expect(values(allowlisted, "Recipient allowlist")).toEqual([
+      "on the wallet's allowlist",
+      "not on the wallet's allowlist",
+      "not on the wallet's allowlist",
+    ]);
+    expect(allowlisted.warnings).toEqual(["recipient_not_allowlisted"]);
+
+    const uncapped = renderMandate(mandate(), { currentPolicy: policy() });
+    expect(value(uncapped, "Wallet's limits")).toBe(
+      "none: the wallet's policy does not let it leave",
+    );
+
+    const none = renderMandate(mandate(), { currentPolicy: null });
+    expect(value(none, "Wallet policy")).toBe("none is set for this wallet");
+    expect(values(none, "Wallet's limits")).toEqual([]);
+    expect(values(none, "Recipient allowlist")).toEqual([]);
+  });
+
+  it("a purpose nobody checked cannot forge a signer line", () => {
+    const baseline = renderMandate(mandate());
+    const purpose = `pay\u200b \u200dTo\u2060: \ufeff${BOB}`;
+    expect(Memo.safeParse(purpose).success).toBe(true);
+    const view = renderMandate(mandate({ purpose }));
+    expect(value(view, PURPOSE)).toBe(`pay[U+200B] [U+200D]To[U+2060]: [U+FEFF]${BOB}`);
+    const differing = view.lines.filter(
+      (line, index) => line.value !== baseline.lines[index]?.value,
+    );
+    expect(differing.map((line) => line.label)).toEqual([PURPOSE]);
+    expect(values(renderMandate(mandate({ purpose: "" })), PURPOSE)).toEqual([]);
+  });
+
+  it("a grant's view is a valid view of its envelope and subject", () => {
+    const subject = mandate();
+    const envelope = mandateEnvelope(subject);
+    const view = {
+      v: 1,
+      approvalId: envelope.approvalId,
+      workspaceId: envelope.workspaceId,
+      kind: envelope.type,
+      state: "open",
+      expiresAt: envelope.expiresAt,
+      ...renderMandate(subject),
+      approvals: { collected: 0, required: 1 },
+      envelope,
+      subject: { kind: "grant-mandate", mandate: subject },
+      webauthn: {
+        rpId: "localhost",
+        challenge: Buffer.from(envelopeChallenge(envelope)).toString("base64url"),
+        allowCredentials: ["Y3JlZC1i"],
+        userVerification: "required",
+        timeoutMs: 120_000,
+      },
+      returnUrl: `http://localhost:8080/w/${WS}/approvals/${APPROVAL}`,
+    };
+    expect(ConfirmationView.safeParse(view).success).toBe(true);
+    const other = { kind: "grant-mandate", mandate: mandate({ maxUses: 21 }) };
+    expect(ConfirmationView.safeParse({ ...view, subject: other }).success).toBe(false);
   });
 });
 

@@ -109,6 +109,12 @@ export const REFUSAL_TEXT = {
   threshold_unreachable: "Not enough approvers are left to approve this.",
   sweep_destination_not_allowed:
     "The signer sends a sweep only to the treasury or to an allowed recipient.",
+  mandate_revoked: "This mandate was revoked. Nothing more is paid under it.",
+  mandate_expired: "This mandate has ended.",
+  mandate_not_yet_valid: "This mandate has not started yet.",
+  mandate_denied: "This mandate does not cover this payment.",
+  mandate_invalid:
+    "The signer refuses this mandate: it does not fit the wallet's limits, or it lasts too long.",
   vault_error: "The signer's key store failed. Try again later.",
   internal: "The signer could not be reached or failed. Try again in a moment.",
 };
