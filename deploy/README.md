@@ -177,6 +177,9 @@ every workspace's signer decision log.
 The fence is a time on the signer host's clock, and mandates start, end and count their
 windows by the same clock: keep it synchronized (see "Mandates").
 
+The fence also stops the reprice of every transaction signed before it; a cancel of one is still
+signed (see "Stuck transactions").
+
 ## Rotating the keyring
 
 The keyring holds the key-encryption keys that wrap every data key in the database. Rotating
@@ -263,6 +266,81 @@ window, and the restore fence is a time on the same clock. A clock that runs beh
 ended mandate signing; one that runs ahead lets payments leave the window early. Nothing in the
 stack checks the clock.
 
+## Stuck transactions
+
+A payment the signer signed and the server sent may not be mined: the base fee rose above its
+fee cap, its tip is too low, or a node dropped it. It keeps its account nonce, so every later
+transaction of that wallet on that chain waits behind it. The approval page shows it with every
+attempt, and agents see the same through `get_intent` (`attempts`, `stuckReason`); an agent has
+no tool that speeds up or cancels.
+
+- **Repriced by itself.** While `REPRICE_AUTO=1`, the server asks the signer for the same
+  transaction with both fees higher once the newest attempt is `REPRICE_AFTER_SECONDS` old, and
+  offers it to the chain. Only the two fee fields change; the signer rebuilds every attempt from
+  its own record of the first signature, so the nonce, gas, recipient, amount and data stay
+  those people approved, and since every attempt has the one nonce, at most one is ever mined.
+  It needs no passkey and stays inside `min(intent.maxFeeWei, policy fees.maxPerTxWei)`, the
+  fee ceiling people approved, capped by the wallet's current policy. It stops at that ceiling,
+  `SIGNER_REPRICE_WINDOW_SECONDS` after the first signature, or after `SIGNER_MAX_TX_ATTEMPTS`
+  signatures; the page then says why (`stuckReason`). A payment waiting behind an earlier unmined
+  nonce is not repriced: a higher fee would not help it.
+- **Speed up.** An owner or approver can ask for the next attempt now, with no passkey
+  (`POST /api/v1/intents/:intentId/speed-up`). Within 15 seconds of the newest attempt the click
+  adds none and shows the payment as it is.
+- **Cancel.** An owner or approver asks to cancel a sent, unmined payment
+  (`POST /api/v1/intents/:intentId/cancel-transaction`; a sweep's transaction:
+  `POST /api/v1/approvals/:approvalId/cancel-transaction`). That opens a `cancel-transaction`
+  request, approved like any other on the confirmation page, at the wallet policy's threshold.
+  The signer then signs a transfer of nothing from the wallet to itself at the same nonce, with a
+  fee of at most the policy's `fees.maxPerTxWei`. Once a cancel exists every later attempt is a
+  cancel. It works while the workspace is paused. A sweep can be cancelled, not repriced.
+- **A cancel is an attempt, not a guarantee.** Whichever the chain mines first wins: the cancel
+  (the payment ends `voided`, `transaction_cancelled`) or the payment (`confirmed` or `reverted`,
+  `cancel_too_late`). The payment still counts toward the wallet's 24-hour cap either way: the
+  signer counted it when it first signed it and gives nothing back. A cancel costs a network fee.
+- **Paused.** Pausing a workspace stops every reprice, automatic or not; cancels still go through.
+
+Five settings in `.env`, all optional; Compose passes them on:
+
+| Setting                         | Read by | Meaning                                                                                                                                                   |
+| ------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `REPRICE_AUTO`                  | server  | `1` (default) raises the fee of a stuck transaction without asking; `0` leaves it to an approver's "Speed up".                                            |
+| `REPRICE_AFTER_SECONDS`         | server  | How long the newest attempt stays unmined before the next: 15 to 86400 seconds, default 180.                                                              |
+| `REPRICE_BUMP_PERCENT`          | server  | How much both fees rise at least, each time: 10 to 100 percent, default 12.                                                                               |
+| `SIGNER_REPRICE_WINDOW_SECONDS` | signer  | How long after the first signature the signer reprices with no person: 0 to 604800 seconds, default 86400. `0` refuses every reprice; cancels still work. |
+| `SIGNER_MAX_TX_ATTEMPTS`        | signer  | The most signatures of one approval, the first included: 2 to 64, default 16. When it is reached, nothing more is signed, not even a cancel.              |
+
+To stop repricing while keeping the record, set `REPRICE_AUTO=0` and
+`SIGNER_REPRICE_WINDOW_SECONDS=0`. The server keeps following every attempt already signed,
+because any of them may still be mined.
+
+**Replacement rules differ by client.** A node replaces a pooled transaction only when the new
+one pays enough more. go-ethereum and reth want both fees at least 10% higher, which the default
+bump of 12 clears; Anvil takes any higher fee cap; Besu, Nethermind, L2 sequencers and private
+relays have rules of their own. A node that refuses a replacement keeps the earlier attempt,
+which stays valid and may still be mined. If your chain's nodes want more, raise
+`REPRICE_BUMP_PERCENT`. The signer requires only that both fees are strictly higher than the
+latest attempt's.
+
+**Reorgs and confirmation depth.** Which attempt was mined, the payment or its cancel, is decided
+only at the chain's `confirmations` in `deploy/chains.json`. Until then a reorg can swap one for
+another, so the nonce stays held and nothing is reported final. On chains with deep reorgs raise
+`confirmations`.
+
+**What a compromised control plane can do with this.** It chooses when and how far fees rise,
+within the ceiling people approved, the window and the attempt limit: it can burn every
+payment's network fee up to that ceiling. It cannot change a recipient, an amount, a nonce, the
+gas or the data, cannot get a second nonce for an approved payment, and cannot cancel without
+passkeys on the confirmation page (`docs/threat-model.md`, "Stuck transactions").
+
+**After a restore.** The fence (see "Backups and restoring") also ends repricing of every
+transaction signed before it: the signer refuses with `envelope_fenced`, and the payment shows
+`reprice_refused`. A restored signer may have forgotten attempts signed after its backup, a
+cancel among them, and a reprice built from what it remembers could turn that cancel back into
+the payment. Such a transaction can still be cancelled: the cancel request is new, so the fence
+does not refuse it. The chain is not part of a backup; whatever attempt was mined meanwhile is
+found again by its hash.
+
 ## When no approver is left
 
 Who may approve for a workspace is recorded in the signer, and normally changes only with a
@@ -294,12 +372,20 @@ file was not restored: approvals waiting at that moment must be proposed again. 
 to start on a database written by a newer signer (`schema_too_new`). Do not go back to a v0.1
 signer image after upgrading: it does not know the fence and would ignore it.
 
-The signer's schema is now version 5: version 5 adds the tables `mandates`, `mandate_grantors`
-and `mandate_uses`. The migration only creates them, and nothing changes for a workspace until
-someone grants a mandate. A signer image from before it refuses to start on the migrated file
-with `schema_too_new`, so a rollback of the signer means fixing forward. The same holds for the
-control plane: its migration `0004_mandates` adds the `mandates` table and lets an approval be a
-mandate use; do not run an older control plane against a database that holds mandate uses.
+The signer's schema is now version 6: version 6 adds the table `signature_attempts`, one row per
+reprice or cancel the signer signed. The migration only creates it; a transaction signed before
+the upgrade can be repriced and cancelled like a new one. A signer image from before it refuses
+to start on the migrated file with `schema_too_new`, so a rollback of the signer means fixing
+forward. The control plane's migration `0007_transaction_attempts` adds `transaction_attempts`
+and the columns that track them; do not run an older control plane against a database that holds
+attempts: it follows only each first signature's hash.
+
+Version 5 added the tables `mandates`, `mandate_grantors` and `mandate_uses`. The migration
+only creates them, and nothing changes for a workspace until someone grants a mandate. A signer
+image from before it refuses to start on the migrated file with `schema_too_new`, so a rollback
+of the signer means fixing forward. The same holds for the control plane: its migration
+`0004_mandates` adds the `mandates` table and lets an approval be a mandate use; do not run an
+older control plane against a database that holds mandate uses.
 
 Version 4 added the table `possession_challenges` for a new approver's possession step. The
 migration only creates that table. A signer image from before it refuses to start on the

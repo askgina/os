@@ -3,9 +3,10 @@
 This document says what the system protects, against whom, how, and where it does not. Each
 claim names the file that implements it or the plan section that fixes it. The plan is
 [`specs/agent-workspaces-v0.1.md`](../specs/agent-workspaces-v0.1.md); mandates follow
-[`specs/approval-mandates.md`](../specs/approval-mandates.md). Components and terms are
-introduced in [`architecture.md`](./architecture.md); the exact checks are in
-[`approval-protocol.md`](./approval-protocol.md).
+[`specs/approval-mandates.md`](../specs/approval-mandates.md), reprices and cancels of a stuck
+transaction [`specs/stuck-transaction-repricing.md`](../specs/stuck-transaction-repricing.md).
+Components and terms are introduced in [`architecture.md`](./architecture.md); the exact checks
+are in [`approval-protocol.md`](./approval-protocol.md).
 
 ## Assets
 
@@ -27,8 +28,8 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
 ## Trust boundaries
 
 1. **Agent → control plane.** An agent reaches only Caddy and the MCP gateway. Its seven tools
-   can propose, read and cancel its own intents. None signs, approves or administers (plan,
-   "MCP tools").
+   can propose, read and withdraw its own intents while they wait. None signs, approves,
+   administers, or speeds up or cancels a sent transaction (plan, "MCP tools").
 2. **Browser → control plane.** People sign in with passkeys. Sessions are rows behind an
    httpOnly, SameSite=Strict cookie; only a SHA-256 of the cookie value is stored
    ([`apps/server/src/db/schema.ts`](../apps/server/src/db/schema.ts), table `sessions`). No
@@ -67,7 +68,9 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
   granted that agent covers it (see "Mandates"); the signer checks the policy
   (requesters, chains, recipients, contract allowlist, per-transaction and daily caps, fee
   ceiling) on its own ledger ([`evaluate.ts`](../packages/protocol/src/evaluate.ts)). The agent
-  has no tool that approves or signs. Memos may not contain control or bidirectional characters
+  has no tool that approves or signs, and none that raises the fee of a sent payment or cancels
+  it: a prompt-injected agent could otherwise push every payment to its fee ceiling. It sees the
+  attempts in `get_intent`. Memos may not contain control or bidirectional characters
   that could make a card show something other than what is stored
   ([`intent.ts`](../packages/protocol/src/intent.ts), `Memo`). On the network, the agent can
   reach only Caddy (plan, "How the pieces fit together").
@@ -129,7 +132,9 @@ This covers code execution in the server and a script injected into a page on `P
   and a session; pause workspaces and revoke approvals. Pausing stops new signatures; a repeat of
   an approval the signer already signed still returns that stored transaction, because it
   already exists. Ask for a sweep of any wallet, which has no cap, and choose its amount when it
-  asks.
+  asks. Have the signer sign again, with higher fees and no passkey, any transaction it signed
+  and that is not mined, choosing when and how far up to its fee ceiling (see "Stuck
+  transactions"); open a cancel request for one and link people to it.
 - **Stopped by:** it cannot obtain an approval the signer accepts. A passkey prompt on any of
   its pages makes an assertion stamped with `PUBLIC_ORIGIN`, which the signer refuses
   (`assertion_invalid`), whatever digest it carries. It cannot change what the confirmation page
@@ -139,8 +144,9 @@ This covers code execution in the server and a script injected into a page on `P
   an assertion made in a frame. So it can no longer obtain an approval for an operation the
   person did not see on the signer's page. It cannot exceed the signer's policy caps, reuse an
   approval, or change policy or approvers without passkey approval of the exact new value. The
-  signer builds every transaction from the approved intent or sweep. A sweep needs the
-  workspace's admin threshold, and the signer sends it only to an address already on the
+  signer builds every transaction from the approved intent or sweep, and every later attempt of
+  it from its own record of the first signature: only the two fee fields change. A sweep needs
+  the workspace's admin threshold, and the signer sends it only to an address already on the
   wallet's recipient allowlist or to a treasury wallet of the same workspace, read from its own
   records ([`signer.ts`](../apps/signer/src/signer.ts), `assertSweepAllowed`). It cannot set or
   move the restore fence: that happens only on the signer host. It cannot have an approver
@@ -152,11 +158,12 @@ This covers code execution in the server and a script injected into a page on `P
   an agent talked them into it; a person who approves without reading the confirmation page;
   denial of service; an `add-approver` request that carries a key the attacker holds under the
   named person's credential id, when nobody compares the fingerprint (see "Limits"); transfers it
-  invents under a live mandate, which the signer signs with no person (see "Mandates"). The release
-  gate "an approval made on the control plane's page is refused" and the browser gate "a script
-  on the control plane's page cannot get an approval" test the refusal against the real stack;
-  the release gate "an approver change whose key the new person does not hold cannot be
-  approved" tests the possession step.
+  invents under a live mandate, which the signer signs with no person (see "Mandates"); network
+  fees burned by repricing up to each approval's fee ceiling (see "Stuck transactions"). The
+  release gate "an approval made on the control plane's page is refused" and the browser gate
+  "a script on the control plane's page cannot get an approval" test the refusal against the
+  real stack; the release gate "an approver change whose key the new person does not hold
+  cannot be approved" tests the possession step.
 
 ### A compromised `approve` service, or Caddy, DNS or the certificate for `APPROVE_ORIGIN`
 
@@ -257,7 +264,10 @@ This covers code execution in the server and a script injected into a page on `P
   open last by itself. Then it refuses every envelope issued before the fence
   ([`fence.ts`](../apps/signer/src/fence.ts); `approval-protocol.md`, section 8). It has also
   forgotten the payments it counted under a mandate after the backup, so every move of the
-  fence revokes every live mandate (see "Mandates").
+  fence revokes every live mandate (see "Mandates"). It may also have forgotten attempts it
+  signed after the backup, a cancel among them, so it no longer reprices any transaction signed
+  before the fence (`envelope_fenced`); a cancel, approved after the fence, is still signed (see
+  "Stuck transactions").
 
 Back up each trust domain separately and protect the signer's backups as you would the funds.
 
@@ -468,6 +478,89 @@ Push encryption against RFC 8291's own example. Push delivery is tested only aga
 stand-in push service, in the server's tests; no release gate turns Web Push on, and no real
 phone has received a push from this build. Nothing tests a receiver whose clock is wrong.
 
+## Stuck transactions
+
+A transaction the signer signed and the server sent may never be mined. Its account nonce stays
+held, so the wallet's later transactions on that chain wait behind it. The signer then signs
+further **attempts** of the same approval, all at the first signature's nonce, so at most one of
+them can be mined ([`apps/signer/src/attempts.ts`](../apps/signer/src/attempts.ts);
+`approval-protocol.md`, section 8, "Reprices and cancels"). A **reprice** is the same
+transaction with both fees higher: no passkey, asked for by the server on a schedule or by an
+owner's or approver's "Speed up". A **cancel** is a transfer of nothing from the wallet to
+itself at that nonce, approved as a `cancel-transaction` request on the confirmation page with
+passkeys at the wallet policy's threshold. The server follows the hashes of every attempt and
+reports the one that was mined ([`apps/server/src/execution/`](../apps/server/src/execution/),
+`repricing.ts`, `cancel.ts`, `transactions.ts`).
+
+| If this is compromised | It can                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | It cannot                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The control plane      | Choose when and how far fees rise for any approval it holds, up to `min(intent.maxFeeWei, policy fees.maxPerTxWei)`, within `SIGNER_REPRICE_WINDOW_SECONDS` of the first signature and `SIGNER_MAX_TX_ATTEMPTS` signatures: it can burn each payment's network fee up to the ceiling people approved; withhold broadcasts or give two approvals one nonce so they void each other (denial of service, as in v0.1); open a cancel request for any sent, unmined transaction and link people to it | Change the nonce, gas, recipient, amount, calldata or chain of an approved operation: the signer rebuilds every attempt from its own record; get a signature of it at a second nonce, so it is never mined twice; reprice an approval the signer never signed, or with another envelope or intent; reprice while the workspace is paused; get a cancel without passkeys at the wallet's threshold; turn a cancel back into the payment; add or release a spend |
+| An agent's token       | Read the attempts and the stuck reason of its own intents                                                                                                                                                                                                                                                                                                                                                                                                                                        | Speed up or cancel anything: no tool does, and the people's routes need a session                                                                                                                                                                                                                                                                                                                                                                              |
+| One approver's passkey | Approve a cancel where the wallet's threshold is 1: that payment does not happen, and the wallet pays one cancel fee within the policy's cap                                                                                                                                                                                                                                                                                                                                                     | Move anything with a cancel: it sends nothing to anyone                                                                                                                                                                                                                                                                                                                                                                                                        |
+| The signer host        | Everything, as before                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+
+**A cancel is an attempt, not a guarantee.** The chain decides: if the payment is mined first,
+it stands (`confirmed` or `reverted`, with `cancel_too_late`), and the cancel does nothing but
+cost its fee. The confirmation page says so. Once a cancel was signed, every later attempt is a
+cancel, whichever route asks for it, so no reprice turns it back into the payment.
+
+**The spend stands.** Neither a reprice nor a cancel adds or releases a spend or a mandate use.
+The signer counted the payment when it first signed it, and only the control plane could say
+which attempt was mined, so a landed cancel ages out of the 24-hour window like any spend.
+
+**Which attempt was mined.** At most one can be, and the server reads every attempt's receipt,
+whichever node saw which. An outcome is final only at the chain's `confirmations` depth: until
+then a reorg can swap the payment for its cancel or the reverse, and the nonce stays held.
+Operators of chains with deep reorgs raise `confirmations`.
+
+**Replacement rules differ by client.** go-ethereum and reth replace a pooled transaction only
+for both fees at least 10% higher; Anvil for any higher fee cap; Besu, Nethermind, L2
+sequencers and private relays by rules of their own. The signer requires only "strictly
+higher"; the size of the raise is the server's `REPRICE_BUMP_PERCENT` (12 by default). A refused
+replacement leaves the earlier attempt valid, and it may still be mined.
+
+**Restoring the signer.** A restored signer may have forgotten attempts signed after its
+backup, a cancel among them, and a reprice built from what it remembers could undo that cancel.
+So it refuses to reprice anything signed before the restore fence (`envelope_fenced`; the
+server shows `reprice_refused`). A cancel request opened after the fence is not refused: people
+can still stop such a transaction.
+
+**Pause.** A paused workspace gets no reprice, neither from the server nor from a person's
+speed-up, and the signer refuses one too. A cancel is still signed: it moves nothing and carries
+its own passkeys.
+
+What the release gates in [`e2e/test/release-gates.spec.ts`](../e2e/test/release-gates.spec.ts)
+check on the real stack, with Anvil's mining held back so a payment stays unmined until the gate
+lets it be mined:
+
+- "a payment the chain does not mine is signed again with a higher fee by itself, differs only
+  in its fees, and is mined exactly once": the node drops the first attempt and a block is mined
+  without it; the server's own reprice raises both fees by the bump and stays inside the
+  approved ceiling; as the node holds them, both attempts have the same sender, recipient,
+  amount, data, nonce, gas and chain; once mining resumes exactly one attempt has a receipt, the
+  recipient is paid once, the nonce rises by one, and the spend counts once.
+- "an approver speeds up a stuck payment with no passkey, and the agent that proposed it sees
+  every attempt but can neither speed it up nor cancel it": a click within 15 seconds adds
+  nothing, a later one adds an attempt with no passkey assertion; the agent has its seven tools,
+  its token gets 401 from the speed-up and cancel routes and 404 from the agents network, and
+  `get_intent` shows each attempt and the stuck reason.
+- "a cancel a person asks for, approved on the confirmation page at the wallet's threshold while
+  the workspace is paused, is mined in the payment's place: nothing moves, the nonce is used
+  once, and the spend still counts": the page shows the payment it would stop from the signer's
+  record; the cancel attempt as the node holds it is a transfer of nothing from the wallet to
+  itself; the intent ends `voided` with `transaction_cancelled`, the recipient's balance is
+  unchanged, the wallet pays only the cancel's fee, and the signer's spend is unchanged.
+
+The signer's tests ([`apps/signer/test/repricing.test.ts`](../apps/signer/test/repricing.test.ts))
+cover every reprice and cancel refusal, the window, the attempt limit, the fence, mandate uses,
+and a cancel's ceiling; the server's tests
+([`apps/server/test/execution/repricing.test.ts`](../apps/server/test/execution/repricing.test.ts),
+[`cancel.test.ts`](../apps/server/test/execution/cancel.test.ts)) cover the schedule, crash
+recovery, the payment mined after a cancel was signed, a foreign transaction at the nonce, a
+paused workspace and the cancel of a sweep. Everything runs against Anvil. Nothing tests a real
+public mempool, the replacement rules of go-ethereum, reth or any other client, a reorg that
+swaps two attempts, or a real phone's passkey on a cancel.
+
 ## What is encrypted at rest
 
 | Data                                                                                                                            | Where                                                                                                   | Encrypted?                                                                                 | Why                                                                                                                     |
@@ -477,7 +570,7 @@ phone has received a push from this build. Nothing tests a receiver whose clock 
 | What an approval kind needs to apply its effect: a proposed policy, a sweep's amount and target                                 | `approvals.detail`                                                                                      | Sealed, workspace key                                                                      | Same                                                                                                                    |
 | The confirmation page's link for a waiting request, with its token                                                              | `approvals.confirmation`                                                                                | Sealed, workspace key                                                                      | The token shows the request to whoever holds it; the signer stores only its SHA-256                                     |
 | A mandate: its caps, recipients and purpose                                                                                     | `mandates.mandate`, and the grant's `approvals.detail`                                                  | Sealed, workspace key                                                                      | What a person typed about a standing grant; its id, wallet, agent, times, hash and status stay readable                 |
-| The signed raw transaction                                                                                                      | `transactions.raw`                                                                                      | Sealed, workspace key                                                                      | Kept only to rebroadcast; it contains the operation                                                                     |
+| The signed raw transaction, of every attempt                                                                                    | `transactions.raw`, `transaction_attempts.raw`                                                          | Sealed, workspace key                                                                      | Kept only to rebroadcast; it contains the operation. Each attempt's hash, gas and fees stay readable, as on chain       |
 | Audit details                                                                                                                   | `audit_events.detail`                                                                                   | Sealed, workspace key                                                                      | Free-form content; its digest stays readable so the chain verifies without the key                                      |
 | Workflow inputs, outputs, hook payloads, stream chunks, step errors                                                             | `workflow` schema                                                                                       | AES-256-GCM, per-run key ([`packages/world/src/index.ts`](../packages/world/src/index.ts)) | The upstream Postgres World stores these in plaintext                                                                   |
 | Data keys                                                                                                                       | `os_keys` schema                                                                                        | Wrapped by a KEK from the keyring file                                                     | The database alone must not be enough                                                                                   |
@@ -591,9 +684,12 @@ requests and unknown workspaces appear only in the signer's stdout.
 records the spend in the same database transaction as the signature (plan, Milestone 2, step 8).
 It does not watch the chain.
 
-**A stuck transaction blocks later ones.** A signed transaction that is never mined holds its
-nonce, so later transactions of that wallet on that chain cannot be mined either. Repricing
-under an existing approval is not designed.
+**A stuck transaction blocks later ones until one of its attempts is mined.** A signed
+transaction that is never mined holds its nonce, so later transactions of that wallet on that
+chain cannot be mined either. The server raises its fee within the approved ceiling, and people
+can cancel it, but nothing forces the chain to take either: a fee ceiling below what the chain
+asks, a closed reprice window or an exhausted attempt limit leaves it waiting, and a cancel can
+lose to the payment (see "Stuck transactions").
 
 **The request signature can be replayed for 60 seconds.** It is not a source of single use; the
 envelope nonce is.
@@ -630,6 +726,7 @@ From the map's "Not yet specified" list ([askgina/os#1](https://github.com/askgi
   "Notifications"): email, and chat adapters built into the control plane.
 - Workspace lifecycle beyond emptying a wallet: clone, export, retiring a wallet, and delete with
   assets still in the wallets. A person can sweep a wallet whose agent is gone.
-- Repricing stuck transactions.
+- For stuck transactions: a new gas limit, legacy (type 0) and blob transactions, L2-specific
+  fee fields, private order flow, and a signer that watches the chain itself.
 
 Also out of scope: hosted or multi-tenant operation by Ask Gina.

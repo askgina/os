@@ -69,6 +69,10 @@ Success means:
   Rationale: one outcome per nonce, decided by what the chain shows; the signer's attempt list is the record.
   Date/Author: 2026-11-15 / building agent, recorded by the lead
 
+- Decision: taken while building the routes (Milestone 4). A second cancel request while one waits returns the waiting one. When the payment becomes final while a cancel waits, the cancel request ends cancelled and is revoked at the signer; a cancel approved after that signs nothing and ends failed with `transaction_final`. A cancel may be requested while the transaction is broadcast or stuck, also while the workspace is paused. Sweeps get their own route, because they have no intent. `canSpeedUp` and `canCancel` describe the transaction, not the person; the routes check the role. A cancel first stores any attempt the signer holds and the server lost, then signs at the next number.
+  Rationale: one waiting cancel per transaction; nothing is signed for a transaction that is already final; a crash never leaves a gap in the attempt numbers.
+  Date/Author: 2026-11-15 / building agent, recorded by the lead
+
 - Decision: only `maxFeePerGas` and `maxPriorityFeePerGas` change under an existing approval. The nonce, gas limit, `to`, `value`, `data` and chain are those of the first signature, taken from the signer's own record.
   Rationale: the person approved an operation and a fee ceiling (`intent.maxFeeWei`). Raising the fee inside that ceiling is what v0.1 already lets the control plane choose at first signing. Keeping the nonce is what makes every attempt mutually exclusive on chain.
   Date/Author: 2026-11-14 / research agent (recommendation; owner decision 1 pending for who may trigger it).

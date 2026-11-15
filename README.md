@@ -122,7 +122,9 @@ The tools are `whoami`, `get_balances`, `propose_transfer`, `propose_contract_ca
 what is left of them. A propose tool answers with `authorizedBy`: `"mandate"` when a mandate
 covers the proposal (it is signed and sent with no person asked, and has no `approvalUrl`), or
 `"person"` when someone must approve it at `approvalUrl`. `propose_transfer` takes an optional
-`mandateId` to use exactly that mandate, or be refused with the reason.
+`mandateId` to use exactly that mandate, or be refused with the reason. `get_intent` shows every
+attempt of a sent payment and why it is not mined yet; no tool lets an agent speed one up or
+cancel it.
 [`examples/scripted-agent`](examples/scripted-agent)
 is the smallest complete agent. [`examples/eve-agent`](examples/eve-agent) is a real agent
 runtime (vercel/eve, no Vercel service) that keeps its conversations encrypted in its own
@@ -159,15 +161,28 @@ To notify people's own phones and browsers directly, serve the stack over HTTPS 
 encrypted for the device and never show an amount or a recipient
 ([`deploy/README.md`](deploy/README.md#web-push)).
 
+## When a payment is stuck
+
+A sent payment that the chain does not mine keeps its nonce, and the wallet's later payments wait
+behind it. The server signs it again with a higher fee by itself (after `REPRICE_AFTER_SECONDS`,
+three minutes by default), and an owner or approver can press "Speed up" at once, without a
+passkey. Only the two fee fields change, inside the fee ceiling people approved: never the
+recipient, the amount or the nonce, so at most one of its attempts can be mined. People can also
+cancel it: a request they approve with passkeys on the confirmation page, after which the signer
+signs a transfer of nothing from the wallet to itself at the same nonce. A cancel is an attempt:
+if the chain mines the payment first, the payment stands. Either way the payment counts toward
+the wallet's daily limit. The settings and what they cannot do are in
+[`deploy/README.md`](deploy/README.md#stuck-transactions).
+
 ## What this protects, and what it does not
 
-| If this is compromised       | The attacker can                                                                                        | The attacker cannot                                                                                             |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| An agent or its token        | Propose operations; spend inside its live mandates                                                      | Approve, sign, change limits, reach the signer; pay outside a mandate's list or caps                            |
-| The control plane's database | Read names, ids, statuses, addresses, limits                                                            | Read sealed content; forge an approval                                                                          |
-| The control plane itself     | Ask the signer; show a person a misleading card; have the signer sign transfers that fit a live mandate | Get an approval the signer accepts; change the confirmation page; exceed limits or a mandate; reuse an approval |
-| The confirmation service     | Show a person a misleading page                                                                         | Sign or read a key; reach a signer route but its four; approve unaided                                          |
-| The signer's machine         | Everything for the wallets on it                                                                        |                                                                                                                 |
+| If this is compromised       | The attacker can                                                                                                                                                              | The attacker cannot                                                                                                                                                  |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| An agent or its token        | Propose operations; spend inside its live mandates                                                                                                                            | Approve, sign, change limits, reach the signer; pay outside a mandate's list or caps; speed up or cancel a payment                                                   |
+| The control plane's database | Read names, ids, statuses, addresses, limits                                                                                                                                  | Read sealed content; forge an approval                                                                                                                               |
+| The control plane itself     | Ask the signer; show a person a misleading card; have the signer sign transfers that fit a live mandate; raise a sent payment's network fee up to the ceiling people approved | Get an approval the signer accepts; change the confirmation page; exceed limits or a mandate; reuse an approval; change a stuck payment's recipient, amount or nonce |
+| The confirmation service     | Show a person a misleading page                                                                                                                                               | Sign or read a key; reach a signer route but its four; approve unaided                                                                                               |
+| The signer's machine         | Everything for the wallets on it                                                                                                                                              |                                                                                                                                                                      |
 
 Two limits are worth knowing before you rely on this:
 
@@ -193,9 +208,10 @@ The full list is in [`docs/threat-model.md`](docs/threat-model.md).
 This is a first release (v0.1) and has not been audited. Use test funds.
 
 Scope: EVM chains; native transfers, ERC-20 transfers and allowlisted contract calls; one
-approval for one transaction, or a mandate for a bounded series of one agent's transfers. Not in
-this release: mandates for contract calls or trades, other chains, a bundled agent runtime,
-cloud key management. The
+approval for one transaction, or a mandate for a bounded series of one agent's transfers; a
+stuck transaction repriced under its approval or cancelled with passkeys, tested against a local
+chain only. Not in this release: mandates for contract calls or trades, other chains, a bundled
+agent runtime, cloud key management. The
 [map of open questions](https://github.com/askgina/os/issues/1) lists what is planned and why.
 
 ## Documentation

@@ -1,6 +1,6 @@
 # Overlay for the release gates only: lets the tests reach the database (to scan it for
-# plaintext), the local chain (to check balances) and a webhook receiver (to check what the
-# server notifies). Never use it for a real deployment.
+# plaintext), the local chain (to check balances and to hold back mining) and a webhook receiver
+# (to check what the server notifies). Never use it for a real deployment.
 services:
   postgres:
     ports:
@@ -39,5 +39,10 @@ services:
   server:
     environment:
       NOTIFY_WEBHOOK_URL: http://webhook-receiver:8080/hook
+      # A stuck payment is repriced by itself 45 seconds after its newest attempt (180 by
+      # default): late enough that a person's "Speed up", allowed 15 seconds after the newest
+      # attempt, is the only possible cause of an attempt in between, so the gates know whose
+      # each attempt is.
+      REPRICE_AFTER_SECONDS: "45"
     depends_on:
       webhook-receiver: { condition: service_healthy }

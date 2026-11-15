@@ -11,8 +11,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   type AgentSummary,
   ApiError,
+  type AuditEvent,
+  type IntentDetail,
   type MandateDraft,
   type PolicyDraft,
+  type TransactionAttemptView,
+  type TransactionInfo,
   type WalletSummary,
   type WorkspaceDetail,
 } from "@askgina/os-api";
@@ -22,9 +26,9 @@ import { b64url, coseEc2, SoftAuthenticator } from "@askgina/os-protocol/testing
 import { scanForMarkers } from "@askgina/os-testkit";
 import { expect, test } from "@playwright/test";
 import pg from "pg";
-import { createPublicClient, createTestClient, formatEther, http, parseEther } from "viem";
-import { foundry } from "viem/chains";
+import { formatEther, type Hash, isAddressEqual, parseEther, type Transaction } from "viem";
 import { type AgentConnection, connectAgent, type Proposal, ToolRefused } from "../src/agent.ts";
+import { chain, chainAdmin, receiptOf, withMiningHeld } from "../src/chain.ts";
 import { ConfirmationRefused, Person } from "../src/person.ts";
 import {
   backUpInto,
@@ -60,16 +64,16 @@ const CALLDATA_MARKER = `0x12345678${Buffer.from(`CALLMARK${run}`).toString("hex
 /** A name a person types, which is readable on purpose: it proves the scanner can see. */
 const WORKSPACE_NAME = `Treasury ${run}`;
 
-const chain = createPublicClient({
-  chain: foundry,
-  transport: http(stack.anvilUrl),
-  cacheTime: 0,
-});
-const chainAdmin = createTestClient({
-  chain: foundry,
-  mode: "anvil",
-  transport: http(stack.anvilUrl),
-});
+/** Exactly the tools an agent gets: none signs, approves, administers, speeds up or cancels. */
+const AGENT_TOOLS = [
+  "cancel_intent",
+  "get_balances",
+  "get_intent",
+  "list_intents",
+  "propose_contract_call",
+  "propose_transfer",
+  "whoami",
+];
 
 const ada = new Person(stack.origin, "Ada");
 let workspace: WorkspaceDetail;
@@ -218,15 +222,7 @@ test("a workspace, an agent with its own wallet, and limits approved with a pass
 });
 
 test("an agent can propose and read, and nothing else", async () => {
-  expect(await agent.tools()).toEqual([
-    "cancel_intent",
-    "get_balances",
-    "get_intent",
-    "list_intents",
-    "propose_contract_call",
-    "propose_transfer",
-    "whoami",
-  ]);
+  expect(await agent.tools()).toEqual(AGENT_TOOLS);
   const unauthenticated = await fetch(`${stack.origin}/mcp`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -959,6 +955,35 @@ async function rejectWaiting(proposal: Proposal): Promise<void> {
   expect(await intentSettles(proposal.intentId)).toBe("rejected");
 }
 
+/**
+ * `person` joins the workspace as an approver, proves on the confirmation page that the passkey
+ * is theirs, and Ada approves the change. Returns their user id.
+ */
+async function joinAsApprover(person: Person): Promise<string> {
+  const invite = await ada.api.call("createInvite", {
+    params: { workspaceId: workspace.id },
+    body: { role: "approver" },
+  });
+  const { user } = await person.join(invite.url);
+  if (!user) throw new Error(`${person.name} did not join`);
+  const pending = await ada.api.call("listApprovals", {
+    params: { workspaceId: workspace.id },
+    query: { status: "pending" },
+  });
+  let change: string | undefined;
+  for (const item of pending.items.filter((candidate) => candidate.kind === "add-approver")) {
+    const detail = await ada.api.call("getApproval", { params: { approvalId: item.id } });
+    if (detail.subject.kind === "add-approver" && detail.subject.user.id === user.id) {
+      change = item.id;
+    }
+  }
+  if (!change) throw new Error("joining as an approver opened no approver change");
+  await person.provePossession(change);
+  await ada.confirm(change);
+  expect((await ada.settled(change)).status).toBe("executed");
+  return user.id;
+}
+
 /** Run one of the signer's operator commands on its host, as the deploy guide does. */
 async function signerAdmin(...args: string[]): Promise<Record<string, unknown>> {
   const output = await exec("signer", "node", "src/admin.ts", ...args);
@@ -1349,27 +1374,7 @@ test("a revoked mandate signs nothing, and the next payment waits for a person",
 test("removing the approver who granted a mandate ends that mandate and no other", async () => {
   // Lin joins as an approver, proves her passkey is hers, and Ada approves the change.
   const lin = new Person(stack.origin, "Lin");
-  const invite = await ada.api.call("createInvite", {
-    params: { workspaceId: workspace.id },
-    body: { role: "approver" },
-  });
-  const { user } = await lin.join(invite.url);
-  if (!user) throw new Error("Lin did not join");
-  const pending = await ada.api.call("listApprovals", {
-    params: { workspaceId: workspace.id },
-    query: { status: "pending" },
-  });
-  let addLin: string | undefined;
-  for (const item of pending.items.filter((candidate) => candidate.kind === "add-approver")) {
-    const change = await ada.api.call("getApproval", { params: { approvalId: item.id } });
-    if (change.subject.kind === "add-approver" && change.subject.user.id === user.id) {
-      addLin = item.id;
-    }
-  }
-  if (!addLin) throw new Error("joining as an approver opened no approver change");
-  await lin.provePossession(addLin);
-  await ada.confirm(addLin);
-  expect((await ada.settled(addLin)).status).toBe("executed");
+  const linId = await joinAsApprover(lin);
 
   // Lin grants one mandate, Ada another, for the same agent and wallet.
   const byLin = await grantMandate(payerWallet.id, mandateDraft(payerId), lin);
@@ -1381,7 +1386,7 @@ test("removing the approver who granted a mandate ends that mandate and no other
   // Lin stops approving: the signer removes her passkey and, in the same transaction, revokes
   // what it granted.
   const demoted = await ada.api.call("setMemberRole", {
-    params: { workspaceId: workspace.id, userId: user.id },
+    params: { workspaceId: workspace.id, userId: linId },
     body: { role: "viewer" },
   });
   const removal = demoted.approvals.find((item) => item.kind === "remove-approver");
@@ -1734,6 +1739,644 @@ test("a payment under a mandate is announced to the webhook as mandate.used, sig
   // Nothing stays live for the fence gate.
   await ada.revokeMandate(workspace.id, granted);
   expect(await payerMandates()).toEqual([]);
+});
+
+// --- stuck transactions -----------------------------------------------------------------------
+// A payment that is signed and sent but not mined keeps its account nonce; the server signs it
+// again with higher fees by itself, people may speed it up or cancel it, agents may only watch.
+// Each gate holds the chain's mining for its own payment and gives it back before it ends
+// (`withMiningHeld`), so no gate before or after depends on mining in that window. The e2e
+// overlay sets REPRICE_AFTER_SECONDS to 45: the automatic reprice then comes well after a
+// person's speed-up may (15 seconds after the newest attempt), so each attempt below has one
+// known cause. They pay from the payer's wallet with no mandate live (the gate above revoked its
+// last one), so each payment waits for a person, and they leave none live for the fence gate.
+
+/** An address no other gate pays: its balance moves only by the payments below. */
+const STUCK_RECIPIENT = "0x0000000000000000000000000000000000057001";
+
+/** Kai, an approver who is not an owner: the one who speeds up and asks for the cancel. */
+const kai = new Person(stack.origin, "Kai");
+let kaiId: string;
+
+/** `value`, in wei, raised by the stack's REPRICE_BUMP_PERCENT of 12, rounded up. */
+const bumped = (value: string) => (BigInt(value) * 112n + 99n) / 100n;
+
+/** Read the intent until its transaction satisfies `ready`, and return both. */
+async function transactionOnceSent(
+  intentId: string,
+  ready: (transaction: TransactionInfo) => boolean,
+  timeoutMs = 60_000,
+): Promise<{ intent: IntentDetail; transaction: TransactionInfo }> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const intent = await ada.api.call("getIntent", { params: { intentId } });
+    const { transaction } = intent;
+    if (transaction !== null && ready(transaction)) return { intent, transaction };
+    if (Date.now() > deadline) {
+      throw new Error(
+        `intent ${intentId} is ${intent.status}, its transaction ${transaction?.status ?? "not signed"} with ${transaction?.attempts.length ?? 0} attempts`,
+      );
+    }
+    await delay(250);
+  }
+}
+
+/** The intent's transaction as people see it now. */
+async function transactionOf(intentId: string): Promise<TransactionInfo> {
+  const { transaction } = await ada.api.call("getIntent", { params: { intentId } });
+  if (transaction === null) throw new Error(`intent ${intentId} has no transaction`);
+  return transaction;
+}
+
+/** What the signer counts as signed from `walletId` in the last 24 hours, in wei of the native coin. */
+async function spentNative(walletId: WalletSummary["id"]): Promise<bigint> {
+  const { spent } = await ada.api.call("getWallet", {
+    params: { workspaceId: workspace.id, walletId },
+  });
+  const native = spent.find((entry) => entry.chainId === CHAIN && entry.asset === "native");
+  return BigInt(native?.amount ?? "0");
+}
+
+/** The newest audit event's number. */
+async function auditHead(): Promise<number> {
+  const page = await ada.api.call("listAudit", { params: { workspaceId: workspace.id } });
+  return page.items[0]?.seq ?? 0;
+}
+
+/** The workspace's audit events after `seq`, oldest first, read across pages. */
+async function auditAfter(seq: number): Promise<AuditEvent[]> {
+  const events: AuditEvent[] = [];
+  for (let cursor: string | undefined; ; ) {
+    const page = await ada.api.call("listAudit", {
+      params: { workspaceId: workspace.id },
+      query: cursor === undefined ? {} : { cursor },
+    });
+    for (const event of page.items) {
+      if (event.seq <= seq) return events.reverse();
+      events.push(event);
+    }
+    if (page.nextCursor === null) return events.reverse();
+    cursor = page.nextCursor;
+  }
+}
+
+/**
+ * How many assertions `person`'s passkeys have made: each approval, sign-in and possession proof
+ * adds one, so an action that leaves it unchanged asked for no passkey.
+ */
+function passkeyUses(person: Person): number {
+  let uses = 0;
+  for (const credential of person.authenticator.credentials.values()) uses += credential.signCount;
+  return uses;
+}
+
+/** Everything an attempt may not change: all but the two fee fields, as the node reports it. */
+function fixedFields(transaction: Transaction) {
+  return {
+    from: transaction.from.toLowerCase(),
+    to: transaction.to?.toLowerCase() ?? null,
+    value: transaction.value,
+    input: transaction.input,
+    nonce: transaction.nonce,
+    gas: transaction.gas,
+    chainId: transaction.chainId,
+    type: transaction.type,
+  };
+}
+
+/** The attempt the node holds now, checked against what the control plane says it signed. */
+async function offered(attempt: TransactionAttemptView): Promise<Transaction> {
+  const transaction = await chain.getTransaction({ hash: attempt.hash as Hash });
+  expect(transaction.blockNumber).toBeNull();
+  expect(transaction).toMatchObject({
+    gas: BigInt(attempt.gas),
+    maxFeePerGas: BigInt(attempt.maxFeePerGas),
+    maxPriorityFeePerGas: BigInt(attempt.maxPriorityFeePerGas),
+  });
+  return transaction;
+}
+
+/** Both fees of `next` are at least the bump above `previous`'s. */
+function expectRaised(previous: TransactionAttemptView, next: TransactionAttemptView): void {
+  expect(BigInt(next.maxFeePerGas)).toBeGreaterThanOrEqual(bumped(previous.maxFeePerGas));
+  expect(BigInt(next.maxPriorityFeePerGas)).toBeGreaterThanOrEqual(
+    bumped(previous.maxPriorityFeePerGas),
+  );
+}
+
+/** After the chain mined `mined`, no other attempt of the transaction has a receipt. */
+async function expectMinedOnce(
+  attempts: TransactionAttemptView[],
+  mined: TransactionAttemptView,
+): Promise<void> {
+  expect((await receiptOf(mined.hash as Hash))?.status).toBe("success");
+  for (const attempt of attempts) {
+    if (attempt.attempt === mined.attempt) continue;
+    expect(await receiptOf(attempt.hash as Hash), `attempt ${attempt.attempt}`).toBeNull();
+  }
+}
+
+test("a payment the chain does not mine is signed again with a higher fee by itself, differs only in its fees, and is mined exactly once", async () => {
+  const amount = "0.003";
+  const before = await chain.getBalance({ address: STUCK_RECIPIENT });
+  const nonceBefore = await chain.getTransactionCount({ address: payerWallet.address });
+  const spentBefore = await spentNative(payerWallet.id);
+  const auditFrom = await auditHead();
+  let intentId = "";
+  let approvalId = "";
+  let first: Transaction | undefined;
+
+  await withMiningHeld(async (mining) => {
+    const proposal = await payer.proposeTransfer({
+      chainId: CHAIN,
+      to: STUCK_RECIPIENT,
+      amount,
+      memo: "repriced by the server",
+    });
+    expect(proposal).toMatchObject({ authorizedBy: "person", status: "pending_approval" });
+    intentId = proposal.intentId;
+    approvalId = approvalIdOf(proposal);
+    await ada.confirm(approvalId);
+
+    // Signed once and offered to the chain, which holds it in its pool.
+    const sent = await transactionOnceSent(intentId, (tx) => tx.status === "broadcast");
+    expect(sent.transaction.attempts).toHaveLength(1);
+    const [original] = sent.transaction.attempts;
+    if (!original) throw new Error("no first attempt");
+    expect(original).toMatchObject({
+      attempt: 0,
+      kind: "original",
+      status: "pending",
+      cancelApprovalId: null,
+    });
+    first = await offered(original);
+    expect(first).toMatchObject({ nonce: nonceBefore, value: parseEther(amount) });
+    expect(first.to !== null && isAddressEqual(first.to, STUCK_RECIPIENT)).toBe(true);
+    // The signer counted the payment once, when it signed it.
+    expect(await spentNative(payerWallet.id)).toBe(spentBefore + parseEther(amount));
+
+    // The node drops it and the chain goes on without it: a block is mined, the payment is not
+    // in it, and the wallet's nonce has not moved. Only the server can bring it back.
+    const height = await chain.getBlockNumber();
+    await chainAdmin.dropTransaction({ hash: original.hash as Hash });
+    await chainAdmin.mine({ blocks: 1 });
+    expect(await chain.getBlockNumber()).toBe(height + 1n);
+    expect(await receiptOf(original.hash as Hash)).toBeNull();
+    expect(await chain.getTransactionCount({ address: payerWallet.address })).toBe(nonceBefore);
+    // Nothing was repriced yet: the next attempt is due 45 seconds after this one was signed.
+    expect((await transactionOf(intentId)).attempts).toHaveLength(1);
+
+    // While it is not mined, people are told why, and that they may act.
+    await expect
+      .poll(async () => (await transactionOf(intentId)).stuckReason, { timeout: 30_000 })
+      .toBe("fee_too_low");
+    expect(await transactionOf(intentId)).toMatchObject({
+      status: "broadcast",
+      minedAttempt: null,
+      canSpeedUp: true,
+      canCancel: true,
+      pendingCancelApprovalId: null,
+    });
+
+    // With nobody asking, the server has the signer sign it again with higher fees.
+    const { intent, transaction } = await transactionOnceSent(
+      intentId,
+      (tx) => tx.attempts.length >= 2,
+      120_000,
+    );
+    const [, raised] = transaction.attempts;
+    if (!raised) throw new Error("no second attempt");
+    expect(raised).toMatchObject({
+      attempt: 1,
+      kind: "reprice",
+      gas: original.gas,
+      status: "pending",
+      cancelApprovalId: null,
+    });
+    expect(raised.hash).not.toBe(original.hash);
+    expectRaised(original, raised);
+    // Every attempt stays inside the ceiling the person approved and the policy's fee cap.
+    const ceiling = BigInt(intent.intent.maxFeeWei);
+    expect(ceiling).toBeLessThanOrEqual(BigInt(wei("0.01")));
+    for (const attempt of transaction.attempts) {
+      expect(BigInt(attempt.gas) * BigInt(attempt.maxFeePerGas)).toBeLessThanOrEqual(ceiling);
+    }
+    // The node holds the new attempt: the first signature's sender, recipient, amount, data,
+    // nonce, gas and chain, with only the two fees higher.
+    expect(fixedFields(await offered(raised))).toEqual(fixedFields(first));
+    // A reprice counts nothing again.
+    expect(await spentNative(payerWallet.id)).toBe(spentBefore + parseEther(amount));
+    // Recorded as the server's own doing, and allowed by the signer under the payment's approval.
+    expect(await auditAfter(auditFrom)).toContainEqual(
+      expect.objectContaining({
+        action: "transaction.repriced",
+        actor: expect.objectContaining({ type: "system" }),
+        subject: { type: "approval", id: approvalId },
+        detail: expect.objectContaining({
+          trigger: "automatic",
+          attempt: 1,
+          kind: "reprice",
+          transactionHash: raised.hash,
+        }),
+      }),
+    );
+    expect(await signerDecisions()).toContainEqual(
+      expect.objectContaining({ action: "reprice", approvalId, outcome: "allowed" }),
+    );
+
+    await mining.resume();
+  });
+
+  // Mining resumed: whichever attempt the pool held is mined, once.
+  expect(await intentSettles(intentId)).toBe("confirmed");
+  const settled = await transactionOf(intentId);
+  const mined = settled.attempts.at(-1);
+  if (!mined || !first) throw new Error("nothing was mined");
+  expect(settled).toMatchObject({
+    status: "confirmed",
+    minedAttempt: mined.attempt,
+    hash: mined.hash,
+    stuckReason: null,
+    canSpeedUp: false,
+    canCancel: false,
+  });
+  expect(mined.attempt).toBeGreaterThanOrEqual(1);
+  expect(settled.attempts.map((attempt) => attempt.status)).toEqual(
+    settled.attempts.map((attempt) => (attempt === mined ? "mined" : "not_mined")),
+  );
+  await expectMinedOnce(settled.attempts, mined);
+  expect(fixedFields(await chain.getTransaction({ hash: mined.hash as Hash }))).toEqual(
+    fixedFields(first),
+  );
+  expect(formatEther((await chain.getBalance({ address: STUCK_RECIPIENT })) - before)).toBe(amount);
+  expect(await chain.getTransactionCount({ address: payerWallet.address })).toBe(nonceBefore + 1);
+  expect(await spentNative(payerWallet.id)).toBe(spentBefore + parseEther(amount));
+});
+
+test("an approver speeds up a stuck payment with no passkey, and the agent that proposed it sees every attempt but can neither speed it up nor cancel it", async () => {
+  kaiId = await joinAsApprover(kai);
+  const amount = "0.002";
+  const before = await chain.getBalance({ address: STUCK_RECIPIENT });
+  const nonceBefore = await chain.getTransactionCount({ address: payerWallet.address });
+  const auditFrom = await auditHead();
+  let intentId = "";
+
+  await withMiningHeld(async (mining) => {
+    const proposal = await payer.proposeTransfer({
+      chainId: CHAIN,
+      to: STUCK_RECIPIENT,
+      amount,
+      memo: "sped up by a person",
+    });
+    intentId = proposal.intentId;
+    await ada.confirm(approvalIdOf(proposal));
+    const { transaction } = await transactionOnceSent(intentId, (tx) => tx.status === "broadcast");
+    const [original] = transaction.attempts;
+    if (!original) throw new Error("no first attempt");
+    const first = await offered(original);
+
+    // A click within 15 seconds of the newest attempt adds none: it answers the payment as is.
+    expect(nowSeconds()).toBeLessThan(original.signedAt + 15);
+    const early = await kai.api.call("speedUp", { params: { intentId }, body: {} });
+    expect(early.transaction?.attempts.map((attempt) => attempt.hash)).toEqual([original.hash]);
+
+    // The agent: its seven tools, none of which acts on a sent payment. Withdrawing it changes
+    // nothing once people approved it.
+    expect(await payer.tools()).toEqual(AGENT_TOOLS);
+    expect(await payer.call("cancel_intent", { intentId })).toEqual({
+      intentId,
+      status: "broadcast",
+    });
+    // Its token opens none of the people's routes: from the public origin it is no session...
+    for (const action of ["speed-up", "cancel-transaction"]) {
+      const response = await fetch(`${stack.origin}/api/v1/intents/${intentId}/${action}`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${payerToken}`,
+          origin: stack.origin,
+          "content-type": "application/json",
+        },
+        body: "{}",
+        redirect: "manual",
+      });
+      const refusal = (await response.json()) as { error?: { code?: string } };
+      expect({ status: response.status, code: refusal.error?.code }, action).toEqual({
+        status: 401,
+        code: "unauthenticated",
+      });
+    }
+    // ...and from where an agent runs, the routes are not there at all.
+    const script = `
+      const post = (path) => fetch("http://agent-gateway" + path, {
+        method: "POST",
+        headers: { authorization: "Bearer ${payerToken}", "content-type": "application/json" },
+        body: "{}",
+        signal: AbortSignal.timeout(4000),
+      }).then((r) => r.status, () => "unreachable");
+      (async () => {
+        console.log(JSON.stringify({
+          speedUp: await post("/api/v1/intents/${intentId}/speed-up"),
+          cancel: await post("/api/v1/intents/${intentId}/cancel-transaction"),
+        }));
+      })();`;
+    const { output } = await fromAgentsNetwork(script);
+    expect(JSON.parse(output.trim().split("\n").at(-1) ?? "{}")).toEqual({
+      speedUp: 404,
+      cancel: 404,
+    });
+    // What the agent can do is watch: get_intent shows the attempt and why it is not mined.
+    await expect
+      .poll(async () => (await payer.call("get_intent", { intentId })).stuckReason, {
+        timeout: 30_000,
+      })
+      .toBe("fee_too_low");
+    expect(await payer.call("get_intent", { intentId })).toMatchObject({
+      status: "broadcast",
+      transactionHash: original.hash,
+      attempts: [
+        {
+          attempt: 0,
+          kind: "original",
+          hash: original.hash,
+          maxFeePerGas: original.maxFeePerGas,
+          maxPriorityFeePerGas: original.maxPriorityFeePerGas,
+          status: "pending",
+        },
+      ],
+    });
+    // None of that added an attempt or opened a cancel.
+    expect(await transactionOf(intentId)).toMatchObject({
+      attempts: [expect.objectContaining({ hash: original.hash })],
+      pendingCancelApprovalId: null,
+    });
+
+    // Fifteen seconds after the first signature Kai's click adds an attempt, and asks for no
+    // passkey. The server's own reprice is not due until 45 seconds, so this one is Kai's.
+    const spacing = (original.signedAt + 16) * 1000 - Date.now();
+    if (spacing > 0) await delay(spacing);
+    const uses = passkeyUses(kai);
+    const sped = await kai.api.call("speedUp", { params: { intentId }, body: {} });
+    expect(passkeyUses(kai)).toBe(uses);
+    const attempts = sped.transaction?.attempts ?? [];
+    expect(attempts).toHaveLength(2);
+    const [, raised] = attempts;
+    if (!raised) throw new Error("no second attempt");
+    expect(raised).toMatchObject({ attempt: 1, kind: "reprice", gas: original.gas });
+    expectRaised(original, raised);
+    expect(fixedFields(await offered(raised))).toEqual(fixedFields(first));
+    // A second click right after adds nothing.
+    const again = await kai.api.call("speedUp", { params: { intentId }, body: {} });
+    expect(again.transaction?.attempts.map((attempt) => attempt.hash)).toEqual(
+      attempts.map((attempt) => attempt.hash),
+    );
+    expect(await auditAfter(auditFrom)).toContainEqual(
+      expect.objectContaining({
+        action: "transaction.repriced",
+        actor: expect.objectContaining({ type: "user", id: kaiId }),
+        detail: expect.objectContaining({
+          trigger: "speed_up",
+          attempt: 1,
+          transactionHash: raised.hash,
+        }),
+      }),
+    );
+
+    // The agent sees both attempts at the one nonce, and the newest as the hash to follow.
+    expect(await payer.call("get_intent", { intentId })).toMatchObject({
+      status: "broadcast",
+      transactionHash: raised.hash,
+      attempts: [
+        { attempt: 0, kind: "original", hash: original.hash, status: "pending" },
+        { attempt: 1, kind: "reprice", hash: raised.hash, status: "pending" },
+      ],
+    });
+
+    await mining.resume();
+  });
+
+  expect(await intentSettles(intentId)).toBe("confirmed");
+  const settled = await transactionOf(intentId);
+  const [original, raised] = settled.attempts;
+  if (!original || !raised) throw new Error("the attempts are gone");
+  expect(settled).toMatchObject({ status: "confirmed", minedAttempt: 1, hash: raised.hash });
+  expect(settled.attempts.map((attempt) => attempt.status)).toEqual(["not_mined", "mined"]);
+  await expectMinedOnce(settled.attempts, raised);
+  expect(formatEther((await chain.getBalance({ address: STUCK_RECIPIENT })) - before)).toBe(amount);
+  expect(await chain.getTransactionCount({ address: payerWallet.address })).toBe(nonceBefore + 1);
+  expect(await payer.call("get_intent", { intentId })).toMatchObject({
+    status: "confirmed",
+    transactionHash: raised.hash,
+    stuckReason: null,
+    attempts: [
+      { attempt: 0, status: "not_mined" },
+      { attempt: 1, status: "mined" },
+    ],
+  });
+  // Mined, it cannot be sped up any more.
+  expect(await apiRefusal(kai.api.call("speedUp", { params: { intentId }, body: {} }))).toEqual({
+    code: "conflict",
+    detail: "not_repriceable",
+  });
+});
+
+test("a cancel a person asks for, approved on the confirmation page at the wallet's threshold while the workspace is paused, is mined in the payment's place: nothing moves, the nonce is used once, and the spend still counts", async () => {
+  const amount = "0.004";
+  const before = await chain.getBalance({ address: STUCK_RECIPIENT });
+  const nonceBefore = await chain.getTransactionCount({ address: payerWallet.address });
+  const spentBefore = await spentNative(payerWallet.id);
+  const auditFrom = await auditHead();
+  let intentId = "";
+  let approvalId = "";
+  let cancelId = "";
+  let walletBefore = 0n;
+
+  await withMiningHeld(async (mining) => {
+    const proposal = await payer.proposeTransfer({
+      chainId: CHAIN,
+      to: STUCK_RECIPIENT,
+      amount,
+      memo: "cancelled by people",
+    });
+    intentId = proposal.intentId;
+    approvalId = approvalIdOf(proposal);
+    await ada.confirm(approvalId);
+    const { intent, transaction } = await transactionOnceSent(
+      intentId,
+      (tx) => tx.status === "broadcast",
+    );
+    const [original] = transaction.attempts;
+    if (!original) throw new Error("no first attempt");
+    expect(await spentNative(payerWallet.id)).toBe(spentBefore + parseEther(amount));
+
+    // Paused: the server raises no fee, and nobody can, but a cancel still works.
+    await ada.api.call("pauseWorkspace", { params: { workspaceId: workspace.id }, body: {} });
+    await expect
+      .poll(async () => (await transactionOf(intentId)).stuckReason, { timeout: 30_000 })
+      .toBe("workspace_paused");
+    expect(await transactionOf(intentId)).toMatchObject({
+      canSpeedUp: false,
+      canCancel: true,
+      pendingCancelApprovalId: null,
+    });
+
+    // Kai asks. Asking again, as anyone, answers the request that waits.
+    const cancel = await kai.api.call("requestCancel", { params: { intentId }, body: {} });
+    cancelId = cancel.id;
+    const policyThreshold = payerPolicy(payerId).approvals.threshold;
+    expect(cancel).toMatchObject({
+      kind: "cancel-transaction",
+      status: "pending",
+      threshold: policyThreshold,
+      approvals: 0,
+      title: `Cancel payment: ${intent.display.title}`,
+    });
+    expect((await ada.api.call("requestCancel", { params: { intentId }, body: {} })).id).toBe(
+      cancel.id,
+    );
+    expect(await transactionOf(intentId)).toMatchObject({
+      canCancel: false,
+      pendingCancelApprovalId: cancel.id,
+    });
+    const detail = await ada.api.call("getApproval", { params: { approvalId: cancel.id } });
+    if (detail.subject.kind !== "cancel-transaction") throw new Error("not a cancel");
+    expect(detail.subject).toMatchObject({
+      intent: { id: intentId },
+      sweep: null,
+      txNonce: nonceBefore,
+      maxFeeWei: wei("0.01"),
+    });
+    expect(detail.envelope).toMatchObject({
+      type: "cancel-transaction",
+      targetApprovalId: approvalId,
+      walletId: payerWallet.id,
+      chainId: CHAIN,
+      txNonce: nonceBefore,
+      maxFeeWei: wei("0.01"),
+    });
+
+    // The confirmation page shows, from the signer's own record of the payment, what the cancel
+    // would stop, and that it is only an attempt. Nothing is signed before people approve it.
+    const link = await ada.confirmationLink(cancel.id);
+    expect(link.origin).toBe(stack.approveOrigin);
+    const view = await ada.readConfirmation(link);
+    expect(view).toMatchObject({
+      approvalId: cancel.id,
+      kind: "cancel-transaction",
+      state: "open",
+      title: `Try to cancel sending ${amount} ETH`,
+    });
+    expect(view.envelope).toEqual(detail.envelope);
+    expect(view.lines.map((line) => line.value).join("\n")).toContain(STUCK_RECIPIENT);
+    expect(view.lines).toContainEqual(
+      expect.objectContaining({ label: "Transaction number (nonce)", value: String(nonceBefore) }),
+    );
+    expect(view.lines.map((line) => line.label)).toContain("Cancelling is an attempt");
+    expect((await transactionOf(intentId)).attempts).toHaveLength(1);
+
+    // Ada approves it there, at the policy's threshold; the signer signs the cancel while the
+    // workspace is paused, and the server offers it to the chain.
+    expect(await ada.approveOnConfirmationPage(link, view)).toMatchObject({
+      collected: 1,
+      required: policyThreshold,
+    });
+    await ada.api.call("collectApproval", { params: { approvalId: cancel.id }, body: {} });
+    expect((await ada.settled(cancel.id)).status).toBe("executed");
+    const { attempts } = await transactionOf(intentId);
+    expect(attempts).toHaveLength(2);
+    const [, cancelling] = attempts;
+    if (!cancelling) throw new Error("no cancel attempt");
+    expect(cancelling).toMatchObject({
+      attempt: 1,
+      kind: "cancel",
+      gas: "21000",
+      cancelApprovalId: cancel.id,
+      status: "pending",
+    });
+    expectRaised(original, cancelling);
+    expect(BigInt(cancelling.gas) * BigInt(cancelling.maxFeePerGas)).toBeLessThanOrEqual(
+      BigInt(wei("0.01")),
+    );
+    // As the node holds it: a transfer of nothing from the wallet to itself, at the payment's
+    // nonce.
+    const pooled = await offered(cancelling);
+    expect(pooled).toMatchObject({ nonce: nonceBefore, value: 0n, input: "0x" });
+    expect(isAddressEqual(pooled.from, payerWallet.address)).toBe(true);
+    expect(pooled.to !== null && isAddressEqual(pooled.to, payerWallet.address)).toBe(true);
+
+    walletBefore = await chain.getBalance({ address: payerWallet.address });
+    await mining.resume();
+  });
+
+  // The cancel is mined in the payment's place: the payment ends voided and moved nothing.
+  expect(await intentSettles(intentId)).toBe("voided");
+  const voided = await ada.api.call("getIntent", { params: { intentId } });
+  expect(voided).toMatchObject({ status: "voided", failureCode: "transaction_cancelled" });
+  const settled = voided.transaction;
+  if (!settled) throw new Error("the transaction is gone");
+  const [original, cancelling] = settled.attempts;
+  if (!original || !cancelling) throw new Error("the attempts are gone");
+  expect(settled).toMatchObject({ status: "cancelled", minedAttempt: 1, hash: cancelling.hash });
+  expect(settled.attempts.map((attempt) => attempt.status)).toEqual(["not_mined", "mined"]);
+  await expectMinedOnce(settled.attempts, cancelling);
+  expect(await chain.getBalance({ address: STUCK_RECIPIENT })).toBe(before);
+  expect(await chain.getTransactionCount({ address: payerWallet.address })).toBe(nonceBefore + 1);
+  // The wallet paid the cancel's network fee and nothing else.
+  const receipt = await receiptOf(cancelling.hash as Hash);
+  if (!receipt) throw new Error("the cancel has no receipt");
+  expect(walletBefore - (await chain.getBalance({ address: payerWallet.address }))).toBe(
+    receipt.gasUsed * receipt.effectiveGasPrice,
+  );
+  // A landed cancel gives no spend back: the payment still counts toward the wallet's limits.
+  expect(await spentNative(payerWallet.id)).toBe(spentBefore + parseEther(amount));
+
+  const events = await auditAfter(auditFrom);
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      action: "transaction.cancel_requested",
+      actor: expect.objectContaining({ type: "user", id: kaiId }),
+      subject: { type: "approval", id: approvalId },
+      detail: expect.objectContaining({ cancelApprovalId: cancelId, intentId }),
+    }),
+  );
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      action: "transaction.cancel_signed",
+      subject: { type: "approval", id: approvalId },
+      detail: expect.objectContaining({
+        cancelApprovalId: cancelId,
+        transactionHash: cancelling.hash,
+      }),
+    }),
+  );
+  expect(await signerDecisions()).toContainEqual(
+    expect.objectContaining({
+      action: "cancel-transaction",
+      approvalId: cancelId,
+      outcome: "allowed",
+    }),
+  );
+  // The agent sees how it ended, and both attempts.
+  expect(await payer.call("get_intent", { intentId })).toMatchObject({
+    status: "voided",
+    failureCode: "transaction_cancelled",
+    transactionHash: cancelling.hash,
+    attempts: [
+      { attempt: 0, kind: "original", status: "not_mined" },
+      { attempt: 1, kind: "cancel", hash: cancelling.hash, status: "mined" },
+    ],
+  });
+  // Nothing is left to cancel.
+  expect(
+    await apiRefusal(kai.api.call("requestCancel", { params: { intentId }, body: {} })),
+  ).toEqual({ code: "conflict", detail: "transaction_final" });
+
+  // Resume for the gate that follows; resuming needs the passkey, as always.
+  const resume = await ada.api.call("requestResume", {
+    params: { workspaceId: workspace.id },
+    body: {},
+  });
+  await ada.confirm(resume.id);
+  expect((await ada.settled(resume.id)).status).toBe("executed");
 });
 
 // Last: the fence refuses every envelope issued before it, plus the clock skew, so nothing is

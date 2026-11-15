@@ -213,6 +213,62 @@ restore fence moves, and on the operator's command on the signer host. The exact
 lets a compromised control plane or a stolen agent token do is in
 [the threat model](./threat-model.md#mandates).
 
+## A stuck payment: repriced or cancelled
+
+A payment that is signed and sent may not be mined: the base fee rose above its fee cap, its tip
+is too low, or a node dropped it. It keeps its account nonce, and the wallet's later transactions
+on that chain wait behind it. Nothing new is approved to fix it: the signer signs further
+**attempts** under the approval the payment already has, all at the first signature's nonce, so
+at most one can be mined ([`specs/stuck-transaction-repricing.md`](../specs/stuck-transaction-repricing.md)).
+
+A **reprice** is the same transaction with both fees higher. The server asks for one by itself
+once the newest attempt is `REPRICE_AFTER_SECONDS` old, and an owner or approver can ask now with
+"Speed up"; neither needs a passkey. The signer rebuilds the transaction from its own record of
+the first signature and lets only `maxFeePerGas` and `maxPriorityFeePerGas` rise, within the fee
+ceiling people approved (`intent.maxFeeWei`, and the policy's current cap if lower), within a
+window after the first signature and a number of attempts, and never while the workspace is
+paused.
+
+A **cancel** is a new request, `cancel-transaction`, which people approve on the confirmation
+page at the wallet policy's threshold like any other. The signer then signs a transfer of
+nothing from the wallet to itself at the same nonce. From then on every attempt is a cancel.
+It is an attempt, not a guarantee: whichever the chain mines first wins.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant P as Person (browser + passkey)
+  participant S as Server (control plane)
+  participant A as approve service
+  participant G as Signer
+  participant Ch as Chain
+  Note over S,Ch: attempt 0 is sent and not mined
+  loop every REPRICE_AFTER_SECONDS while nothing is mined, or at once on Speed up
+    S->>Ch: the latest base fee and a suggested tip
+    S->>G: POST /v1/approvals/:approvalId/reprice (intent, envelope, attempt n, two fees)
+    G->>G: rebuild from the first signature with only the two fees higher, check ceiling, window, attempt limit, pause
+    G-->>S: attempt n, signed at the same nonce
+    S->>Ch: broadcast attempt n, which replaces the older one in nodes' pools
+  end
+  P->>S: Cancel payment (owner or approver)
+  S->>S: open a cancel-transaction request at the wallet policy's threshold
+  P->>A: approve it on the confirmation page, as for any request
+  A->>G: the assertion, verified and kept by the signer
+  S->>G: POST /v1/approvals/:approvalId/cancel (authorization, next attempt, two fees)
+  G->>G: verify the passkeys, build a transfer of nothing from the wallet to itself at the same nonce
+  G-->>S: the cancel attempt
+  S->>Ch: broadcast it
+  S->>Ch: read the receipt of every attempt's hash
+  Ch-->>S: at most one is mined, the payment (confirmed) or the cancel (voided)
+```
+
+The server follows every attempt's hash until one is mined at the chain's confirmation depth.
+Neither a reprice nor a cancel adds or gives back a spend: the signer counted the payment when it
+first signed it. Agents see every attempt in `get_intent` and have no tool for either. What a
+compromised control plane can do with this, at most burn fees up to each approval's ceiling, is
+in [the threat model](./threat-model.md#stuck-transactions); the exact checks are in
+[the approval protocol, section 8](./approval-protocol.md#reprices-and-cancels).
+
 ## Notifications
 
 People see waiting requests in the approval inbox. The server can also tell them elsewhere, and
