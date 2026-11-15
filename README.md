@@ -38,7 +38,7 @@ the address bar.
   encrypted through our own storage backend for the Workflow SDK (the upstream Postgres backend
   stores it in plaintext), and the application's own content columns are sealed per workspace.
 - **Bring your own agent.** An agent is any program that speaks MCP: Claude Code, Codex, a
-  script. It gets seven tools. None of them signs, approves or administers.
+  script. It gets eight tools. None of them signs, approves or administers.
 
 ## How one payment happens
 
@@ -119,13 +119,15 @@ Any MCP client that supports Streamable HTTP with a bearer token works:
 ```
 
 The tools are `whoami`, `get_balances`, `propose_transfer`, `propose_contract_call`,
-`get_intent`, `list_intents` and `cancel_intent`. `whoami` lists the agent's live mandates with
-what is left of them. A propose tool answers with `authorizedBy`: `"mandate"` when a mandate
-covers the proposal (it is signed and sent with no person asked, and has no `approvalUrl`), or
+`propose_order`, `get_intent`, `list_intents` and `cancel_intent`. `whoami` lists the agent's
+live mandates with what is left of them, and the venue markets its wallet may trade. A propose
+tool answers with `authorizedBy`: `"mandate"` when a mandate covers the proposal (it is signed
+and sent with no person asked, and has no `approvalUrl`), or
 `"person"` when someone must approve it at `approvalUrl`. `propose_transfer` takes an optional
 `mandateId` to use exactly that mandate, or be refused with the reason. `get_intent` shows every
 attempt of a sent payment and why it is not mined yet; no tool lets an agent speed one up or
-cancel it.
+cancel it. `propose_order` proposes a limit order on Hyperliquid's testnet (see below); a person
+always approves it, and `cancel_intent` also cancels the agent's own order at the venue.
 [`examples/scripted-agent`](examples/scripted-agent)
 is the smallest complete agent. [`examples/eve-agent`](examples/eve-agent) is a real agent
 runtime (vercel/eve, no Vercel service) that keeps its conversations encrypted in its own
@@ -175,6 +177,25 @@ if the chain mines the payment first, the payment stands. Either way the payment
 the wallet's daily limit. The settings and what they cannot do are in
 [`deploy/README.md`](deploy/README.md#stuck-transactions).
 
+## Trade on Hyperliquid's testnet
+
+With `VENUES_FILE` set, an agent can propose a limit order on a Hyperliquid perpetual market,
+and a withdrawal of USDC from the wallet's Hyperliquid account to the wallet's own address. A
+person approves each on the confirmation page, which shows the market, side, size, limit price,
+notional, time in force, reduce-only and the submit window; no mandate covers an order. The
+signer encodes and signs the order itself, once per approval, inside the wallet's markets and
+notional caps, and the server posts it to the venue and follows it. The agent, or any owner or
+approver, can cancel that order with no passkey, also while the workspace is paused.
+
+Limits: testnet only. The signer signs nothing for mainnet, and the server does not start with a
+mainnet venue configured; whether and where mainnet may ship is a legal and geographic question,
+to be looked at for the EU first, that is open with the owner. The notional caps limit new
+orders, not losses: what can be lost is the account's value at the venue. The signer never sees
+the venue, so fills, positions and the account's value are the venue's report. The encoder's
+signatures match the venue SDK's own vectors; everything else is unit-tested, with the
+real-stack gate pending, and nothing has run against the real testnet
+([`deploy/README.md`](deploy/README.md#venue-orders-hyperliquid-testnet)).
+
 ## Retire a wallet or delete a workspace
 
 An owner can retire a wallet, or delete a paused workspace with all its wallets. People approve
@@ -207,7 +228,7 @@ that satisfies GDPR Article 17 has not been reviewed by counsel. These have unit
 
 | If this is compromised       | The attacker can                                                                                                                                                                                                                                       | The attacker cannot                                                                                                                                                                                                                   |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| An agent or its token        | Propose operations; spend inside its live mandates                                                                                                                                                                                                     | Approve, sign, change limits, reach the signer; pay outside a mandate's list or caps; speed up or cancel a payment                                                                                                                    |
+| An agent or its token        | Propose operations; spend inside its live mandates; cancel its own venue orders                                                                                                                                                                        | Approve, sign, change limits, reach the signer; pay outside a mandate's list or caps; speed up or cancel a payment                                                                                                                    |
 | The control plane's database | Read names, ids, statuses, addresses, limits                                                                                                                                                                                                           | Read sealed content; forge an approval                                                                                                                                                                                                |
 | The control plane itself     | Ask the signer; show a person a misleading card; have the signer sign transfers that fit a live mandate; raise a sent payment's network fee up to the ceiling people approved; ask for a deletion and show false balances beside it; cancel a deletion | Get an approval the signer accepts; change the confirmation page; exceed limits or a mandate; reuse an approval; change a stuck payment's recipient, amount or nonce; destroy a key without passkeys or before its time; export a key |
 | The confirmation service     | Show a person a misleading page                                                                                                                                                                                                                        | Sign or read a key; reach a signer route but its four; approve unaided                                                                                                                                                                |
@@ -228,6 +249,9 @@ Two limits are worth knowing before you rely on this:
 - A live mandate is spent with no person asked. A stolen agent token, or a compromised control
   plane, can make the signer pay the mandate's recipients up to its remaining caps, choosing
   when. Grant mandates with short lives and tight caps, and revoke them when they are not needed.
+- An approved venue order can lose more than its notional cap. What bounds the loss is the
+  account's value at the venue, which the signer cannot see; a compromised control plane can
+  also report false fills and balances.
 - Deleting a workspace destroys keys whatever their wallets hold. The balances the web app shows
   come from the control plane and are partial; the signer sees none. A deletion people were
   misled into loses funds, and a compromised control plane can delay any deletion by cancelling
@@ -248,7 +272,10 @@ stuck transaction repriced under its approval or cancelled with passkeys, tested
 chain only; retiring a wallet and deleting a workspace, with keys destroyed after a delay, tested
 on the full stack; exporting, copying and importing a workspace and erasing a person, with unit
 tests only; key-encryption keys in a keyring file or in OpenBao Transit, the OpenBao provider
-with unit tests only.
+with unit tests only; limit orders on Hyperliquid perpetual markets and withdrawals to the
+wallet's own address, on Hyperliquid's testnet only, each approved with passkeys, the encoder
+proven against the venue SDK's signed vectors, the rest unit-tested with the real-stack gate
+pending, and never run against the real testnet.
 
 Beyond one machine ([`deploy/README.md`](deploy/README.md#running-the-signer-on-its-own-host)):
 
@@ -259,8 +286,8 @@ Beyond one machine ([`deploy/README.md`](deploy/README.md#running-the-signer-on-
 - Kubernetes manifests (`deploy/k8s/`): written; their CI job has not run.
 - HA Postgres: not built.
 
-Not in this release: mandates for contract calls or trades, other chains, a bundled agent
-runtime, cloud KMS key management. The
+Not in this release: mandates for contract calls or orders, other chains and venues, Hyperliquid
+mainnet, a bundled agent runtime, cloud KMS key management. The
 [map of open questions](https://github.com/askgina/os/issues/1) lists what is planned and why.
 
 ## Documentation

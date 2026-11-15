@@ -6,14 +6,16 @@ claim names the file that implements it or the plan section that fixes it. The p
 [`specs/approval-mandates.md`](../specs/approval-mandates.md), reprices and cancels of a stuck
 transaction [`specs/stuck-transaction-repricing.md`](../specs/stuck-transaction-repricing.md),
 retiring a wallet and deleting a workspace [`specs/workspace-lifecycle.md`](../specs/workspace-lifecycle.md),
-running on more than one machine [`specs/beyond-one-machine.md`](../specs/beyond-one-machine.md).
+running on more than one machine [`specs/beyond-one-machine.md`](../specs/beyond-one-machine.md),
+venue orders [`specs/non-evm-operations.md`](../specs/non-evm-operations.md).
 Components and terms are introduced in [`architecture.md`](./architecture.md); the exact checks
 are in [`approval-protocol.md`](./approval-protocol.md).
 
 ## Assets
 
 1. **Funds in the wallets.** The wallet private keys, and the ability to make the signer use
-   them.
+   them. USDC a wallet deposited at Hyperliquid is held by the venue, not by the key alone (see
+   "Venue orders").
 2. **Authority.** Who may approve, the approval threshold, and each wallet's policy.
 3. **Content about operations.** What agents and people write about an operation: intents,
    memos, calldata, simulation results, audit details, workflow payloads.
@@ -33,9 +35,10 @@ are in [`approval-protocol.md`](./approval-protocol.md).
 
 ## Trust boundaries
 
-1. **Agent → control plane.** An agent reaches only Caddy and the MCP gateway. Its seven tools
-   can propose, read and withdraw its own intents while they wait. None signs, approves,
-   administers, or speeds up or cancels a sent transaction (plan, "MCP tools").
+1. **Agent → control plane.** An agent reaches only Caddy and the MCP gateway. Its eight tools
+   can propose, read and withdraw its own intents while they wait, and cancel its own order at a
+   venue. None signs, approves, administers, or speeds up or cancels a sent transaction (plan,
+   "MCP tools"; [`gateway.ts`](../apps/server/src/mcp/gateway.ts), `MCP_TOOL_NAMES`).
 2. **Browser → control plane.** People sign in with passkeys. Sessions are rows behind an
    httpOnly, SameSite=Strict cookie; only a SHA-256 of the cookie value is stored
    ([`apps/server/src/db/schema.ts`](../apps/server/src/db/schema.ts), table `sessions`). No
@@ -67,6 +70,11 @@ are in [`approval-protocol.md`](./approval-protocol.md).
    server POSTs identifiers, a kind, a time and a link, signed with HMAC-SHA-256 under a third
    secret, `notify-webhook-secret` ([`apps/server/src/notify/webhook.ts`](../apps/server/src/notify/webhook.ts)).
    Nothing the receiver answers is read. See "Notifications".
+8. **Control plane → venue.** When `VENUES_FILE` names one, the server posts the requests the
+   signer signed to Hyperliquid's testnet API and reads order and account state from it
+   ([`apps/server/src/execution/venues/hyperliquid.ts`](../apps/server/src/execution/venues/hyperliquid.ts)).
+   The signer never talks to the venue, and nothing the venue answers reaches the signer. See
+   "Venue orders".
 
 ## Attacker positions
 
@@ -85,9 +93,11 @@ are in [`approval-protocol.md`](./approval-protocol.md).
   ([`intent.ts`](../packages/protocol/src/intent.ts), `Memo`). On the network, the agent can
   reach only Caddy (plan, "How the pieces fit together").
 - **Not stopped:** a persuasive memo that talks a person into approving. Within its policy, an
-  approved intent spends real money. Within a live mandate, the agent's transfers to the
-  mandate's recipients are signed with no person asked, until the mandate's caps are spent. A
-  raw contract call to an allowlisted contract can move
+  approved intent spends real money, and an approved order can lose more than its notional cap
+  at the venue (see "Venue orders"). The agent can cancel an order of its own that rests at the
+  venue, which only removes what people approved (D4). Within a live mandate, the agent's
+  transfers to the mandate's recipients are signed with no person asked, until the mandate's
+  caps are spent. A raw contract call to an allowlisted contract can move
   things the caps cannot measure ([`policy.ts`](../packages/protocol/src/policy.ts),
   `CallOperation` comment in `intent.ts`). A capped token cannot itself be a call target (the
   policy schema refuses it), but an allowlisted contract that holds or can pull the wallet's
@@ -172,8 +182,10 @@ This covers code execution in the server and a script injected into a page on `P
   fees burned by repricing up to each approval's fee ceiling (see "Stuck transactions"); a
   retirement or deletion people did not want, described falsely, or with false balances beside
   it, and a deletion it stalls by cancelling it (see "Retiring a wallet and deleting a
-  workspace"). The release gate "an approval made on the control plane's page is refused" and
-  the browser gate "a script on the control plane's page cannot get an approval" test the
+  workspace"); for venue orders, an order it withholds, posts late inside its submit window or
+  cancels, and false fills and balances it reports (see "Venue orders"). The release gate "an
+  approval made on the control plane's page is refused" and the browser gate "a script on the
+  control plane's page cannot get an approval" test the
   refusal against the real stack; the release gate "an approver change whose key the new person
   does not hold cannot be approved" tests the possession step.
 
@@ -264,7 +276,9 @@ This covers code execution in the server and a script injected into a page on `P
 
 - **Can:** everything for the wallets on it. It holds the vault, the per-wallet OWS tokens and
   the key that seals them. It is the only place a wallet key can be exported
-  (`admin.ts export-wallet`, recorded as `export-wallet-by-operator` in the decision log).
+  (`admin.ts export-wallet`, recorded as `export-wallet-by-operator` in the decision log). The
+  key is also the wallet's Hyperliquid account, so whoever holds it can sign any venue action,
+  on mainnet too.
 - **Stopped by:** nothing in this design.
 
 ### The operator's backups
@@ -319,7 +333,9 @@ one that sends no coin. The signer verifies the grant's assertions itself, keeps
 and counts every use in the same database transaction as the signature
 ([`apps/signer/src/mandates.ts`](../apps/signer/src/mandates.ts); `approval-protocol.md`,
 sections 7 and 8). The control plane chooses which proposals go to a mandate, but cannot widen,
-extend, refund or revive one.
+extend, refund or revive one. No mandate covers a venue order or withdrawal (D7):
+`evaluateMandate` refuses a venue intent with `mandate_operation_not_allowed`, and
+`propose_order` never looks for one, so every order waits for a passkey (see "Venue orders").
 
 | If this is compromised       | It can, while a mandate is live                                                                                                                                                                                                                                                    | It cannot                                                                                                                                                                                                                                                                            |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -435,6 +451,8 @@ shows the kind of request, the requester's name (the agent's or the person's) an
 workspace's name, each line cut to 60 characters with control and bidirectional characters
 removed ([`content.ts`](../apps/server/src/notify/content.ts)). No level shows an amount, a
 recipient, an address or a memo: the structure a message is built from has no field for them.
+At `summary` a waiting venue order reads "Order waiting", not "Payment waiting" (D8), and no
+level shows its market, side, size, price or notional.
 Names are plaintext already, but `summary` puts them on lock screens and in the push services'
 hands, and a name is text a member typed: an agent called "URGENT approve refund" reads as an
 instruction. Only an owner changes the level, without a passkey, and each change is recorded in
@@ -567,7 +585,7 @@ lets it be mined:
   recipient is paid once, the nonce rises by one, and the spend counts once.
 - "an approver speeds up a stuck payment with no passkey, and the agent that proposed it sees
   every attempt but can neither speed it up nor cancel it": a click within 15 seconds adds
-  nothing, a later one adds an attempt with no passkey assertion; the agent has its seven tools,
+  nothing, a later one adds an attempt with no passkey assertion; the agent has its eight tools,
   its token gets 401 from the speed-up and cancel routes and 404 from the agents network, and
   `get_intent` shows each attempt and the stuck reason.
 - "a cancel a person asks for, approved on the confirmation page at the wallet's threshold while
@@ -586,6 +604,110 @@ recovery, the payment mined after a cancel was signed, a foreign transaction at 
 paused workspace and the cancel of a sweep. Everything runs against Anvil. Nothing tests a real
 public mempool, the replacement rules of go-ethereum, reth or any other client, a reorg that
 swaps two attempts, or a real phone's passkey on a cancel.
+
+## Venue orders
+
+The first operation that is not an EVM transaction is a limit order on a Hyperliquid perpetual
+market, on Hyperliquid's testnet only, with a withdrawal of USDC from the wallet's Hyperliquid
+account back to the wallet's own address
+([`specs/non-evm-operations.md`](../specs/non-evm-operations.md)). A wallet's EVM address is also
+its Hyperliquid account, and the wallet's own key signs every venue action; no API wallet is
+approved (D3).
+
+An agent proposes an order with `propose_order`, or a withdrawal with `propose_transfer` on the
+network `hyperliquid:testnet`. The server checks the wallet policy's venue rules and the venue's
+own metadata: the market must still be listed at the policy's asset index
+(`market_metadata_mismatch`), and the price and size must fit its precision (`invalid_tick`)
+([`orders.ts`](../apps/server/src/execution/orders.ts), `proposeOrder`). A person approves on
+the signer's confirmation page, which shows the market as the policy names it and its index, the
+side, size, limit price, notional at the limit price, time in force, reduce-only, the submit
+window, that the agent may cancel the order without asking again, and that the caps limit new
+orders, not losses ([`confirmation.ts`](../packages/protocol/src/confirmation.ts)). The signer
+then builds the action with its own encoder, takes a nonce from its own ledger and an
+`expiresAfter` inside the policy's submit window (5 to 300 seconds), signs once per approval,
+checks the vault's signature against a digest it computed itself, and records the request before
+it answers ([`venue-signing.ts`](../apps/signer/src/venue-signing.ts); `approval-protocol.md`,
+section 8, "Venue orders"). The server stores the request sealed, posts it to the venue byte for
+byte, and follows the order by its client order id, which the signer derives from the approval
+id.
+
+Approving an order includes the right to cancel that one order (D4). The signer signs its
+`cancelByCloid` with no passkey, also while the workspace is paused, when the agent calls
+`cancel_intent` or an owner or approver presses "Cancel order"; a cancel moves nothing. No
+mandate covers an order or a withdrawal (D7), so each one waits for a passkey.
+
+| If this is compromised                                | It can                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | It cannot                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| An agent's token                                      | Propose orders in the markets its wallet's policy lists, each waiting for a passkey; propose withdrawals where the policy allows them; cancel its own orders at the venue (D4); read the fills and account the venue reports                                                                                                                                                                                                                                                                                                   | Get an order signed with no person (D7); trade a market the policy does not list or exceed its caps; withdraw to an address other than the wallet's own; cancel another agent's order                                                                                                                                                                                                                                                                                                                                                                                                               |
+| The control plane                                     | Not post a signed request, or post it at any moment until its `expiresAfter`; hold a signed withdrawal, which has no expiry of its own, until the venue's nonce rule refuses it (about two days, by the venue's documentation) and then post or drop it; have the signer cancel any order it signed, at any time, also while paused; skip the metadata check, so people may approve an index whose coin changed; report false fills, positions, account value and liquidations to people and agents; read sealed order content | Get a signature over a Hyperliquid action the signer did not build from an approved intent: no route takes an action, typed data, a message or a hash; change the market index, side, size, limit price, time in force, reduce-only flag, client order id, nonce or expiry of an approved order; set a priority fee or a builder (the signer fixes `grouping` to `na` and sets no builder); get two orders from one approval (a second post fails on the venue's nonce rule); exceed a cap; extend the submit window; withdraw to any address but the wallet's own; get anything signed for mainnet |
+| One approver's passkey                                | Approve an order or a withdrawal where the wallet's threshold is 1, as for a payment                                                                                                                                                                                                                                                                                                                                                                                                                                           | Approve anything outside the policy's venue rules                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| The `approve` service                                 | Show a person one order and relay their approval for another waiting order                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Get anything signed beyond what an approved intent and the policy allow                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| The venue itself (Hyperliquid, its chain, its bridge) | Lose or freeze the USDC deposited there with no signature: liquidation, auto-deleveraging, an outage or a bridge failure; fill, cancel or report orders other than as asked                                                                                                                                                                                                                                                                                                                                                    | Get a signature: the signer never talks to it, and nothing it answers reaches the signer                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| The signer host                                       | Everything, as before; with the wallet's key it can sign any venue action, on mainnet too                                                                                                                                                                                                                                                                                                                                                                                                                                      |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+
+**What the signer checks, and what it cannot.** The signer enforces the network (it signs only
+`hyperliquid:testnet`), that the market index is one of the policy's markets, each market's
+per-order cap and the daily cap on its own ledger, the time in force, the submit window, and that
+a withdrawal is allowed by the policy and goes only to the wallet's own address. It has no path
+to the venue, so it cannot see fills, positions, the account's value, or what an asset index
+names today. Those come from the venue through the control plane, and the web app shows them as
+reported by the venue, not verified. Asset indices are bound to coin names in the policy people
+approved, and the confirmation page shows both; the check of the live metadata at proposal time
+is the control plane's, and a compromised control plane can skip it.
+
+**The loss bound is the venue account's value, not the caps.** A cap counts an order's
+worst-case notional, size times limit price, when the signer signs it. It limits the new exposure
+signed per order and per rolling day, not what can be lost: leverage (the venue's default or a
+value set outside this system), funding payments, liquidation and positions opened earlier are
+outside it. A reduce-only order counts against its market's per-order cap and not against the
+daily cap, so closing stays possible when the daily cap is spent. A withdrawal has no cap; it can
+only reach the wallet's own address. What can be lost is the value of the account at the venue,
+which grows by deposits: EVM transfers to the venue's bridge under the wallet's EVM caps, or
+transfers from other accounts at the venue. A sweep (`sweep-wallet`) does not reach the venue
+balance, and retiring a wallet or deleting a workspace destroys the key whatever the venue
+account holds; after that, the signer signs no cancel (`wallet_retired`), so an order still
+resting stays at the venue. Withdraw first, with a person's approval.
+
+**After a restore (D9).** A restored signer has no record of an order it signed after its
+backup, so it answers `not_found` to that order's cancel. An immediate-or-cancel order is
+already done; a good-till-cancelled or add-liquidity-only order may rest at the venue with no
+way for this system to cancel it. The venue rules a policy starts from in the web app allow only
+immediate or cancel for that reason. The restore fence refuses every approval issued before it,
+orders included, and the signer's next nonce is never below its clock, so a restored signer
+does not reuse a nonce while its clock is right.
+
+**Mainnet is refused (D2).** The signer signs only `hyperliquid:testnet`, a constant in its code
+(`SIGNABLE_VENUE_NETWORKS`), and refuses a mainnet intent with `venue_not_allowed` whatever the
+wallet's policy names. The server stops at boot when `VENUES_FILE` names `hyperliquid:mainnet` or
+the host `api.hyperliquid.xyz` ([`config.ts`](../apps/server/src/config.ts)). Whether and where
+mainnet venue support may ship is a legal and geographic question, to be looked at for the EU
+first. It is open with the owner; nothing in this repository answers it, and nothing here is a
+legal opinion.
+
+**What is stored.** The signed request is sealed in `venue_orders.request`. The order's client
+order id, nonce, expiry, status, venue order id, filled size, average price and the venue's own
+refusal text (at most 200 characters) are readable, like a transaction's hash and status. Server
+log lines `venue.post`, `venue.status` and `venue.cancel` carry ids, the network and a status,
+never the request.
+
+What is proven, and what is not:
+
+- The encoder and the signatures: equal to the venue SDK's own signed vectors
+  (`hyperliquid-python-sdk` at `2fdb18f9`) for orders, cancels and testnet withdrawals, through
+  real OWS ([`hyperliquid-encoding.test.ts`](../apps/signer/test/hyperliquid-encoding.test.ts),
+  [`ows.test.ts`](../apps/signer/test/ows.test.ts)); green in CI. A mainnet withdrawal is checked
+  only by recovering its signer, not against a vector.
+- The signer's venue routes and their refusals (mainnet, caps, fence, pause, a cancel with no
+  passkey): unit tests ([`venue-signing.test.ts`](../apps/signer/test/venue-signing.test.ts)),
+  green in CI (runs 43735023880 and 43737561979).
+- The control plane's proposal checks, posting, follow-up, cancel and the withdrawal ledger read:
+  unit tests ([`orders.test.ts`](../apps/server/test/execution/orders.test.ts)) against a fake
+  venue that checks signatures with an encoder of its own (`@askgina/os-testkit/fake-hyperliquid`).
+  Unit-tested; the real-stack gate is pending.
+- Not run: the real Hyperliquid testnet, because no funded testnet account is in hand (the manual
+  proof is open, D6), and so also whether the real venue's ledger entry for a withdrawal carries
+  its nonce, which the follow-up relies on after a lost answer. Mainnet is refused and has never
+  run.
 
 ## Retiring a wallet and deleting a workspace
 
@@ -915,6 +1037,7 @@ checks of the webhook URL and push hosts are what limit it.
 | The confirmation page's link for a waiting request, with its token                                                              | `approvals.confirmation`                                                                                | Sealed, workspace key                                                                      | The token shows the request to whoever holds it; the signer stores only its SHA-256                                     |
 | A mandate: its caps, recipients and purpose                                                                                     | `mandates.mandate`, and the grant's `approvals.detail`                                                  | Sealed, workspace key                                                                      | What a person typed about a standing grant; its id, wallet, agent, times, hash and status stay readable                 |
 | The signed raw transaction, of every attempt                                                                                    | `transactions.raw`, `transaction_attempts.raw`                                                          | Sealed, workspace key                                                                      | Kept only to rebroadcast; it contains the operation. Each attempt's hash, gas and fees stay readable, as on chain       |
+| The signed venue request of an order or a withdrawal                                                                            | `venue_orders.request`                                                                                  | Sealed, workspace key                                                                      | It contains the order. Its client order id, nonce, status, fills and the venue's refusal text stay readable             |
 | Audit details                                                                                                                   | `audit_events.detail`                                                                                   | Sealed, workspace key                                                                      | Free-form content; its digest stays readable so the chain verifies without the key                                      |
 | Workflow inputs, outputs, hook payloads, stream chunks, step errors                                                             | `workflow` schema                                                                                       | AES-256-GCM, per-run key ([`packages/world/src/index.ts`](../packages/world/src/index.ts)) | The upstream Postgres World stores these in plaintext                                                                   |
 | Data keys                                                                                                                       | `os_keys` schema                                                                                        | Wrapped by a KEK from the keyring file or OpenBao Transit                                  | The database alone must not be enough                                                                                   |
@@ -1064,6 +1187,11 @@ web app shows are the control plane's, partial, and not checked by anyone else. 
 from backups only when every backup that holds it is gone (see "Retiring a wallet and deleting a
 workspace").
 
+**A venue order's caps are not loss caps.** The signer counts each order's notional when it
+signs, but what can be lost at the venue is the account's value there, and the signer sees
+neither fills nor balances: they are the venue's report, passed on by the control plane (see
+"Venue orders").
+
 **Removing the passkeys of every approver does not lock the funds forever, by design.** It also
 means the signer host's operator can always add an approver.
 
@@ -1072,9 +1200,12 @@ means the signer host's operator can always add an approver.
 From the map's "Not yet specified" list ([askgina/os#1](https://github.com/askgina/os/issues/1)):
 
 - Approvals wider than one action, beyond transfers: mandates cover native and ERC-20 transfers
-  to listed recipients (see "Mandates"); contract calls, trades and session delegation are not
-  covered by anything but one approval per action.
-- Operations that are not EVM transactions: other chains, and off-chain venues.
+  to listed recipients (see "Mandates"); contract calls, trades, venue orders and session
+  delegation are not covered by anything but one approval per action.
+- Operations that are not EVM transactions, beyond Hyperliquid testnet perpetual limit orders and
+  withdrawals to the wallet's own address (see "Venue orders"): other chains, other venues, other
+  Hyperliquid actions (stop and trigger orders, transfers between accounts, leverage changes),
+  and Hyperliquid mainnet, which is refused until the owner decides D2.
 - Shipping agent runtimes or sandboxes.
 - Cloud KMS key providers, and HA Postgres (CloudNativePG is planned and not built). The signer
   on its own host, OpenBao Transit, several server replicas and the Kubernetes manifests are in

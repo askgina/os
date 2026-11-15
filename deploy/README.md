@@ -70,15 +70,15 @@ The proxy must pass the `Host` header through unchanged. With Tailscale:
 
 ## Networks
 
-| Network          | Members                                    | Why                                                                         |
-| ---------------- | ------------------------------------------ | --------------------------------------------------------------------------- |
-| `edge`           | caddy                                      | Where the published ports live.                                             |
-| `control`        | caddy, agent-gateway, server, postgres     | Proxies to the server; the server to Postgres.                              |
-| `signing`        | server, signer (internal)                  | The server's path to the signer. No internet.                               |
-| `approve-edge`   | caddy, approve (internal)                  | The only path to the `approve` service. No internet.                        |
-| `approve-signer` | approve, signer (internal)                 | The `approve` service's path to the signer, and its only one. No internet.  |
-| `chain`          | server, anvil                              | RPC access for reading chains and broadcasting.                             |
-| `agents`         | agent-gateway, agent containers (internal) | Agents reach `http://agent-gateway/mcp` and nothing else, not the internet. |
+| Network          | Members                                    | Why                                                                                        |
+| ---------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `edge`           | caddy                                      | Where the published ports live.                                                            |
+| `control`        | caddy, agent-gateway, server, postgres     | Proxies to the server; the server to Postgres.                                             |
+| `signing`        | server, signer (internal)                  | The server's path to the signer. No internet.                                              |
+| `approve-edge`   | caddy, approve (internal)                  | The only path to the `approve` service. No internet.                                       |
+| `approve-signer` | approve, signer (internal)                 | The `approve` service's path to the signer, and its only one. No internet.                 |
+| `chain`          | server, anvil                              | RPC access for reading chains and broadcasting; the venue's API when `VENUES_FILE` is set. |
+| `agents`         | agent-gateway, agent containers (internal) | Agents reach `http://agent-gateway/mcp` and nothing else, not the internet.                |
 
 Only the server and the `approve` service reach the signer, each on its own network, and each
 with its own request secret. The `approve` service's secret opens the signer's four confirmation
@@ -96,6 +96,7 @@ flowchart LR
   A -->|approve-signer network, confirm secret| G
   S -->|control network| P[(postgres)]
   S -->|chain network| R[(chain RPC)]
+  S -->|chain network, VENUES_FILE| H[(venue API)]
 ```
 
 The `approve` service reads one secret, `confirm-request-secret`, from the `approve-secrets`
@@ -182,6 +183,14 @@ windows by the same clock: keep it synchronized (see "Mandates").
 
 The fence also stops the reprice of every transaction signed before it; a cancel of one is still
 signed (see "Stuck transactions").
+
+**Venue orders signed after the backup cannot be cancelled (D9).** A restored signer has no
+record of an order it signed after its backup, so it answers `not_found` to that order's cancel.
+An immediate-or-cancel order is already done; a good-till-cancelled or add-liquidity-only order
+may rest at the venue with no way for this system to cancel it. That is why the venue rules a
+policy starts from allow immediate or cancel only. After a restore, compare each wallet's resting
+orders on its wallet page, as the venue reports them, with the orders people approved since the
+backup (see "Venue orders (Hyperliquid testnet)").
 
 **Deleted workspaces stay in backups.** A backup set taken before a deletion holds the deleted
 workspace whole: `signer-data` holds its wallet keys, signed transactions, confirmations and
@@ -416,6 +425,88 @@ cancel among them, and a reprice built from what it remembers could turn that ca
 the payment. Such a transaction can still be cancelled: the cancel request is new, so the fence
 does not refuse it. The chain is not part of a backup; whatever attempt was mined meanwhile is
 found again by its hash.
+
+## Venue orders (Hyperliquid testnet)
+
+An agent can propose a limit order on a Hyperliquid perpetual market with `propose_order`, and a
+withdrawal of USDC from the wallet's Hyperliquid account to the wallet's own address with
+`propose_transfer` on `hyperliquid:testnet`. A person approves each one on the confirmation page;
+the signer builds and signs the request, and the server posts it to the venue and follows it
+(`docs/architecture.md`, "A venue order, end to end"; `specs/non-evm-operations.md`).
+
+Status: **testnet only, off by default.** The encoder and its signatures match the venue SDK's own
+signed vectors and the signer's routes are unit-tested, both green in CI; the server's half is
+unit-tested against a fake venue, and the real-stack gate is pending. Nothing has run against
+the real Hyperliquid testnet yet: no funded testnet account is in hand. Mainnet is refused:
+whether and where it may ship is a legal and geographic question, to be looked at for the EU
+first, and it is open with the owner (D2). Nothing in this guide answers it.
+
+| Setting       | Service | Meaning                                                                                                                                                                                                                    |
+| ------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VENUES_FILE` | server  | The path, inside the server's container, of a JSON array of `{ "network", "apiUrl" }`, at most one entry per network. Empty or unset (default): no venue, and every venue proposal is refused with `venue_not_configured`. |
+
+The signer needs no setting: a wallet's policy carries its venue rules (markets with their asset
+index and per-order cap, a daily cap, the allowed time in force, a submit window of 5 to 300
+seconds, whether withdrawals are allowed), and the networks it signs for are in its code.
+
+To turn it on, write the file, for example `deploy/venues.json`:
+
+    [{ "network": "hyperliquid:testnet", "apiUrl": "https://api.hyperliquid-testnet.xyz" }]
+
+mount it into the server with an override, and start the stack with it
+(`docker compose -f compose.yaml -f compose.venues.yaml up -d`):
+
+    # compose.venues.yaml
+    services:
+      server:
+        environment:
+          VENUES_FILE: /etc/os/venues.json
+        volumes:
+          - ./deploy/venues.json:/etc/os/venues.json:ro
+
+The split layout's control host inherits the setting from `compose.yaml`; the Kubernetes
+manifests do not set it. The server reaches the venue over the `chain` network, which has
+internet access. Then an owner adds venue rules to the wallet's policy in the web app, and people
+approve the new policy on the confirmation page like any policy change. The rules a policy
+starts from allow immediate or cancel only, with no withdrawals.
+
+**The boot refusal.** The server does not start when `VENUES_FILE` names `hyperliquid:mainnet`,
+or any network with the host `api.hyperliquid.xyz`. It logs `failed to start` with
+`reason: "VENUES_FILE: Hyperliquid mainnet is refused until the owner decides D2 (whether and
+where mainnet venue support may ship); configure hyperliquid:testnet only"` and exits. A file
+that is not such an array, or that names a network twice, stops it too. The signer refuses a
+mainnet order on its own as well, whatever the policy says (`venue_not_allowed`).
+
+**Funding the account.** This system builds no deposit. The testnet account is funded from
+outside it, by a transfer from another funded testnet account, or by an ordinary EVM payment to
+the venue's bridge that people approve. Hyperliquid's testnet faucet pays only addresses that
+deposited on mainnet. Neither way has been tried here.
+
+**What you see in the server's logs.** One JSON line per event, with the approval id and the
+network, never the request or its fields:
+
+| `event`        | `message`                                   | Fields                                                                                                                            |
+| -------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `venue.post`   | `venue request posted`                      | `outcome`: `resting`, `filled`, `accepted` (a withdrawal) or `refused` (the venue's text is in the intent, not the log)           |
+| `venue.post`   | `venue request not answered` (warn)         | `outcome: "unreachable"`: tried again after 5 seconds; a request the venue never had ends `expired` once its submit window passes |
+| `venue.status` | `venue order read`, `venue withdrawal read` | `status`: the venue's own word for the order, `accepted` for a withdrawal, or `unknown` when the venue has no record of it        |
+| `venue.status` | `venue reconcile failed` (error)            | `error`: the error's name. Orders older than an hour are read every 5 minutes                                                     |
+| `venue.cancel` | `venue cancel posted`                       | `outcome`: `accepted` or `refused`; the order's status is read right after                                                        |
+
+The signer's decision log records `sign-venue` for each order or withdrawal it signed or refused
+and `cancel-venue-order` for each cancel. A cancel needs no passkey and is allowed while the
+workspace is paused (D4): approving an order includes cancelling it.
+
+**Clocks.** The signer's clock sets each request's nonce and its `expiresAfter`. A signer clock
+behind the venue's by more than the submit window makes every order arrive expired; keep NTP on
+the signer host.
+
+**Upgrading.** Upgrade the signer before the server. A server ahead of its signer gets 404 from
+the signer's venue routes, and the order's approval fails.
+
+**Removing a venue.** Take its entry out of `VENUES_FILE` and restart the server. A request
+signed and not yet posted ends `expired` once its submit window has passed; an order already
+resting at the venue stays there, and this system can no longer read or cancel it.
 
 ## Retiring wallets and deleting workspaces
 
