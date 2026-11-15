@@ -1,0 +1,101 @@
+# The signer's host in a split deployment: the signer, the confirmation page (the `approve`
+# service) and the confirmation page's edge, administered apart from the control plane's host
+# (deploy/split/control.compose.yaml). Each service is the one in ../../compose.yaml, changed only
+# where a second host needs it. From the repository root, on the signer's host:
+#
+#   deploy/split/make-peer-certs.sh <signer host name> <directory>
+#   docker compose -f deploy/split/signer.compose.yaml up -d --build
+#   docker compose -f deploy/split/signer.compose.yaml exec signer cat /run/secrets/signer/signer-request-secret
+#
+# SIGNER_HOST_FILES is a directory holding signer.crt, signer.key, control.crt, approve.crt and
+# approve.key from make-peer-certs.sh; copy signer-request-secret, control.crt, control.key and
+# signer.crt to the control host, and keep nothing else there. Settings come from the
+# environment or from deploy/split/.env: OS_HOSTNAME (the RP ID), PUBLIC_ORIGIN (the control
+# host's origin), APPROVE_ORIGIN (this host's, under OS_HOSTNAME, with its own DNS record),
+# SIGNER_BIND_ADDRESS (the private address the control host reaches), SIGNER_HOST_FILES.
+# deploy/split/nftables-signer.conf keeps the signer from opening any connection out.
+name: os-signer
+
+services:
+  init:
+    extends: { file: ../../compose.yaml, service: init }
+    command: ["node", "/init/init.mjs", "--domain=signer"]
+    volumes: !override
+      - ../init:/init:ro
+      - signer-secrets:/secrets/signer
+      - approve-secrets:/secrets/approve
+      - signer-data:/data/signer
+      - ${SIGNER_HOST_FILES:?set SIGNER_HOST_FILES to the directory with this host's certificates}:/import:ro
+
+  signer:
+    extends: { file: ../../compose.yaml, service: signer }
+    environment:
+      WEBAUTHN_RP_ID: ${OS_HOSTNAME:?set OS_HOSTNAME, the RP ID, as on the control host}
+      SIGNER_APPROVAL_ORIGIN: ${APPROVE_ORIGIN:?set APPROVE_ORIGIN, this host's origin}
+      SIGNER_RETURN_ORIGIN: ${PUBLIC_ORIGIN:?set PUBLIC_ORIGIN, the control host's origin}
+      # Mutual TLS: only the control plane's and the `approve` service's certificates get in,
+      # each to its own routes. The health check gets a plain listener on loopback (8789).
+      SIGNER_TLS_CERT_FILE: /run/secrets/signer/signer.crt
+      SIGNER_TLS_KEY_FILE: /run/secrets/signer/signer.key
+      SIGNER_TLS_CONTROL_CERT_FILE: /run/secrets/signer/control.crt
+      SIGNER_TLS_APPROVE_CERT_FILE: /run/secrets/signer/approve.crt
+    # Published on the private interface the control host reaches, and nowhere else.
+    ports:
+      - "${SIGNER_BIND_ADDRESS:?set SIGNER_BIND_ADDRESS to the private address the control host reaches}:8787:8787"
+    networks: !override [signer-wire, approve-signer]
+    healthcheck:
+      test: !override
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8789/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+
+  # The confirmation page and its relay to the signer's confirm routes, over mutual TLS with the
+  # certificate the signer binds to that scope. It holds no key; it reaches only the signer.
+  approve:
+    extends: { file: ../../compose.yaml, service: approve }
+    environment:
+      APPROVE_ORIGIN: ${APPROVE_ORIGIN:?set APPROVE_ORIGIN, this host's origin}
+      SIGNER_URL: https://signer:8787
+      APPROVE_TLS_CERT_FILE: /run/secrets/approve/approve.crt
+      APPROVE_TLS_KEY_FILE: /run/secrets/approve/approve.key
+      APPROVE_TLS_PEER_CERT_FILE: /run/secrets/approve/signer.crt
+
+  # The confirmation page's edge: APPROVE_ORIGIN and nothing else. Caddy obtains the
+  # certificate of an https origin itself, so ports 80 and 443 must be reachable; it is the only
+  # container on this host that may open a connection out (to the ACME server).
+  caddy:
+    extends: { file: ../../compose.yaml, service: caddy }
+    environment:
+      APPROVE_SITE_ADDRESS: ${APPROVE_ORIGIN:?set APPROVE_ORIGIN, this host's origin}
+    tmpfs: !override ["/tmp", "/config"]
+    volumes: !override
+      - ./Caddyfile.approve:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    ports: !override
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    networks: !override [edge, approve-edge]
+    depends_on: !override
+      approve: { condition: service_healthy }
+
+networks:
+  edge: {}
+  # The signer's only network with a route out, for its published port. Named, so that
+  # deploy/split/nftables-signer.conf can drop every connection the signer would open.
+  signer-wire:
+    driver_opts:
+      com.docker.network.bridge.name: os-signer0
+  # The `approve` service to the signer.
+  approve-signer:
+    internal: true
+  # The edge to the `approve` service.
+  approve-edge:
+    internal: true
+
+volumes:
+  signer-data: {}
+  signer-secrets: {}
+  approve-secrets: {}
+  caddy-data: {}

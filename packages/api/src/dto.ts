@@ -164,6 +164,17 @@ export const PendingPasskey = z.strictObject({
 });
 export type PendingPasskey = z.infer<typeof PendingPasskey>;
 
+/**
+ * What an operator types on the signer's host before one of the signer's admin commands, for
+ * example `docker compose exec signer node src/admin.ts` (the server's `SIGNER_ADMIN_COMMAND`).
+ * It is pasted into a root shell, so it is only words of `[A-Za-z0-9_./:-]` separated by single
+ * spaces: no quoting, substitution, redirection or second command.
+ */
+export const SignerAdminCommand = z.string().regex(/^[A-Za-z0-9_./:-]+( [A-Za-z0-9_./:-]+)*$/, {
+  message: "must be words of [A-Za-z0-9_./:-] separated by single spaces",
+});
+export type SignerAdminCommand = z.infer<typeof SignerAdminCommand>;
+
 export const Member = z.strictObject({
   user: UserSummary,
   role: Role,
@@ -287,6 +298,11 @@ export const WorkspaceDetail = WorkspaceSummary.extend({
   /** What notifications about this workspace's requests may say. */
   notificationDetail: NotificationDetail,
   members: z.array(Member),
+  /**
+   * Set for owners only, who see the passkeys that wait to approve: the prefix of the signer's
+   * admin commands on its host, to build the command that enrolls such a passkey there.
+   */
+  signerAdminCommand: SignerAdminCommand.optional(),
   agents: z.array(AgentSummary),
   wallets: z.array(WalletSummary),
   chains: z.array(ChainInfo),

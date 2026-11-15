@@ -1,6 +1,13 @@
 import { createPrivateKey, createPublicKey } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { SignerAdminCommand } from "@askgina/os-api";
 import { ChainId } from "@askgina/os-protocol";
+import {
+  readSignerTls,
+  type SignerTls,
+  type SignerTlsFile,
+  SignerTlsFileError,
+} from "@askgina/os-protocol/signer-transport";
 import { z } from "zod";
 
 /** One chain the control plane can read from and broadcast to. */
@@ -23,6 +30,16 @@ const integer = (fallback: number, min: number, max: number) =>
 /** An optional setting where "" means unset: Compose passes an unset `${VAR:-}` as "". */
 const optional = <T extends z.ZodType>(schema: T) =>
   z.preprocess((value) => (value === "" ? undefined : value), schema.optional());
+
+/** The variable behind each of the server's TLS files, for messages that name it. */
+const TLS_VARIABLES: Record<SignerTlsFile, string> = {
+  cert: "SIGNER_TLS_CERT_FILE",
+  key: "SIGNER_TLS_KEY_FILE",
+  peerCert: "SIGNER_TLS_PEER_CERT_FILE",
+};
+
+/** How an operator reaches the signer's admin commands on one machine with `compose.yaml`. */
+const DEFAULT_SIGNER_ADMIN_COMMAND = "docker compose exec signer node src/admin.ts";
 
 /** Where browsers' push services live. A subscription's endpoint must be under one of them. */
 const DEFAULT_PUSH_ENDPOINT_HOSTS = [
@@ -90,9 +107,26 @@ const Environment = z
     DATABASE_PASSWORD_FILE: z.string().min(1).optional(),
     // The key provider (`KEY_PROVIDER`, `KEYRING_FILE`, `OPENBAO_*`) is read and checked by
     // `keyProviderFromEnv` from `@askgina/os-keys`, which `main.ts` calls at boot.
-    SIGNER_URL: z.url(),
+    /** For example `http://signer:8787`, or `https://signer.example.internal:8787` on its own host. */
+    SIGNER_URL: z.url({ protocol: /^https?$/ }),
     /** File holding the secret shared with the signer for request signatures. */
     SIGNER_HMAC_SECRET_FILE: z.string().min(1),
+    /**
+     * Mutual TLS to a signer at an `https:` SIGNER_URL: the control plane's certificate and key,
+     * and the one certificate it accepts from the signer (PEM, `deploy/split/make-peer-certs.sh`).
+     * All three with an `https:` SIGNER_URL, none with an `http:` one.
+     */
+    SIGNER_TLS_CERT_FILE: optional(z.string().min(1)),
+    SIGNER_TLS_KEY_FILE: optional(z.string().min(1)),
+    SIGNER_TLS_PEER_CERT_FILE: optional(z.string().min(1)),
+    /**
+     * What an operator types on the signer's host before one of its admin commands, shown to
+     * owners next to a passkey that waits to approve. Pasted into a root shell, so only words of
+     * `[A-Za-z0-9_./:-]` separated by single spaces.
+     */
+    SIGNER_ADMIN_COMMAND: optional(SignerAdminCommand).transform(
+      (value) => value ?? DEFAULT_SIGNER_ADMIN_COMMAND,
+    ),
     /** JSON array of {@link ChainConfig}. */
     CHAINS_FILE: z.string().min(1),
     /** Directory with the built UI (`apps/web/dist`). */
@@ -158,6 +192,28 @@ const Environment = z
     (env) => new URL(env.APPROVE_ORIGIN).origin !== new URL(env.PUBLIC_ORIGIN).origin,
     { path: ["APPROVE_ORIGIN"], message: "must not be PUBLIC_ORIGIN" },
   )
+  // A half-configured split fails at boot, not silently in clear text.
+  .refine(
+    (env) =>
+      new URL(env.SIGNER_URL).protocol !== "https:" ||
+      (env.SIGNER_TLS_CERT_FILE !== undefined &&
+        env.SIGNER_TLS_KEY_FILE !== undefined &&
+        env.SIGNER_TLS_PEER_CERT_FILE !== undefined),
+    {
+      path: ["SIGNER_TLS_CERT_FILE"],
+      message: "an https SIGNER_URL needs all three SIGNER_TLS_* files",
+    },
+  )
+  .refine(
+    (env) =>
+      new URL(env.SIGNER_URL).protocol === "https:" ||
+      (env.SIGNER_TLS_CERT_FILE ?? env.SIGNER_TLS_KEY_FILE ?? env.SIGNER_TLS_PEER_CERT_FILE) ===
+        undefined,
+    {
+      path: ["SIGNER_TLS_CERT_FILE"],
+      message: "SIGNER_TLS_* files are set only with an https SIGNER_URL",
+    },
+  )
   .refine(
     (env) => env.NOTIFY_WEBHOOK_URL === undefined || env.NOTIFY_WEBHOOK_SECRET_FILE !== undefined,
     { path: ["NOTIFY_WEBHOOK_SECRET_FILE"], message: "is required with NOTIFY_WEBHOOK_URL" },
@@ -184,6 +240,11 @@ const Environment = z
       message: "is required with WEB_PUSH_ENABLED=1 when PUBLIC_ORIGIN is not https",
     },
   );
+
+/** A configuration file that cannot be used. The message names the variable, never its content. */
+export class ConfigError extends Error {
+  override readonly name = "ConfigError";
+}
 
 /** The webhook's shortest secret, so a guessable one fails at boot. */
 const MIN_WEBHOOK_SECRET_LENGTH = 32;
@@ -224,6 +285,10 @@ export interface Config {
   databaseUrl: string;
   signerUrl: string;
   signerSecret: Uint8Array;
+  /** Mutual TLS to the signer, set exactly when `signerUrl` is `https:`. */
+  signerTls: SignerTls | null;
+  /** The prefix of the signer's admin commands on its host (`SIGNER_ADMIN_COMMAND`). */
+  signerAdminCommand: string;
   chains: ChainConfig[];
   webDistDir: string | undefined;
   sessionTtlSeconds: number;
@@ -265,6 +330,26 @@ function vapidKeys(file: string): Pick<WebPushConfig, "vapidPrivateKey" | "vapid
   };
 }
 
+function signerTls(parsed: {
+  SIGNER_TLS_CERT_FILE?: string | undefined;
+  SIGNER_TLS_KEY_FILE?: string | undefined;
+  SIGNER_TLS_PEER_CERT_FILE?: string | undefined;
+}): SignerTls | null {
+  const {
+    SIGNER_TLS_CERT_FILE: cert,
+    SIGNER_TLS_KEY_FILE: key,
+    SIGNER_TLS_PEER_CERT_FILE: peerCert,
+  } = parsed;
+  // The schema allows all three or none, by the scheme of SIGNER_URL.
+  if (cert === undefined || key === undefined || peerCert === undefined) return null;
+  try {
+    return readSignerTls({ cert, key, peerCert });
+  } catch (error) {
+    if (!(error instanceof SignerTlsFileError)) throw error;
+    throw new ConfigError(`${TLS_VARIABLES[error.file]}: ${error.message}`);
+  }
+}
+
 /** Read and check the whole configuration once, at boot. A bad value stops the process. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const parsed = Environment.parse(env);
@@ -289,6 +374,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     signerSecret: new Uint8Array(
       Buffer.from(readFileSync(parsed.SIGNER_HMAC_SECRET_FILE, "utf8").trim(), "base64"),
     ),
+    signerTls: signerTls(parsed),
+    signerAdminCommand: parsed.SIGNER_ADMIN_COMMAND,
     chains: z
       .array(ChainConfig)
       .min(1)

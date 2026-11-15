@@ -1,0 +1,18 @@
+# The confirmation page's edge on the signer's host in a split deployment
+# (deploy/split/signer.compose.yaml): the APPROVE_ORIGIN site of deploy/Caddyfile and nothing
+# else. It holds no secret but its certificate, which Caddy obtains for an https origin.
+{
+	admin off
+}
+
+{$APPROVE_SITE_ADDRESS} {
+	@wellknown path /.well-known/*
+	respond @wellknown 404
+
+	header -Server
+
+	reverse_proxy approve:8788 {
+		# The `approve` service has no use for cookies and never sees them.
+		header_up -Cookie
+	}
+}

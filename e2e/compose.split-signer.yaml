@@ -1,0 +1,23 @@
+# Overlay for the `split` release gates only (E2E_SPLIT=1 e2e/run.sh), over
+# deploy/split/signer.compose.yaml: the signer joins the wire network the gates create, the one
+# network it shares with the control project's server, under the host name in its certificate;
+# the confirmation page's edge serves plain HTTP on a loopback port instead of 80 and 443. Paths
+# are relative to the project directory, deploy/split. Never use it for a real deployment.
+services:
+  signer:
+    environment:
+      # As in e2e/compose.e2e.yaml: the lifecycle gates wait for keys to be destroyed.
+      SIGNER_MIN_DESTROY_DELAY_SECONDS: "0"
+    # Reached through the wire network, as from another host; nothing is published.
+    ports: !reset []
+    networks:
+      wire:
+        aliases: ["${SIGNER_HOSTNAME:?}"]
+  caddy:
+    ports: !override
+      - "127.0.0.1:${APPROVE_HTTP_PORT:?}:${APPROVE_HTTP_PORT:?}"
+
+networks:
+  wire:
+    name: ${E2E_WIRE_NETWORK:?}
+    external: true

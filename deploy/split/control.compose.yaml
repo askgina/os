@@ -1,0 +1,87 @@
+# The control plane's host in a split deployment: Postgres, the server, its public edge and the
+# agents' gateway, with no signer, no `approve` service and none of their secrets. The server
+# reaches the signer on its own host (deploy/split/signer.compose.yaml) over mutual TLS. Each
+# service is the one in ../../compose.yaml, changed only where a second host needs it. From the
+# repository root, on the control host:
+#
+#   docker compose -f deploy/split/control.compose.yaml up -d --build
+#
+# CONTROL_HOST_FILES is a directory holding what was copied from the signer's host:
+# signer-request-secret, control.crt, control.key and signer.crt (deploy/split/make-peer-certs.sh).
+# Settings come from the environment or from deploy/split/.env: OS_HOSTNAME (the RP ID),
+# PUBLIC_ORIGIN (this host's origin), APPROVE_ORIGIN (the signer host's confirmation page),
+# SIGNER_HOSTNAME (the name in the signer's certificate, resolving to the signer host's private
+# address), CONTROL_HOST_FILES, and every setting of compose.yaml's server.
+name: os-control
+
+services:
+  init:
+    extends: { file: ../../compose.yaml, service: init }
+    command: ["node", "/init/init.mjs", "--domain=control"]
+    volumes: !override
+      - ../init:/init:ro
+      - server-secrets:/secrets/server
+      - db-secrets:/secrets/db
+      - ${CONTROL_HOST_FILES:?set CONTROL_HOST_FILES to the directory with the files from the signer host}:/import:ro
+
+  postgres:
+    extends: { file: ../../compose.yaml, service: postgres }
+
+  server:
+    extends: { file: ../../compose.yaml, service: server }
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?set PUBLIC_ORIGIN, this host's origin}
+      WEBAUTHN_RP_ID: ${OS_HOSTNAME:?set OS_HOSTNAME, the RP ID, as on the signer host}
+      APPROVE_ORIGIN: ${APPROVE_ORIGIN:?set APPROVE_ORIGIN, the signer host's origin}
+      # Mutual TLS to the signer, which must present the certificate issued for this name.
+      SIGNER_URL: https://${SIGNER_HOSTNAME:?set SIGNER_HOSTNAME, the name in the signer's certificate}:8787
+      SIGNER_TLS_CERT_FILE: /run/secrets/server/control.crt
+      SIGNER_TLS_KEY_FILE: /run/secrets/server/control.key
+      SIGNER_TLS_PEER_CERT_FILE: /run/secrets/server/signer.crt
+      # What owners are told to run on the signer's host to enroll a passkey there.
+      SIGNER_ADMIN_COMMAND: ${SIGNER_ADMIN_COMMAND:-docker compose -f deploy/split/signer.compose.yaml exec signer node src/admin.ts}
+    # No `signing` network: the signer is on another host, reached through the routed networks.
+    networks: !override [control, chain]
+    depends_on: !override
+      postgres: { condition: service_healthy }
+
+  # The public edge: PUBLIC_ORIGIN and nothing else; the confirmation page is on the signer's
+  # host. Caddy obtains the certificate of an https origin itself, so ports 80 and 443 must be
+  # reachable.
+  caddy:
+    extends: { file: ../../compose.yaml, service: caddy }
+    environment:
+      SITE_ADDRESS: ${PUBLIC_ORIGIN:?set PUBLIC_ORIGIN, this host's origin}
+    tmpfs: !override ["/tmp", "/config"]
+    volumes: !override
+      - ./Caddyfile.control:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    ports: !override
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    networks: !override [edge, control]
+    depends_on: !override
+      server: { condition: service_healthy }
+
+  agent-gateway:
+    extends: { file: ../../compose.yaml, service: agent-gateway }
+
+  anvil:
+    extends: { file: ../../compose.yaml, service: anvil }
+
+  scripted-agent:
+    extends: { file: ../../compose.yaml, service: scripted-agent }
+
+networks:
+  edge: {}
+  control: {}
+  chain: {}
+  agents:
+    internal: true
+
+volumes:
+  postgres-data: {}
+  server-secrets: {}
+  db-secrets: {}
+  caddy-data: {}

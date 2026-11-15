@@ -1,11 +1,12 @@
 import { DataKeyStore, keyProviderFromEnv } from "@askgina/os-keys";
 import { createSignerClient } from "@askgina/os-protocol/signer";
+import { createSignerFetch } from "@askgina/os-protocol/signer-transport";
 import { serve } from "@hono/node-server";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import { ZodError } from "zod";
 import type { ApprovalEngine } from "./approvals/kinds.ts";
-import { loadConfig } from "./config.ts";
+import { ConfigError, loadConfig } from "./config.ts";
 import type { AppContext } from "./context.ts";
 import { migrateDatabase } from "./db/migrate.ts";
 import * as schema from "./db/schema.ts";
@@ -43,7 +44,16 @@ async function main(): Promise<void> {
     db,
     keys,
     sealer: createSealer(keys),
-    signer: createSignerClient({ baseUrl: config.signerUrl, secret: config.signerSecret }),
+    signer: createSignerClient({
+      baseUrl: config.signerUrl,
+      secret: config.signerSecret,
+      // Mutual TLS to an `https:` signer on its own host, which must present the certificate
+      // issued for the host name in SIGNER_URL; plain HTTP on one machine, as before.
+      fetch:
+        config.signerTls === null
+          ? undefined
+          : createSignerFetch(config.signerTls, new URL(config.signerUrl).hostname),
+    }),
     sessions: createSessions({ db, config, now }),
     chains: createChains(config),
     // Assigned right below: the engine keeps this object and reads `approvals` lazily.
@@ -105,6 +115,8 @@ main().catch((error: unknown) => {
       error instanceof ZodError
         ? error.issues.map((issue) => `${issue.path.join(".")}: ${issue.code}`).join("; ")
         : undefined,
+    // Names the variable and what is wrong with its file, never the file's content.
+    reason: error instanceof ConfigError ? error.message : undefined,
   });
   process.exit(1);
 });

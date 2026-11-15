@@ -1,0 +1,55 @@
+# Overlay for the `split` release gates only (E2E_SPLIT=1 e2e/run.sh), over
+# deploy/split/control.compose.yaml: what e2e/compose.e2e.yaml gives the single-machine stack
+# (the database, the chain and a webhook receiver reachable from the tests), the server on the
+# wire network the gates create, the one network it shares with the signer project, and the
+# public edge on a loopback port instead of 80 and 443. Paths are relative to the project
+# directory, deploy/split. Never use it for a real deployment.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${E2E_POSTGRES_PORT:-55900}:5432"
+  anvil:
+    ports:
+      - "127.0.0.1:${E2E_ANVIL_PORT:-55901}:8545"
+
+  # The same receiver as in e2e/compose.e2e.yaml.
+  webhook-receiver:
+    image: node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
+    command: ["node", "/receiver/webhook-receiver.mts"]
+    user: node
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    volumes:
+      - ../../e2e/src/webhook-receiver.mts:/receiver/webhook-receiver.mts:ro
+    ports:
+      - "127.0.0.1:${E2E_WEBHOOK_PORT:-55904}:8080"
+    networks: [control]
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  server:
+    environment:
+      NOTIFY_WEBHOOK_URL: http://webhook-receiver:8080/hook
+      REPRICE_AFTER_SECONDS: "45"
+    networks:
+      wire: {}
+    depends_on:
+      webhook-receiver: { condition: service_healthy }
+
+  caddy:
+    ports: !override
+      - "127.0.0.1:${HTTP_PORT:?}:${HTTP_PORT:?}"
+
+networks:
+  wire:
+    name: ${E2E_WIRE_NETWORK:?}
+    external: true

@@ -46,8 +46,16 @@ Success means:
       `8e78b3f`, run 43727759164): signer mutual TLS with each client certificate bound to its
       scope, the loopback health listener, the expiry check at boot, `createSignerFetch`
       (`@askgina/os-protocol/signer-transport`), the `approve` service's TLS client,
-      `deploy/split/make-peer-certs.sh`. Left: the server's TLS client and `SIGNER_ADMIN_COMMAND`,
-      `init --domain`, the two split Compose files, the `split` CI stack and its gates.
+      `deploy/split/make-peer-certs.sh`. Second half written (2026-11-15), local checks only, CI
+      pending: the server's TLS client (`SIGNER_TLS_CERT_FILE`, `SIGNER_TLS_KEY_FILE`,
+      `SIGNER_TLS_PEER_CERT_FILE`, the https/http rule) and `SIGNER_ADMIN_COMMAND`, shown to
+      owners as `signerAdminCommand` in the workspace response and used by the members page;
+      `init --domain=all|control|signer` with a read-only `/import` directory; the two split
+      Compose files with their Caddyfiles, `deploy/split/nftables-signer.conf`; `E2E_SPLIT=1` in
+      `e2e/run.sh` and `e2e/src/stack.ts` with two overlays; `e2e/test/split.spec.ts`; the
+      `stack (split)` CI entry. Local: `apps/server/test/support/signer-tls-config.test.ts` (8)
+      and `apps/web/test/operator.test.ts` (13) pass alone; type checks of server, api, web and e2e
+      clean; every Compose file and overlay parses. Left: `stack (split)` green in CI.
 - [x] (2026-11-14) Milestone 2: the restore fence, built ahead of Milestone 1 as a fix to v0.1: `apps/signer/src/fence.ts`, the `fence` admin command, `envelope_fenced` for every envelope kind, a `PRAGMA user_version` migration step for the signer's SQLite (version 2 adds `signer_meta`), detection of a replaced database file, the rewritten restore gate and restore procedure. Proven locally: `apps/signer/test/fence.test.ts` (10 tests) and `apps/signer/test/admin.test.ts` (3 tests) pass, one file at a time.
 - [ ] Milestone 2 in CI: the restore gate in `e2e/test/release-gates.spec.ts` on a real stack (`stack (amd64)`, `stack (arm64)`), including `docker compose run --rm signer node src/admin.ts fence` on restored volumes. Written and type-checked, not run.
 - [ ] Milestone 3: key providers and OpenBao Transit. Built (2026-11-15), CI pending:
@@ -92,6 +100,19 @@ Success means:
   Evidence: `apps/server/src/notify/outbox.ts:28-39,162-196,399-420`; `deploy/README.md:403-419`.
 - Observation (2026-11-15): two transactions that inserted rows referring to one workspace and then appended to its audit chain deadlocked under `FOR UPDATE` on the workspace row; `appendAudit` now takes `FOR NO KEY UPDATE`. Concurrent proposals on several replicas meet the same lock, so the fix is a precondition for Milestone 4, already met.
   Evidence: `apps/server/src/audit.ts:61-70`; commit `307c404`.
+- Observation (2026-11-15): Compose `extends` resolves the base file's relative paths (build
+  context, bind mounts) against the base file's directory and keeps its `depends_on`, so each split
+  file extends the services of `compose.yaml` and changes only what a second host needs, with
+  `!override` for lists (networks, ports, volumes, the health check). A base file's `${VAR:?}` is
+  interpolated before an overlay's `!reset` can drop the key, so the e2e run sets
+  `SIGNER_BIND_ADDRESS` although its overlay publishes nothing.
+  Evidence: `docker compose config` (v2.40.3) on `deploy/split/*.compose.yaml` and the e2e overlays.
+- Observation (2026-11-15): `make-peer-certs.sh` writes `0400` files owned by the operator, which a
+  container running as `node` (uid 1000) can read from a bind mount only when the operator is uid
+  1000 too (GitHub's runner is 1001). `init --domain=signer|control` therefore installs them from a
+  read-only `/import` directory into the host's secret volumes, owned by `node`, and rewrites a copy
+  whenever `/import` differs, which is also how a renewed certificate takes effect.
+  Evidence: `deploy/init/init.mjs`; `deploy/split/make-peer-certs.sh` (`chmod 0400`).
 
 ## Decision Log
 
@@ -169,6 +190,28 @@ Plan decisions (taken here, reopen in review if wrong):
 - Decision: kind v0.33.0 with kindnet's built-in NetworkPolicy, not k3d.
   Rationale: kind runs upstream Kubernetes (`kindest/node:v1.37.0`) and enforces policies out of the box since v0.24.0.
   Date/Author: 2026-11-14 / research agent
+- Decision (2026-11-15): the control host gets the signer's request secret, and each host its
+  certificates, from `/import`, a directory the operator fills (`SIGNER_HOST_FILES`,
+  `CONTROL_HOST_FILES`); `init --domain=control` refuses to start without the request secret and
+  never makes one. The confirm secret, the token key and the vault passphrase have no way off the
+  signer host.
+  Rationale: one documented copy step per host, and no secret in the environment or on a command
+  line.
+  Date/Author: 2026-11-15 / MultiM1Split
+- Decision (2026-11-15): `signerAdminCommand` is an optional member of the workspace response, set
+  for owners only (like `pendingPasskeys`), checked against one pattern
+  (`SignerAdminCommand` in `@askgina/os-api`) by the server at boot and by the web app before it
+  builds a command.
+  Rationale: additive for every other producer of the response; a non-owner has no use for how the
+  operator reaches the signer host.
+  Date/Author: 2026-11-15 / MultiM1Split
+- Decision (2026-11-15): each edge serves its own origin from `SITE_ADDRESS`/`APPROVE_SITE_ADDRESS`
+  set to `PUBLIC_ORIGIN`/`APPROVE_ORIGIN`, on ports 80 and 443, from its own Caddyfile in
+  `deploy/split/`; the signer project's edge is named `caddy`, as on one machine, so the gate
+  "the confirmation service reaches the signer and nothing else" holds unchanged.
+  Rationale: an https origin gets its certificate from Caddy, a plain one (the e2e run) serves on
+  its own port; no TLS overlay per host.
+  Date/Author: 2026-11-15 / MultiM1Split
 
 ## Outcomes & Retrospective
 

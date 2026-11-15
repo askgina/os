@@ -183,6 +183,8 @@ export async function workspaceDetail(
     adminThreshold: workspace.adminThreshold,
     notificationDetail: workspace.notificationDetail,
     members: await listMembers(ctx, workspaceId, role),
+    // Only owners see the passkeys that wait to approve, and the command that enrolls them.
+    ...(role === "owner" ? { signerAdminCommand: ctx.config.signerAdminCommand } : {}),
     agents: agentRows.map(agentSummary),
     wallets: walletRows.map((wallet) =>
       walletSummary(wallet, agentRows.find((agent) => agent.walletId === wallet.id)?.id ?? null),

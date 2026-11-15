@@ -1,0 +1,22 @@
+# The control host's public edge in a split deployment (deploy/split/control.compose.yaml): the
+# PUBLIC_ORIGIN site of deploy/Caddyfile and nothing else. The confirmation page is served by
+# the signer's host. An https origin gets its certificate from Caddy itself.
+{
+	admin off
+}
+
+{$SITE_ADDRESS} {
+	@workflow path /.well-known/workflow /.well-known/workflow/*
+	respond @workflow 404
+
+	# The server sets its own Content-Security-Policy; these headers do not overlap with it.
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		X-Frame-Options DENY
+		Cross-Origin-Opener-Policy same-origin
+		-Server
+	}
+
+	reverse_proxy server:3000
+}

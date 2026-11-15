@@ -867,6 +867,10 @@ function workspaceDetail(workspace: Workspace, userId: string): WorkspaceDetail 
     lifecycle: workspace.lifecycle,
     adminThreshold: workspace.adminThreshold,
     notificationDetail: workspace.notificationDetail,
+    // The server's default SIGNER_ADMIN_COMMAND, shown to owners only, as the server does.
+    ...(viewerIsOwner
+      ? { signerAdminCommand: "docker compose exec signer node src/admin.ts" }
+      : {}),
     members: workspace.members.map((member) => ({
       ...member,
       // Owners see the passkeys that wait to approve, so an operator can enroll them by hand.

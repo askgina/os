@@ -89,6 +89,7 @@ export function MembersPage() {
                 key={member.user.id}
                 workspaceId={workspaceId}
                 member={member}
+                signerAdminCommand={data.signerAdminCommand}
                 editable={isOwner && member.user.id !== me}
                 onApprovals={setOpened}
               />
@@ -112,11 +113,13 @@ export function MembersPage() {
 function MemberRow({
   workspaceId,
   member,
+  signerAdminCommand,
   editable,
   onApprovals,
 }: {
   workspaceId: string;
   member: Member;
+  signerAdminCommand: string | undefined;
   editable: boolean;
   onApprovals: (approvals: ApprovalSummary[]) => void;
 }) {
@@ -189,6 +192,7 @@ function MemberRow({
               workspaceId={workspaceId}
               member={member}
               passkey={passkey}
+              signerAdminCommand={signerAdminCommand}
             />
           ))}
         </div>
@@ -224,14 +228,16 @@ function PendingPasskeyHelp({
   workspaceId,
   member,
   passkey,
+  signerAdminCommand,
 }: {
   workspaceId: string;
   member: Member;
   passkey: PendingPasskey;
+  signerAdminCommand: string | undefined;
 }) {
   let command: string | null = null;
   try {
-    command = enrollApproverCommand({
+    command = enrollApproverCommand(signerAdminCommand, {
       workspaceId,
       userId: member.user.id,
       credentialId: passkey.credentialId,

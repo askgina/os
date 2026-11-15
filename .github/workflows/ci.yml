@@ -145,10 +145,14 @@ jobs:
           - { name: amd64, runner: ubuntu-latest, tls: "0" }
           - { name: arm64, runner: ubuntu-24.04-arm, tls: "0" }
           - { name: tls, runner: ubuntu-latest, tls: "1" }
+          # The signer and its confirmation page in a second Compose project, as on their own
+          # host (deploy/split), joined to the control plane only by mutual TLS.
+          - { name: split, runner: ubuntu-latest, tls: "0", split: "1" }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     env:
       E2E_TLS: ${{ matrix.tls }}
+      E2E_SPLIT: ${{ matrix.split || '0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -163,6 +167,10 @@ jobs:
       - name: Install the browser the release gates drive
         run: bunx playwright install --with-deps chromium
         working-directory: e2e
+      # The split gate applies deploy/split/nftables-signer.conf with `sudo nft`.
+      - name: Install nftables for the split gates
+        if: matrix.split == '1'
+        run: command -v nft >/dev/null || sudo apt-get install -y --no-install-recommends nftables
       # Builds the images, starts the whole stack as a throwaway Compose project, runs the
       # release gates against it, prints the server and signer logs on failure, and removes it.
       - name: Release gates against the real stack
