@@ -562,7 +562,7 @@ enrolls it on the signer's host. The members page shows the command with its val
 
     docker compose exec signer node src/admin.ts enroll-approver \
       --workspace <workspace id> --user <user id> \
-      --credential-id <credential id> --public-key <public key>
+      --credential-id=<credential id> --public-key=<public key>
 
 Whoever can run this command decides who approves. That is deliberate: access to the signer's
 host is the root of trust in this design. The enrollment is written to the signer's decision log.

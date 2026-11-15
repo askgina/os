@@ -37,7 +37,9 @@ export function enrollApproverCommand(
     `${prefix.data} enroll-approver`,
     `--workspace ${input.workspaceId}`,
     `--user ${input.userId}`,
-    `--credential-id ${input.credentialId}`,
-    `--public-key ${input.publicKey}`,
+    // base64url values may start with "-", which an option parser reads as another option
+    // unless the value is attached with "=".
+    `--credential-id=${input.credentialId}`,
+    `--public-key=${input.publicKey}`,
   ].join(" ");
 }

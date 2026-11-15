@@ -38,7 +38,7 @@ import { MANDATE_ACTIONS } from "./mandates.ts";
  * that can approve anything the workspace's thresholds allow. Each command prints one JSON line.
  */
 const USAGE =
-  "usage: admin.ts enroll-approver --workspace <ws_id> --user <usr_id> --credential-id <b64url> --public-key <b64url>\n" +
+  "usage: admin.ts enroll-approver --workspace <ws_id> --user <usr_id> --credential-id=<b64url> --public-key=<b64url>\n" +
   "       admin.ts verify-log --workspace <ws_id>\n" +
   "       admin.ts fence\n" +
   "       admin.ts list-mandates --workspace <ws_id>\n" +

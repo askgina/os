@@ -62,10 +62,9 @@ describe("the admin CLI on the signer host", () => {
       workspaceId,
       "--user",
       person.userId,
-      "--credential-id",
-      person.credential.credentialId,
-      "--public-key",
-      person.credential.publicKey,
+      // Attached with "=": a base64url value may start with "-".
+      `--credential-id=${person.credential.credentialId}`,
+      `--public-key=${person.credential.publicKey}`,
     ]);
 
   it("enrolls exactly the key the operator typed, once, and records it", async () => {
@@ -110,6 +109,22 @@ describe("the admin CLI on the signer host", () => {
       code: 0,
       line: { ok: true, workspaceId: world.workspaceId, brokenAt: null },
     });
+  });
+
+  it("takes a credential id and a key that start with a dash, as one in 64 base64url values do", async () => {
+    startSigner({ sqlitePath: join(dir, "signer.sqlite") });
+    const person = newPerson();
+    const result = await admin([
+      "enroll-approver",
+      "--workspace",
+      newId("ws"),
+      "--user",
+      person.userId,
+      `--credential-id=-${person.credential.credentialId.slice(1)}`,
+      `--public-key=${person.credential.publicKey}`,
+    ]);
+    // Read as a value, so the answer is about the workspace, not about how to call the command.
+    expect(result).toEqual({ code: 2, line: { ok: false, code: "not_found" } });
   });
 
   it("refuses a malformed key without touching the database", async () => {

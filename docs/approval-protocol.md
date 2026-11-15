@@ -27,14 +27,14 @@ Source: [`primitives.ts`](../packages/protocol/src/primitives.ts).
 
 Venue primitives, from [`venues.ts`](../packages/protocol/src/venues.ts):
 
-| Name              | Encoding                                                                                                                                                                                                                  | Example               |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| `VenueNetwork`    | `"hyperliquid:testnet"` or `"hyperliquid:mainnet"`. Takes the place of a `ChainId` in a venue intent and its envelope.                                                                                                     | `hyperliquid:testnet` |
-| `Network`         | A `ChainId` or a `VenueNetwork`.                                                                                                                                                                                          |                       |
+| Name              | Encoding                                                                                                                                                                                                             | Example                |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| `VenueNetwork`    | `"hyperliquid:testnet"` or `"hyperliquid:mainnet"`. Takes the place of a `ChainId` in a venue intent and its envelope.                                                                                               | `hyperliquid:testnet`  |
+| `Network`         | A `ChainId` or a `VenueNetwork`.                                                                                                                                                                                     |                        |
 | `Decimal`         | A canonical decimal string matching `^(0\|[1-9][0-9]{0,19})(\.[0-9]{0,7}[1-9])?$`: no sign, exponent, leading zero (except `0.`), trailing zero or trailing point, at most 8 fraction digits. One value, one string. | `"0.0147"`, `"1670.1"` |
-| `PositiveDecimal` | A `Decimal` that is not `"0"`.                                                                                                                                                                                            |                       |
-| `Cloid`           | `0x` and 32 lowercase hex digits (16 bytes), Hyperliquid's client order id.                                                                                                                                              |                       |
-| `SpendAsset`      | An `AssetRef`, or `"usd6"`: micro-USD (10^-6 USD) of order notional at a venue.                                                                                                                                          |                       |
+| `PositiveDecimal` | A `Decimal` that is not `"0"`.                                                                                                                                                                                       |                        |
+| `Cloid`           | `0x` and 32 lowercase hex digits (16 bytes), Hyperliquid's client order id.                                                                                                                                          |                        |
+| `SpendAsset`      | An `AssetRef`, or `"usd6"`: micro-USD (10^-6 USD) of order notional at a venue.                                                                                                                                      |                        |
 
 **Sets.** Hashed structures store sets as JSON arrays sorted in strictly ascending order by
 plain string comparison (UTF-16 code units, as JavaScript `<` compares). Strict order also
@@ -122,10 +122,10 @@ token to the token's own contract: both lose the funds and are easy to miss on a
 same members as above except `maxFeeWei`, which it MUST NOT carry (a venue action pays no gas),
 and its `operation` is one of:
 
-| `type`                 | Fields                                                                                                                                                       | Meaning                                                                                                                                        |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `type`                 | Fields                                                                                                                                                    | Meaning                                                                                                                                        |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `hyperliquid.order`    | `asset`: integer 0–9999, `isBuy: boolean`, `size: PositiveDecimal`, `limitPx: PositiveDecimal`, `tif`: `"Alo"`, `"Gtc"` or `"Ioc"`, `reduceOnly: boolean` | A limit order on the perpetual at index `asset` of the venue's `meta.universe`. The signer picks the order's nonce, expiry and `Cloid` itself. |
-| `hyperliquid.withdraw` | `amount: PositiveDecimal`                                                                                                                                    | Withdraw `amount` USDC. There is no destination field: the signer always withdraws to the wallet's own address.                               |
+| `hyperliquid.withdraw` | `amount: PositiveDecimal`                                                                                                                                 | Withdraw `amount` USDC. There is no destination field: the signer always withdraws to the wallet's own address.                                |
 
 An EVM operation on a venue network, a venue operation on an EVM chain, and an unknown venue
 network are invalid. Both kinds of intent are hashed under `askgina.os/v1/intent`; an EVM intent
@@ -168,14 +168,14 @@ copy and enforces it when it signs.
 `venues` MUST name at least one venue, so a policy without venue rules has one form, the one it
 had before venues existed, and hashes as it did then. `HyperliquidRules` is:
 
-| Field                   | Type                                                                                        | Meaning                                                                                       |
-| ----------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `network`               | `VenueNetwork`                                                                              | The only network these rules allow.                                                           |
+| Field                   | Type                                                                                          | Meaning                                                                                                               |
+| ----------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `network`               | `VenueNetwork`                                                                                | The only network these rules allow.                                                                                   |
 | `markets`               | 1 to 64 `{ asset: 0–9999, coin, maxNotionalPerOrderUsd6: PositiveAmount }`, sorted by `asset` | The perpetuals the wallet may trade. `coin` is 1 to 16 of `A-Z 0-9`, unique: the name people approved for that index. |
-| `maxNotionalPerDayUsd6` | `PositiveAmount`                                                                            | Most notional of orders that are not reduce-only in any rolling 24 hours, in micro-USD.       |
-| `timeInForce`           | sorted set of `"Alo"`, `"Gtc"`, `"Ioc"`, at least one                                       | The times in force an order may use.                                                          |
-| `submitWindowSeconds`   | integer 5–300                                                                               | How long after signing the venue still accepts an order (its `expiresAfter`).                |
-| `withdrawals`           | boolean                                                                                     | Whether USDC may be withdrawn, always to the wallet's own address.                           |
+| `maxNotionalPerDayUsd6` | `PositiveAmount`                                                                              | Most notional of orders that are not reduce-only in any rolling 24 hours, in micro-USD.                               |
+| `timeInForce`           | sorted set of `"Alo"`, `"Gtc"`, `"Ioc"`, at least one                                         | The times in force an order may use.                                                                                  |
+| `submitWindowSeconds`   | integer 5–300                                                                                 | How long after signing the venue still accepts an order (its `expiresAfter`).                                         |
+| `withdrawals`           | boolean                                                                                       | Whether USDC may be withdrawn, always to the wallet's own address.                                                    |
 
 Asset indices MUST be strictly ascending; no two markets may name the same coin; no market's
 `maxNotionalPerOrderUsd6` may exceed `maxNotionalPerDayUsd6`. The caps limit the notional of new

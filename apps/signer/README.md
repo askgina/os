@@ -148,7 +148,7 @@ Runs on the signer host, with the same environment, against the same SQLite file
 
 ```sh
 node src/admin.ts enroll-approver --workspace ws_… --user usr_… \
-  --credential-id <base64url> --public-key <base64url COSE key>
+  --credential-id=<base64url> --public-key=<base64url COSE key>
 node src/admin.ts verify-log --workspace ws_…
 node src/admin.ts fence
 node src/admin.ts list-mandates --workspace ws_…

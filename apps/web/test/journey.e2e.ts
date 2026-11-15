@@ -633,7 +633,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     const workspaceId = base.split("/").pop() ?? "";
     await expect(page.getByLabel("Command to enroll this passkey at the signer")).toHaveValue(
       new RegExp(
-        `^docker compose exec signer node src/admin\\.ts enroll-approver --workspace ${workspaceId} --user usr_[A-Za-z0-9_-]+ --credential-id [A-Za-z0-9_-]+ --public-key [A-Za-z0-9_-]+$`,
+        `^docker compose exec signer node src/admin\\.ts enroll-approver --workspace ${workspaceId} --user usr_[A-Za-z0-9_-]+ --credential-id=[A-Za-z0-9_-]+ --public-key=[A-Za-z0-9_-]+$`,
       ),
     );
     await expect(page.getByRole("link", { name: "approval inbox" })).toHaveAttribute(
