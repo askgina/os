@@ -35,6 +35,8 @@ try {
     tokenKey: config.tokenKey,
     maxIntentTtlSeconds: config.maxIntentTtlSeconds,
     maxAdminTtlSeconds: config.maxAdminTtlSeconds,
+    maxMandateSeconds: config.maxMandateSeconds,
+    maxLiveMandatesPerWallet: config.maxLiveMandatesPerWallet,
     log,
   });
 } catch (error) {

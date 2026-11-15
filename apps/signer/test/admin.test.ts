@@ -9,6 +9,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   approveIntent,
   confirmationEnvironment,
+  grantMandate,
   intentFor,
   newPerson,
   type Person,
@@ -16,7 +17,9 @@ import {
   refused,
   setUpWorld,
   startSigner,
+  tokenIntent,
   txParams,
+  useRequest,
 } from "./harness.ts";
 
 const run = promisify(execFile);
@@ -118,6 +121,90 @@ describe("the admin CLI on the signer host", () => {
       "x",
     ]);
     expect(result).toEqual({ code: 2, line: { ok: false, code: "usage" } });
+  });
+
+  it("lists a workspace's mandates, and revokes one or every live one as the operator", async () => {
+    const t = startSigner({ sqlitePath: join(dir, "signer.sqlite") });
+    // The CLI runs on the host's clock: grant on it too, so the mandates are live for both.
+    t.clock.value = Math.floor(Date.now() / 1000);
+    const world = await setUpWorld(t);
+    const granted = [
+      await grantMandate(world),
+      await grantMandate(world),
+      await grantMandate(world),
+    ];
+    const [one, ...rest] = granted.map(({ mandate }) => mandate);
+    if (one === undefined) throw new Error("three mandates were granted");
+
+    expect(await admin(["list-mandates", "--workspace", world.workspaceId])).toEqual({
+      code: 0,
+      line: {
+        ok: true,
+        workspaceId: world.workspaceId,
+        mandates: granted
+          .map(({ mandate, state }) => ({
+            mandateId: mandate.id,
+            walletId: world.walletId,
+            agentId: world.agentId,
+            status: "active",
+            notBefore: mandate.notBefore,
+            notAfter: mandate.notAfter,
+            grantedAt: state.grantedAt,
+            revokedAt: null,
+            revokedReason: null,
+            uses: 0,
+            maxUses: mandate.maxUses,
+          }))
+          .sort((a, b) => (a.mandateId < b.mandateId ? -1 : 1)),
+      },
+    });
+
+    expect(await admin(["revoke-mandate", "--mandate", one.id])).toEqual({
+      code: 0,
+      line: { ok: true, action: "revoke-mandate-by-operator", revoked: [one.id] },
+    });
+    expect(await admin(["revoke-mandate", "--mandate", one.id])).toEqual({
+      code: 0,
+      line: { ok: true, action: "revoke-mandate-by-operator", revoked: [] },
+    });
+    expect(await admin(["revoke-mandate", "--mandate", newId("mnd")])).toEqual({
+      code: 2,
+      line: { ok: false, code: "not_found" },
+    });
+    expect(await admin(["revoke-mandate", "--all", "--workspace", world.workspaceId])).toEqual({
+      code: 0,
+      line: {
+        ok: true,
+        action: "revoke-mandate-by-operator",
+        workspaceId: world.workspaceId,
+        revoked: rest.map((mandate) => mandate.id).sort(),
+      },
+    });
+    for (const args of [
+      ["revoke-mandate"],
+      ["revoke-mandate", "--all"],
+      ["revoke-mandate", "--mandate", one.id, "--all", "--workspace", world.workspaceId],
+      ["revoke-mandate", "--mandate", one.id, "--workspace", world.workspaceId],
+      ["list-mandates"],
+    ]) {
+      expect(await admin(args), args.join(" ")).toEqual({
+        code: 2,
+        line: { ok: false, code: "usage" },
+      });
+    }
+
+    // The running signer sees the revocations at once.
+    expect(await t.client.getMandate(one.id)).toMatchObject({
+      status: "revoked",
+      revokedReason: "operator",
+    });
+    await refused(
+      t.client.signUnderMandate(one.id, useRequest(tokenIntent(world, 1n))),
+      "mandate_revoked",
+    );
+    const { decisions } = await t.client.listDecisions(world.workspaceId);
+    expect(decisions.filter((d) => d.action === "revoke-mandate-by-operator")).toHaveLength(3);
+    t.signer.close();
   });
 
   it("sets the restore fence for every workspace, and the running signer refuses what came before", async () => {

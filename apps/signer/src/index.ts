@@ -4,6 +4,7 @@ import {
   type ApproverCredential,
   type AssetLabel,
   type ChainLabel,
+  MandateId,
   WalletId,
   type WorkspaceId,
   WorkspaceId as WorkspaceIdSchema,
@@ -14,13 +15,17 @@ import {
   CONFIRM_TOKEN_HEADER,
   CreateWalletRequest,
   CreateWorkspaceRequest,
+  GrantMandateRequest,
   MAX_CLOCK_SKEW_SECONDS,
+  type MandateState,
   MIN_SECRET_BYTES,
   OpenConfirmationRequest,
   RevokeApprovalRequest,
+  RevokeMandateRequest,
   SetPolicyRequest,
   SIGNATURE_HEADER,
   SignRequest,
+  SignUnderMandateRequest,
   SubmitConfirmationRequest,
   SubmitPossessionRequest,
   SweepRequest,
@@ -35,6 +40,7 @@ import { openDatabase, transaction } from "./db.ts";
 import { SignerFailure } from "./errors.ts";
 import { FENCE_BY_OPERATOR, fenceReplacedDatabase, raiseFence } from "./fence.ts";
 import { type Logger, silentLogger } from "./log.ts";
+import { DEFAULT_MAX_LIVE_MANDATES_PER_WALLET, DEFAULT_MAX_MANDATE_SECONDS } from "./mandates.ts";
 import { createSignerCore } from "./signer.ts";
 import type { Vault } from "./vault.ts";
 
@@ -84,6 +90,13 @@ export interface SignerOptions {
   tokenKey: Uint8Array;
   maxIntentTtlSeconds: number;
   maxAdminTtlSeconds: number;
+  /**
+   * The longest life the signer grants a mandate, counted from now or from its start when that
+   * is later (`SIGNER_MAX_MANDATE_SECONDS`). Defaults to seven days.
+   */
+  maxMandateSeconds?: number;
+  /** How many live mandates one wallet may hold (`SIGNER_MAX_LIVE_MANDATES_PER_WALLET`). */
+  maxLiveMandatesPerWallet?: number;
   /** Seconds since the Unix epoch. Tests inject a clock. */
   now?: () => number;
   log?: Logger;
@@ -98,11 +111,20 @@ export interface Signer {
   enrollApproverByOperator(workspaceId: WorkspaceId, approver: ApproverCredential): void;
   verifyDecisionLog(workspaceId: WorkspaceId): { ok: boolean; brokenAt: number | null };
   /**
-   * Set the restore fence to now: every envelope issued before it is refused from here on. Not
-   * reachable over HTTP: only the admin CLI on the signer host calls it, as part of a restore.
-   * Returns the fence in force, in seconds since the Unix epoch.
+   * Set the restore fence to now: every envelope issued before it is refused from here on, and
+   * every live mandate is revoked. Not reachable over HTTP: only the admin CLI on the signer host
+   * calls it, as part of a restore. Returns the fence in force, in seconds since the Unix epoch.
    */
   fence(): number;
+  /** Every mandate of a workspace, for the admin CLI. */
+  listWorkspaceMandates(workspaceId: WorkspaceId): MandateState[];
+  /**
+   * End one mandate with reason `operator`, recorded as `revoke-mandate-by-operator`. Returns
+   * the ids it revoked: none when it was revoked already. Only the admin CLI calls it.
+   */
+  revokeMandateByOperator(mandateId: MandateId): MandateId[];
+  /** End every live mandate of a workspace with reason `operator`. Only the admin CLI calls it. */
+  revokeWorkspaceMandatesByOperator(workspaceId: WorkspaceId): MandateId[];
   close(): void;
 }
 
@@ -201,6 +223,7 @@ export function createSigner(options: SignerOptions): Signer {
   const secrets = { control: options.requestSecret, confirm: options.confirmSecret };
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const log = options.log ?? silentLogger;
+  const maxMandateSeconds = options.maxMandateSeconds ?? DEFAULT_MAX_MANDATE_SECONDS;
   const { db, created } = openDatabase(options.sqlitePath);
   // Before anything is served: a database file that is not the one last recorded may be a
   // restored copy that forgot what it signed after the copy was made.
@@ -217,6 +240,9 @@ export function createSigner(options: SignerOptions): Signer {
     tokenKey: options.tokenKey,
     maxIntentTtlSeconds: options.maxIntentTtlSeconds,
     maxAdminTtlSeconds: options.maxAdminTtlSeconds,
+    maxMandateSeconds,
+    maxLiveMandatesPerWallet:
+      options.maxLiveMandatesPerWallet ?? DEFAULT_MAX_LIVE_MANDATES_PER_WALLET,
     now,
     log,
   });
@@ -230,6 +256,7 @@ export function createSigner(options: SignerOptions): Signer {
     assets: options.assets,
     maxIntentTtlSeconds: options.maxIntentTtlSeconds,
     maxAdminTtlSeconds: options.maxAdminTtlSeconds,
+    maxMandateSeconds,
     now,
     log,
   });
@@ -243,6 +270,7 @@ export function createSigner(options: SignerOptions): Signer {
   ): Promise<unknown> {
     const workspaceId = () => parse(WorkspaceIdSchema, params.workspaceId);
     const approvalId = () => parse(ApprovalId, params.approvalId);
+    const mandateId = () => parse(MandateId, params.mandateId);
     switch (name) {
       case "health":
         return { ok: true, version: VERSION };
@@ -297,6 +325,19 @@ export function createSigner(options: SignerOptions): Signer {
         );
       case "getApproval":
         return core.getApproval(approvalId());
+      case "grantMandate":
+        return core.grantMandate(mandateId(), parse(GrantMandateRequest, parseBody(body)));
+      case "getMandate":
+        return core.getMandate(mandateId());
+      case "listMandates":
+        return core.listMandates(parse(WalletId, params.walletId));
+      case "revokeMandate":
+        return core.revokeMandate(
+          mandateId(),
+          parse(RevokeMandateRequest, parseBody(body)).workspaceId,
+        );
+      case "signUnderMandate":
+        return core.signUnderMandate(mandateId(), parse(SignUnderMandateRequest, parseBody(body)));
       case "openConfirmation":
         return confirmations.openConfirmation(
           approvalId(),
@@ -386,6 +427,9 @@ export function createSigner(options: SignerOptions): Signer {
       log.warn("restore fence set", { reason: "operator", fenceAt });
       return fenceAt;
     },
+    listWorkspaceMandates: core.listWorkspaceMandates,
+    revokeMandateByOperator: core.revokeMandateByOperator,
+    revokeWorkspaceMandatesByOperator: core.revokeWorkspaceMandatesByOperator,
     close: () => db.close(),
   };
 }

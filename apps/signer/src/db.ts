@@ -156,8 +156,53 @@ CREATE TABLE IF NOT EXISTS possession_challenges (
 ) STRICT;
 `;
 
+/**
+ * Version 5: mandates (`mandates.ts`). A mandate is stored as its canonical JSON with the people
+ * whose assertions granted it, and ends only by revocation or by its own `not_after`. Each use is
+ * an `approvals` row whose `envelope_digest` is the use's `mandateUseDigest`, with its signature
+ * and its spend as for an approved intent, plus one `mandate_uses` row that counts it. Nothing is
+ * ever deleted from these tables, so a use counts for good. `grant_approval_id` has no foreign key
+ * because the grant is applied before its approval row is recorded, in the same transaction.
+ */
+const VERSION_5 = `
+CREATE TABLE IF NOT EXISTS mandates (
+  mandate_id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+  wallet_id TEXT NOT NULL REFERENCES wallets(wallet_id),
+  agent_id TEXT NOT NULL,
+  mandate_hash TEXT NOT NULL,
+  mandate TEXT NOT NULL,
+  grant_approval_id TEXT NOT NULL UNIQUE,
+  not_before INTEGER NOT NULL,
+  not_after INTEGER NOT NULL,
+  granted_at INTEGER NOT NULL,
+  revoked_at INTEGER,
+  revoked_reason TEXT CHECK (revoked_reason IN ('requested', 'grantor_removed', 'operator')),
+  CHECK ((revoked_at IS NULL) = (revoked_reason IS NULL))
+) STRICT;
+CREATE INDEX IF NOT EXISTS mandates_by_wallet ON mandates (wallet_id, not_after);
+CREATE INDEX IF NOT EXISTS mandates_by_workspace ON mandates (workspace_id, not_after);
+
+CREATE TABLE IF NOT EXISTS mandate_grantors (
+  mandate_id TEXT NOT NULL REFERENCES mandates(mandate_id),
+  user_id TEXT NOT NULL,
+  credential_id TEXT NOT NULL,
+  PRIMARY KEY (mandate_id, user_id)
+) STRICT;
+CREATE INDEX IF NOT EXISTS mandate_grantors_by_credential ON mandate_grantors (credential_id);
+
+CREATE TABLE IF NOT EXISTS mandate_uses (
+  approval_id TEXT PRIMARY KEY REFERENCES approvals(approval_id),
+  mandate_id TEXT NOT NULL REFERENCES mandates(mandate_id),
+  intent_id TEXT NOT NULL UNIQUE,
+  intent_hash TEXT NOT NULL,
+  at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS mandate_uses_by_mandate ON mandate_uses (mandate_id, at);
+`;
+
 /** Migration `n` (from 1) takes a database from version `n - 1` to version `n`. */
-const MIGRATIONS: readonly string[] = [VERSION_1, VERSION_2, VERSION_3, VERSION_4];
+const MIGRATIONS: readonly string[] = [VERSION_1, VERSION_2, VERSION_3, VERSION_4, VERSION_5];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
 /** A database written by a newer signer. Opening it with older code could lose what it records. */

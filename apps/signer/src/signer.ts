@@ -57,6 +57,7 @@ import { appendDecision, listDecisions, verifyDecisions } from "./decisions.ts";
 import { SignerFailure } from "./errors.ts";
 import { readFence } from "./fence.ts";
 import type { Logger } from "./log.ts";
+import { createMandateOperations } from "./mandates.ts";
 import { type EvmTransaction, type Vault, VaultError } from "./vault.ts";
 
 const DAY_SECONDS = 86_400;
@@ -68,8 +69,37 @@ export interface SignerCoreOptions {
   tokenKey: Uint8Array;
   maxIntentTtlSeconds: number;
   maxAdminTtlSeconds: number;
+  /** The longest life, from now or its start, the signer grants a mandate. */
+  maxMandateSeconds: number;
+  /** How many live mandates one wallet may hold. */
+  maxLiveMandatesPerWallet: number;
   now: () => number;
   log: Logger;
+}
+
+/** One change that adds authority without signing a transaction (see `authorizedChange`). */
+export interface AuthorizedChangeInput<T> {
+  workspaceId: string;
+  authorization: Authorization;
+  type: Envelope["type"];
+  action: string;
+  /** Run before verification and again inside the transaction; throws a SignerFailure. */
+  check?: (envelope: Envelope) => void;
+  apply: (envelope: Envelope) => void;
+  state: () => T;
+}
+
+/** What `signAndRecord` stores for one approval id: its signature, its spend and its digest. */
+export interface SignAndRecordInput {
+  approvalId: string;
+  workspaceId: string;
+  /** The envelope's digest, or a mandate use's `mandateUseDigest`. */
+  digest: string;
+  wallet: WalletRow;
+  chainId: ChainId;
+  params: TransactionParams;
+  unsigned: EvmTransaction;
+  spend: { asset: AssetRef; amount: bigint };
 }
 
 export type WorkspaceRow = {
@@ -78,7 +108,6 @@ export type WorkspaceRow = {
   paused: number;
   created_request: string;
 };
-type ApproverRow = { credential_id: string; user_id: string; public_key: string; added_at: number };
 export type WalletRow = {
   wallet_id: string;
   workspace_id: string;
@@ -93,6 +122,7 @@ export type ApprovalRow = {
   state: "revoked" | "signed" | "applied";
   envelope_digest: string | null;
 };
+type ApproverRow = { credential_id: string; user_id: string; public_key: string; added_at: number };
 type SignatureRow = {
   approval_id: string;
   wallet_id: string;
@@ -372,16 +402,15 @@ export function createSignerCore(options: SignerCoreOptions) {
     ).run(envelope.nonce, envelope.workspaceId, envelope.approvalId, options.now());
   }
 
-  function recordApproval(envelope: Envelope, state: "signed" | "applied"): void {
+  function recordApproval(
+    approvalId: string,
+    workspaceId: string,
+    state: "signed" | "applied",
+    digest: string,
+  ): void {
     db.prepare(
       "INSERT INTO approvals (approval_id, workspace_id, state, envelope_digest, at) VALUES (?, ?, ?, ?, ?)",
-    ).run(
-      envelope.approvalId,
-      envelope.workspaceId,
-      state,
-      envelopeDigest(envelope),
-      options.now(),
-    );
+    ).run(approvalId, workspaceId, state, digest, options.now());
   }
 
   /** What an approval id already means: null when the signer has never acted on it. */
@@ -398,15 +427,7 @@ export function createSignerCore(options: SignerCoreOptions) {
    * envelope is of the right type for this workspace, enough current approvers signed it, its
    * nonce is unused, and the change, the nonce and the decision commit together.
    */
-  async function authorizedChange<T>(input: {
-    workspaceId: string;
-    authorization: Authorization;
-    type: Envelope["type"];
-    action: string;
-    check?: (envelope: Envelope) => void;
-    apply: (envelope: Envelope) => void;
-    state: () => T;
-  }): Promise<T> {
+  async function authorizedChange<T>(input: AuthorizedChangeInput<T>): Promise<T> {
     const { envelope } = input.authorization;
     requireWorkspace(input.workspaceId);
     return decide(input.workspaceId, envelope.approvalId, input.action, async (allow) => {
@@ -435,7 +456,12 @@ export function createSignerCore(options: SignerCoreOptions) {
         consumeNonce(envelope);
         input.check?.(envelope);
         input.apply(envelope);
-        recordApproval(envelope, "applied");
+        recordApproval(
+          envelope.approvalId,
+          envelope.workspaceId,
+          "applied",
+          envelopeDigest(envelope),
+        );
         allow();
         return input.state();
       });
@@ -611,6 +637,8 @@ export function createSignerCore(options: SignerCoreOptions) {
         if (distinctApproverCount(workspaceId) < requiredApprovers(workspaceId)) {
           throw new SignerFailure("threshold_unreachable");
         }
+        // A standing grant does not outlive the authority of a passkey that gave it.
+        mandates.revokeMandatesOfCredential(workspaceId, envelope.credentialId);
       },
       state: () => workspaceState(workspaceId),
     });
@@ -799,15 +827,8 @@ export function createSignerCore(options: SignerCoreOptions) {
    * Sign `unsigned` with the wallet's key and record it as this approval's one signature, with
    * what it moves. Runs inside the signing transaction, after every check.
    */
-  function signAndRecord(input: {
-    envelope: Envelope;
-    wallet: WalletRow;
-    chainId: ChainId;
-    params: TransactionParams;
-    unsigned: EvmTransaction;
-    spend: { asset: AssetRef; amount: bigint };
-  }): SignResponse {
-    const { envelope, wallet, unsigned } = input;
+  function signAndRecord(input: SignAndRecordInput): SignResponse {
+    const { approvalId, wallet, unsigned } = input;
     const credential = open(
       options.tokenKey,
       wallet.sealed_credential,
@@ -831,11 +852,11 @@ export function createSignerCore(options: SignerCoreOptions) {
     }
     const transactionHash = keccak256(signed);
     const at = options.now();
-    recordApproval(envelope, "signed");
+    recordApproval(approvalId, input.workspaceId, "signed", input.digest);
     db.prepare(
       "INSERT INTO signatures (approval_id, wallet_id, chain_id, tx_nonce, signed_transaction, transaction_hash, signed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
     ).run(
-      envelope.approvalId,
+      approvalId,
       wallet.wallet_id,
       input.chainId,
       input.params.nonce,
@@ -846,7 +867,7 @@ export function createSignerCore(options: SignerCoreOptions) {
     db.prepare(
       "INSERT INTO spends (approval_id, wallet_id, chain_id, asset, amount, at) VALUES (?, ?, ?, ?, ?, ?)",
     ).run(
-      envelope.approvalId,
+      approvalId,
       wallet.wallet_id,
       input.chainId,
       input.spend.asset,
@@ -854,7 +875,7 @@ export function createSignerCore(options: SignerCoreOptions) {
       at,
     );
     return {
-      approvalId: envelope.approvalId,
+      approvalId: approvalId as ApprovalId,
       walletId: wallet.wallet_id as WalletId,
       from: wallet.address as Address,
       signedTransaction: signed,
@@ -929,7 +950,9 @@ export function createSignerCore(options: SignerCoreOptions) {
         if (!decision.allowed) throw new SignerFailure("policy_denied", decision.code);
 
         const response = signAndRecord({
-          envelope,
+          approvalId: envelope.approvalId,
+          workspaceId: envelope.workspaceId,
+          digest: envelopeDigest(envelope),
           wallet,
           chainId: intent.chainId,
           params,
@@ -1025,7 +1048,9 @@ export function createSignerCore(options: SignerCoreOptions) {
         const amount = BigInt(sweepRequest.amount);
         const base = transactionBase(sweepRequest.chainId, params);
         const response = signAndRecord({
-          envelope,
+          approvalId: envelope.approvalId,
+          workspaceId: envelope.workspaceId,
+          digest: envelopeDigest(envelope),
           wallet,
           chainId: sweepRequest.chainId,
           params,
@@ -1086,6 +1111,25 @@ export function createSignerCore(options: SignerCoreOptions) {
     return listDecisions(db, workspaceId as WorkspaceId, after, limit);
   }
 
+  const mandates = createMandateOperations({
+    db,
+    now: options.now,
+    log,
+    maxMandateSeconds: options.maxMandateSeconds,
+    maxLiveMandatesPerWallet: options.maxLiveMandatesPerWallet,
+    decide,
+    authorizedChange,
+    requireWorkspace,
+    findWallet,
+    currentPolicy,
+    spentSince,
+    findApproval,
+    storedSignature,
+    signAndRecord,
+    buildTransaction,
+    assertFeeWithin,
+  });
+
   const records: SignerRecords = {
     findWorkspace,
     approvers,
@@ -1115,6 +1159,14 @@ export function createSignerCore(options: SignerCoreOptions) {
     sweep,
     revokeApproval,
     getApproval,
+    grantMandate: mandates.grantMandate,
+    getMandate: mandates.getMandate,
+    listMandates: mandates.listMandates,
+    revokeMandate: mandates.revokeMandate,
+    signUnderMandate: mandates.signUnderMandate,
+    listWorkspaceMandates: mandates.listWorkspaceMandates,
+    revokeMandateByOperator: mandates.revokeMandateByOperator,
+    revokeWorkspaceMandatesByOperator: mandates.revokeWorkspaceMandatesByOperator,
     enrollApproverByOperator,
     verifyDecisionLog: (workspaceId: WorkspaceId) => {
       // An unknown workspace has no log; reporting it as intact would mislead an operator.

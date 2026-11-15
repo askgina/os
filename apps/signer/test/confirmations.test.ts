@@ -22,16 +22,20 @@ import {
   authorize,
   CHAIN,
   ETH,
+  grantRequest,
   header,
   intentFor,
+  mandateFor,
   newPerson,
   ORIGIN,
   type Person,
   RECIPIENT,
   refused,
+  replacePolicy,
   setUpWorld,
   startSigner,
   type TestSigner,
+  TOKEN,
   txParams,
   type World,
 } from "./harness.ts";
@@ -250,30 +254,6 @@ describe("opening a confirmation", () => {
     await refused(open(t, foreign.envelope, foreign.subject), "envelope_mismatch");
   });
 });
-
-/** Approve and apply a new revision of the wallet's policy through the old path. */
-async function replacePolicy(world: World, changes: Partial<WalletPolicy>): Promise<WalletPolicy> {
-  const policy: WalletPolicy = {
-    ...world.policy,
-    ...changes,
-    revision: world.policy.revision + 1,
-    previousHash: policyHash(world.policy),
-  };
-  await world.t.client.setPolicy(world.walletId, {
-    policy,
-    authorization: authorize(
-      {
-        ...header(world.t.clock, newId("apr"), world.workspaceId),
-        type: "set-policy",
-        walletId: world.walletId,
-        policyHash: policyHash(policy),
-        previousPolicyHash: policyHash(world.policy),
-      },
-      world.people,
-    ),
-  });
-  return policy;
-}
 
 describe("the view", () => {
   it("the confirmation page shows the payment exactly as in the intent the signer holds", async () => {
@@ -580,6 +560,25 @@ describe("submitting an assertion", () => {
     const underOldPolicy = await payment(world, t);
     await replacePolicy(world, { recipients: { mode: "allowlist", addresses: [RECIPIENT] } });
     await superseded(underOldPolicy, world.people[0] as Person);
+
+    // A grant whose mandate the wallet's policy no longer admits: no approval could apply it.
+    const granting = await setUpWorld(t);
+    const mandate = mandateFor(granting);
+    const grant = grantRequest(granting, mandate, []).authorization.envelope;
+    const grantSubject: ConfirmationSubject = { kind: "grant-mandate", mandate };
+    const pendingGrant = { envelope: grant, token: await open(t, grant, grantSubject) };
+    await replacePolicy(granting, {
+      assets: [
+        { chainId: CHAIN, asset: TOKEN, maxPerTx: "400000", maxPerDay: "5000000" },
+        { chainId: CHAIN, asset: "native", maxPerTx: String(ETH), maxPerDay: String(ETH) },
+      ],
+    });
+    await superseded(pendingGrant, granting.people[0] as Person);
+    await refused(
+      t.client.openConfirmation(grant.approvalId, { envelope: grant, subject: grantSubject }),
+      "mandate_invalid",
+      "over_per_tx_cap",
+    );
 
     // Issued before the signer was restored.
     const beforeFence = await payment(other, t);

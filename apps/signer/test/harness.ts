@@ -3,6 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type AddApproverEnvelope,
+  type Address,
   type AgentId,
   type ApprovalId,
   type ApproverCredential,
@@ -13,6 +14,8 @@ import {
   type Envelope,
   type Intent,
   intentHash,
+  type Mandate,
+  mandateHash,
   newId,
   type Operation,
   policyHash,
@@ -26,8 +29,11 @@ import {
   createConfirmClient,
   createSignerClient,
   type GetPossessionResponse,
+  type GrantMandateRequest,
+  type MandateState,
   type SignerClient,
   SignerError,
+  type SignUnderMandateRequest,
   type TransactionParams,
 } from "@askgina/os-protocol/signer";
 import {
@@ -179,7 +185,13 @@ export interface TestSigner {
 
 /** Pass `vault` and `tokenKey` from an earlier start to open the same wallets after a restart. */
 export function startSigner(
-  input: { sqlitePath?: string; vault?: Vault; clock?: Clock; tokenKey?: Uint8Array } = {},
+  input: {
+    sqlitePath?: string;
+    vault?: Vault;
+    clock?: Clock;
+    tokenKey?: Uint8Array;
+    maxLiveMandatesPerWallet?: number;
+  } = {},
 ) {
   const clock = input.clock ?? new Clock();
   const secret = new Uint8Array(randomBytes(32));
@@ -196,6 +208,9 @@ export function startSigner(
     tokenKey,
     maxIntentTtlSeconds: 3600,
     maxAdminTtlSeconds: 86_400,
+    ...(input.maxLiveMandatesPerWallet === undefined
+      ? {}
+      : { maxLiveMandatesPerWallet: input.maxLiveMandatesPerWallet }),
     now: clock.now,
   });
   const fetch: typeof globalThis.fetch = (url, init) =>
@@ -356,6 +371,107 @@ export function approveIntent(
     policyHash: options.policyHash ?? policyHash(world.policy),
   };
   return authorize(envelope, options.people ?? world.people.slice(0, 1));
+}
+
+/** Approve and apply the next revision of the wallet's policy with every person's passkey. */
+export async function replacePolicy(
+  world: World,
+  changes: Partial<WalletPolicy>,
+): Promise<WalletPolicy> {
+  const policy: WalletPolicy = {
+    ...world.policy,
+    ...changes,
+    revision: world.policy.revision + 1,
+    previousHash: policyHash(world.policy),
+  };
+  await world.t.client.setPolicy(world.walletId, {
+    policy,
+    authorization: authorize(
+      {
+        ...header(world.t.clock, newId("apr"), world.workspaceId),
+        type: "set-policy",
+        walletId: world.walletId,
+        policyHash: policyHash(policy),
+        previousPolicyHash: policyHash(world.policy),
+      },
+      world.people,
+    ),
+  });
+  return policy;
+}
+
+/**
+ * A mandate for the world's agent and wallet: token transfers to `RECIPIENT`, 0.5 TKN a payment,
+ * 1 TKN an hour, 1.5 TKN in total, for a day from now. Every cap is inside the base policy.
+ */
+export function mandateFor(world: World, changes: Partial<Mandate> = {}): Mandate {
+  return {
+    v: 1,
+    id: newId("mnd"),
+    workspaceId: world.workspaceId,
+    walletId: world.walletId,
+    agentId: world.agentId,
+    assets: [
+      {
+        chainId: CHAIN,
+        asset: TOKEN,
+        maxPerAction: "500000",
+        maxPerWindow: "1000000",
+        maxTotal: "1500000",
+      },
+    ],
+    windowSeconds: 3600,
+    recipients: [RECIPIENT],
+    maxUses: 10,
+    maxFeePerActionWei: String(10n ** 15n),
+    notBefore: world.t.clock.value,
+    notAfter: world.t.clock.value + 86_400,
+    purpose: "pay the supplier",
+    ...changes,
+  };
+}
+
+/** The `grant-mandate` request for `mandate`, approved by `people` (by default the first one). */
+export function grantRequest(
+  world: World,
+  mandate: Mandate,
+  people: readonly Person[] = world.people.slice(0, 1),
+): GrantMandateRequest {
+  return {
+    mandate,
+    authorization: authorize(
+      {
+        ...header(world.t.clock, newId("apr"), world.workspaceId),
+        type: "grant-mandate",
+        mandateId: mandate.id,
+        walletId: mandate.walletId,
+        agentId: mandate.agentId,
+        mandateHash: mandateHash(mandate),
+      },
+      people,
+    ),
+  };
+}
+
+/** Grant a mandate for the world's agent, approved by `people` (by default the first one). */
+export async function grantMandate(
+  world: World,
+  changes: Partial<Mandate> = {},
+  people?: readonly Person[],
+): Promise<{ mandate: Mandate; state: MandateState }> {
+  const mandate = mandateFor(world, changes);
+  const state = await world.t.client.grantMandate(mandate.id, grantRequest(world, mandate, people));
+  return { mandate, state };
+}
+
+/** A token transfer of `amount` base units to `to` by the world's agent. */
+export function tokenIntent(world: World, amount: bigint, to: Address = RECIPIENT): Intent {
+  return intentFor(world, { type: "evm.erc20.transfer", token: TOKEN, to, amount: String(amount) });
+}
+
+/** One use of a mandate: a new use id for `intent`, at the next account nonce. */
+export function useRequest(intent: Intent): SignUnderMandateRequest {
+  return { approvalId: newId("apr"), intent, transaction: txParams() };
 }
 
 let txNonce = 0;

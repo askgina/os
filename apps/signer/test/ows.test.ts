@@ -26,13 +26,17 @@ import {
   CONFIRMATION_SETTINGS,
   confirmationEnvironment,
   ETH,
+  grantRequest,
   header,
   intentFor,
+  mandateFor,
   newPerson,
   RECIPIENT,
   RP_ID,
   refused,
   TOKEN,
+  tokenIntent,
+  useRequest,
   type World,
 } from "./harness.ts";
 
@@ -198,6 +202,9 @@ describe("the real OWS vault, across a restart of the signer process", () => {
     const tokenTx = parseTransaction(tokenSigned.signedTransaction);
     expect(tokenTx.to).toBe(TOKEN);
     expect(decodeFunctionData({ abi: erc20Abi, data: tokenTx.data ?? "0x" }).args[1]).toBe(7n);
+    // Granted now, used by the second life with no passkey.
+    const mandate = mandateFor(world);
+    await inProcess.grantMandate(mandate.id, grantRequest(world, mandate));
     first.close();
 
     // Second life: a new process from `node src/main.ts`, same SQLite and vault, and no owner
@@ -260,6 +267,25 @@ describe("the real OWS vault, across a restart of the signer process", () => {
       transaction: { ...transferRequest.transaction, nonce: transferRequest.transaction.nonce + 2 },
     });
     expect(freshSigned.from).toBe(wallet.address);
+    // A transfer under the mandate is signed by the same key, once per use.
+    const mandated = {
+      ...useRequest(tokenIntent(world, 9n)),
+      transaction: {
+        ...transferRequest.transaction,
+        nonce: transferRequest.transaction.nonce + 3,
+        gas: "60000",
+      },
+    };
+    const underMandate = await remote.signUnderMandate(mandate.id, mandated);
+    expect(
+      (
+        await recoverTransactionAddress({
+          serializedTransaction: underMandate.signedTransaction as `0x02${string}`,
+        })
+      ).toLowerCase(),
+    ).toBe(wallet.address);
+    expect(await remote.signUnderMandate(mandate.id, mandated)).toEqual(underMandate);
+    expect((await remote.getMandate(mandate.id)).usage.uses).toBe(1);
     await refused(
       remote.createWallet({ workspaceId, walletId: newId("wal"), kind: "agent", label: "x" }),
       "vault_error",

@@ -69,8 +69,8 @@ Success means:
 - [x] (2026-11-14 21:36Z) Research: current behavior, prior art and options read from source and documentation; report written ([research/approval-mandates.md](./research/approval-mandates.md)). Nothing built or run.
 - [x] (2026-11-14 21:36Z) Implementation approach and validation plan drafted (this file).
 - [x] (2026-11-15) Owner decisions D1 to D7 taken: Eric chose the recommended option of each (Decision Log). Build started.
-- [ ] Milestone 1: protocol structures, evaluator, signer contract, normative document.
-- [ ] Milestone 2: the signer grants, counts, signs under and revokes mandates.
+- [x] (2026-11-15) Milestone 1: protocol structures, evaluator, signer contract, normative document, and the grant's confirmation view. Commit `b7effa5`; CI run 43697354475 green (check, test, ui, stack amd64/arm64/tls). Added beyond the plan: setting the restore fence revokes every live mandate (protocol document section 8).
+- [x] (2026-11-15) Milestone 2: the signer grants, counts, signs under and revokes mandates (schema version 5, five routes, fence and approver-removal revocation, admin `list-mandates` and `revoke-mandate`). A pending grant shows as superseded while the wallet's current policy would refuse it. `mandate_wallet_mismatch` cannot occur at the signer: the policy check runs first and answers `policy_denied wallet_mismatch`.
 - [ ] Milestone 3: the control plane routes proposals through mandates; API and MCP report it.
 - [ ] Milestone 4: the web UI grants, shows and revokes mandates.
 - [ ] Milestone 5: stack release gates, threat model and documentation.

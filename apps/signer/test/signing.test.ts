@@ -6,7 +6,12 @@ import {
   newId,
   policyHash,
 } from "@askgina/os-protocol";
-import { SIGNATURE_HEADER, signRequest, TIMESTAMP_HEADER } from "@askgina/os-protocol/signer";
+import {
+  SIGNATURE_HEADER,
+  SignerErrorBody,
+  signRequest,
+  TIMESTAMP_HEADER,
+} from "@askgina/os-protocol/signer";
 import { b64url } from "@askgina/os-protocol/testing";
 import { decodeFunctionData, erc20Abi, parseTransaction, recoverTransactionAddress } from "viem";
 import { describe, expect, it } from "vitest";
@@ -583,6 +588,39 @@ describe("request authentication and the route surface", () => {
     expect((await t.client.getWorkspace(world.workspaceId)).paused).toBe(false);
   });
 
+  it("refuses every mandate route without the control plane's valid request signature", async () => {
+    const t = startSigner();
+    const world = await setUpWorld(t);
+    const mandateId = newId("mnd");
+    const routes = [
+      ["PUT", `/v1/mandates/${mandateId}`],
+      ["GET", `/v1/mandates/${mandateId}`],
+      ["GET", `/v1/wallets/${world.walletId}/mandates`],
+      ["POST", `/v1/mandates/${mandateId}/revoke`],
+      ["POST", `/v1/mandates/${mandateId}/sign`],
+    ] as const;
+    for (const [method, path] of routes) {
+      const body = method === "GET" ? "" : JSON.stringify({ workspaceId: world.workspaceId });
+      for (const response of [
+        await t.signer.app.request(`http://signer.test${path}`, {
+          method,
+          ...(method === "GET" ? {} : { body }),
+        }),
+        await raw(t, method, path, { body, secret: new Uint8Array(32).fill(7) }),
+        await raw(t, method, path, { body, timestamp: t.clock.value - 61 }),
+        // The `approve` service's secret reaches the confirm routes only.
+        await raw(t, method, path, { body, secret: t.confirmSecret }),
+      ]) {
+        expect(response.status, `${method} ${path}`).toBe(401);
+        expect(SignerErrorBody.parse(await response.json()).error.code).toBe("unauthenticated");
+      }
+    }
+    // With the control plane's secret the same requests reach the mandate code.
+    expect((await raw(t, "GET", `/v1/mandates/${mandateId}`)).status).toBe(404);
+    expect((await raw(t, "GET", `/v1/wallets/${world.walletId}/mandates`)).status).toBe(200);
+    expect((await raw(t, "GET", "/v1/mandates/not-an-id")).status).toBe(400);
+  });
+
   it("answers 404 to every path and method outside the contract, signed or not", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
@@ -597,6 +635,12 @@ describe("request authentication and the route surface", () => {
       ["DELETE", `/v1/wallets/${world.walletId}`],
       ["POST", "/healthz"],
       ["GET", "/"],
+      ["GET", "/v1/mandates"],
+      ["POST", "/v1/mandates"],
+      ["DELETE", `/v1/mandates/${newId("mnd")}`],
+      ["POST", `/v1/mandates/${newId("mnd")}/resume`],
+      ["POST", `/v1/mandates/${newId("mnd")}/uses`],
+      ["PUT", `/v1/wallets/${world.walletId}/mandates`],
     ] as const;
     for (const [method, path] of outside) {
       for (const response of [

@@ -2,6 +2,7 @@ import { statSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import type { WorkspaceId } from "@askgina/os-protocol";
 import { appendDecision } from "./decisions.ts";
+import { revokeMandatesOnFence } from "./mandates.ts";
 
 /**
  * The restore fence. A database restored from a backup has forgotten every approval it acted on
@@ -14,6 +15,10 @@ import { appendDecision } from "./decisions.ts";
  * - the operator runs `node src/admin.ts fence` as part of every restore;
  * - the signer sets it itself when it opens a database file that is not the file it last
  *   recorded (copied, extracted from an archive, or moved to another host).
+ *
+ * Mandates carry no envelope to fence, and a restored database has forgotten the uses counted
+ * after its backup, so every move of the fence also revokes every live mandate, with reason
+ * `operator`, in the same transaction.
  */
 
 /** Decision-log actions, one entry per workspace each time the fence moves. */
@@ -43,8 +48,9 @@ export function readFence(db: DatabaseSync): number | null {
 }
 
 /**
- * Move the fence to `at` unless it is already there or later, and record the move in every
- * workspace's decision log. Call inside a transaction. Returns the fence now in force.
+ * Move the fence to `at` unless it is already there or later, record the move in every
+ * workspace's decision log, and revoke every live mandate. Call inside a transaction. Returns the
+ * fence now in force.
  */
 export function raiseFence(db: DatabaseSync, at: number, action: string): number {
   const current = readFence(db);
@@ -63,6 +69,7 @@ export function raiseFence(db: DatabaseSync, at: number, action: string): number
       at,
     });
   }
+  revokeMandatesOnFence(db, at);
   return at;
 }
 

@@ -13,6 +13,7 @@ import {
   ConfirmationSubject,
   type ConfirmationView,
   canonicalJson,
+  checkMandateAgainstPolicy,
   checkSubject,
   Envelope,
   envelopeChallenge,
@@ -78,6 +79,8 @@ export interface ConfirmationOptions {
   assets: readonly AssetLabel[];
   maxIntentTtlSeconds: number;
   maxAdminTtlSeconds: number;
+  /** The signer's lifetime ceiling for mandates, as it applies to a grant. */
+  maxMandateSeconds: number;
   now: () => number;
   log: Logger;
 }
@@ -127,6 +130,16 @@ type AssertionRow = { user_id: string; credential_id: string; response: string }
 
 /** What the signer requires of an approval: how many people, and how long its envelope may live. */
 type Rules = { required: number; maxTtlSeconds: number };
+
+/** Why the signer would refuse an envelope however many people approve it. */
+type Superseded = {
+  code: Extract<
+    SignerErrorCode,
+    "envelope_fenced" | "policy_missing" | "policy_changed" | "mandate_invalid"
+  >;
+  /** The grant-time reason, for `mandate_invalid`. */
+  detail?: string;
+};
 
 const tokenHash = (token: string) => createHash("sha256").update(token, "utf8").digest();
 
@@ -193,19 +206,34 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
     };
   }
 
-  /** Why the signer would refuse this envelope however many people approve it, or null. */
-  function supersededBy(
-    envelope: Envelope,
-  ): Extract<SignerErrorCode, "envelope_fenced" | "policy_missing" | "policy_changed"> | null {
-    if (records.isFenced(envelope)) return "envelope_fenced";
+  /**
+   * Why the signer would refuse this envelope however many people approve it, or null. A grant
+   * is superseded while the wallet has no policy or the mandate does not fit the current policy,
+   * the signer's clock or its lifetime ceiling (`mandate_invalid` with the reason): no approval
+   * can make it apply then. A policy edited back to admit it reopens it, since this is computed
+   * each time. The cap on live mandates is not part of it: that only waits for one to end.
+   */
+  function supersededBy(envelope: Envelope, subject: ConfirmationSubject): Superseded | null {
+    if (records.isFenced(envelope)) return { code: "envelope_fenced" };
     if (envelope.type === "approve-intent") {
       const current = records.currentPolicy(envelope.walletId);
-      if (!current) return "policy_missing";
-      return current.hash === envelope.policyHash ? null : "policy_changed";
+      if (!current) return { code: "policy_missing" };
+      return current.hash === envelope.policyHash ? null : { code: "policy_changed" };
     }
     if (envelope.type === "set-policy") {
       const current = records.currentPolicy(envelope.walletId);
-      return (current?.hash ?? null) === envelope.previousPolicyHash ? null : "policy_changed";
+      return (current?.hash ?? null) === envelope.previousPolicyHash
+        ? null
+        : { code: "policy_changed" };
+    }
+    if (envelope.type === "grant-mandate" && subject.kind === "grant-mandate") {
+      const current = records.currentPolicy(envelope.walletId);
+      if (!current) return { code: "policy_missing" };
+      const refusal = checkMandateAgainstPolicy(subject.mandate, current.policy, {
+        now: options.now(),
+        maxSeconds: options.maxMandateSeconds,
+      });
+      return refusal === null ? null : { code: "mandate_invalid", detail: refusal };
     }
     return null;
   }
@@ -232,6 +260,7 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
 
   function stateOf(
     envelope: Envelope,
+    subject: ConfirmationSubject,
     collectedCount: number,
     required: number,
   ): ConfirmationState {
@@ -239,7 +268,7 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
     if (approval?.state === "revoked") return "revoked";
     if (approval) return "used";
     if (options.now() >= envelope.expiresAt) return "expired";
-    if (supersededBy(envelope) !== null) return "superseded";
+    if (supersededBy(envelope, subject) !== null) return "superseded";
     if (collectedCount >= required) return "complete";
     return "open";
   }
@@ -272,8 +301,8 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
       const approval = records.findApproval(approvalId);
       if (approval?.state === "revoked") throw new SignerFailure("approval_revoked");
       if (approval) throw new SignerFailure("confirmation_closed");
-      const superseded = supersededBy(envelope);
-      if (superseded !== null) throw new SignerFailure(superseded);
+      const superseded = supersededBy(envelope, subject);
+      if (superseded !== null) throw new SignerFailure(superseded.code, superseded.detail);
       const existing = find(approvalId);
       if (existing && existing.envelope_digest !== digest) throw new SignerFailure("conflict");
       const hash = tokenHash(token).toString("hex");
@@ -343,7 +372,7 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
       approvalId,
       workspaceId: row.workspace_id as WorkspaceId,
       kind: envelope.type,
-      state: stateOf(envelope, assertions.length, required),
+      state: stateOf(envelope, subject, assertions.length, required),
       expiresAt: envelope.expiresAt,
       ...rendered,
       approvals,
@@ -391,12 +420,12 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
     const fields = { approvalId, workspaceId: row.workspace_id };
     countAttempt(fields);
     try {
-      const { envelope } = stored(row);
+      const { envelope, subject } = stored(row);
       const open = () => {
         const approvers = records.approvers(row.workspace_id);
         const rules = rulesFor(envelope, workspaceOf(row).admin_threshold);
         const assertions = collected(row, approvers);
-        if (stateOf(envelope, assertions.length, rules.required) !== "open") {
+        if (stateOf(envelope, subject, assertions.length, rules.required) !== "open") {
           throw new SignerFailure("confirmation_closed");
         }
         return { approvers, rules, collected: assertions.length };
@@ -491,7 +520,13 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
   function assertPossessionOpen(row: ConfirmationRow, envelope: AddApproverEnvelope): void {
     const approvers = records.approvers(row.workspace_id);
     const { required } = rulesFor(envelope, workspaceOf(row).admin_threshold);
-    const state = stateOf(envelope, collected(row, approvers).length, required);
+    // An approver change names everything in its envelope.
+    const state = stateOf(
+      envelope,
+      { kind: "envelope-only" },
+      collected(row, approvers).length,
+      required,
+    );
     if (state !== "open" && state !== "complete") throw new SignerFailure("confirmation_closed");
   }
 

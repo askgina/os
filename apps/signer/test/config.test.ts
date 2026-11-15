@@ -48,6 +48,28 @@ describe("the signer's configuration", () => {
     expect(config.returnOrigin).toBe("https://os.example.com");
   });
 
+  it("grants mandates for at most seven days and 16 live per wallet unless set, within fixed bounds", () => {
+    const config = loadConfig(base);
+    expect(config.maxMandateSeconds).toBe(604_800);
+    expect(config.maxLiveMandatesPerWallet).toBe(16);
+    const set = loadConfig({
+      ...base,
+      SIGNER_MAX_MANDATE_SECONDS: "86400",
+      SIGNER_MAX_LIVE_MANDATES_PER_WALLET: "4",
+    });
+    expect([set.maxMandateSeconds, set.maxLiveMandatesPerWallet]).toEqual([86_400, 4]);
+    for (const value of ["3599", "2592001", "1.5", "a week"]) {
+      expect(refusal({ SIGNER_MAX_MANDATE_SECONDS: value })).toBe(
+        "missing or invalid: SIGNER_MAX_MANDATE_SECONDS",
+      );
+    }
+    for (const value of ["0", "65"]) {
+      expect(refusal({ SIGNER_MAX_LIVE_MANDATES_PER_WALLET: value })).toBe(
+        "missing or invalid: SIGNER_MAX_LIVE_MANDATES_PER_WALLET",
+      );
+    }
+  });
+
   it("the signer refuses to start when the approval origin's host is not under the RP ID", () => {
     for (const origin of [
       "https://evil.example",

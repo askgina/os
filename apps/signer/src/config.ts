@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { AssetLabels, ChainLabels } from "@askgina/os-protocol";
+import { AssetLabels, ChainLabels, MANDATE_MAX_SECONDS } from "@askgina/os-protocol";
 import { MIN_SECRET_BYTES } from "@askgina/os-protocol/signer";
 import { z } from "zod";
+import { DEFAULT_MAX_LIVE_MANDATES_PER_WALLET, DEFAULT_MAX_MANDATE_SECONDS } from "./mandates.ts";
 
 const Environment = z.object({
   SIGNER_PORT: z.coerce.number().int().min(1).max(65_535).default(8787),
@@ -20,6 +21,20 @@ const Environment = z.object({
   // by its schema is usable; an operator lowers them to shorten how long an approval can wait.
   SIGNER_MAX_INTENT_TTL_SECONDS: z.coerce.number().int().min(60).max(86_400).default(86_400),
   SIGNER_MAX_ADMIN_TTL_SECONDS: z.coerce.number().int().min(60).max(86_400).default(86_400),
+  // The longest life the signer grants a mandate, at most the protocol's 30 days. One misleading
+  // grant can spend its worst case until it ends, so the default is seven days.
+  SIGNER_MAX_MANDATE_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(3600)
+    .max(MANDATE_MAX_SECONDS)
+    .default(DEFAULT_MAX_MANDATE_SECONDS),
+  SIGNER_MAX_LIVE_MANDATES_PER_WALLET: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(64)
+    .default(DEFAULT_MAX_LIVE_MANDATES_PER_WALLET),
 });
 
 export interface SignerConfig {
@@ -40,6 +55,8 @@ export interface SignerConfig {
   assets: AssetLabels;
   maxIntentTtlSeconds: number;
   maxAdminTtlSeconds: number;
+  maxMandateSeconds: number;
+  maxLiveMandatesPerWallet: number;
 }
 
 /** A configuration problem. The message names the variable, never its value. */
@@ -162,5 +179,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv): SignerConfig {
     assets: assets.data,
     maxIntentTtlSeconds: env.SIGNER_MAX_INTENT_TTL_SECONDS,
     maxAdminTtlSeconds: env.SIGNER_MAX_ADMIN_TTL_SECONDS,
+    maxMandateSeconds: env.SIGNER_MAX_MANDATE_SECONDS,
+    maxLiveMandatesPerWallet: env.SIGNER_MAX_LIVE_MANDATES_PER_WALLET,
   };
 }

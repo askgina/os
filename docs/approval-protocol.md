@@ -638,7 +638,16 @@ Rules:
   header, never in a path or a query, so no server or proxy log records it.
 - The view is rendered by the signer from its own records: the stored subject, its current
   policy, its 24-hour ledger, its approver registry, and the operator's chain and token labels.
-  Its `state` is `open`, `complete`, `expired`, `revoked`, `used` or `superseded`.
+  Its `state` is `open`, `complete`, `expired`, `revoked`, `used` or `superseded`. `superseded`
+  means the signer would refuse to act on it however many people approve: it was issued before
+  the restore fence (`envelope_fenced`); for a payment the wallet's policy is no longer the one it
+  names, and for a policy change another revision applied first (`policy_missing`,
+  `policy_changed`); for a mandate grant the wallet has no policy, or the mandate no longer passes
+  `checkMandateAgainstPolicy` with the signer's current policy, clock and lifetime ceiling
+  (`policy_missing`, `mandate_invalid` with the reason). The state is computed each time, so a
+  grant reopens if the policy is edited back to admit it; the cap on live mandates does not make
+  a grant superseded, because it only waits for a mandate to end. Opening a confirmation in that
+  state is refused with the same code.
 - A submitted assertion must come from an approver of the workspace and pass section 6's checks
   for one assertion: made top-level at `APPROVE_ORIGIN`, as a `webauthn.get`, over the
   envelope's digest. A second one by the same person is `conflict`, unless their first was made
