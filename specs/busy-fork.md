@@ -79,10 +79,15 @@ Success means:
       narrowed to what needs no third-party contact and makes nothing public. Still Eric's:
       making the fork repository public, the fork's product name, and any contact with the
       upstream Busy project.
-- [ ] Milestone 0: askgina/os packages and tool annotations.
+- [x] (2026-11-15) Milestone 0: askgina/os packages and tool annotations. `eac3a6b`, green in
+      CI run 43723043467 (new job `packages`: build, pack, smoke). No `world-v*` tag pushed yet,
+      so nothing is published.
 - [x] (2026-11-15) Milestone 1 prerequisite: private mirror `askgina/busy` created with upstream
       history at `3dd91e1`; GitHub Actions off until Milestone 1's workflows land.
-- [ ] Milestone 1: fork repository, attribution and upstream gate.
+- [x] (2026-11-15) Milestone 1: fork repository, attribution and upstream gate. `askgina/busy`
+      `e919310`: `Ultracite` green (run 43723302469, Desktop job off), `fork-notice` green on
+      push, `upstream-rebase` green against `3dd91e1` (run 43723344720). The notice check compares
+      the upstream base tree with the working tree, not `base...HEAD`.
 - [ ] Milestone 2: platform seams in the Hub, Vercel behavior unchanged.
 - [ ] Milestone 3: OpenAI-compatible model connection.
 - [ ] Milestone 4: bot runner, bot identity, bots on the encrypting World.
