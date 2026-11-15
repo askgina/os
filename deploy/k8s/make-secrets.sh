@@ -2,19 +2,23 @@
 # Creates the Secrets of a cluster that holds every trust domain (overlays/kind: CI and
 # evaluation only, decision D4) from one run of deploy/init/init.mjs, the files Compose's `init`
 # writes, in a throwaway container with no network. Apply the overlay first, so the namespaces
-# exist. Nothing is printed but Secret names; the files never outlive the run.
+# exist. Prints init.mjs's file names and the Secret names, never a value; on failure, the step.
 #
 #   deploy/k8s/make-secrets.sh    against the current kubectl context
 #
 # The four Secrets share two values (the signer's request secret, the confirm secret), so they
 # are made together or not at all: when all exist the run changes nothing, and when only some
 # exist it stops rather than make values the others do not share.
-set -euo pipefail
+set -Eeuo pipefail
 cd "$(dirname "$0")/../.."
+
+step="starting"
+trap 'status=$?; echo "make-secrets.sh: failed while ${step} (exit ${status}, line ${LINENO})" >&2' ERR
 
 # The image Compose runs `init` with (compose.yaml).
 NODE_IMAGE="node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc"
 
+step="checking which Secrets exist"
 secrets=(os/os-server-secrets os/os-db-secrets os-signer/os-signer-secrets os-signer/os-approve-secrets)
 present=0
 for secret in "${secrets[@]}"; do
@@ -33,25 +37,29 @@ fi
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-mkdir -p "$work/server" "$work/signer" "$work/approve" "$work/db" "$work/data"
-# init.mjs gives each file to the user of the service that reads it; the copies here go back to
-# the user running this script, so kubectl can read them.
+
+# Every path init.mjs (--domain=all, the default) writes, chowns or chmods is a tmpfs inside the
+# container: the four secret directories and the signer's data directory, whose ownership it
+# sets. It reads only /init (the script, read-only); /import is for split hosts and unused here.
+# The root file system stays read-only. init.mjs gives each file to the user of the service that
+# reads it; the container then streams the four directories out as a tar, which the user running
+# this script unpacks as its own, so no file here is ever owned by another user. init.mjs's own
+# lines (file names and whether each was created) go to stderr.
+step="generating the files with deploy/init/init.mjs"
 docker run --rm --network none --read-only \
   --cap-drop ALL --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE \
   --security-opt no-new-privileges:true \
+  --tmpfs /secrets/server --tmpfs /secrets/signer --tmpfs /secrets/approve \
+  --tmpfs /secrets/db --tmpfs /data/signer \
   -v "$PWD/deploy/init:/init:ro" \
-  -v "$work/server:/secrets/server" \
-  -v "$work/signer:/secrets/signer" \
-  -v "$work/approve:/secrets/approve" \
-  -v "$work/db:/secrets/db" \
-  -v "$work/data:/data/signer" \
   "$NODE_IMAGE" \
-  sh -c 'node /init/init.mjs >/dev/null && chown -R "$0:$1" /secrets /data/signer' \
-  "$(id -u)" "$(id -g)"
+  sh -c 'node /init/init.mjs >&2 && tar -C /secrets -cf - server signer approve db' |
+  tar -C "$work" -xf -
 
 create() {
   local namespace="$1" name="$2" dir="$3"
   shift 3
+  step="creating Secret ${namespace}/${name}"
   local files=()
   for file in "$@"; do
     files+=("--from-file=${file}=${dir}/${file}")

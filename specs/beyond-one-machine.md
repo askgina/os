@@ -84,9 +84,17 @@ Success means:
       and a payment approved during the outage is confirmed after it, the delays printed as
       `{"gate":"openbao-outage",...}`; rotation, a server restart, `cli.ts rewrap` and
       `min_decryption_version=2` leave every key under `@2` and the first payment's memo
-      readable), then every release gate on a second fresh stack of that kind. Left: CI green,
-      the measured outage delays recorded here, and the World ciphertext test on both
-      providers with the 20-second outage.
+      readable), then every release gate on a second fresh stack of that kind. The World
+      ciphertext test on both providers is written (2026-11-15), not run (CI-only):
+      `packages/world/test/ciphertext-at-rest.test.ts` runs the marker scenario (with a check
+      that the run's key is wrapped under `k1` or `bao:<mount>/os-kek@1`) and shredding on the
+      keyring file and on Transit (required when `CI=true`); on Transit, with the container
+      paused 20 seconds, a new run is refused as unavailable and leaves no row, a run resumed
+      during the outage is neither completed nor failed at unpause and completes after it, the
+      delays printed as `{"gate":"world-openbao-outage",...}`. The stock control runs once (it
+      uses no key provider). The OpenBao test helpers moved to `packages/testkit/src/openbao.ts`
+      with `holdOpenBao()`. Left: CI green, and the measured outage delays of both gates
+      recorded here.
 - [ ] Milestone 4: a replica-safe control plane. Server and key-store half written (2026-11-15),
       local checks only, CI pending: `os.rate_limits` (UNLOGGED, migration
       `0010_rate_limits`) with `takeToken`/`hasToken` (`apps/server/src/rate-limit.ts`) behind
@@ -128,13 +136,13 @@ Success means:
       Jobs), `deploy/k8s/make-secrets.sh` (the kind overlay's Secrets from `init.mjs`),
       `deploy/k8s/test/files.test.ts` (copies of `deploy/` files stay byte-equal), `e2e/run-k8s.sh`,
       `e2e/test/kubernetes.spec.ts` and the `k8s` CI job (kind v0.33.0, kubectl v1.37.0,
-      kubeconform v0.8.0, each by SHA-256). The server Deployment has `replicas: 1` until
-      Milestone 4 is green in CI. Local: every manifest parses, the files test passes, Biome
-      clean, `bash -n` on both scripts; `kubectl kustomize` was not run (no kubectl here). Needs
-      Milestone 4 committed first (`/readyz`, `cli.ts setup-token`, `SETUP_TOKEN_IN_LOG`). Not
-      done: the `StackDriver` and running every release gate with `E2E_DRIVER=k8s`, and the
-      replica crash gate on Kubernetes. First CI run (43737561979 at `ad0454f`) failed at
-      rendering the kind overlay (see `Surprises & Discoveries`); fixed, written, not re-run.
+      kubeconform v0.8.0, each by SHA-256). The server Deployment runs 2 replicas with
+      `strategy: Recreate`, and the gate checks both are Ready. Not done: the `StackDriver` and
+      running every release gate with `E2E_DRIVER=k8s`, and the replica crash gate on
+      Kubernetes. CI so far: run 43737561979 (`ad0454f`) failed rendering the kind overlay (see
+      `Surprises & Discoveries`); run 43739857058 rendered both overlays, passed kubeconform,
+      started kind and applied the overlay, then `make-secrets.sh` failed (it chowned the
+      container's read-only `/secrets`); both fixed, written, not re-run.
 - [ ] Milestone 6: HA Postgres with CloudNativePG.
 - [ ] Milestone 7: documentation matches the code.
 - [ ] Run validation in CI and record evidence.
@@ -271,6 +279,20 @@ Success means:
   three values therefore cannot differ between server and signer, as in `compose.yaml`.
   Evidence: CI run 43737561979, job `k8s` (kubectl v1.37.0, Kustomize v5.8.1);
   `api/internal/target/kusttarget.go` at `kustomize/v5.8.1`, `accumulateTarget`.
+- Observation (2026-11-15, Milestone 3): Vitest runs the `keys` and `world` projects at once, and
+  both pause the one OpenBao test container (the World for 20 seconds), so each would break the
+  other's cases, and `docker pause` fails on a paused container. Every test section that uses
+  the real OpenBao holds `holdOpenBao()` (`packages/testkit/src/openbao.ts`), a session advisory
+  lock on the test Postgres, from setup to teardown; a waiter gives up after 600 seconds and
+  names the holder.
+  Evidence: `vitest.config.ts` (`projects`), `packages/keys/test/transit.test.ts`.
+- Observation (2026-11-15, Milestone 3): a hook resumed while the key provider is down may still
+  be accepted: since a run publishes an X25519 public key at start, the SDK seals the resume
+  payload to it without asking the World for the run's key. The run then cannot replay until its
+  key unwraps, so the World's outage test asserts that the run is neither completed nor failed at
+  unpause and completes afterwards, and accepts either answer to the resume itself.
+  Evidence: `@workflow/core` 5.5.0 `dist/runtime/resume-hook.js` (`decodeRunPublicKey`,
+  `sealTo`), `dist/runtime/start.js` (publishes the public key).
 
 ## Decision Log
 

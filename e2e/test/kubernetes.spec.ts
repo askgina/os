@@ -1,10 +1,11 @@
 /**
  * The Kubernetes gate (specs/beyond-one-machine.md, milestone 5), against the kind stack that
  * `e2e/run-k8s.sh` starts from `deploy/k8s/overlays/kind` and publishes with
- * `kubectl port-forward` on the origins the Compose gates use. It checks the shape of the server
- * pod, that the isolation probe passes and is not blind, that the signer and its confirmation
- * service are held to their policies, and that a person claims the installation, approves an
- * agent's payment on the signer's confirmation page, and the payment lands once.
+ * `kubectl port-forward` on the origins the Compose gates use. It checks that both server
+ * replicas are ready and alone in their pods, that the isolation probe passes and is not blind,
+ * that the signer and its confirmation service are held to their policies, and that a person
+ * claims the installation, approves an agent's payment on the signer's confirmation page, and
+ * the payment lands once.
  *
  * The tests run in order and share one installation.
  */
@@ -59,6 +60,14 @@ const Pod = z.object({
     initContainers: z.array(z.object({ name: z.string() })).optional(),
     ephemeralContainers: z.array(z.object({ name: z.string() })).optional(),
   }),
+  status: z.object({
+    conditions: z.array(z.object({ type: z.string(), status: z.string() })).optional(),
+  }),
+});
+
+const Deployment = z.object({
+  spec: z.object({ replicas: z.number() }),
+  status: z.object({ readyReplicas: z.number().optional() }),
 });
 
 const Job = z.object({
@@ -205,7 +214,12 @@ async function intentSettles(intentId: string, timeoutMs = 120_000): Promise<str
   }
 }
 
-test("the server pod runs exactly one container, and no service mesh may add another", async () => {
+test("two server replicas are ready, each pod with one container that no mesh may join", async () => {
+  const deployment = Deployment.parse(
+    JSON.parse(await kubectl("get", "deployment", "--namespace", "os", "server", "-o", "json")),
+  );
+  expect(deployment.spec.replicas).toBe(2);
+  expect(deployment.status.readyReplicas).toBe(2);
   const pods = z
     .object({ items: z.array(Pod) })
     .parse(
@@ -222,8 +236,10 @@ test("the server pod runs exactly one container, and no service mesh may add ano
         ),
       ),
     ).items;
-  expect(pods.length).toBeGreaterThan(0);
+  expect(pods.map((pod) => pod.metadata.name)).toHaveLength(2);
   for (const pod of pods) {
+    const ready = pod.status.conditions?.find((condition) => condition.type === "Ready");
+    expect(ready?.status, `${pod.metadata.name} is not Ready`).toBe("True");
     expect(pod.spec.containers.map((container) => container.name)).toEqual(["server"]);
     // A native sidecar is an init container that keeps running.
     expect(pod.spec.initContainers ?? []).toEqual([]);

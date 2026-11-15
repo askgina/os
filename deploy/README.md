@@ -942,7 +942,7 @@ edge, the agent gateway, the namespaces `os` and `os-agents`, and NetworkPolicie
 - `overlays/kind`: everything in one kind cluster, for CI and evaluation only, with its Secrets
   made by `deploy/k8s/make-secrets.sh`.
 
-The server's Deployment runs one replica with `strategy: Recreate` (the bundle rule above), uses
+The server's Deployment runs two replicas with `strategy: Recreate` (the bundle rule above), uses
 `/readyz` as its readiness probe, and sets `SETUP_TOKEN_IN_LOG=false`; get the setup token with
 `kubectl exec -n os deploy/server -- node apps/server/src/cli.ts setup-token`. A NetworkPolicy
 does nothing on a network plugin that does not enforce it, and kind's plugin fails open when its

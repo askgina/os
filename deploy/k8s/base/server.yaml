@@ -13,12 +13,13 @@ metadata:
     app.kubernetes.io/name: server
     os.askgina/role: server
 spec:
-  # One replica until the replica-safe control plane (specs/beyond-one-machine.md, milestone 4:
-  # shared rate limits, one setup token, shred notices across replicas, the bundle guard) is
-  # green in CI; then 2, here and nowhere else.
-  replicas: 1
+  # Two replicas: rate limits, the setup token and shred notices are shared through Postgres
+  # (specs/beyond-one-machine.md, milestone 4), so either may take any request.
+  replicas: 2
   # Runs are not pinned to a workflow bundle, so two versions never run side by side: an
-  # upgrade stops every old pod before the first new one starts.
+  # upgrade stops every old pod before the first new one starts. A rolling update would not
+  # finish anyway: the bundle guard stops a new pod at boot (`workflow.bundle_mismatch`) while
+  # an old pod still runs another bundle.
   strategy:
     type: Recreate
   selector:
