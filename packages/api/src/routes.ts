@@ -317,6 +317,16 @@ export const routes = {
    */
   collectApproval: post("/api/v1/approvals/:approvalId/collect", NoBody, ApprovalDetail),
   reject: post("/api/v1/approvals/:approvalId/reject", NoBody, ApprovalDetail),
+  /**
+   * Owners and approvers. Opens a `cancel-transaction` request for the transaction of a
+   * `sweep-wallet` request (a payment is cancelled through its intent, `requestCancel`), as
+   * `requestCancel` does, with the same answers and refusals. Any other kind is `not_found`.
+   */
+  requestSweepCancel: post(
+    "/api/v1/approvals/:approvalId/cancel-transaction",
+    NoBody,
+    ApprovalSummary,
+  ),
 
   // --- intents --------------------------------------------------------------------------------
   /** Newest first; with `mandateId`, only the intents signed under that mandate. */
@@ -326,6 +336,32 @@ export const routes = {
     page(IntentSummary),
   ),
   getIntent: get("/api/v1/intents/:intentId", IntentDetail),
+  /**
+   * Owners and approvers, with no passkey. Asks the signer now for one more attempt of the
+   * payment's sent, unmined transaction with both fees raised by at least `REPRICE_BUMP_PERCENT`
+   * (12 by default), at the same account nonce and under the fee ceiling people approved, and
+   * offers it to the chain. Answers the intent with every attempt. Within 15 seconds of the
+   * newest attempt (a second click, or the automatic reprice) no attempt is added and the
+   * answer is the same. Refused with `conflict` and the reason as `detail`: `not_repriceable`
+   * (not sent yet, already final, or its nonce was used), `waiting_behind_nonce`,
+   * `workspace_paused`, `fee_ceiling_reached`, `reprice_window_closed`, `attempts_exhausted` or
+   * `reprice_refused` (see `StuckReason`); with `internal` and `retry_later` when the chain or
+   * the signer could not be reached.
+   */
+  speedUp: post("/api/v1/intents/:intentId/speed-up", NoBody, IntentDetail),
+  /**
+   * Owners and approvers. Opens a `cancel-transaction` request for the payment's sent, unmined
+   * transaction: once enough people approve it on the signer's confirmation page, at the
+   * wallet policy's threshold and within its lifetime, the signer signs a transfer of nothing
+   * from the wallet to itself at the same account nonce, with fees up to the policy's fee cap
+   * per transaction. Whichever the chain mines first wins: the payment (`confirmed`, failure
+   * code `cancel_too_late`) or the cancel (`voided`). Allowed while the workspace is paused.
+   * While one request waits, asking again answers that one. Refused with `conflict`: `not_sent`
+   * (no transaction sent yet), `transaction_final` (already mined or replaced),
+   * `attempts_exhausted`, `fee_ceiling_reached` (the policy's fee cap cannot outbid the newest
+   * attempt); with `policy_denied` and `policy_missing` for a wallet without a policy.
+   */
+  requestCancel: post("/api/v1/intents/:intentId/cancel-transaction", NoBody, ApprovalSummary),
 
   // --- audit ----------------------------------------------------------------------------------
   listAudit: list("/api/v1/workspaces/:workspaceId/audit", cursorQuery, page(AuditEvent)),

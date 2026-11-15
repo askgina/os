@@ -4,6 +4,7 @@ import type { AppContext } from "../context.ts";
 import { approvals } from "../db/schema.ts";
 import { type DeliveryCounts, deliverDueNotifications } from "../notify/outbox.ts";
 import { engineOf } from "./approvals.ts";
+import { registerCancelKind } from "./cancel.ts";
 import { registerIntentKind } from "./intents.ts";
 import { registerMandateKinds } from "./mandates.ts";
 import { repriceAutomatically } from "./repricing.ts";
@@ -26,7 +27,7 @@ const DEFAULT_OPTIONS: ExecutionOptions = { pollSeconds: 5 };
 
 /**
  * The approval, intent, sweep and mandate routes, and the kinds that sign or grant:
- * `approve-intent`, `mandate-use`, `sweep-wallet` and `grant-mandate`.
+ * `approve-intent`, `mandate-use`, `sweep-wallet`, `grant-mandate` and `cancel-transaction`.
  */
 export function registerExecution(
   app: Hono,
@@ -36,6 +37,7 @@ export function registerExecution(
   registerIntentKind(ctx, options, repriceAutomatically);
   registerSweepKind(ctx, options);
   registerMandateKinds(ctx);
+  registerCancelKind(ctx);
   registerApprovalAndIntentRoutes(app, ctx);
 }
 

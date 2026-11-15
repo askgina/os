@@ -69,6 +69,7 @@ const KIND_LABEL: Record<ApprovalKind, string> = {
   "resume-workspace": "Workspace resume",
   "sweep-wallet": "Wallet sweep",
   "grant-mandate": "Approval in advance",
+  "cancel-transaction": "Cancel request",
 };
 
 /** One line of at most {@link TEXT_MAX_CHARACTERS}: control, format and separator characters out. */

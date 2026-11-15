@@ -15,6 +15,7 @@ import type {
   PushSubscriptionInput,
   PushSubscriptionSummary,
   SessionInfo,
+  TransactionInfo,
   WalletDetail,
   WalletSummary,
   WorkspaceDetail,
@@ -30,10 +31,12 @@ export const APPROVAL = `apr_${ULID}5` as const;
 export const USER = `usr_${ULID}6` as const;
 export const MANDATE = `mnd_${ULID}7` as const;
 export const SUBSCRIPTION = `psb_${ULID}8` as const;
+export const CANCEL_APPROVAL = `apr_${ULID}9` as const;
 const T0 = 1_700_000_000;
 const ADDRESS = "0x1111111111111111111111111111111111111111" as const;
 const HASH = "c".repeat(64);
 const TX = `0x${"d".repeat(64)}` as const;
+const TX_REPRICED = `0x${"e".repeat(64)}` as const;
 
 export const user = { id: USER, displayName: "Ada" };
 
@@ -210,12 +213,53 @@ export const intentSummary: IntentSummary = {
   failureCode: null,
 };
 
+/** A stuck payment repriced once: the shown hash is the newest attempt's. */
+export const transactionInfo: TransactionInfo = {
+  hash: TX_REPRICED,
+  status: "stuck",
+  blockNumber: null,
+  explorerUrl: `https://basescan.org/tx/${TX_REPRICED}`,
+  attempts: [
+    {
+      attempt: 0,
+      kind: "original",
+      hash: TX,
+      gas: "26250",
+      maxFeePerGas: "2000000000",
+      maxPriorityFeePerGas: "1000000000",
+      signedAt: T0 + 60,
+      cancelApprovalId: null,
+      status: "pending",
+      explorerUrl: `https://basescan.org/tx/${TX}`,
+    },
+    {
+      attempt: 1,
+      kind: "reprice",
+      hash: TX_REPRICED,
+      gas: "26250",
+      maxFeePerGas: "2240000000",
+      maxPriorityFeePerGas: "1120000000",
+      signedAt: T0 + 240,
+      cancelApprovalId: null,
+      status: "pending",
+      explorerUrl: `https://basescan.org/tx/${TX_REPRICED}`,
+    },
+  ],
+  minedAttempt: null,
+  stuckReason: "fee_too_low",
+  canSpeedUp: true,
+  canCancel: true,
+  pendingCancelApprovalId: null,
+};
+
 export const intentDetail: IntentDetail = {
   ...intentSummary,
+  status: "stuck",
+  transactionHash: TX_REPRICED,
   intent,
   intentHash: HASH,
   simulation: { ok: true, blockNumber: 100, gasEstimate: "21000", error: null },
-  transaction: { hash: TX, status: "broadcast", blockNumber: null, explorerUrl: null },
+  transaction: transactionInfo,
 };
 
 export const approvalSummary: ApprovalSummary = {
@@ -302,6 +346,49 @@ export const sweepApprovalDetail: ApprovalDetail = {
     transaction: null,
   },
   confirmUrl: null,
+};
+
+/** A request to cancel the stuck payment above, waiting for its one approval. */
+export const cancelApprovalDetail: ApprovalDetail = {
+  ...approvalSummary,
+  id: CANCEL_APPROVAL,
+  kind: "cancel-transaction",
+  title: "Cancel payment: Send 5 wei to 0x1111…1111",
+  requestedBy: { type: "user", id: USER, name: "Ada" },
+  envelope: {
+    v: 1,
+    type: "cancel-transaction",
+    approvalId: CANCEL_APPROVAL,
+    workspaceId: WS,
+    nonce: "AAAAAAAAAAAAAAAAAAAAAA",
+    issuedAt: T0,
+    expiresAt: T0 + 600,
+    targetApprovalId: APPROVAL,
+    walletId: WALLET,
+    chainId: "eip155:8453",
+    txNonce: 7,
+    maxFeeWei: "1000000000000000",
+  },
+  approvedBy: [],
+  rejectedBy: null,
+  canDecide: true,
+  subject: {
+    kind: "cancel-transaction",
+    wallet,
+    intent: {
+      ...intentDetail,
+      transaction: {
+        ...transactionInfo,
+        canCancel: false,
+        pendingCancelApprovalId: CANCEL_APPROVAL,
+      },
+    },
+    sweep: null,
+    transaction: { ...transactionInfo, canCancel: false, pendingCancelApprovalId: CANCEL_APPROVAL },
+    txNonce: 7,
+    maxFeeWei: "1000000000000000",
+  },
+  confirmUrl: `https://approve.os.example.com/a/${CANCEL_APPROVAL}#AAAAAAAAAAAAAAAAAAAAAA`,
 };
 
 export const auditEvent: AuditEvent = {

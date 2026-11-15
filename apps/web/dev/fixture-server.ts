@@ -58,6 +58,7 @@ import {
   type RouteName,
   routes,
   type SessionInfo,
+  type TransactionInfo,
   type WalletSummary,
   type WorkspaceDetail,
 } from "@askgina/os-api";
@@ -220,8 +221,13 @@ interface State {
     }
   >;
   spent: Map<string, bigint>;
-  /** When each intent's transaction was broadcast, to "mine" it shortly after. */
+  /**
+   * When each intent's newest attempt was offered to the chain, to "mine" it shortly after. A
+   * transaction put into `stuck` has none until a speed-up or a cancel adds an attempt.
+   */
   sentAt: Map<string, number>;
+  /** The approval id a mandate's use signed under, per intent; such an intent shows none. */
+  useIds: Map<string, string>;
   /** Push subscriptions by id, with their person and endpoint. */
   pushSubscriptions: Map<
     string,
@@ -249,6 +255,7 @@ function freshState(): State {
     invites: new Map(),
     spent: new Map(),
     sentAt: new Map(),
+    useIds: new Map(),
     pushSubscriptions: new Map(),
     notificationSwitches: new Map(),
     quietHours: new Map(),
@@ -347,16 +354,247 @@ function expireApprovals(): void {
   }
 }
 
+const GWEI = 1_000_000_000n;
+const randomHash = () => `0x${randomBytes(32).toString("hex")}` as `0x${string}`;
+const isSent = (transaction: TransactionInfo) =>
+  transaction.status === "broadcast" || transaction.status === "stuck";
+
+function explorerOf(chainId: string, hash: string): string | null {
+  const chain = CHAINS.find((item) => item.chainId === chainId);
+  return chain?.explorerUrl ? `${chain.explorerUrl}/tx/${hash}` : null;
+}
+
+/** A transaction just signed and offered to the chain: its first attempt, nothing final yet. */
+function sentTransaction(chainId: string): TransactionInfo {
+  const hash = randomHash();
+  return {
+    hash,
+    status: "broadcast",
+    blockNumber: null,
+    explorerUrl: explorerOf(chainId, hash),
+    attempts: [
+      {
+        attempt: 0,
+        kind: "original",
+        hash,
+        gas: "21000",
+        maxFeePerGas: (2n * GWEI).toString(),
+        maxPriorityFeePerGas: GWEI.toString(),
+        signedAt: now(),
+        cancelApprovalId: null,
+        status: "pending",
+        explorerUrl: explorerOf(chainId, hash),
+      },
+    ],
+    minedAttempt: null,
+    stuckReason: null,
+    canSpeedUp: true,
+    canCancel: true,
+    pendingCancelApprovalId: null,
+  };
+}
+
+/**
+ * One more attempt with both fees 12% higher, at the same nonce: a reprice, or a cancel (a
+ * transfer of nothing to the wallet itself). Once a cancel exists every later attempt is one.
+ */
+function withAttempt(
+  transaction: TransactionInfo,
+  chainId: string,
+  kind: "reprice" | "cancel",
+  cancelApprovalId: string | null,
+): TransactionInfo {
+  const latest = transaction.attempts[transaction.attempts.length - 1];
+  if (!latest) throw new Error("a transaction without its first attempt");
+  const raised = (value: string) => ((BigInt(value) * 112n + 99n) / 100n).toString();
+  const cancel = kind === "cancel" || latest.kind === "cancel";
+  const hash = randomHash();
+  return {
+    ...transaction,
+    hash,
+    explorerUrl: explorerOf(chainId, hash),
+    stuckReason: null,
+    attempts: [
+      ...transaction.attempts,
+      {
+        attempt: latest.attempt + 1,
+        kind: cancel ? "cancel" : "reprice",
+        hash,
+        gas: cancel ? "21000" : latest.gas,
+        maxFeePerGas: raised(latest.maxFeePerGas),
+        maxPriorityFeePerGas: raised(latest.maxPriorityFeePerGas),
+        signedAt: now(),
+        cancelApprovalId: (kind === "cancel"
+          ? cancelApprovalId
+          : latest.cancelApprovalId) as TransactionInfo["pendingCancelApprovalId"],
+        status: "pending",
+        explorerUrl: explorerOf(chainId, hash),
+      },
+    ],
+  };
+}
+
+/** The newest attempt mined: `cancelled` when it is a cancel, otherwise `confirmed`. */
+function minedTransaction(transaction: TransactionInfo): TransactionInfo {
+  const newest = transaction.attempts[transaction.attempts.length - 1];
+  if (!newest) throw new Error("a transaction without its first attempt");
+  return {
+    ...transaction,
+    status: newest.kind === "cancel" ? "cancelled" : "confirmed",
+    blockNumber: 1042,
+    minedAttempt: newest.attempt,
+    stuckReason: null,
+    attempts: transaction.attempts.map((attempt) => ({
+      ...attempt,
+      status: attempt.attempt === newest.attempt ? "mined" : "not_mined",
+    })),
+  };
+}
+
+/** The approval whose transaction an intent sent: its request's, or its mandate use's. */
+function targetOf(intent: { id: string; approvalId: string | null }): string | null {
+  return intent.approvalId ?? state.useIds.get(intent.id) ?? null;
+}
+
+function waitingCancel(targetApprovalId: string | null): Approval | undefined {
+  return [...state.approvals.values()].find(
+    (approval) =>
+      approval.summary.status === "pending" &&
+      approval.envelope.type === "cancel-transaction" &&
+      approval.envelope.targetApprovalId === targetApprovalId,
+  );
+}
+
+/** What a person may do with a transaction now, worked out when it is read, as the server does. */
+function liveTransaction(
+  transaction: TransactionInfo,
+  targetApprovalId: string | null,
+  payment: boolean,
+): TransactionInfo {
+  const sent = isSent(transaction);
+  const waiting = waitingCancel(targetApprovalId);
+  const reason = transaction.stuckReason;
+  return {
+    ...transaction,
+    stuckReason: sent ? reason : null,
+    canSpeedUp: sent && payment && (reason === null || reason === "fee_too_low"),
+    canCancel: sent && waiting === undefined && reason !== "attempts_exhausted",
+    pendingCancelApprovalId: (waiting?.summary.id ??
+      null) as TransactionInfo["pendingCancelApprovalId"],
+  };
+}
+
 function advanceTransactions(): void {
-  // A broadcast transaction is "mined" two seconds later, so the UI's follow-through shows.
+  // The newest attempt of a sent transaction is "mined" two seconds after it was offered, so the
+  // UI's follow-through shows. Whichever attempt is mined decides: a cancel voids the payment.
   for (const intent of state.intents.values()) {
-    if (intent.status === "broadcast" && intent.transaction) {
-      if (now() - (state.sentAt.get(intent.id) ?? 0) >= 2) {
-        intent.status = "confirmed";
-        intent.transaction = { ...intent.transaction, status: "confirmed", blockNumber: 1042 };
-      }
+    const sentAt = state.sentAt.get(intent.id);
+    if (!intent.transaction || !isSent(intent.transaction) || sentAt === undefined) continue;
+    if (now() - sentAt < 2) continue;
+    const cancelSigned = intent.transaction.attempts.some((attempt) => attempt.kind === "cancel");
+    intent.transaction = minedTransaction(intent.transaction);
+    intent.transactionHash = intent.transaction.hash;
+    if (intent.transaction.status === "cancelled") {
+      intent.status = "voided";
+      intent.failureCode = "transaction_cancelled";
+    } else {
+      intent.status = "confirmed";
+      if (cancelSigned) intent.failureCode = "cancel_too_late";
     }
+    // Nothing is left to cancel: a cancel request still waiting ends.
+    const waiting = waitingCancel(targetOf(intent));
+    if (waiting) waiting.summary.status = "cancelled";
   }
+}
+
+/**
+ * Open a `cancel-transaction` request for a sent transaction, as the server does: at the wallet
+ * policy's threshold and lifetime, with its fee cap as ceiling; asking again while one waits
+ * answers that one. Applied, it adds a cancel attempt, or fails when the transaction is final.
+ */
+function openCancel(
+  workspace: Workspace,
+  userId: string,
+  input: {
+    target: string;
+    walletId: string;
+    chainId: string;
+    title: string;
+    intent: (IntentDetail & { workspaceId: string }) | null;
+    transaction: () => TransactionInfo | null;
+    update: (transaction: TransactionInfo) => void;
+  },
+): ApprovalSummary {
+  const waiting = waitingCancel(input.target);
+  if (waiting) return waiting.summary;
+  const wallet = workspace.wallets.find((item) => item.id === input.walletId);
+  if (!wallet?.policy)
+    throw new Refusal("policy_denied", "This wallet has no approved policy.", "policy_missing");
+  const current = input.transaction();
+  if (!current) throw new Refusal("conflict", "Nothing was sent yet.", "not_sent");
+  const maxFeeWei = wallet.policy.fees.maxPerTxWei;
+  const approval: Approval = openApproval({
+    workspace,
+    kind: "cancel-transaction",
+    title: `${input.intent ? "Cancel payment" : "Cancel sweep"}: ${input.title}`,
+    requestedBy: {
+      type: "user",
+      id: userId as Member["user"]["id"],
+      name: state.users.get(userId) ?? "",
+    },
+    threshold: wallet.policy.approvals.threshold,
+    ttl: wallet.policy.approvals.ttlSeconds,
+    envelope: {
+      targetApprovalId: input.target,
+      walletId: wallet.id,
+      chainId: input.chainId,
+      txNonce: 0,
+      maxFeeWei,
+    },
+    subject: {
+      kind: "cancel-transaction",
+      wallet: { ...wallet },
+      intent: input.intent ? stripIntent(input.intent) : null,
+      sweep: input.intent
+        ? null
+        : { approvalId: input.target as ApprovalSummary["id"], title: input.title },
+      transaction: current,
+      txNonce: 0,
+      maxFeeWei,
+    },
+    apply: () => {
+      const live = input.transaction();
+      if (!live || !isSent(live)) {
+        approval.summary.status = "failed";
+        approval.summary.failureCode = "transaction_final";
+        return;
+      }
+      input.update(withAttempt(live, input.chainId, "cancel", approval.summary.id));
+      decide(workspace, approval.summary.id, "cancel-transaction", null);
+    },
+  });
+  audit(workspace, userActor(userId), "transaction.cancel_requested", {
+    type: "approval",
+    id: input.target,
+  });
+  return approval.summary;
+}
+
+/** A cancel request's subject as it is now: the payment or sweep, and its transaction. */
+function liveCancelSubject(
+  subject: Extract<ApprovalSubject, { kind: "cancel-transaction" }>,
+): ApprovalSubject {
+  if (subject.intent) {
+    const intent = stripIntent(state.intents.get(subject.intent.id) ?? subject.intent);
+    return { ...subject, intent, transaction: intent.transaction ?? subject.transaction };
+  }
+  const sweep = state.approvals.get(subject.sweep?.approvalId ?? "")?.subject;
+  return sweep?.kind === "sweep-wallet" && sweep.transaction && subject.sweep
+    ? {
+        ...subject,
+        transaction: liveTransaction(sweep.transaction, subject.sweep.approvalId, false),
+      }
+    : subject;
 }
 
 function openApproval(input: {
@@ -535,16 +773,25 @@ function approvalDetail(approval: Approval, userId: string): ApprovalDetail {
   const liveSubject: ApprovalSubject =
     subject.kind === "approve-intent"
       ? { ...subject, intent: stripIntent(state.intents.get(subject.intent.id) ?? subject.intent) }
-      : subject.kind === "grant-mandate"
-        ? {
-            ...subject,
-            assets: mandateAssets(
-              subject.mandate,
-              workspace.wallets.find((item) => item.id === subject.wallet.id)?.policy ?? null,
-            ),
-            usage: granted ? mandateSummary(granted).usage : null,
-          }
-        : subject;
+      : subject.kind === "cancel-transaction"
+        ? liveCancelSubject(subject)
+        : subject.kind === "sweep-wallet"
+          ? {
+              ...subject,
+              transaction: subject.transaction
+                ? liveTransaction(subject.transaction, approval.summary.id, false)
+                : null,
+            }
+          : subject.kind === "grant-mandate"
+            ? {
+                ...subject,
+                assets: mandateAssets(
+                  subject.mandate,
+                  workspace.wallets.find((item) => item.id === subject.wallet.id)?.policy ?? null,
+                ),
+                usage: granted ? mandateSummary(granted).usage : null,
+              }
+            : subject;
   return {
     ...approval.summary,
     envelope: approval.envelope,
@@ -563,7 +810,10 @@ function approvalDetail(approval: Approval, userId: string): ApprovalDetail {
 
 function stripIntent(intent: IntentDetail & { workspaceId?: string }): IntentDetail {
   const { workspaceId: _workspace, ...rest } = intent;
-  return rest;
+  return {
+    ...rest,
+    transaction: rest.transaction ? liveTransaction(rest.transaction, targetOf(rest), true) : null,
+  };
 }
 
 function workspaceDetail(workspace: Workspace, userId: string): WorkspaceDetail {
@@ -791,16 +1041,10 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
     }
     covering.uses.push({ at: now(), chainId, asset, amount: BigInt(moved) });
     state.spent.set(spentKey, (state.spent.get(spentKey) ?? 0n) + BigInt(moved));
-    const hash = `0x${randomBytes(32).toString("hex")}` as `0x${string}`;
-    const chain = CHAINS.find((item) => item.chainId === chainId);
     detail.status = "broadcast";
-    detail.transactionHash = hash;
-    detail.transaction = {
-      hash,
-      status: "broadcast",
-      blockNumber: null,
-      explorerUrl: chain?.explorerUrl ? `${chain.explorerUrl}/tx/${hash}` : null,
-    };
+    detail.transaction = sentTransaction(chainId);
+    detail.transactionHash = detail.transaction.hash;
+    state.useIds.set(intent.id, useId);
     state.sentAt.set(intent.id, now());
     decide(workspace, useId, "sign-under-mandate", null);
     return stripIntent(detail);
@@ -851,16 +1095,9 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
       if (workspace.paused) return fail("workspace_paused");
       if (wallet.policyHash !== policyAtProposal) return fail("policy_changed");
       state.spent.set(spentKey, (state.spent.get(spentKey) ?? 0n) + BigInt(moved));
-      const hash = `0x${randomBytes(32).toString("hex")}` as `0x${string}`;
-      const chain = CHAINS.find((item) => item.chainId === chainId);
       live.status = "broadcast";
-      live.transactionHash = hash;
-      live.transaction = {
-        hash,
-        status: "broadcast",
-        blockNumber: null,
-        explorerUrl: chain?.explorerUrl ? `${chain.explorerUrl}/tx/${hash}` : null,
-      };
+      live.transaction = sentTransaction(chainId);
+      live.transactionHash = live.transaction.hash;
       state.sentAt.set(live.id, now());
       decide(workspace, approval?.summary.id ?? null, "sign_transaction", null);
     },
@@ -1689,12 +1926,8 @@ const handlers: Record<RouteName, Handler> = {
           decide(workspace, approval.summary.id, "sweep", "sweep_destination_not_allowed");
           return;
         }
-        subject.transaction = {
-          hash: `0x${randomBytes(32).toString("hex")}`,
-          status: "confirmed",
-          blockNumber: 1043,
-          explorerUrl: null,
-        };
+        // A sweep is mined at once here; it can be cancelled, never sped up.
+        subject.transaction = minedTransaction(sentTransaction(sweep.chainId));
         decide(workspace, approval.summary.id, "sweep", null);
       },
     });
@@ -1951,6 +2184,115 @@ const handlers: Record<RouteName, Handler> = {
     if (!intent) throw new Refusal("not_found", "This request does not exist.");
     return stripIntent(intent);
   },
+  speedUp: ({ params, userId }) => {
+    const id = signedIn(userId);
+    const intent = state.intents.get(params.intentId ?? "");
+    if (!intent) throw new Refusal("not_found", "This request does not exist.");
+    const workspace = workspaceOf(intent.workspaceId);
+    if (memberOf(workspace, id).role === "viewer") {
+      throw new Refusal("forbidden", "Only an owner or an approver can do this.");
+    }
+    const transaction = intent.transaction;
+    if (!transaction || !isSent(transaction)) {
+      throw new Refusal(
+        "conflict",
+        "Only a payment that was sent and is not mined yet can be sped up.",
+        "not_repriceable",
+      );
+    }
+    if (workspace.paused) {
+      throw new Refusal(
+        "conflict",
+        "This workspace is paused; a cancel still works.",
+        "workspace_paused",
+      );
+    }
+    // Within 15 seconds of the newest attempt nothing is added: two clicks make one attempt.
+    const latest = transaction.attempts[transaction.attempts.length - 1];
+    if (latest && now() - latest.signedAt >= 15) {
+      intent.transaction = withAttempt(transaction, intent.chainId, "reprice", null);
+      intent.transactionHash = intent.transaction.hash;
+      state.sentAt.set(intent.id, now());
+      audit(workspace, userActor(id), "transaction.repriced", {
+        type: "approval",
+        id: targetOf(intent) ?? intent.id,
+      });
+    }
+    return stripIntent(intent);
+  },
+  requestCancel: ({ params, userId }) => {
+    const id = signedIn(userId);
+    const intent = state.intents.get(params.intentId ?? "");
+    if (!intent) throw new Refusal("not_found", "This request does not exist.");
+    const workspace = workspaceOf(intent.workspaceId);
+    if (memberOf(workspace, id).role === "viewer") {
+      throw new Refusal("forbidden", "Only an owner or an approver can do this.");
+    }
+    const target = targetOf(intent);
+    if (!intent.transaction || target === null || intent.transaction.status === "signed") {
+      throw new Refusal(
+        "conflict",
+        "Nothing was sent yet, so there is nothing to cancel.",
+        "not_sent",
+      );
+    }
+    if (!isSent(intent.transaction)) {
+      throw new Refusal(
+        "conflict",
+        "The transaction is already mined or replaced.",
+        "transaction_final",
+      );
+    }
+    return openCancel(workspace, id, {
+      target,
+      walletId: intent.walletId,
+      chainId: intent.chainId,
+      title: `${intent.display.title} to ${short(intent.display.to)}`,
+      intent,
+      transaction: () => intent.transaction,
+      update: (transaction) => {
+        intent.transaction = transaction;
+        intent.transactionHash = transaction.hash;
+        state.sentAt.set(intent.id, now());
+      },
+    });
+  },
+  requestSweepCancel: ({ params, userId }) => {
+    const id = signedIn(userId);
+    const approval = state.approvals.get(params.approvalId ?? "");
+    if (!approval) throw new Refusal("not_found", "This request does not exist.");
+    const workspace = workspaceOf(approval.summary.workspaceId);
+    if (memberOf(workspace, id).role === "viewer") {
+      throw new Refusal("forbidden", "Only an owner or an approver can do this.");
+    }
+    const subject = approval.subject;
+    if (subject.kind !== "sweep-wallet") throw new Refusal("not_found", "No such sweep.");
+    if (!subject.transaction || subject.transaction.status === "signed") {
+      throw new Refusal(
+        "conflict",
+        "Nothing was sent yet, so there is nothing to cancel.",
+        "not_sent",
+      );
+    }
+    if (!isSent(subject.transaction)) {
+      throw new Refusal(
+        "conflict",
+        "The transaction is already mined or replaced.",
+        "transaction_final",
+      );
+    }
+    return openCancel(workspace, id, {
+      target: approval.summary.id,
+      walletId: subject.sweep.walletId,
+      chainId: subject.sweep.chainId,
+      title: approval.summary.title,
+      intent: null,
+      transaction: () => subject.transaction,
+      update: (transaction) => {
+        subject.transaction = transaction;
+      },
+    });
+  },
   listAudit: ({ params, query, userId }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
@@ -2153,7 +2495,9 @@ const server = createServer(async (req, res) => {
         throw new Refusal("not_found", "No sent transaction for this intent.");
       if (input.status === "stuck") {
         intent.status = "stuck";
-        intent.transaction = { ...intent.transaction, status: "stuck" };
+        intent.transaction = { ...intent.transaction, status: "stuck", stuckReason: "fee_too_low" };
+        // Stays unmined until a speed-up or a cancel offers another attempt.
+        state.sentAt.delete(intent.id);
       } else if (input.status === "rejected") {
         intent.status = "failed";
         intent.failureCode = "rejected";
@@ -2316,6 +2660,18 @@ function confirmationLines(approval: Approval): { label: string; value: string }
       ];
     case "resume-workspace":
       return [{ label: "Workspace", value: workspaceOf(approval.summary.workspaceId).name }];
+    case "cancel-transaction": {
+      const stops = subject.intent
+        ? `${subject.intent.display.amountFormatted} ${subject.intent.display.assetSymbol} to ${subject.intent.display.to}`
+        : (subject.sweep?.title ?? "");
+      return [
+        { label: "Stop this transaction", value: stops },
+        { label: "From wallet", value: `${subject.wallet.label} ${subject.wallet.address}` },
+        { label: "Account nonce", value: String(subject.txNonce) },
+        { label: "Attempts so far", value: String(subject.transaction.attempts.length) },
+        { label: "Most it may cost in fees", value: `${formatAmount(subject.maxFeeWei, 18)} ETH` },
+      ];
+    }
     case "grant-mandate": {
       const { mandate } = subject;
       const hours = mandate.windowSeconds / 3600;

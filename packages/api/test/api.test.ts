@@ -123,11 +123,20 @@ const examples: { [N in RouteName]: { body?: unknown; query?: unknown; response:
     body: {},
     response: { ...f.approvalDetail, status: "rejected", rejectedBy: f.user, confirmUrl: null },
   },
+  requestSweepCancel: {
+    body: {},
+    response: { ...f.approvalSummary, id: f.CANCEL_APPROVAL, kind: "cancel-transaction" },
+  },
   listIntents: {
     query: { cursor: "c1", mandateId: f.MANDATE },
     response: { items: [f.intentSummary], nextCursor: null },
   },
   getIntent: { response: f.intentDetail },
+  speedUp: { body: {}, response: f.intentDetail },
+  requestCancel: {
+    body: {},
+    response: { ...f.approvalSummary, id: f.CANCEL_APPROVAL, kind: "cancel-transaction" },
+  },
   listAudit: { query: {}, response: { items: [f.auditEvent], nextCursor: null } },
   verifyAudit: { response: { ok: true, checked: 1, brokenAt: null } },
   listSignerDecisions: { query: { after: "3" }, response: { items: [f.signerDecision] } },
@@ -284,6 +293,27 @@ describe("route contract", () => {
     expect(quiet({ start: "22:00", end: "07:00" })).toBe(false);
     const twice = [...prefs.workspaces, ...prefs.workspaces];
     expect(body.safeParse({ ...prefs, workspaces: twice }).success).toBe(false);
+  });
+
+  it("a cancel's subject names the transaction it stops, with every attempt and why it is stuck", () => {
+    expect(ApprovalDetail.parse(f.cancelApprovalDetail)).toEqual(f.cancelApprovalDetail);
+    const subject = f.cancelApprovalDetail.subject;
+    // The envelope a passkey approves names the target by its approval id, never by a hash.
+    expect(
+      ApprovalDetail.safeParse({
+        ...f.cancelApprovalDetail,
+        envelope: { ...f.cancelApprovalDetail.envelope, targetApprovalId: f.CANCEL_APPROVAL },
+      }).success,
+    ).toBe(false);
+    const transaction = f.transactionInfo;
+    for (const broken of [
+      { ...transaction, attempts: [] },
+      { ...transaction, stuckReason: "gas_too_low" },
+      { ...transaction, attempts: [{ ...transaction.attempts[0], status: "replaced" }] },
+      { ...transaction, canCancel: undefined },
+    ]) {
+      expect(ApprovalSubject.safeParse({ ...subject, transaction: broken }).success).toBe(false);
+    }
   });
 
   it("a sweep's subject carries the exact sweep, and a sweep the protocol refuses does not parse", () => {

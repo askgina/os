@@ -2,8 +2,10 @@ import type { MandateId, WorkspaceId } from "@askgina/os-protocol";
 import type { Hono } from "hono";
 import { requireMember } from "../access.ts";
 import type { AppContext } from "../context.ts";
+import { HttpError } from "../http/errors.ts";
 import { handle } from "../http/route.ts";
 import { engineOf } from "./approvals.ts";
+import { requestCancel } from "./cancel.ts";
 import { getIntentRow, intentDetail, intentSummary, listIntentRows } from "./intents.ts";
 import {
   listMandates,
@@ -12,6 +14,7 @@ import {
   openMandateGrant,
   revokeMandate,
 } from "./mandates.ts";
+import { speedUpIntent } from "./repricing.ts";
 import { requestSweep } from "./sweeps.ts";
 
 /** The approval, intent, sweep and mandate endpoints of the contract in `@askgina/os-api`. */
@@ -105,6 +108,20 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
     return engine.detail(await engine.request(row.id), session);
   });
 
+  // Stopping a transaction moves nothing, so anyone who may approve may ask; people approve the
+  // cancel with their passkeys at the wallet policy's threshold.
+  handle(app, ctx, "requestSweepCancel", async ({ params, session }) => {
+    const row = await engine.request(params.approvalId);
+    await requireMember(ctx, session, row.workspaceId, "approver");
+    if (row.kind !== "sweep-wallet") throw new HttpError("not_found", "no such sweep");
+    return requestCancel(ctx, {
+      workspaceId: row.workspaceId,
+      targetApprovalId: row.id,
+      intentId: null,
+      requestedBy: session.user.id,
+    });
+  });
+
   handle(app, ctx, "listIntents", async ({ params, query, session }) => {
     await requireMember(ctx, session, params.workspaceId as never);
     const { rows, nextCursor } = await listIntentRows(ctx, {
@@ -119,5 +136,25 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
     const row = await getIntentRow(ctx, params.intentId);
     await requireMember(ctx, session, row.workspaceId);
     return intentDetail(ctx, row);
+  });
+
+  // Raising a fee needs no passkey: the signer lets only the two fees rise, under the ceiling
+  // people approved, within its window.
+  handle(app, ctx, "speedUp", async ({ params, session }) => {
+    const row = await getIntentRow(ctx, params.intentId);
+    await requireMember(ctx, session, row.workspaceId, "approver");
+    await speedUpIntent(ctx, row, session.user.id);
+    return intentDetail(ctx, await getIntentRow(ctx, row.id));
+  });
+
+  handle(app, ctx, "requestCancel", async ({ params, session }) => {
+    const row = await getIntentRow(ctx, params.intentId);
+    await requireMember(ctx, session, row.workspaceId, "approver");
+    return requestCancel(ctx, {
+      workspaceId: row.workspaceId,
+      targetApprovalId: row.approvalId,
+      intentId: row.id,
+      requestedBy: session.user.id,
+    });
   });
 }

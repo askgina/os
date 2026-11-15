@@ -26,8 +26,9 @@ import {
   wallets,
   workspaces,
 } from "../db/schema.ts";
+import { HttpError } from "../http/errors.ts";
 import { ChainError, chainAccess, type FeeQuote } from "./chains.ts";
-import { readIntent } from "./intents.ts";
+import { type IntentRow, readIntent } from "./intents.ts";
 import {
   type Attempt,
   attemptsOf,
@@ -429,4 +430,49 @@ export function speedUp(
   userId: UserId,
 ): Promise<RepriceOutcome> {
   return reprice(ctx, approvalId, { type: "user", id: userId }, "speed_up");
+}
+
+/**
+ * The `speedUp` route: an approver's speed-up of an intent's transaction, as an HTTP answer.
+ * Returns when the intent is to be answered as it is now: a new attempt was stored, or the
+ * newest one is too recent for another (`not_due`: a second click, or the automatic reprice).
+ * Every other outcome is a `conflict` with the reason as `detail`, or `internal` with
+ * `retry_later` when the chain or the signer could not be reached. The caller checks the role.
+ */
+export async function speedUpIntent(
+  ctx: AppContext,
+  row: IntentRow,
+  userId: UserId,
+): Promise<void> {
+  // A use of a mandate signs under its own approval id, as a request does.
+  const outcome: RepriceOutcome =
+    row.approvalId === null ? "not_repriceable" : await speedUp(ctx, row.approvalId, userId);
+  switch (outcome) {
+    case "repriced":
+    case "caught_up":
+    case "not_due":
+      return;
+    case "retry_later":
+      throw new HttpError(
+        "internal",
+        "the chain or the signer could not be reached; try again",
+        "retry_later",
+      );
+    case "not_repriceable":
+      throw new HttpError(
+        "conflict",
+        "only a payment that was sent and is not mined yet can be sped up",
+        outcome,
+      );
+    case "waiting_behind_nonce":
+      throw new HttpError(
+        "conflict",
+        "an earlier transaction of this wallet is not mined yet; a higher fee here would not help",
+        outcome,
+      );
+    case "workspace_paused":
+      throw new HttpError("conflict", "this workspace is paused; a cancel still works", outcome);
+    default:
+      throw new HttpError("conflict", "this transaction cannot be repriced any further", outcome);
+  }
 }

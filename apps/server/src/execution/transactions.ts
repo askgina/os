@@ -1,4 +1,4 @@
-import type { TransactionInfo } from "@askgina/os-api";
+import type { TransactionAttemptView, TransactionInfo } from "@askgina/os-api";
 import type { ApprovalId, ChainId, IntentId, WorkspaceId } from "@askgina/os-protocol";
 import {
   type AttemptResponse,
@@ -7,11 +7,12 @@ import {
   type TransactionAttemptKind,
   type TransactionParams,
 } from "@askgina/os-protocol/signer";
-import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, or, sql } from "drizzle-orm";
 import { parseTransaction, type Hex as ViemHex } from "viem";
 import { ApprovalFailure, type ApprovalRow } from "../approvals/kinds.ts";
 import type { AppContext, Executor, Transaction } from "../context.ts";
 import {
+  approvals,
   nonceReservations,
   type StuckReason,
   type TransactionStatusColumn,
@@ -108,18 +109,124 @@ export async function shownHash(ctx: AppContext, row: TransactionRow): Promise<V
   return (shown?.hash ?? row.hash) as ViemHex;
 }
 
-/** How a person sees a transaction: its hash, where it is, and a link to the explorer. */
+/** Statuses in which a transaction was sent and nothing is final: it can get more attempts. */
+export const SENT: readonly TransactionStatusColumn[] = ["broadcast", "stuck"];
+
+/** Reasons a higher fee cannot cure: a speed-up would only be refused. */
+const NOT_SPEEDABLE: readonly StuckReason[] = [
+  ...REPRICE_STOPPED,
+  "waiting_behind_nonce",
+  "workspace_paused",
+];
+
+/** The `cancel-transaction` request for this transaction that waits for approval, if any. */
+export async function waitingCancel(
+  ctx: AppContext,
+  approvalId: ApprovalId,
+  executor: Executor = ctx.db,
+): Promise<ApprovalId | null> {
+  const [waiting] = await executor
+    .select({ id: approvals.id })
+    .from(approvals)
+    .where(
+      and(
+        eq(approvals.kind, "cancel-transaction"),
+        eq(approvals.subjectId, approvalId),
+        eq(approvals.status, "pending"),
+        gt(approvals.expiresAt, new Date(ctx.now() * 1000)),
+      ),
+    )
+    .limit(1);
+  return waiting?.id ?? null;
+}
+
+/** Every attempt of a transaction as people and agents see it, oldest first. */
+export async function attemptViews(
+  ctx: AppContext,
+  workspaceId: WorkspaceId,
+  row: TransactionRow,
+): Promise<TransactionAttemptView[]> {
+  const chains = chainAccess(ctx);
+  return (await attemptsOf(ctx, workspaceId, row)).map((attempt) => ({
+    attempt: attempt.attempt,
+    kind: attempt.kind,
+    hash: attempt.hash,
+    gas: attempt.gas.toString(),
+    maxFeePerGas: attempt.maxFeePerGas.toString(),
+    maxPriorityFeePerGas: attempt.maxPriorityFeePerGas.toString(),
+    signedAt: attempt.signedAt,
+    cancelApprovalId: attempt.cancelApprovalId,
+    status: attempt.status === "replaced" ? "not_mined" : attempt.status,
+    explorerUrl: chains.explorerLink(row.chainId as ChainId, attempt.hash),
+  }));
+}
+
+/**
+ * How a person sees a transaction: the shown hash, where it is, every attempt, why it is not
+ * mined yet, and whether it can be sped up or a cancel requested now. `workspaceId` is its
+ * approval's.
+ */
 export async function transactionInfo(
   ctx: AppContext,
+  workspaceId: WorkspaceId,
   row: TransactionRow,
 ): Promise<TransactionInfo> {
-  const hash = await shownHash(ctx, row);
+  const [attempts, [wallet], [workspace], pendingCancel] = await Promise.all([
+    attemptViews(ctx, workspaceId, row),
+    ctx.db.select({ policy: wallets.policy }).from(wallets).where(eq(wallets.id, row.walletId)),
+    ctx.db
+      .select({ paused: workspaces.paused })
+      .from(workspaces)
+      .where(eq(workspaces.id, workspaceId)),
+    waitingCancel(ctx, row.approvalId),
+  ]);
+  const shown = attempts.find(
+    (attempt) => attempt.attempt === (row.minedAttempt ?? row.latestAttempt),
+  );
+  const hash = shown?.hash ?? (row.hash as ViemHex);
+  const sent = SENT.includes(row.status);
+  const reason = row.stuckReason;
   return {
     hash,
     status: row.status,
     blockNumber: row.blockNumber,
     explorerUrl: chainAccess(ctx).explorerLink(row.chainId as ChainId, hash),
+    attempts,
+    minedAttempt: row.minedAttempt,
+    stuckReason: sent ? reason : null,
+    // A sweep has no intent the signer could rebuild a reprice from.
+    canSpeedUp:
+      sent &&
+      row.intentId !== null &&
+      workspace?.paused !== true &&
+      (reason === null || !NOT_SPEEDABLE.includes(reason)),
+    canCancel:
+      sent &&
+      pendingCancel === null &&
+      reason !== "attempts_exhausted" &&
+      (wallet?.policy ?? null) !== null,
+    pendingCancelApprovalId: pendingCancel,
   };
+}
+
+/**
+ * End the cancel requests still waiting for approval of a transaction that is final: there is
+ * nothing left to cancel, so nobody is asked for a passkey in vain. Each ends `cancelled`, and
+ * its own run makes sure the signer never acts on it. A request already approved is left to
+ * its run, which finds the transaction final and ends it `failed` with `transaction_final`.
+ */
+export async function endWaitingCancels(ctx: AppContext, approvalId: ApprovalId): Promise<void> {
+  const waiting = await ctx.db
+    .select({ id: approvals.id })
+    .from(approvals)
+    .where(
+      and(
+        eq(approvals.kind, "cancel-transaction"),
+        eq(approvals.subjectId, approvalId),
+        eq(approvals.status, "pending"),
+      ),
+    );
+  for (const { id } of waiting) await ctx.approvals.cancel(id);
 }
 
 // --- attempts ---------------------------------------------------------------------------------
@@ -556,6 +663,11 @@ export async function followUpTransaction(
   const now = ctx.now();
   const at = new Date(now * 1000);
   const done = { done: true, waitSeconds: 0 };
+  /** Final: a cancel request still waiting for it has nothing left to cancel. */
+  const finished = async () => {
+    await endWaitingCancels(ctx, approval.id);
+    return done;
+  };
   /** Move the transaction on from the status it was read with, and its kind with it. */
   const move = (status: TransactionStatusColumn, set: Partial<TransactionRow> = {}) =>
     ctx.db.transaction(async (tx) => {
@@ -664,7 +776,9 @@ export async function followUpTransaction(
     await move("broadcast", { lastBroadcastAt: at });
     return { done: false, waitSeconds: options.pollSeconds };
   }
-  if (FINAL.includes(transaction.status)) return done;
+  // Ended before by this follow-up; repeated so a crash right after cannot leave a cancel
+  // request waiting.
+  if (FINAL.includes(transaction.status)) return finished();
 
   // `broadcast` or `stuck`. A stuck transaction is still valid and may be mined any time, so it
   // is looked at again for as long as the run lives.
@@ -712,11 +826,11 @@ export async function followUpTransaction(
       attempt: attempt.attempt,
       blockNumber: receipt.blockNumber,
     });
-    return done;
+    return finished();
   }
   if (accountNonce > transaction.nonce) {
     await settle("superseded", null);
-    return done;
+    return finished();
   }
 
   const behind = accountNonce < transaction.nonce;

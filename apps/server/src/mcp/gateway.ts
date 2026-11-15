@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { IntentStatus, type IntentSummary } from "@askgina/os-api";
+import { IntentStatus } from "@askgina/os-api";
 import { type AgentId, type MandateId, Memo, type WalletId } from "@askgina/os-protocol";
 import { createMcpHandler, type McpHttpHandler, McpServer } from "@modelcontextprotocol/server";
 import { and, eq, isNull, lt, or } from "drizzle-orm";
@@ -19,6 +19,7 @@ import {
   proposeTransfer,
 } from "../execution/intents.ts";
 import { activeMandatesOf } from "../execution/mandates.ts";
+import { attemptViews, transactionOf } from "../execution/transactions.ts";
 import { HttpError } from "../http/errors.ts";
 
 type AgentRow = typeof agents.$inferSelect;
@@ -79,7 +80,7 @@ export const MCP_TOOL_NAMES = [
 ] as const;
 
 const APPROVAL_NOTE =
-  'If a mandate a person approved in advance covers the proposal (see whoami), it is signed and sent with no person asked: the answer says authorizedBy "mandate", its mandateId, status approved, and approvalUrl and expiresAt null. Otherwise (authorizedBy "person") nothing is sent yet: a person must approve the proposal with their passkey first, at approvalUrl, before expiresAt. Either way, call get_intent with the returned intentId and waitSeconds (up to 50) to wait for the outcome; repeat until the status is final (confirmed, reverted, stuck, rejected, expired, cancelled, denied or failed). A stuck transaction is still valid and can later become confirmed or reverted. Two proposals racing for the last of a mandate\'s budget can both start approved: the signer signs one and the other ends denied with a counter code such as mandate_over_window_cap, and your next proposal then waits for a person.';
+  'If a mandate a person approved in advance covers the proposal (see whoami), it is signed and sent with no person asked: the answer says authorizedBy "mandate", its mandateId, status approved, and approvalUrl and expiresAt null. Otherwise (authorizedBy "person") nothing is sent yet: a person must approve the proposal with their passkey first, at approvalUrl, before expiresAt. Either way, call get_intent with the returned intentId and waitSeconds (up to 50) to wait for the outcome; repeat until the status is final (confirmed, reverted, stuck, rejected, expired, cancelled, denied, failed or voided). A stuck transaction is still valid: the server raises its fee by itself, and people may speed it up or cancel it (you cannot), so it can still become confirmed or reverted, or voided when a cancel people approved was mined in its place (nothing moved; a network fee was paid). get_intent lists every attempt at the same nonce, and stuckReason says why it is not mined yet. Two proposals racing for the last of a mandate\'s budget can both start approved: the signer signs one and the other ends denied with a counter code such as mandate_over_window_cap, and your next proposal then waits for a person.';
 
 function json(value: unknown) {
   return {
@@ -132,7 +133,17 @@ async function walletsFor(ctx: AppContext, agent: AgentRow) {
   );
 }
 
-function intentView(ctx: AppContext, summary: IntentSummary) {
+/**
+ * One intent as an agent sees it: what it is, where it stands, and every attempt of its
+ * transaction. Nothing here is an action: people speed up and cancel, never an agent.
+ */
+async function intentView(ctx: AppContext, row: IntentRow) {
+  const [summary, transaction] = await Promise.all([
+    intentSummary(ctx, row),
+    transactionOf(ctx, row.approvalId),
+  ]);
+  const attempts = transaction ? await attemptViews(ctx, row.workspaceId, transaction) : [];
+  const sent = transaction?.status === "broadcast" || transaction?.status === "stuck";
   return {
     intentId: summary.id,
     status: summary.status,
@@ -152,6 +163,16 @@ function intentView(ctx: AppContext, summary: IntentSummary) {
         ? null
         : chainAccess(ctx).explorerLink(summary.chainId, summary.transactionHash),
     failureCode: summary.failureCode,
+    stuckReason: sent ? (transaction?.stuckReason ?? null) : null,
+    attempts: attempts.map((attempt) => ({
+      attempt: attempt.attempt,
+      kind: attempt.kind,
+      hash: attempt.hash,
+      maxFeePerGas: attempt.maxFeePerGas,
+      maxPriorityFeePerGas: attempt.maxPriorityFeePerGas,
+      status: attempt.status,
+      explorerUrl: attempt.explorerUrl,
+    })),
   };
 }
 
@@ -319,7 +340,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
     "get_intent",
     {
       description:
-        "Read one of your proposals. With waitSeconds, wait up to that long for its status to change before answering. authorizedBy says whether a mandate (mandateId) or a person approves it. When the transaction exists, the answer carries its hash and an explorer link; when it ended without one, failureCode says why.",
+        "Read one of your proposals. With waitSeconds, wait up to that long for its status to change before answering. authorizedBy says whether a mandate (mandateId) or a person approves it. When the transaction exists, the answer carries its hash (the mined attempt's, else the newest's) and an explorer link, every attempt at its nonce with its fees and whether it was mined, and, while it is not mined, stuckReason; when it ended without one, or was voided, failureCode says why.",
       inputSchema: z.object({
         intentId: z.string().describe("The intentId a propose tool returned."),
         waitSeconds: z
@@ -346,7 +367,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
           await delay(Math.min(WAIT_POLL_MS, deadline - Date.now()));
           row = await ownIntent(intentId);
         }
-        return json(intentView(ctx, await intentSummary(ctx, row)));
+        return json(await intentView(ctx, row));
       }),
   );
 
@@ -368,8 +389,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
           ...(status === undefined ? {} : { status }),
           limit: limit ?? 20,
         });
-        const summaries = await Promise.all(rows.map((row) => intentSummary(ctx, row)));
-        return json({ intents: summaries.map((summary) => intentView(ctx, summary)) });
+        return json({ intents: await Promise.all(rows.map((row) => intentView(ctx, row))) });
       }),
   );
 

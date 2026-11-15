@@ -137,12 +137,18 @@ export async function intentDetail(ctx: AppContext, row: IntentRow): Promise<Int
     intent,
     intentHash: row.intentHash,
     simulation: presentation.simulation,
-    transaction: transaction ? await transactionInfo(ctx, transaction) : null,
+    transaction: transaction ? await transactionInfo(ctx, row.workspaceId, transaction) : null,
   };
 }
 
 export async function getIntentRow(ctx: AppContext, id: string): Promise<IntentRow> {
   return intentRow(ctx, id);
+}
+
+/** One line for an intent, for example "Send 0.01 ETH to 0x12ab…89ef". */
+export async function intentTitle(ctx: AppContext, row: IntentRow): Promise<string> {
+  const { presentation } = await readIntent(ctx, row);
+  return `${presentation.display.title} to ${shortAddress(presentation.display.to)}`;
 }
 
 export async function listIntentRows(
@@ -744,9 +750,7 @@ export function approveIntentKind(): ApprovalKindHandler<"approve-intent"> {
   return {
     kind: "approve-intent",
     async title(ctx, _approval, detail) {
-      const row = await intentRow(ctx, (detail as IntentApprovalDetail).intentId);
-      const { presentation } = await readIntent(ctx, row);
-      return `${presentation.display.title} to ${shortAddress(presentation.display.to)}`;
+      return intentTitle(ctx, await intentRow(ctx, (detail as IntentApprovalDetail).intentId));
     },
     async describe(ctx, _approval, detail) {
       const row = await intentRow(ctx, (detail as IntentApprovalDetail).intentId);

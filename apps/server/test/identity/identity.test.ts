@@ -239,6 +239,9 @@ describe("origin check", () => {
     "requestSweep",
     "proposeMandate",
     "revokeMandate",
+    "speedUp",
+    "requestCancel",
+    "requestSweepCancel",
   ]);
   const writes = Object.entries(routes).filter(
     ([name, route]) => route.method !== "GET" && !elsewhere.has(name),

@@ -279,7 +279,8 @@ export type PolicyDraft = z.infer<typeof PolicyDraft>;
  * - `approved`: enough people approved; signing is next.
  * - `signed`, `broadcast`: the transaction exists and is on its way.
  * - `confirmed` / `reverted`: mined, with that outcome.
- * - `stuck`: signed and broadcast but not mined in time. It can still be mined later.
+ * - `stuck`: signed and broadcast but not mined in time. It can still be mined later, or
+ *   cancelled.
  * - `voided`: a cancel people approved was mined in its place; nothing moved, a fee was paid.
  * - `rejected`, `expired`, `cancelled`: ended without a signature.
  * - `denied`: a policy or the signer refused it; `failureCode` says why.
@@ -352,8 +353,63 @@ export const Simulation = z.strictObject({
 });
 export type Simulation = z.infer<typeof Simulation>;
 
+/**
+ * Why a sent transaction is not mined yet, as the control plane last found it.
+ * - `fee_too_low`: its account nonce is the next to mine; its newest attempt's fee is not enough.
+ * - `waiting_behind_nonce`: an earlier transaction of the wallet is not mined yet. A higher fee
+ *   here would not help.
+ * - `workspace_paused`: nothing is repriced while the workspace is paused. A cancel still works.
+ * The rest stop repricing until a cancel adds an attempt: the next fee would pass the approved
+ * ceiling (`fee_ceiling_reached`), the signer's window after the first signature closed
+ * (`reprice_window_closed`), the transaction has every attempt the signer allows
+ * (`attempts_exhausted`, which also ends cancelling), or the signer refuses to reprice it for
+ * good (`reprice_refused`, for example after its mandate was revoked).
+ */
+export const StuckReason = z.enum([
+  "fee_too_low",
+  "waiting_behind_nonce",
+  "workspace_paused",
+  "fee_ceiling_reached",
+  "reprice_window_closed",
+  "attempts_exhausted",
+  "reprice_refused",
+]);
+export type StuckReason = z.infer<typeof StuckReason>;
+
+/**
+ * One signed attempt of a transaction. Every attempt has the account nonce of the first, so at
+ * most one of them is ever mined.
+ */
+export const TransactionAttemptView = z.strictObject({
+  /** 0 for the first signature, then 1, 2, … */
+  attempt: z.number().int().min(0),
+  /**
+   * `original`: the first signature. `reprice`: the same transaction with both fees higher.
+   * `cancel`: a transfer of nothing from the wallet to itself, approved by a
+   * `cancel-transaction` request, or a later reprice of one.
+   */
+  kind: z.enum(["original", "reprice", "cancel"]),
+  hash: Hex32,
+  gas: Amount,
+  /** In wei per gas. */
+  maxFeePerGas: Amount,
+  maxPriorityFeePerGas: Amount,
+  /** When the signer signed it; for the first attempt, when it was stored. */
+  signedAt: EpochSeconds,
+  /** For a cancel: the `cancel-transaction` request it is under, when known. */
+  cancelApprovalId: ApprovalId.nullable(),
+  /**
+   * `mined`: the attempt the chain mined. `not_mined`: the transaction is final through another
+   * attempt or another transaction at its nonce. `pending`: nothing is final yet.
+   */
+  status: z.enum(["pending", "mined", "not_mined"]),
+  explorerUrl: z.string().nullable(),
+});
+export type TransactionAttemptView = z.infer<typeof TransactionAttemptView>;
+
 /** The one transaction an approval signed, as the chain last showed it. */
 export const TransactionInfo = z.strictObject({
+  /** The mined attempt's hash once one is final, otherwise the newest attempt's. */
   hash: Hex32,
   /**
    * `rejected`: signed, never accepted by the chain, and no longer retried. `cancelled`: a
@@ -371,6 +427,28 @@ export const TransactionInfo = z.strictObject({
   ]),
   blockNumber: z.number().int().nullable(),
   explorerUrl: z.string().nullable(),
+  /** Every attempt, oldest first, the first signature included. */
+  attempts: z.array(TransactionAttemptView).min(1).max(64),
+  /** The attempt the chain mined, once final at the chain's confirmation depth. */
+  minedAttempt: z.number().int().min(0).nullable(),
+  /** Why it is not mined yet, while it is `broadcast` or `stuck`; null when none was found. */
+  stuckReason: StuckReason.nullable(),
+  /**
+   * Whether `speedUp` can add an attempt with higher fees now: a payment (never a sweep) that is
+   * `broadcast` or `stuck`, in a workspace that is not paused, with no `stuckReason` that a
+   * higher fee cannot cure. Says nothing about the signed-in person's role: owners and approvers
+   * may speed up.
+   */
+  canSpeedUp: z.boolean(),
+  /**
+   * Whether a cancel can be requested now: the transaction is `broadcast` or `stuck`, the wallet
+   * has a policy, the signer still allows attempts, and no cancel request waits already (see
+   * `pendingCancelApprovalId`). Says nothing about the signed-in person's role: owners and
+   * approvers may request one.
+   */
+  canCancel: z.boolean(),
+  /** A `cancel-transaction` request for this transaction that waits for approval, if any. */
+  pendingCancelApprovalId: ApprovalId.nullable(),
 });
 export type TransactionInfo = z.infer<typeof TransactionInfo>;
 
@@ -525,6 +603,7 @@ export const ApprovalKind = z.enum([
   "resume-workspace",
   "sweep-wallet",
   "grant-mandate",
+  "cancel-transaction",
 ]);
 export type ApprovalKind = z.infer<typeof ApprovalKind>;
 
@@ -610,6 +689,23 @@ export const ApprovalSubject = z.discriminatedUnion("kind", [
     assets: z.array(MandateAssetView),
     /** What the signer counted under it once granted; null while the grant waits. */
     usage: MandateUsageSummary.nullable(),
+  }),
+  z.strictObject({
+    kind: z.literal("cancel-transaction"),
+    wallet: WalletSummary,
+    /** The payment it would stop; null when it stops a sweep. */
+    intent: IntentDetail.nullable(),
+    /** The `sweep-wallet` request whose transaction it would stop; null for a payment. */
+    sweep: z.strictObject({ approvalId: ApprovalId, title: z.string() }).nullable(),
+    /** The transaction it would stop, with every attempt so far. */
+    transaction: TransactionInfo,
+    /** The account nonce the cancel is signed at: the transaction's own. */
+    txNonce: z.number().int().min(0),
+    /**
+     * The most the cancel may cost in network fees, in wei: the wallet policy's fee cap per
+     * transaction when it was requested. Nothing else leaves the wallet.
+     */
+    maxFeeWei: Amount,
   }),
 ]);
 export type ApprovalSubject = z.infer<typeof ApprovalSubject>;
