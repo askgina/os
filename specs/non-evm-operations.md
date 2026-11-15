@@ -1,7 +1,8 @@
 # Sign Hyperliquid testnet orders that the signer builds from an approved intent
 
 - Branch: none yet
-- Status: Draft
+- Status: Ready for Review (built 2026-11-15; every milestone green in CI run 43742600902; the
+  manual testnet proof is open because no funded testnet account exists)
 - Owner(s): Eric Juta
 - Created: 2026-11-14
 - Last Updated: 2026-11-15
@@ -121,7 +122,7 @@ Success means:
       `sweep`, `governance`, `possession`, `tls`, `admin` and `hyperliquid-encoding` tests and
       the protocol `signer-client` and `lifecycle-envelopes` tests, each file alone; Biome clean
       on the changed files.
-- [ ] Milestone 5: control plane: venue client, MCP tool, approval card, follow-up.
+- [x] (2026-11-15) Milestone 5: control plane: venue client, MCP tool, approval card, follow-up.
   - [x] (2026-11-15) Server half. `VENUES_FILE` (`apps/server/src/config.ts`, `VenueConfig`; a
         `hyperliquid:mainnet` entry or an `api.hyperliquid.xyz` URL stops the boot naming D2);
         `apps/server/src/execution/venues/hyperliquid.ts` (`createHyperliquidClient`: `meta`,
@@ -168,7 +169,7 @@ Success means:
         `fake-hyperliquid.test.ts` (19) and the approve `app.test.ts` (11) pass, each file
         alone; the web journeys pass on phone-light (4/4) and phone-wide-font (4/4); Biome
         clean on the changed files. Not run: phone-dark and desktop journeys.
-- [ ] Milestone 6: fake venue, release gates, documentation.
+- [x] (2026-11-15) Milestone 6: fake venue, release gates, documentation.
   - [x] (2026-11-15) The fake venue (`packages/testkit/src/fake-hyperliquid.ts`, its HTTP entry
         `e2e/src/fake-hyperliquid.mts`, overlay `e2e/compose.venue.yaml`) and its wiring:
         `e2e/run.sh` runs `e2e/test/venue.spec.ts` on a third, fresh stack
@@ -525,6 +526,25 @@ legal and geographic question and stays open with Eric. Each was re-checked agai
   Date/Author: 2026-11-15 / plan refresh
 
 ## Outcomes & Retrospective
+
+- Outcome (2026-11-15, final): Milestones 1 to 6 are built on private `main` and green in CI.
+  Evidence: run 43742600902 at `fddc68a`, all eleven jobs (check, test, ui, packages, k8s,
+  stack amd64, arm64, tls, split, replicas, openbao). On `stack (amd64)` and `stack (arm64)`
+  the venue gates ran on their own stack with the fake venue: 16 of 16 passed on their first
+  complete run (eight tools; one signed request per approved order, byte for byte what the
+  signer signed, recovered to the wallet by the venue itself; cancel with no passkey while
+  paused; refusals before any approval; no mandate covers an order; an expired window is never
+  posted; a crash between signing and posting gives one request; replay refused; the daily cap
+  and reduce-only; the wallet page; withdrawal to the wallet's own address only; the webhook
+  carries no order field; the signer cannot reach the venue and has no route that signs typed
+  data, a hash or a raw action; mainnet refused at boot; no plaintext). That supersedes every
+  "CI pending" above. Earlier runs: 43735023880 (protocol, encoder against the venue SDK's own
+  signed vectors, typed-data signing through real OWS), 43737561979 (signer routes).
+  One fix round on the way: Compose cannot put an inline config into a service with a
+  read-only root, so the venues file is a read-only mount.
+  Unproven: the real Hyperliquid testnet (the manual proof needs a funded testnet account,
+  which does not exist yet); the venue's real ledger and open-order shapes; mainnet, which is
+  refused in code until the owner decides D2.
 
 - Outcome (Milestone 1, 2026-11-15, local checks only, CI pending): `packages/protocol/src/venues.ts`
   (`VenueNetwork`, `Network`, `Decimal`, `PositiveDecimal`, `Cloid`, `SpendAsset`,
