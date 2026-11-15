@@ -68,7 +68,7 @@ Success means:
 
 - [x] (2026-11-14 21:36Z) Research: current behavior, prior art and options read from source and documentation; report written ([research/approval-mandates.md](./research/approval-mandates.md)). Nothing built or run.
 - [x] (2026-11-14 21:36Z) Implementation approach and validation plan drafted (this file).
-- [ ] Owner decisions D1 to D7 taken (Decision Log). The plan below is written for the recommended option of each.
+- [x] (2026-11-15) Owner decisions D1 to D7 taken: Eric chose the recommended option of each (Decision Log). Build started.
 - [ ] Milestone 1: protocol structures, evaluator, signer contract, normative document.
 - [ ] Milestone 2: the signer grants, counts, signs under and revokes mandates.
 - [ ] Milestone 3: the control plane routes proposals through mandates; API and MCP report it.
@@ -163,6 +163,18 @@ Decisions this plan takes (delegated to the planning agent; each can be reopened
   Rationale: the next change to an existing signer table then has a version to migrate from
   (research F7). Nothing reads it in this plan.
   Date/Author: 2026-11-14 / planning agent
+
+- Decision: D1 to D7 below are taken as recommended: (D1) admin threshold; (D2) allowlist
+  required; (D3) native and ERC-20 transfers only; (D4) people in the web UI only; (D5) 7 days;
+  (D6) rolling 24 hours; (D7) no fixed-list approval in this plan.
+  Rationale: owner's answers in one form.
+  Date/Author: 2026-11-15 / Eric Juta
+- Decision: a `grant-mandate` envelope is approved on the signer's confirmation page like every
+  other kind, so the signer builds its view (`packages/protocol/src/confirmation.ts`). The signer
+  tables are added as the next `PRAGMA user_version` after 4, not as version 2.
+  Rationale: the trusted display (ticket 20) and signer schema versions 2 to 4 landed after this
+  plan was drafted; where the plan's text and the code on main disagree, main is the truth.
+  Date/Author: 2026-11-15 / lead agent
 
 Pending owner decisions. The plan is written for the recommended option of each; the milestones
 that depend on one say so with **[depends on Dn]**.

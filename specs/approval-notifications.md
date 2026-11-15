@@ -61,7 +61,7 @@ Success means:
 
 ## Decision Log
 
-Decisions D1 to D7 are open and belong to the owner. This plan is written for the recommended option of each. Where a milestone depends on one, it says so.
+Decisions D1 to D7 were taken by the owner on 2026-11-15: Eric chose the recommended option of each (the entries below still read "open" and "recommended"; the recommendation is the decision). The approval page a notification leads to now links on to the signer's confirmation page (ticket 20, built after this plan was drafted).
 
 - Decision (D1, open): channels built into the control plane. Recommended: Web Push and the signed, reliable webhook; everything else as sidecars of the webhook.
   Rationale: Web Push reaches the phone people already approve on; sidecars keep third-party tokens out of the control plane.

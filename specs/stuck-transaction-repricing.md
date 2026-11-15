@@ -61,6 +61,10 @@ Success means:
 
 ## Decision Log
 
+- Decision: owner decisions 1 to 5 are taken as recommended: (1) automatic repricing plus an approver's "Speed up" without a passkey, no agent tool; (2) a cancel is a `cancel-transaction` envelope at the wallet policy's threshold; (3) a 24-hour reprice window; (4) a landed cancel does not release daily-cap spend; (5) new envelope kinds are additive in protocol v1. The cancel is approved on the signer's confirmation page (ticket 20, built after this plan was drafted).
+  Rationale: owner's answers in one form.
+  Date/Author: 2026-11-15 / Eric Juta
+
 - Decision: only `maxFeePerGas` and `maxPriorityFeePerGas` change under an existing approval. The nonce, gas limit, `to`, `value`, `data` and chain are those of the first signature, taken from the signer's own record.
   Rationale: the person approved an operation and a fee ceiling (`intent.maxFeeWei`). Raising the fee inside that ceiling is what v0.1 already lets the control plane choose at first signing. Keeping the nonce is what makes every attempt mutually exclusive on chain.
   Date/Author: 2026-11-14 / research agent (recommendation; owner decision 1 pending for who may trigger it).
