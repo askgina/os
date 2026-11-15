@@ -1,7 +1,8 @@
 # Run a fork of Busy self-hosted next to askgina/os, with wallet proposals through the MCP gateway
 
 - Branch: none yet
-- Status: Draft
+- Status: Ready for Review (built 2026-11-15 in the private repository `askgina/busy`; every
+  milestone green in its CI: `Fork` run 43750318626 and `Ultracite` run 43750318548 at `63a9eb0`)
 - Owner(s): Eric Juta
 - Created: 2026-11-14
 - Last Updated: 2026-11-15
@@ -122,30 +123,43 @@ Success means:
       runner ran out of disk building the images; the Hub asked for `ai-gateway.vercel.sh` until
       Milestone 8 refused the remaining Vercel ties; the token steps used the bot directory,
       which Milestone 8 empties on self-hosted.
-- [ ] Milestone 5: computers on gVisor with per-bot volumes. Built (2026-11-15), CI pending:
+- [x] Milestone 5: computers on gVisor with per-bot volumes. Green under `runsc` in CI
+      (`computers.spec` 7/7, run 43750318626). Built (2026-11-15), CI pending:
       the runner's computer broker (`runsc` by default, refused when the runtime is absent),
       per-bot drives, a live-view proxy with single-use tokens, the Hub's `selfhosted`
       computers seam. No real-stack gate yet; a hosted CI runner has no gVisor.
-- [ ] Milestone 6: Hub on the encrypting World; storage, schedules, queues, observability.
+- [x] Milestone 6: Hub on the encrypting World; storage, schedules, queues, observability.
       Built (2026-11-15), CI pending: schedules on Postgres with a ticker service, an S3 object
       store on Garage with uploads by descriptor, bot deletion completing on the self-hosted
       platform, the Hub's own workflows on the vendored World, OTLP traces only when configured.
       As built: the tick route is `POST /api/cron/schedules/tick`; the ticker is a script in the
       hub image, not a new workspace. No real-stack gate for files and routines yet.
+- [x] (2026-11-15) Real-stack evidence for Milestones 6, 7 and 8: `askgina/busy` `bf2cc02`,
+      `Fork` run 43749064860, job `selfhosted-stack`: `bot.spec` 14/14, `files.spec` 5/5
+      (upload by descriptor to Garage, size limit enforced by the store, download through the
+      Hub with a sandbox policy), `refusals.spec` 3/3 (the four switched-off features answer
+      404 `feature_disabled` behind Caddy; a deleted bot leaves no row, schedule or object),
+      `routines.spec` 4/4 (a routine fires exactly once through the Postgres schedules and the
+      ticker), `wallet.spec` 6/6 (against a stub gateway: no token, no network and no tool;
+      with a token the bot calls a gateway tool with exactly that token and no approval card;
+      removal withdraws both; the token appears in no Hub answer, bot environment or log).
+      Found by these runs and fixed: an upstream bug that failed the routines cron on the real
+      Postgres driver (a `Date` in raw SQL); the runner's removal of a computer that never
+      started blocked deleting its bot.
 - [x] (2026-11-15) Unit evidence for Milestones 5 to 8: `askgina/busy` `3c6f6e4`, `Ultracite`
       run 43741182196 green (lint, typecheck, hub tests in four shards, bot tests, runner
       tests, builds), and the full stack gate still green on that tree (`Fork` run
       43741972434). Real-stack gates for files, routines, the refusals, the wallet connection
       (against a stub gateway) and computers are written separately; see the lines below for
       what each has proven.
-- [ ] Milestone 7: the askgina/os wallet connection. Built (2026-11-15): a per-bot connection
+- [x] Milestone 7: the askgina/os wallet connection. Built (2026-11-15): a per-bot connection
       (`/api/bots/{slug}/askgina-os`, the agent token sealed and bound to the bot and the
       gateway URL, handed to the runner as secret files, the bot on the agents network only
       while it holds a token), the gateway's tools (eight, `propose_order` included) at eve
       approval `never()` with unknown tools hidden, the wallet skill (only `confirmed` is paid;
       the approval link as plain text), the D13 warning in the README. Unit-tested. No payment
       by a Busy bot has run end to end: the fork's CI cannot start askgina/os.
-- [ ] Milestone 8: switched-off features, documentation, threat model. Built (2026-11-15):
+- [x] Milestone 8: switched-off features, documentation, threat model. Built (2026-11-15):
       code tasks, consultations, firesides and Desktop answer 404 `feature_disabled` on
       self-hosted; the remaining Vercel ties are refused or shown unreachable (skills.sh, the dev
       relay, AI Gateway catalog and embeddings, account usage); `docs/self-hosting.md`,
@@ -154,7 +168,7 @@ Success means:
       selection, the builder recording the provider's artifact) and `web_fetch` using the bot's
       own model. The askgina/os side (threat model subsection, architecture paragraph, README
       line) is in this repository.
-- [ ] Run validation and record evidence.
+- [x] (2026-11-15) Run validation and record evidence: see `Outcomes & Retrospective`.
 
 ## Surprises & Discoveries
 
@@ -338,6 +352,30 @@ marked **Eric's** below.
   Date/Author: 2026-11-15 / plan refresh
 
 ## Outcomes & Retrospective
+
+- Outcome (2026-11-15, final): Milestones 0 to 8 are built. Milestone 0 is on `askgina/os`
+  `main`; the rest is in the private mirror `askgina/busy` on `main` at `63a9eb0`.
+  Evidence: `Ultracite` run 43750318548 (lint, typecheck, Hub tests in four shards, bot tests,
+  runner tests, builds) and `Fork` run 43750318626, job `selfhosted-stack`, which builds the
+  images, installs gVisor, starts the whole stack and runs seven specs, all green: `bot.spec`
+  14/14 (a bot on the encrypting World answers through a stub model; no plaintext in its
+  database, proven by a control bot on the stock World; tokens; redeploy; delete shreds the
+  keyring), `files.spec` 5/5, `refusals.spec` 3/3, `routines.spec` 4/4, `wallet.spec` 6/6
+  (against a stub gateway), `computers.spec` 7/7 (a computer under `runsc` on its own
+  network, with no secret, resolving through the sinkhole, a second bot unable to read the
+  first bot's drive, stop and resume, deny-all with no route out), `dns.spec` 1/1 (no query
+  for a Vercel name in the whole job). That supersedes every "CI pending" in `Progress`.
+  Fix rounds on the way, each found by a real-stack run: the hosted runner's disk; the Hub
+  asking for the AI Gateway catalog; token steps that used a route Milestone 8 empties; an
+  upstream bug in the routines cron on the real Postgres driver; the runner unable to remove
+  a computer that never started; gVisor unable to reach Docker's embedded resolver, and
+  Docker's copy-up refusing a single-file volume mount.
+  Not built by the first agent and found later: the bot template's half of Milestone 5.
+  Unproven: a payment by a Busy bot against a real askgina/os (the wallet connection is
+  gated against a stub gateway; the fork's CI cannot start askgina/os); computers on a host
+  other than the CI runner; a real model endpoint; rebasing onto later upstream commits (the
+  nightly job only reports).
+  The owner's: the fork's name, any contact with upstream, and making it public.
 
 - Outcome: research done; nothing built.
   Evidence: [research/busy-fork.md](./research/busy-fork.md).
