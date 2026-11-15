@@ -153,6 +153,16 @@ async function intentSettles(intentId: string, timeoutMs = 120_000): Promise<str
 }
 
 /** The workspace's whole signer decision log, read to its end: a page holds the oldest 100. */
+/**
+ * Kill the server as a crash would, and return only once its container has stopped. `kill`
+ * returns before that, and an `up --wait` that still sees the container running then fails
+ * when it exits.
+ */
+async function killServer(): Promise<void> {
+  await compose("kill", "server");
+  await compose("stop", "--timeout", "0", "server");
+}
+
 async function signerDecisions(): Promise<SignerDecision[]> {
   const decisions: SignerDecision[] = [];
   for (let after = 0; ; ) {
@@ -644,7 +654,7 @@ test("a crash after the approval and before the broadcast still ends in exactly 
   await compose("pause", "anvil");
   const approving = ada.confirm(approvalId).catch(() => undefined);
   await delay(4_000);
-  await compose("kill", "server");
+  await killServer();
   await approving;
   await compose("unpause", "anvil");
   await compose("up", "-d", "--wait", "--wait-timeout", "300", "server");
@@ -1194,7 +1204,7 @@ test("a server killed right after a payment under a mandate still ends in exactl
     mandateId,
   });
   expect(paid).toMatchObject({ authorizedBy: "mandate", mandateId });
-  await compose("kill", "server");
+  await killServer();
   await compose("up", "-d", "--wait", "--wait-timeout", "300", "server");
   await waitUntilHealthy();
 
