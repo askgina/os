@@ -9,6 +9,10 @@
 {$SITE_ADDRESS:http://:8080} {
 	@workflow path /.well-known/workflow /.well-known/workflow/*
 	respond @workflow 404
+	# No access log by default: request paths carry invitation links. The release gates set
+	# ACCESS_LOG=log (e2e/compose.e2e.yaml), so a failed gate shows each request, its status and
+	# how long it took. Caddy leaves cookies and Authorization headers out of the log.
+	{$ACCESS_LOG:}
 
 	# The server sets its own Content-Security-Policy; these headers do not overlap with it.
 	header {

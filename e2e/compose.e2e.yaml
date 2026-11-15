@@ -15,6 +15,10 @@ services:
   anvil:
     ports:
       - "127.0.0.1:${E2E_ANVIL_PORT:-55901}:8545"
+  caddy:
+    environment:
+      # Every request, its status and its duration, in the logs a failed gate prints.
+      ACCESS_LOG: log
 
   # The operator's webhook, as an operator would run one next to the stack: on the `control`
   # network, where the server reaches it. It records every request and answers 200, so every
