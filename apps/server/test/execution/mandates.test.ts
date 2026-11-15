@@ -333,12 +333,14 @@ describe("a proposal a mandate covers", () => {
         })
       ).pendingApprovals,
     ).toBe(pendingBefore);
+    // Each call starts only when it is awaited: a refusal nobody is listening to yet is an
+    // unhandled rejection.
     for (const call of [
-      f.t.owner.browser.api.call("getApproval", { params: { approvalId } }),
-      f.t.owner.browser.api.call("collectApproval", { params: { approvalId }, body: {} }),
-      f.t.owner.browser.api.call("reject", { params: { approvalId }, body: {} }),
+      () => f.t.owner.browser.api.call("getApproval", { params: { approvalId } }),
+      () => f.t.owner.browser.api.call("collectApproval", { params: { approvalId }, body: {} }),
+      () => f.t.owner.browser.api.call("reject", { params: { approvalId }, body: {} }),
     ]) {
-      expect(await refusal(call)).toEqual({ code: "not_found" });
+      expect(await refusal(call())).toEqual({ code: "not_found" });
     }
 
     const shown = await getMandate(mandateId);
