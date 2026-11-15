@@ -38,13 +38,9 @@ services:
   server:
     environment:
       VENUES_FILE: /etc/os/venues.json
-    configs:
-      - source: venues
-        target: /etc/os/venues.json
+    # A read-only bind mount of a file in the repository: Compose cannot put an inline config
+    # into a service with a read-only root file system.
+    volumes:
+      - ./e2e/venues.json:/etc/os/venues.json:ro
     depends_on:
       fake-hyperliquid: { condition: service_healthy }
-
-configs:
-  venues:
-    content: |
-      [{ "network": "hyperliquid:testnet", "apiUrl": "http://fake-hyperliquid:8080" }]
