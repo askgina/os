@@ -23,7 +23,8 @@ are in [`approval-protocol.md`](./approval-protocol.md).
 
 ## Actors
 
-- **Operator.** Runs the stack and holds the keyring, the signer volume and backups.
+- **Operator.** Runs the stack and holds the keyring (or the OpenBao that holds its keys), the
+  signer volume and backups.
 - **Members.** People with a role in a workspace: owner, approver or viewer.
 - **Agents.** Programs the operator brings, connected over MCP with a bearer token.
 - **Outsiders.** Anyone on the network who can reach the public entry point.
@@ -42,8 +43,9 @@ are in [`approval-protocol.md`](./approval-protocol.md).
    ([`request-signature.ts`](../packages/protocol/src/signer/request-signature.ts)). Anything that
    adds authority also needs passkey assertions the signer verifies itself
    ([`verify-authorization.ts`](../packages/protocol/src/webauthn/verify-authorization.ts)).
-4. **Data at rest → keyring.** Content is encrypted under data keys that are wrapped by keys in a
-   file outside Postgres ([`packages/keys/src/`](../packages/keys/src/)).
+4. **Data at rest → keyring.** Content is encrypted under data keys that are wrapped by
+   key-encryption keys outside Postgres: in a keyring file, or in an OpenBao Transit key when
+   `KEY_PROVIDER=openbao` ([`packages/keys/src/`](../packages/keys/src/); see "Key providers").
 5. **Browser → confirmation page.** The `approve` service serves the signer's confirmation page
    on its own origin, `APPROVE_ORIGIN` ([`apps/approve`](../apps/approve)). Every approval is
    made here. The page shows the view the signer built from its own records and its own origin,
@@ -103,7 +105,7 @@ are in [`approval-protocol.md`](./approval-protocol.md).
   attributes; their values are stored as `[withheld]` unless a key is listed as readable) (finding 2
   of [`specs/research/encrypting-postgres-world.md`](../specs/research/encrypting-postgres-world.md)).
 - **Stopped by:** content is sealed (see the table below). Data keys in the database are wrapped
-  under keys in the keyring file, with associated data binding each wrapped key to its scope, id,
+  under keys in the keyring file or OpenBao, with associated data binding each wrapped key to its scope, id,
   tenant and key id ([`data-key-store.ts`](../packages/keys/src/data-key-store.ts), `wrapAad`).
   Session cookies, invite tokens, agent tokens and the setup token are stored hashed.
 - **Not stopped:** everything listed under "Can". It is readable on purpose.
@@ -262,6 +264,10 @@ This covers code execution in the server and a script injected into a page on `P
 
 - **The Postgres volume alone:** the same as read access to the database.
 - **The Postgres volume and the keyring file:** all sealed content and all workflow history.
+  With OpenBao, the same holds for the Postgres volume and a token that may decrypt with the
+  Transit key, for as long as OpenBao still holds the key versions the copy was wrapped under.
+- **An exported record:** the workspace's history in readable form (see "Exporting, cloning and
+  erasing a person"). It lives wherever the owner saved it, outside every backup policy here.
 - **The signer volume:** the vault and its records. The OWS research found that a token plus
   read access to the vault directory is the wallet's mnemonic (findings F6 and F7 of
   [`specs/research/ows-node-sdk-in-an-isolated-signer.md`](../specs/research/ows-node-sdk-in-an-isolated-signer.md)).
@@ -674,8 +680,118 @@ workspace keeps, the version 7 migration),
 [`delete.test.ts`](../apps/server/test/lifecycle/delete.test.ts) (mandates ended on approval, a
 cancel keeping the keys and the pause, the wait for a given-up transaction, the wait for runs, a
 proposal racing the tombstone, a deleted workspace whose stored data cannot be opened, disabling
-an agent), and the key store's tests of `shredTenant`. None of it has run on the real stack yet:
-the release gates are being written (plan, Milestone 7).
+an agent), and the key store's tests of `shredTenant`. On the real stack, the ten release gates
+in [`e2e/test/lifecycle.spec.ts`](../e2e/test/lifecycle.spec.ts) passed in CI run 43729783071 on
+amd64 and arm64: retiring and cancelling, the operator's `export-wallet`, destroying a key at its
+time, a deletion pausing the workspace and ending its mandates, the webhook announcement,
+cancelling a deletion, waiting on a transaction that could still be mined, what a deleted
+workspace leaves, and a pre-deletion database copy after a keyring rotation.
+
+## Exporting, cloning and erasing a person
+
+An owner can download a workspace's template (`exportTemplate`) and its record
+(`exportRecord`), and make a new workspace from it (`cloneWorkspace`). Any signed-in person can
+make one from a template file (`importTemplate`). The record also needs a passkey sign-in at
+most 300 seconds old ([`apps/server/src/lifecycle/`](../apps/server/src/lifecycle/)).
+
+**What a template and a clone carry.** A template is configuration only: the workspace's name,
+admin threshold and notification content level, its members' user ids and roles, and per wallet
+its kind, label, agent name and policy. Wallets that are retiring or destroyed and agents that
+are disabled are left out ([`template.ts`](../apps/server/src/lifecycle/template.ts)). A clone
+is built through the ordinary paths ([`clone.ts`](../apps/server/src/lifecycle/clone.ts)): a
+new treasury and new agents, with new keys, new addresses and new agent tokens shown once; the
+person cloning as its only owner and approver; an admin threshold of 1 until people change it
+(the template's is returned as a reminder, not applied); one `set-policy` request per wallet,
+with its threshold capped at 1, which applies no limit until the new workspace's approvers
+approve it on the confirmation page; and invite links, with their roles, for the members this
+installation knows and has not erased.
+
+**What a clone cannot carry: authority.** No key, address, token, mandate, approver, approval,
+intent, transaction, audit entry or workflow run of the source. A template file is input from
+whoever wrote it: it can propose recipients, contract calls and limits, which are shown on the
+confirmation page like any policy change and apply only when people approve them there. A policy
+naming a chain this installation does not configure is refused before anything is created.
+
+**What a record holds.** JSON Lines: the opened audit log with its chained fields and salts,
+intents, transactions without their signed bytes, policy revisions, mandates with what the
+signer counts of them and their uses, and the signer's decision log
+([`export.ts`](../apps/server/src/lifecycle/export.ts)). No token, session, sealed value,
+confirmation link, push endpoint or signed transaction. It is the workspace's sealed content made
+readable, so whoever holds the file reads it. `workspace.exported` is appended first, so the
+record includes its own export. `node apps/server/src/lifecycle/verify-record.ts <file>` checks
+every hash, both chains, their heads, the order of the lines and each section's count offline;
+editing, deleting or reordering a line makes it fail.
+
+| If this is compromised       | It can                                                                                                       | It cannot                                                                                    |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| The control plane            | Hand out a record or template that is not the workspace's: the chains are hashes it computes, not signatures | Carry a mandate, approver or approval into a clone; apply a clone's limits without passkeys  |
+| An owner's session           | Download the template; clone the workspace, getting the new agents' tokens                                   | Download the record without a passkey sign-in in the last 300 seconds                        |
+| An owner's passkey           | Download the record, and with it the workspace's history                                                     | Change anything in the source workspace by exporting or cloning it                           |
+| A template someone hands you | Propose recipients, contract calls and limits                                                                | Apply any of them before the new workspace's approvers approve them on the confirmation page |
+
+**Not stopped:** a record that verifies is consistent, not true. A compromised control plane
+can compute a whole record with chains that verify. Compare its `auditHead` and
+`signerDecisionHead` with those of an earlier export you kept.
+
+**Erasing a person.** A person asks with `eraseMe` (`POST /api/v1/me/erase`, a passkey sign-in at
+most 300 seconds old); the operator, for someone who cannot sign in, runs
+`node apps/server/src/identity/erase-cli.ts --user <id>`
+([`apps/server/src/identity/erase.ts`](../apps/server/src/identity/erase.ts)). It takes two
+calls because the control plane cannot take a passkey out of the signer's approver set. The
+first opens one `remove-approver` request per passkey and workspace and answers `waiting`;
+people approve them on the confirmation page at the admin threshold, which also ends every
+mandate that passkey granted. Once no passkey of the person approves anywhere, the next call
+erases. The operator's command cannot open requests: while the person's passkeys still approve,
+it exits 3 with `still_approving` and changes nothing. Refused, all `conflict`: `last_owner`,
+`last_approver` (fewer people could approve than a threshold of the workspace needs), and
+`workspace_deleting`.
+
+**What erasure removes, and what it keeps.** It removes the person's name (shown as "Erased
+person" from then on), passkeys, sessions, push subscriptions, notification settings and quiet
+hours, memberships, unsent notifications and the unused invites they made, and appends
+`member.erased` to each workspace's audit log. It keeps the person's user id wherever history
+keeps it: audit chains, approvals and their assertions, notification deliveries, the signer's
+records, and so exported records. Nothing sealed is rewritten, so every chain still verifies.
+A clone or import no longer invites an erased person.
+
+| If this is compromised | It can                                                                                    | It cannot                                                                                                  |
+| ---------------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| The control plane      | Erase anyone's name, passkeys and sessions from its own database, or refuse to erase them | Take a passkey out of the signer's approver set: only a `remove-approver` request people approve does that |
+| A person's passkey     | Erase that person, and open the requests that remove their passkeys                       | Remove a passkey from the signer without the admin threshold of approvals                                  |
+
+**Not stopped:**
+
+- **The user id stays**, and links that person's history across every workspace they were in.
+  Whether keeping the id satisfies GDPR Article 17 is an open question for counsel; this
+  document makes no legal claim about it.
+- **Copies taken before erasure.** Backups keep the name and everything else until they are
+  destroyed. Records and templates already downloaded keep the id.
+
+## Key providers
+
+`KEY_PROVIDER=file` (the default) keeps the key-encryption keys in the keyring file;
+`KEY_PROVIDER=openbao` keeps them in an OpenBao Transit key, which never leaves OpenBao
+([`packages/keys`](../packages/keys/README.md#choosing-the-key-provider)). With both set, a
+composite wraps new keys under Transit and unwraps each key with the provider that wrapped it.
+
+- **A compromised OpenBao, or its token for the server:** it unwraps every data key it is given.
+  With a database copy, that reads everything, for as long as OpenBao holds the key versions the
+  copy used. The policy in [`deploy/openbao/policy.hcl`](../deploy/openbao/policy.hcl) grants
+  encrypt, decrypt and reading the key's versions, not export, rotation, deletion or
+  configuration.
+- **An OpenBao outage fails closed.** Every operation that needs a key fails with
+  `KeyProviderUnavailableError` until OpenBao answers again, apart from keys a process has
+  cached (up to one minute). No provider falls back to another, to the keyring file or to
+  plaintext; the composite opens a `bao:` key only with Transit. Shredding needs no key provider,
+  so a deletion's shredding does not wait for OpenBao.
+- **Rotating the Transit key** and raising its `min_decryption_version` makes copies wrapped
+  under older versions, backups included, unopenable.
+
+Export, clone, import, erasing a person and the OpenBao provider have unit tests only
+([`export.test.ts`](../apps/server/test/lifecycle/export.test.ts),
+[`clone.test.ts`](../apps/server/test/lifecycle/clone.test.ts),
+[`erase.test.ts`](../apps/server/test/identity/erase.test.ts),
+[`packages/keys/test/`](../packages/keys/test/)). No release gate runs them on the real stack.
 
 ## What is encrypted at rest
 
@@ -689,7 +805,7 @@ the release gates are being written (plan, Milestone 7).
 | The signed raw transaction, of every attempt                                                                                    | `transactions.raw`, `transaction_attempts.raw`                                                          | Sealed, workspace key                                                                      | Kept only to rebroadcast; it contains the operation. Each attempt's hash, gas and fees stay readable, as on chain       |
 | Audit details                                                                                                                   | `audit_events.detail`                                                                                   | Sealed, workspace key                                                                      | Free-form content; its digest stays readable so the chain verifies without the key                                      |
 | Workflow inputs, outputs, hook payloads, stream chunks, step errors                                                             | `workflow` schema                                                                                       | AES-256-GCM, per-run key ([`packages/world/src/index.ts`](../packages/world/src/index.ts)) | The upstream Postgres World stores these in plaintext                                                                   |
-| Data keys                                                                                                                       | `os_keys` schema                                                                                        | Wrapped by a KEK from the keyring file                                                     | The database alone must not be enough                                                                                   |
+| Data keys                                                                                                                       | `os_keys` schema                                                                                        | Wrapped by a KEK from the keyring file or OpenBao Transit                                  | The database alone must not be enough                                                                                   |
 | Identifiers, names given to workspaces, agents and wallets, roles, statuses, timestamps, hashes                                 | `os` schema                                                                                             | No                                                                                         | Needed to list, join and display without keys                                                                           |
 | Wallet addresses and policies                                                                                                   | `wallets`                                                                                               | No                                                                                         | Public on chain, and needed to show limits                                                                              |
 | WebAuthn public keys and assertions                                                                                             | `credentials`, `approver_credentials`, `approval_assertions`                                            | No                                                                                         | Public keys and signatures over digests; not secret                                                                     |
@@ -843,12 +959,10 @@ From the map's "Not yet specified" list ([askgina/os#1](https://github.com/askgi
   covered by anything but one approval per action.
 - Operations that are not EVM transactions: other chains, and off-chain venues.
 - Shipping agent runtimes or sandboxes.
-- Operating beyond one machine: KMS or OpenBao key providers, HA Postgres, Kubernetes.
+- Operating beyond one machine: cloud KMS key providers, HA Postgres, Kubernetes. OpenBao
+  Transit is a key provider (see "Key providers").
 - Notifications outside the inbox beyond Web Push and the signed webhook with its sidecars (see
   "Notifications"): email, and chat adapters built into the control plane.
-- Workspace lifecycle beyond emptying, retiring and deleting: exporting a workspace's record or
-  template, cloning one, and erasing a person on request (plan
-  [`specs/workspace-lifecycle.md`](../specs/workspace-lifecycle.md), Milestones 5 and 8).
 - For stuck transactions: a new gas limit, legacy (type 0) and blob transactions, L2-specific
   fee fields, private order flow, and a signer that watches the chain itself.
 

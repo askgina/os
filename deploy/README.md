@@ -122,6 +122,9 @@ together, from the same moment, with the stack stopped (`docker compose stop`). 
 needs no backup: `init` copies it from `signer-secrets` on every start.
 
 - The database without the keyring is unreadable, and the keyring without the database is useless.
+  With `KEY_PROVIDER=openbao` the key-encryption keys are in OpenBao, not in `server-secrets`:
+  a restore needs an OpenBao that still holds every key version the backup was wrapped under
+  (see "Choosing the key provider").
 - `signer-data` is the wallets. Restoring an older copy forgets which approvals were used after
   it was made, so never restore it on its own, and always fence it (below).
 - Without `vault-passphrase` new wallets cannot be created; without `token-key` existing wallets
@@ -219,6 +222,48 @@ be read again. Back up `server-secrets` before and after.
 Rotate after every finished deletion (see "Backups and restoring"): `prune` removes the key that
 wrapped the deleted workspace's data keys from the live keyring, so older database copies no
 longer open with it.
+
+With `KEY_PROVIDER=openbao` there is no keyring to rotate: rotate the Transit key instead (see
+"Choosing the key provider").
+
+## Choosing the key provider
+
+The server wraps its data keys under key-encryption keys from one of two providers
+([`packages/keys/README.md`](../packages/keys/README.md#choosing-the-key-provider) has every
+setting):
+
+- `KEY_PROVIDER=file`, the default: the keyring file, `keyring.json` in `server-secrets`, which
+  `init` creates. This is what `compose.yaml` runs.
+- `KEY_PROVIDER=openbao`: an [OpenBao](https://openbao.org/) Transit key, set with
+  `OPENBAO_ADDR`, `OPENBAO_AUTH` (`token`, `approle` or `kubernetes`) and its credential files,
+  `OPENBAO_TRANSIT_MOUNT` and `OPENBAO_TRANSIT_KEY` (default `transit` and `os-kek`),
+  `OPENBAO_CA_FILE` and `OPENBAO_TIMEOUT_MS`. Use an `https:` address between hosts: the data
+  keys travel to OpenBao and back. `compose.yaml` does not pass these variables yet; add them
+  and the credential files to the `server` service in a `compose.override.yaml`.
+
+Give the server's OpenBao identity the policy in [`openbao/policy.hcl`](openbao/policy.hcl):
+encrypt, decrypt and read on the one Transit key, nothing else. Replace `transit` and `os-kek`
+in it when your mount or key name differs.
+
+To move from the keyring file to OpenBao, set `KEY_PROVIDER=openbao` and the `OPENBAO_*`
+variables and keep `KEYRING_FILE`, so both are in use; restart the server; run
+`docker compose exec server node packages/keys/src/cli.ts rewrap` until it reports
+`"failedCount":0`; then remove `KEYRING_FILE` and restart. To rotate the Transit key (default
+names): `bao write -f transit/keys/os-kek/rotate`, wait five minutes (or restart the server), run
+`rewrap`, then raise the key's `min_decryption_version`; copies wrapped under older versions,
+backups included, no longer open. Do this after every finished deletion, as you would rotate the
+keyring.
+
+**When OpenBao is down, the server fails closed.** Every operation that needs a key fails with
+`KeyProviderUnavailableError` until OpenBao answers again, apart from keys already cached (up to
+one minute): proposing and opening sealed content fail. Nothing falls back to the keyring file or to
+plaintext. Shredding does not need OpenBao. The server logs `keys.provider_unavailable` and
+`keys.provider_refresh_failed`. Whoever holds the server's OpenBao token, or controls OpenBao,
+unwraps every data key it is given: with a database copy, that reads everything.
+
+The OpenBao provider has unit tests only: against a stand-in for the Transit API, and in CI
+against a development-mode OpenBao from `deploy/compose.test.yaml`. No release gate runs the
+stack with it.
 
 ## Adding an approver
 
@@ -442,8 +487,71 @@ or never finish one, which only delays it. It cannot destroy a key without passk
 threshold over the exact wallet set, before the destroy time, or with a delay outside the
 signer's bounds (`docs/threat-model.md`, "Retiring a wallet and deleting a workspace").
 
-None of this has run on the real stack yet: the signer's and the server's tests cover it, and the
-release gates are being written.
+The ten release gates in `e2e/test/lifecycle.spec.ts` run this on the real stack: retiring and
+cancelling, `export-wallet`, destroying a key at its time, a deletion and its cancel, the webhook
+announcement, the wait for a transaction that could still be mined, what a deleted workspace
+leaves, and a pre-deletion database copy after a keyring rotation. They passed in CI run
+43729783071 on amd64 and arm64. The 30-day backup retention in "Backups and restoring" is a
+choice, not something a gate checks.
+
+## Exporting and cloning a workspace
+
+An owner can download two files from a workspace in the web app:
+
+- **The template**: its configuration, with no key, address, token, mandate or history. Members
+  appear as user ids with their roles.
+- **The record**: its whole history, opened from the sealed columns, as JSON Lines. It needs a
+  passkey sign-in in the last five minutes, and the export is written to the audit log first.
+  Whoever holds the file reads everything in it: store it encrypted. It is not part of the
+  backups above.
+
+Check a record offline, in a checkout of this repository after `bun install`:
+
+    node apps/server/src/lifecycle/verify-record.ts <record file>
+
+It prints `{"ok":true,…}` and exits 0 when every hash, chain and count verifies, 2 when one does
+not (`brokenAt` is the first line that fails), and 1 when the file cannot be read. A record that
+verifies is consistent, not proof that the control plane was honest: keep the `auditHead` and
+`signerDecisionHead` of each export and compare them with the next.
+
+An owner can clone a workspace, and anyone signed in can import a template file. The copy carries
+no authority: new wallets with new keys and addresses, new agent tokens shown once, the person
+cloning as its only owner and approver, an admin threshold of 1 until changed, invite links for
+the members this installation knows, and one policy change per wallet that applies only when the
+new workspace's approvers approve it. No mandate, approval or history is copied. A template
+naming a chain that `deploy/chains.json` does not list is refused before anything is created.
+
+Exporting, cloning and importing have unit tests only; no release gate runs them on the stack.
+
+## Erasing a person
+
+A person erases themselves in the web app, with a passkey sign-in in the last five minutes. It
+takes two steps. The first opens a request to remove each of their passkeys from each
+workspace where it approves; people approve those on the confirmation page at the admin
+threshold, which also ends the mandates those passkeys granted. When none is left, asking again
+erases: their name (shown as "Erased person" from then on), passkeys, sessions, push
+subscriptions, notification settings and quiet hours, memberships and unsent notifications.
+Their user id stays in the audit logs, approvals, the signer's records and exported records, so
+every chain still verifies.
+
+It is refused, with nothing changed, for the only owner of a workspace (`last_owner`), when
+fewer people would be left to approve than a workspace needs (`last_approver`), and while a
+workspace where they approve is being deleted (`workspace_deleting`).
+
+For someone who cannot sign in, on the server host:
+
+    docker compose exec server node apps/server/src/identity/erase-cli.ts --user <user id>
+
+It prints one JSON line. Exit 0: erased, now or before. Exit 3, `still_approving`: their
+passkeys still approve in the listed workspaces, and the command cannot open the requests that
+remove them; an owner of each removes the person there (or makes them a viewer), people approve
+it, then run the command again. Exit 2: refused, with the code above. Exit 1: usage.
+
+Backups taken before an erasure keep the person's name and everything else until they are
+destroyed. Whether keeping the user id satisfies GDPR Article 17 has not been reviewed by
+counsel; that review is still open, and this guide makes no legal claim about it.
+
+Erasing has unit tests only; no release gate runs it on the stack.
 
 ## When no approver is left
 

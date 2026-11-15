@@ -187,7 +187,20 @@ members no longer see it. The signer cannot see balances: empty the wallets firs
 Backups taken before a deletion still hold everything until you destroy them; the deploy guide
 says how long to keep them and to rotate the keyring after each deletion
 ([`deploy/README.md`](deploy/README.md#retiring-wallets-and-deleting-workspaces)).
-Its unit tests pass; it has not yet run on the full stack.
+Its ten release gates run on the full stack and passed in CI (run 43729783071, amd64 and arm64).
+
+## Export, copy or leave
+
+An owner can download a workspace's template (its configuration, with no key, token or
+history) and its record (its whole history, readable, after a fresh passkey sign-in), and check
+the record offline with `node apps/server/src/lifecycle/verify-record.ts <file>`. A workspace
+can be copied, or made from a template file. The copy gets new keys, new agent tokens shown once,
+invite links instead of members, and an admin threshold of 1; its limits wait for its approvers
+to approve them, and no mandate is copied. A person can erase themselves: their passkeys are
+first removed through requests people approve, then their name, passkeys, sessions and
+notification settings are deleted. Their user id stays, so the audit logs still verify; whether
+that satisfies GDPR Article 17 has not been reviewed by counsel. These have unit tests only
+([`deploy/README.md`](deploy/README.md#exporting-and-cloning-a-workspace)).
 
 ## What this protects, and what it does not
 
@@ -229,11 +242,12 @@ This is a first release (v0.1) and has not been audited. Use test funds.
 Scope: EVM chains; native transfers, ERC-20 transfers and allowlisted contract calls; one
 approval for one transaction, or a mandate for a bounded series of one agent's transfers; a
 stuck transaction repriced under its approval or cancelled with passkeys, tested against a local
-chain only; retiring a wallet and deleting a workspace, with keys destroyed after a delay, not yet
-run on the full stack. Not in this release: exporting or cloning a workspace, erasing a person,
-mandates for contract calls or trades, other chains, a bundled agent runtime, cloud key
-management. The [map of open questions](https://github.com/askgina/os/issues/1) lists what is
-planned and why.
+chain only; retiring a wallet and deleting a workspace, with keys destroyed after a delay, tested
+on the full stack; exporting, copying and importing a workspace and erasing a person, with unit
+tests only; key-encryption keys in a keyring file or in OpenBao Transit, the OpenBao provider
+with unit tests only. Not in this release: mandates for contract calls or trades, other chains, a
+bundled agent runtime, cloud KMS key management. The
+[map of open questions](https://github.com/askgina/os/issues/1) lists what is planned and why.
 
 ## Documentation
 
@@ -241,7 +255,8 @@ planned and why.
 - [`docs/approval-protocol.md`](docs/approval-protocol.md): the exact formats, digests and checks.
 - [`docs/threat-model.md`](docs/threat-model.md): every attacker position and the known limits.
 - [`deploy/README.md`](deploy/README.md): services, networks, volumes, the confirmation page's
-  origin, backups, key rotation, retiring wallets and deleting workspaces.
+  origin, backups, key rotation and key providers, retiring wallets and deleting workspaces,
+  exporting and cloning, erasing a person.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`SECURITY.md`](SECURITY.md).
 - [`THIRD_PARTY.md`](THIRD_PARTY.md): dependencies whose licence is not MIT or Apache-2.0.
 

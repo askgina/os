@@ -386,7 +386,8 @@ Success means:
     there as elsewhere and checked in `clone.test.ts`.
   - `apps/web/dev/fixture-server.ts` serves the four routes (written with Milestone 6, aligned
     here): the template and a record of the fixture's audit and decisions, and clone and import
-    through the fixture's own creation handlers. The fixture asks for no recent sign-in.
+    through the fixture's own creation handlers. Its `exportRecord` asks for a recent sign-in,
+    as the server does.
 - Observation (2026-11-15, Milestone 8): erasing cannot be one step. The control plane cannot
   take a passkey out of the signer's approver set; only a `remove-approver` request people
   approve on the confirmation page does (and ending the mandates that passkey granted, reason
