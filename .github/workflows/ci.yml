@@ -45,6 +45,30 @@ jobs:
       - run: bun run check
       - run: bun run typecheck
 
+  # The World and key packages as another repository gets them: built, packed with their
+  # published manifests, installed from the tarballs and imported with Node. The `packages`
+  # workflow does the same on a `world-v*` tag and then publishes; this job never publishes.
+  packages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+        working-directory: packages/keys
+      - run: bun run build
+        working-directory: packages/world
+      - run: node scripts/pack-packages.mjs
+      - run: node scripts/smoke-packed-world.mjs
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30

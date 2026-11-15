@@ -379,8 +379,12 @@ Files and interfaces:
 
 - `packages/world/package.json`, `packages/keys/package.json`: add `build` (`tsc -p
   tsconfig.build.json`, output `dist/`), `exports` pointing at `dist/*.js` with `types`, `files`,
-  and `publishConfig.registry` `https://npm.pkg.github.com`. Keep source exports for workspace use
-  through a `development` condition.
+  and `publishConfig.registry` `https://npm.pkg.github.com`. As built (2026-11-15): the top-level
+  `exports` stay on source, because every consumer in this repository (Node running `src/*.ts`
+  in the images, the eve image, vitest) resolves with no conditions; the published shape is in
+  `publishConfig.exports`, and `scripts/pack-packages.mjs` promotes it in a staged copy before
+  `npm pack` (tarballs under `.packs/`). Bump the keys version before a `world-v*` tag whenever
+  keys changed, or the publish step skips it.
 - `packages/world/tsconfig.build.json`, `packages/keys/tsconfig.build.json`: new.
 - `.github/workflows/packages.yml`: new. On tags `world-v*`: build both packages, `npm pack`,
   run `scripts/smoke-packed-world.mjs`, publish.

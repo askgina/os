@@ -36,6 +36,22 @@ describe("the MCP gateway", () => {
     expect(tools).toHaveLength(7);
   });
 
+  it("tools/list carries annotations", async () => {
+    const client = await f.mcp(f.agent.token);
+    const { tools } = await client.listTools();
+    const annotations = Object.fromEntries(tools.map((tool) => [tool.name, tool.annotations]));
+    const proposes = { readOnlyHint: false, destructiveHint: false, idempotentHint: false };
+    expect(annotations).toEqual({
+      whoami: { readOnlyHint: true },
+      get_balances: { readOnlyHint: true },
+      get_intent: { readOnlyHint: true },
+      list_intents: { readOnlyHint: true },
+      propose_transfer: proposes,
+      propose_contract_call: proposes,
+      cancel_intent: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+    });
+  });
+
   it("tells an agent who it is and which wallet it may use", async () => {
     const client = await f.mcp(f.agent.token);
     const me = toolJson(await client.callTool({ name: "whoami", arguments: {} }));

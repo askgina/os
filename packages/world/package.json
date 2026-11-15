@@ -5,11 +5,33 @@
   "type": "module",
   "license": "MIT",
   "description": "The Workflow SDK's Postgres World with payload encryption switched on: one wrapped data key per run.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/askgina/os.git",
+    "directory": "packages/world"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./target": "./src/target.ts"
   },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./target": {
+        "types": "./dist/target.d.ts",
+        "default": "./dist/target.js"
+      }
+    }
+  },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

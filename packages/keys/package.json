@@ -5,11 +5,33 @@
   "type": "module",
   "license": "MIT",
   "description": "Key-encryption keys kept outside the database, wrapped data keys kept inside it, and sealing of values with those data keys.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/askgina/os.git",
+    "directory": "packages/keys"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./seal": "./src/seal.ts"
   },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./seal": {
+        "types": "./dist/seal.d.ts",
+        "default": "./dist/seal.js"
+      }
+    }
+  },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

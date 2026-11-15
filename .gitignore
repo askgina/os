@@ -30,3 +30,6 @@ test-results/
 apps/web/dev/screenshots/
 
 .DS_Store
+
+# packed workspace packages (scripts/pack-packages.mjs)
+.packs/

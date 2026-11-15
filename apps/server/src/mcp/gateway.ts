@@ -176,6 +176,13 @@ async function intentView(ctx: AppContext, row: IntentRow) {
   };
 }
 
+// How an MCP host may classify each tool. Reads change nothing. A proposal records a new intent
+// each time it is called and never moves funds by itself: a person or a mandate authorizes it,
+// and the signer signs. Cancelling withdraws a waiting proposal, and a second cancel changes
+// nothing more.
+const READ_ONLY = { readOnlyHint: true } as const;
+const PROPOSES = { readOnlyHint: false, destructiveHint: false, idempotentHint: false } as const;
+
 function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
   const server = new McpServer({ name: "askgina-os", version: "0.1.0" });
 
@@ -193,6 +200,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
       description:
         "Describe who you are in this system: your agent id and name, your workspace, the wallets you may propose from, with their addresses, the chains they work on and their per-transaction and daily limits, and your live mandates: what people approved in advance, which the signer signs with no person asked (recipients, caps per payment, per window and in total in base units, what was used, payments left, end time). Call this first.",
       inputSchema: z.object({}),
+      annotations: READ_ONLY,
     },
     async () =>
       answer(ctx, "whoami", async () => {
@@ -259,6 +267,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
       inputSchema: z.object({
         walletId: WalletIdInput.optional().describe("A wallet id from whoami; defaults to yours."),
       }),
+      annotations: READ_ONLY,
     },
     async ({ walletId }) =>
       answer(ctx, "get_balances", async () => {
@@ -306,6 +315,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
           "A mandateId from whoami to use exactly that mandate; by default the one that covers the transfer and ends first is used, or a person is asked.",
         ),
       }),
+      annotations: PROPOSES,
     },
     async (input) =>
       answer(ctx, "propose_transfer", async () => json(await proposeTransfer(ctx, agent, input))),
@@ -329,6 +339,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
         memo: MemoInput.describe("What this call does and why. People read it before approving."),
         walletId: WalletIdInput.optional().describe("A wallet id from whoami; defaults to yours."),
       }),
+      annotations: PROPOSES,
     },
     async (input) =>
       answer(ctx, "propose_contract_call", async () =>
@@ -351,6 +362,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
           .optional()
           .describe("0 to 50; 0 answers at once."),
       }),
+      annotations: READ_ONLY,
     },
     async ({ intentId, waitSeconds }, extra) =>
       answer(ctx, "get_intent", async () => {
@@ -380,6 +392,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
         status: IntentStatus.optional().describe("Only proposals with this status."),
         limit: z.number().int().min(1).max(50).optional().describe("How many; default 20."),
       }),
+      annotations: READ_ONLY,
     },
     async ({ status, limit }) =>
       answer(ctx, "list_intents", async () => {
@@ -401,6 +414,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
       inputSchema: z.object({
         intentId: z.string().describe("The intentId a propose tool returned."),
       }),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     },
     async ({ intentId }) =>
       answer(ctx, "cancel_intent", async () => {
