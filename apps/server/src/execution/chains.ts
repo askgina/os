@@ -206,6 +206,29 @@ export class ChainAccess implements Chains {
     return (await this.#ready(chainId)).getTransactionCount({ address, blockTag: "pending" });
   }
 
+  /** The newest block's number, read fresh. An RPC failure throws `rpc_unavailable`. */
+  async head(chainId: ChainId): Promise<bigint> {
+    const client = await this.#ready(chainId);
+    try {
+      return await client.getBlockNumber({ cacheTime: 0 });
+    } catch {
+      throw new ChainError("rpc_unavailable");
+    }
+  }
+
+  /**
+   * The account nonce of `address` as of block `blockNumber`: how many of its transactions the
+   * chain up to that block includes. An RPC failure throws `rpc_unavailable`, never a guess.
+   */
+  async latestNonce(chainId: ChainId, address: Address, blockNumber: bigint): Promise<number> {
+    const client = await this.#ready(chainId);
+    try {
+      return await client.getTransactionCount({ address, blockNumber });
+    } catch {
+      throw new ChainError("rpc_unavailable");
+    }
+  }
+
   /**
    * Send a signed transaction. Sending the same bytes again is harmless, so a node that already
    * has it ("already known") or already mined it ("nonce too low" while our hash exists) counts

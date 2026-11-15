@@ -280,6 +280,7 @@ export type PolicyDraft = z.infer<typeof PolicyDraft>;
  * - `signed`, `broadcast`: the transaction exists and is on its way.
  * - `confirmed` / `reverted`: mined, with that outcome.
  * - `stuck`: signed and broadcast but not mined in time. It can still be mined later.
+ * - `voided`: a cancel people approved was mined in its place; nothing moved, a fee was paid.
  * - `rejected`, `expired`, `cancelled`: ended without a signature.
  * - `denied`: a policy or the signer refused it; `failureCode` says why.
  * - `failed`: something broke; `failureCode` says what.
@@ -298,6 +299,7 @@ export const IntentStatus = z.enum([
   "cancelled",
   "denied",
   "failed",
+  "voided",
 ]);
 export type IntentStatus = z.infer<typeof IntentStatus>;
 
@@ -353,8 +355,20 @@ export type Simulation = z.infer<typeof Simulation>;
 /** The one transaction an approval signed, as the chain last showed it. */
 export const TransactionInfo = z.strictObject({
   hash: Hex32,
-  /** `rejected`: signed, never accepted by the chain, and no longer retried. */
-  status: z.enum(["signed", "broadcast", "confirmed", "reverted", "stuck", "rejected"]),
+  /**
+   * `rejected`: signed, never accepted by the chain, and no longer retried. `cancelled`: a
+   * cancel was mined in its place. `superseded`: another transaction used its account nonce.
+   */
+  status: z.enum([
+    "signed",
+    "broadcast",
+    "confirmed",
+    "reverted",
+    "stuck",
+    "rejected",
+    "cancelled",
+    "superseded",
+  ]),
   blockNumber: z.number().int().nullable(),
   explorerUrl: z.string().nullable(),
 });

@@ -489,7 +489,12 @@ describe("the chain", () => {
           },
         );
         expect((await transactionOf(approvalId)).status).toBe("broadcast");
-        expect(await steps().followUp(approvalId)).toEqual({ done: false, waitSeconds: 600 });
+        // Now stuck, and repriced on the way: it is looked at again when the next reprice is
+        // due, sooner than the slow poll of a stuck transaction.
+        expect(await steps().followUp(approvalId)).toEqual({
+          done: false,
+          waitSeconds: f.t.ctx.config.reprice.afterSeconds,
+        });
       },
     );
     expect((await intentOf(intentId)).status).toBe("stuck");

@@ -39,6 +39,7 @@ const TERMINAL: readonly IntentRow["status"][] = [
   "cancelled",
   "denied",
   "failed",
+  "voided",
 ];
 
 // Tool inputs are published as JSON Schema, which the protocol package's custom validators

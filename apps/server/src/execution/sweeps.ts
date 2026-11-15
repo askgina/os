@@ -214,7 +214,7 @@ const sweepWallet: ApprovalKindHandler<"sweep-wallet"> = {
           : treasury
             ? "treasury"
             : null,
-      transaction: transaction ? transactionInfo(ctx, transaction) : null,
+      transaction: transaction ? await transactionInfo(ctx, transaction) : null,
     };
   },
   async confirmationSubject(_ctx, _approval, detail) {

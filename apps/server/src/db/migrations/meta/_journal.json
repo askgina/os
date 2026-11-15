@@ -50,6 +50,13 @@
       "when": 1794740208383,
       "tag": "0006_push_subscriptions",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794745431142,
+      "tag": "0007_transaction_attempts",
+      "breakpoints": true
     }
   ]
 }

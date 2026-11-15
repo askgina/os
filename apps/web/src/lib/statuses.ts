@@ -22,6 +22,8 @@ export const intentSentence: Record<IntentStatus, string> = {
   cancelled: "It was withdrawn before anyone decided. Nothing was signed.",
   denied: "The wallet's limits or the signer refused it. Nothing was signed.",
   failed: "It did not go through, and nothing more will be sent for it.",
+  voided:
+    "A person cancelled it after it was sent. A zero-value transaction took its place. Nothing moved; a network fee was paid.",
 };
 
 /**
@@ -47,4 +49,8 @@ export const transactionSentence: Record<TransactionStatus, string> = {
   stuck:
     "Signed and sent, but not included in a block yet. It may still be included later. Later payments from this wallet on this network wait behind it.",
   rejected: "The network never accepted it, and it will not be sent again. Nothing moved.",
+  cancelled:
+    "A zero-value transaction from the wallet to itself was included in its place. Nothing moved; the network fee was paid.",
+  superseded:
+    "Another transaction from this wallet took its place in line, so it can never be included. Nothing moved.",
 };

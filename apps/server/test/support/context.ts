@@ -142,6 +142,8 @@ export interface TestContextOptions {
   /** Extra routes on the test app, for example the execution module's. */
   routes?: (app: Hono, ctx: AppContext) => void;
   config?: Partial<Config>;
+  /** The in-process signer's attempt limits, where a test needs other than its defaults. */
+  signer?: { repriceWindowSeconds?: number; maxTxAttempts?: number };
   /** Runs on the fresh installation, after the setup token exists and before the owner does. */
   beforeOwner?: (setup: { token: string; browser: TestBrowser }) => Promise<void>;
 }
@@ -212,6 +214,7 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
     tokenKey: randomBytes(32),
     maxIntentTtlSeconds: 86_400,
     maxAdminTtlSeconds: 86_400,
+    ...options.signer,
     now: clock.now,
   });
   const db = drizzle(pool, { schema });

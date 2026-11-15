@@ -6,6 +6,7 @@ import { type DeliveryCounts, deliverDueNotifications } from "../notify/outbox.t
 import { engineOf } from "./approvals.ts";
 import { registerIntentKind } from "./intents.ts";
 import { registerMandateKinds } from "./mandates.ts";
+import { repriceAutomatically } from "./repricing.ts";
 import { registerApprovalAndIntentRoutes } from "./routes.ts";
 import { registerSteps, unregisterSteps } from "./steps.ts";
 import { registerSweepKind } from "./sweeps.ts";
@@ -32,7 +33,7 @@ export function registerExecution(
   ctx: AppContext,
   options: ExecutionOptions = DEFAULT_OPTIONS,
 ): void {
-  registerIntentKind(ctx, options);
+  registerIntentKind(ctx, options, repriceAutomatically);
   registerSweepKind(ctx, options);
   registerMandateKinds(ctx);
   registerApprovalAndIntentRoutes(app, ctx);

@@ -179,6 +179,7 @@ const intentTone: Record<IntentStatus, BadgeTone> = {
   cancelled: "neutral",
   denied: "danger",
   failed: "danger",
+  voided: "neutral",
 };
 
 const intentLabel: Record<IntentStatus, string> = {
@@ -195,6 +196,7 @@ const intentLabel: Record<IntentStatus, string> = {
   cancelled: "Cancelled",
   denied: "Refused by limits",
   failed: "Failed",
+  voided: "Cancelled on chain",
 };
 
 export function IntentStatusBadge({ status }: { status: IntentStatus }) {

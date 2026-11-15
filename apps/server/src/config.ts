@@ -108,6 +108,18 @@ const Environment = z
     MANDATE_MAX_SECONDS: integer(604_800, 3_600, 2_592_000),
     /** How long a broadcast transaction is watched before it is reported as stuck. */
     RECONCILE_TIMEOUT_SECONDS: integer(3_600, 30, 604_800),
+    /**
+     * `0` stops the control plane from repricing a transaction that is not mined by itself; an
+     * approver can still speed one up. On unless set.
+     */
+    REPRICE_AUTO: optional(z.enum(["0", "1"])).transform((value) => value !== "0"),
+    /** How long the newest attempt of a transaction waits unmined before an automatic reprice. */
+    REPRICE_AFTER_SECONDS: integer(180, 15, 86_400),
+    /**
+     * How much each reprice raises both fees above the newest attempt's, in percent. go-ethereum
+     * and reth replace a pooled transaction only for at least 10.
+     */
+    REPRICE_BUMP_PERCENT: integer(12, 10, 100),
     WORKFLOW_WORKER_CONCURRENCY: integer(10, 1, 200),
     /**
      * If set, receives a signed POST with identifiers only when an approval waits and when a
@@ -193,6 +205,14 @@ export interface NotifyConfig {
   webPush: WebPushConfig | null;
 }
 
+/** Repricing a sent transaction that is not mined (`src/execution/repricing.ts`). */
+export interface RepriceConfig {
+  /** Whether the follow-up reprices by itself. */
+  auto: boolean;
+  afterSeconds: number;
+  bumpPercent: number;
+}
+
 export interface Config {
   publicOrigin: string;
   relyingParty: { id: string; name: string; origins: string[] };
@@ -211,6 +231,7 @@ export interface Config {
   adminApprovalTtlSeconds: number;
   mandateMaxSeconds: number;
   reconcileTimeoutSeconds: number;
+  reprice: RepriceConfig;
   workflowWorkerConcurrency: number;
   notify: NotifyConfig;
 }
@@ -279,6 +300,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     adminApprovalTtlSeconds: parsed.ADMIN_APPROVAL_TTL_SECONDS,
     mandateMaxSeconds: parsed.MANDATE_MAX_SECONDS,
     reconcileTimeoutSeconds: parsed.RECONCILE_TIMEOUT_SECONDS,
+    reprice: {
+      auto: parsed.REPRICE_AUTO,
+      afterSeconds: parsed.REPRICE_AFTER_SECONDS,
+      bumpPercent: parsed.REPRICE_BUMP_PERCENT,
+    },
     workflowWorkerConcurrency: parsed.WORKFLOW_WORKER_CONCURRENCY,
     notify: {
       webhook:

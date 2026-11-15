@@ -457,7 +457,8 @@ export type IntentStatusColumn =
   | "expired"
   | "cancelled"
   | "denied"
-  | "failed";
+  | "failed"
+  | "voided";
 
 export const intents = os.table(
   "intents",
@@ -499,6 +500,44 @@ export const intents = os.table(
   ],
 );
 
+/**
+ * Where a signed transaction is.
+ * - `signed`, `broadcast`: on its way; `stuck`: sent but not mined within the reconcile timeout.
+ * - `confirmed` / `reverted`: the payment (its first signature or a reprice) was mined.
+ * - `cancelled`: a cancel attempt was mined in its place; the payment never will be.
+ * - `superseded`: a transaction that is none of its attempts used its account nonce.
+ * - `rejected`: signed, never accepted by the chain, and no longer retried.
+ */
+export type TransactionStatusColumn =
+  | "signed"
+  | "broadcast"
+  | "confirmed"
+  | "reverted"
+  | "stuck"
+  | "rejected"
+  | "cancelled"
+  | "superseded";
+
+/**
+ * Why a sent transaction is not mined yet, as the control plane last found it.
+ * - `fee_too_low`: its account nonce is the next to mine, and its newest attempt is not mined.
+ * - `waiting_behind_nonce`: an earlier transaction of the wallet is not mined yet.
+ * - `workspace_paused`: nothing is repriced while the workspace is paused.
+ * The rest stop automatic repricing until another attempt exists (a cancel): the next fee would
+ * pass the approved ceiling (`fee_ceiling_reached`), the signer's window after the first
+ * signature closed (`reprice_window_closed`), the approval has all the attempts the signer allows
+ * (`attempts_exhausted`), or the signer refuses to reprice it for good (`reprice_refused`: the
+ * approval was revoked or fenced, its mandate revoked, or the request no longer binds).
+ */
+export type StuckReason =
+  | "fee_too_low"
+  | "waiting_behind_nonce"
+  | "workspace_paused"
+  | "fee_ceiling_reached"
+  | "reprice_window_closed"
+  | "attempts_exhausted"
+  | "reprice_refused";
+
 export const transactions = os.table(
   "transactions",
   {
@@ -517,20 +556,63 @@ export const transactions = os.table(
       .references(() => wallets.id),
     chainId: text("chain_id").notNull(),
     nonce: integer("nonce").notNull(),
+    /** The first signature's (attempt 0). Later attempts are in `transaction_attempts`. */
     hash: text("hash").notNull(),
-    /** Sealed. The signed raw transaction, kept so it can be rebroadcast. */
+    /** Sealed. The signed raw transaction of attempt 0, kept so it can be rebroadcast. */
     raw: bytea("raw").notNull(),
-    /** `rejected`: signed, never accepted by the chain, and no longer retried. */
-    status: text("status")
-      .$type<"signed" | "broadcast" | "confirmed" | "reverted" | "stuck" | "rejected">()
-      .notNull()
-      .default("signed"),
+    status: text("status").$type<TransactionStatusColumn>().notNull().default("signed"),
     blockNumber: bigint("block_number", { mode: "number" }),
+    /** The newest attempt's number: 0 until a reprice or a cancel was signed. */
+    latestAttempt: integer("latest_attempt").notNull().default(0),
+    /** The attempt the chain mined, once final at the chain's confirmation depth. */
+    minedAttempt: integer("mined_attempt"),
+    stuckReason: text("stuck_reason").$type<StuckReason>(),
+    /** When an attempt was last offered to the chain. */
+    lastBroadcastAt: time("last_broadcast_at"),
+    /** When the control plane last asked the signer to reprice, or found it could not. */
+    repriceTriedAt: time("reprice_tried_at"),
     createdAt: createdAt(),
     updatedAt: time("updated_at").notNull().defaultNow(),
   },
   (table) => [
     index("transactions_wallet_chain_idx").on(table.walletId, table.chainId, table.status),
+  ],
+);
+
+/**
+ * The attempts of a transaction after its first signature, all at its account nonce, so at most
+ * one of them can be mined: a reprice (the same transaction, both fees higher) or a cancel (a
+ * transfer of nothing from the wallet to itself, approved by a `cancel-transaction` request, or
+ * a later reprice of one). Attempt 0 is the `transactions` row itself.
+ */
+export const transactionAttempts = os.table(
+  "transaction_attempts",
+  {
+    approvalId: text("approval_id")
+      .$type<ApprovalId>()
+      .notNull()
+      .references(() => transactions.approvalId),
+    attempt: integer("attempt").notNull(),
+    kind: text("kind").$type<"reprice" | "cancel">().notNull(),
+    hash: text("hash").notNull(),
+    /** Sealed. The signed raw transaction, kept so it can be rebroadcast. */
+    raw: bytea("raw").notNull(),
+    gas: text("gas").notNull(),
+    maxFeePerGas: text("max_fee_per_gas").notNull(),
+    maxPriorityFeePerGas: text("max_priority_fee_per_gas").notNull(),
+    /** For a cancel: the `cancel-transaction` request whose fee ceiling it is under. */
+    cancelApprovalId: text("cancel_approval_id")
+      .$type<ApprovalId>()
+      .references(() => approvals.id),
+    /** `mined` or `replaced` once one attempt of the transaction is final. */
+    status: text("status").$type<"pending" | "mined" | "replaced">().notNull().default("pending"),
+    /** The signer's time of signing. */
+    signedAt: time("signed_at").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.approvalId, table.attempt] }),
+    check("transaction_attempts_after_first", sql`${table.attempt} >= 1`),
   ],
 );
 

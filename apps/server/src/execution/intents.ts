@@ -8,6 +8,7 @@ import type {
 } from "@askgina/os-api";
 import {
   type AgentId,
+  type ApprovalId,
   type ChainId,
   evaluateIntent,
   type Hex,
@@ -52,6 +53,7 @@ import {
   followUpTransaction,
   GAS_MARGIN_PERCENT,
   releaseNonce,
+  shownHash,
   signOnce,
   transactionInfo,
   transactionOf,
@@ -119,7 +121,7 @@ export async function intentSummary(ctx: AppContext, row: IntentRow): Promise<In
     // A use of a mandate is no approval people see: the intent names its mandate instead.
     approvalId: row.mandateId === null ? row.approvalId : null,
     mandateId: row.mandateId,
-    transactionHash: (transaction?.hash as `0x${string}` | undefined) ?? null,
+    transactionHash: transaction ? await shownHash(ctx, transaction) : null,
     failureCode: row.failureCode,
   };
 }
@@ -135,7 +137,7 @@ export async function intentDetail(ctx: AppContext, row: IntentRow): Promise<Int
     intent,
     intentHash: row.intentHash,
     simulation: presentation.simulation,
-    transaction: transaction ? transactionInfo(ctx, transaction) : null,
+    transaction: transaction ? await transactionInfo(ctx, transaction) : null,
   };
 }
 
@@ -678,30 +680,63 @@ async function executeIntent(
   });
 }
 
-/** After signing: broadcast and watch the transaction, moving the intent along with it. */
+/** Asks for a reprice of an approval's transaction when one is due (`repricing.ts`). */
+export type Reprice = (ctx: AppContext, approvalId: ApprovalId) => Promise<unknown>;
+
+/**
+ * After signing: broadcast and watch the transaction, moving the intent along with it in the
+ * same database transaction. While automatic repricing is on, a payment that is not mined is
+ * repriced on schedule. The outcomes after the first signature:
+ * - the payment (any of its attempts) mined: `confirmed` or `reverted`, with `failureCode`
+ *   `cancel_too_late` when a cancel had been signed for it;
+ * - a cancel mined in its place: `voided`, `failureCode` `transaction_cancelled`;
+ * - another transaction used its nonce: `failed`, `failureCode` `nonce_used_elsewhere`;
+ * - never accepted by the chain: `failed`, `failureCode` `broadcast_rejected`.
+ */
 async function followUpIntent(
   ctx: AppContext,
   approval: ApprovalRow,
   options: ExecutionOptions,
+  reprice: Reprice,
 ): Promise<{ done: boolean; waitSeconds: number }> {
   const transaction = await transactionOf(ctx, approval.id);
   if (!transaction?.intentId) return { done: true, waitSeconds: 0 };
   const intent = await intentRow(ctx, transaction.intentId);
-  return followUpTransaction(ctx, approval, transaction, options, async (status) => {
-    switch (status) {
-      case "rejected":
-        // Never accepted and no longer offered: its nonce is free again for this wallet.
-        return moveIntent(ctx, intent, ["signed"], "failed", { failureCode: "broadcast_rejected" });
-      case "broadcast":
-        return moveIntent(ctx, intent, ["signed"], "broadcast");
-      case "stuck":
-        return moveIntent(ctx, intent, ["broadcast"], "stuck");
-      case "confirmed":
-      case "reverted":
-        return moveIntent(ctx, intent, ["broadcast", "stuck", "signed"], status);
-      case "signed":
-        return false;
-    }
+  const sent: IntentRow["status"][] = ["broadcast", "stuck", "signed"];
+  return followUpTransaction(ctx, approval, transaction, options, {
+    ...(ctx.config.reprice.auto ? { reprice: () => reprice(ctx, approval.id) } : {}),
+    async moved(status, tx, { cancelAttempted }) {
+      switch (status) {
+        case "rejected":
+          // Never accepted and no longer offered: its nonce is free again for this wallet.
+          return moveIntent(ctx, intent, ["signed"], "failed", {
+            failureCode: "broadcast_rejected",
+            executor: tx,
+          });
+        case "broadcast":
+          return moveIntent(ctx, intent, ["signed"], "broadcast", { executor: tx });
+        case "stuck":
+          return moveIntent(ctx, intent, ["broadcast"], "stuck", { executor: tx });
+        case "confirmed":
+        case "reverted":
+          return moveIntent(ctx, intent, sent, status, {
+            executor: tx,
+            ...(cancelAttempted ? { failureCode: "cancel_too_late" } : {}),
+          });
+        case "cancelled":
+          return moveIntent(ctx, intent, sent, "voided", {
+            failureCode: "transaction_cancelled",
+            executor: tx,
+          });
+        case "superseded":
+          return moveIntent(ctx, intent, sent, "failed", {
+            failureCode: "nonce_used_elsewhere",
+            executor: tx,
+          });
+        case "signed":
+          return false;
+      }
+    },
   });
 }
 
@@ -795,13 +830,20 @@ async function abandonIntent(
   await moveIntent(ctx, row, ["pending_approval", "approved"], status);
 }
 
-/** `approve-intent` and `mandate-use`: both sign an intent and follow its transaction. */
-export function registerIntentKind(ctx: AppContext, options: ExecutionOptions): void {
+/**
+ * `approve-intent` and `mandate-use`: both sign an intent and follow its transaction, which
+ * `reprice` (`repricing.ts`, passed in so this module does not import it back) prices up.
+ */
+export function registerIntentKind(
+  ctx: AppContext,
+  options: ExecutionOptions,
+  reprice: Reprice,
+): void {
   const engine = engineOf(ctx);
   engine.register(approveIntentKind());
   engine.registerUse(mandateUseKind());
   const followUp = (context: AppContext, approval: ApprovalRow) =>
-    followUpIntent(context, approval, options);
+    followUpIntent(context, approval, options, reprice);
   engine.registerFollowUp("approve-intent", followUp);
   engine.registerFollowUp("mandate-use", followUp);
 }

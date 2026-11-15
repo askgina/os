@@ -12,6 +12,7 @@ import {
   TEST_ORIGIN,
   TEST_RPC_URL,
   type TestContext,
+  type TestContextOptions,
   type TestPerson,
 } from "../support/context.ts";
 import { TOKEN_BYTECODE } from "./token.ts";
@@ -93,9 +94,14 @@ export async function deployToken(holder: `0x${string}`, supply: bigint): Promis
   return receipt.contractAddress.toLowerCase() as `0x${string}`;
 }
 
-export async function createFixture(label: string, pollSeconds = 1): Promise<Fixture> {
+export async function createFixture(
+  label: string,
+  pollSeconds = 1,
+  signer: TestContextOptions["signer"] = {},
+): Promise<Fixture> {
   const t = await createTestContext({
     label,
+    signer,
     // The test pool is small; Graphile needs a connection per concurrent delivery.
     config: { workflowWorkerConcurrency: 4 },
     routes: (app, ctx) => {
