@@ -4,8 +4,8 @@
 - Status: Draft
 - Owner(s): Eric Juta
 - Created: 2026-11-14
-- Last Updated: 2026-11-14
-- Links: [Ticket #23](https://github.com/askgina/os/issues/23) | [Map #18](https://github.com/askgina/os/issues/18) | [Research report](./research/workspace-lifecycle.md) | [v0.1 ExecPlan](./agent-workspaces-v0.1.md)
+- Last Updated: 2026-11-15
+- Links: [Ticket #23](https://github.com/askgina/os/issues/23) | [Map #18](https://github.com/askgina/os/issues/18) | [Research report](./research/workspace-lifecycle.md) | [v0.1 ExecPlan](./agent-workspaces-v0.1.md) | [Trusted display](./trusted-display.md) | [Mandates](./approval-mandates.md) | [Notifications](./approval-notifications.md) | [Stuck transactions](./stuck-transaction-repricing.md)
 
 This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`,
 `Decision Log`, and `Outcomes & Retrospective` current as research,
@@ -15,46 +15,51 @@ asking for generic next steps.
 
 ## Purpose / Big Picture
 
-v0.1 can create a workspace and pause it. It cannot end one. A person who is done with a
-workspace has no way to move its money out except through an agent, no way to stop its keys from
-existing, and no record to take away. This plan adds the rest of the lifecycle:
+A workspace can be created, paused, and its wallets emptied by a person (the sweep, built). It
+cannot be ended. A person who is done with a workspace has no way to stop its keys from existing,
+and no record to take away. This plan adds the rest of the lifecycle:
 
-- **Sweep** a wallet: a person moves the whole balance of one asset to an address the approvers
-  already allowed, with passkeys at the workspace's admin threshold. No agent is needed and the
-  wallet's caps do not apply.
-- **Retire** a wallet and **remove** an agent: the agent loses its token at once; the wallet's key
-  is destroyed by the signer after a delay, once enough approvers signed for it.
+- **Sweep** a wallet (built, see `Progress`): a person moves the whole balance of one asset to an
+  address the approvers already allowed, with passkeys at the workspace's admin threshold. No
+  agent is needed and the wallet's caps do not apply.
+- **Retire** a wallet: the wallet signs nothing from the moment people approve it, its mandates
+  end, and the signer destroys its key after a delay the control plane cannot shorten.
 - **Delete** a workspace: the same, for every wallet at once, followed by shredding the
   workspace's data key and the keys of all its workflow runs, and a tombstone.
 - **Export** a workspace: a template (configuration, no secrets) and a record (the opened audit
-  log with its hash chain, intents, transactions and the signer's decision log), verifiable
-  offline.
+  log with its hash chain, intents, transactions, mandates and their uses, and the signer's
+  decision log), verifiable offline.
 - **Clone** a workspace from a template: fresh wallets, fresh tokens, policies proposed for the
-  new workspace's approvers to approve.
+  new workspace's approvers to approve. No mandate is carried over.
+
+Disabling an agent is already final and already ends its mandates (built with mandates). This
+plan adds only that disabling also cancels the agent's waiting payment requests (see D12).
 
 The rule from v0.1 stays: the signer decides whether people approved, and does only what they
-approved. Destroying a key is treated like signing: the signer verifies the passkey assertions
-itself, against its own approver registry, and enforces a delay the control plane cannot shorten.
+approved. Destroying a key is treated like signing: people approve it on the signer's own
+confirmation page, which shows the exact wallets and the destroy time from the signer's records;
+the signer verifies the passkey assertions itself, against its own approver registry, and
+enforces a delay the control plane cannot shorten.
 
 Non-goals: copying or moving a key between workspaces; exporting a key over HTTP; a per-workspace
 encrypted backup; erasing data from backups the operator keeps; operations that are not EVM
-transfers; batching several assets into one passkey ceremony (waits for
-[#19](https://github.com/askgina/os/issues/19)); repricing a stuck transaction
-([#22](https://github.com/askgina/os/issues/22)).
+transfers; batching several assets into one sweep approval (mandates cover agent payments, not
+sweeps); repricing or cancelling a stuck transaction (its own plan,
+[#22](https://github.com/askgina/os/issues/22), being built).
 
 Success means:
 
-- An approver deletes a workspace from the UI. Until the delay ends, any member can cancel. After
-  it, the signer refuses every request for that workspace, the OWS vault holds no file for its
-  wallets, and no sealed column or workflow payload of that workspace can be opened.
-- A sweep to an address outside the wallet's recipient allowlist (and not the workspace's
-  treasury) is refused by the signer even when the control plane asks for it with valid
-  assertions.
+- An approver deletes a workspace from the UI and approves it on the signer's confirmation page,
+  which lists every wallet and address and the destroy time. Until the delay ends, any member can
+  cancel. After it, the signer refuses every request for that workspace, the OWS vault holds no
+  file for its wallets, no mandate of it is live, and no sealed column or workflow payload of that
+  workspace can be opened.
 - After a deletion and a keyring rotation, a copy of the database taken before the deletion
   cannot be opened with the current keyring. The same copy opens with the old keyring: backups
   hold deleted data until their keyring copies expire, and the deploy guide says so.
 - An exported record verifies offline, and editing any line of it makes verification fail.
-- A clone has no key, intent, approval, transaction, audit entry or workflow run of its source.
+- A clone has no key, intent, approval, mandate, transaction, audit entry or workflow run of its
+  source.
 
 ## Progress
 
@@ -63,6 +68,7 @@ Success means:
 - [ ] Owner decisions D1-D7 taken and recorded in the Decision Log. D3 is taken (2026-11-14): allowlist or own treasury.
 - [x] (2026-11-14) The sweep, built ahead of the milestones as a fix to v0.1 (a wallet whose agent was removed or disabled could not be emptied): the `Sweep` structure and `sweep-wallet` envelope (protocol), `POST /v1/wallets/:walletId/sweep` (signer), the `sweep-wallet` approval kind and `requestSweep` route on the shared signing path (server, `apps/server/src/execution/sweeps.ts`, `transactions.ts`), "Empty this wallet" and the sweep approval card (web), and a release gate. Proven locally, one file at a time: `packages/protocol/test/digests.test.ts`, `schemas.test.ts`, `signer-client.test.ts`; `apps/signer/test/sweep.test.ts`; `packages/api/test/api.test.ts`; `apps/server/test/execution/sweep.test.ts` on Anvil; `apps/web/test/sweep.test.ts`. Retire, delete, export and clone are not built.
 - [ ] The sweep in CI: the release gate "a person empties a disabled agent's wallet to the treasury while paused, and the signer refuses any other destination" in `e2e/test/release-gates.spec.ts` (`stack (amd64)`, `stack (arm64)`), and the `ui` job with the new card. Written and type-checked, not run. No browser journey covers the card yet.
+- [x] (2026-11-15) Re-checked against main (`2911c20`). The sweep is proven in CI: its release gate (`e2e/test/release-gates.spec.ts:686`) passed in `stack (amd64)` of run 43710836888 on `98cc6a1`, all six jobs green, and the `ui` journey now covers the sweep card (`apps/web/test/journey.e2e.ts:445-466`). Trusted display, the v0.1 defect fixes, mandates and notifications landed since the draft; the milestones below are rewritten for them, D3 is delivered, D8-D12 are new. Nothing else of this plan is built.
 - [ ] Milestone 1: protocol.
 - [ ] Milestone 2: signer.
 - [ ] Milestone 3: key store.
@@ -77,50 +83,80 @@ Success means:
 - Observation: in v0.1 only agents can move funds. `Intent.agentId` is required and the policy
   must list the agent in `requesters`. A wallet whose agent is gone cannot be emptied at all.
   Evidence: `packages/protocol/src/intent.ts:80-94`, `packages/protocol/src/evaluate.ts:38-40`.
+  Update (2026-11-15): resolved by the sweep (`sweep-wallet`), proven in CI.
 - Observation: the signer cannot see balances. It has no network path to a chain. "Refuse while
   assets remain" can only be advisory at the control plane.
   Evidence: report, finding 4.
 - Observation: a signed transaction that was never mined stays valid after its key is destroyed,
   and nobody can replace it. Anyone with a copy can broadcast it later.
-  Evidence: report, finding 5; `apps/signer/src/db.ts:68-76` keeps signed transactions in plaintext.
+  Evidence: report, finding 5; `apps/signer/src/db.ts:71-80` keeps signed transactions in plaintext.
+  Update (2026-11-15): a transaction the control plane marks `rejected` ("never accepted and no
+  longer offered: its nonce is free again", `apps/server/src/execution/transactions.ts:306-310`)
+  is also still valid until another transaction uses its nonce; see D7.
 - Observation: a full backup set taken before a deletion restores the deleted workspace readable.
-  The keyring is backed up "together" with the database (`deploy/README.md:60-62`), while the keys
-  package says to keep it "out of backups that sit next to the database" (`packages/keys/README.md:72-73`).
   Evidence: report, finding 6.
+  Update (2026-11-15): the contradiction the draft found is gone. `deploy/README.md:118-134` and
+  `packages/keys/README.md:72-75` now agree: back up the database and the keyring together, from
+  the same moment, encrypted, and apart if you can. Milestone 7 only adds the erasure window.
 - Observation: shredding a run key while its run is waiting makes the run retry forever.
-  Evidence: `docs/threat-model.md:189-191`; report, finding 10.
+  Evidence: `docs/threat-model.md:497-499`; report, finding 10.
 - Observation: the signer's SQLite schema has no migration step; every table is
   `CREATE TABLE IF NOT EXISTS`. Adding columns needs one.
-  Evidence: `apps/signer/src/db.ts:9-115`.
-  Update (2026-11-14): the restore fence added `PRAGMA user_version` migrations (version 1 is
-  the v0.1 schema, version 2 adds `signer_meta`). Milestone 2's lifecycle columns become
-  version 3.
+  Evidence: `apps/signer/src/db.ts:9-115` (as drafted).
+  Update (2026-11-14): the restore fence added `PRAGMA user_version` migrations.
+  Update (2026-11-15): main is at version 5 (2 restore fence, 3 confirmation pages, 4 possession
+  challenges, 5 mandates; `apps/signer/src/db.ts:205-206`), and stuck-transaction repricing, being
+  built, takes version 6. Milestone 2's lifecycle columns take the next free version: 7 if
+  repricing lands first.
 - Observation: an envelope is stored unencrypted in `approvals.envelope`, and the release gates
   scan the database for recipient addresses in the clear. A `sweep-wallet` envelope that carried
   `to` and `amount` as fields, as Milestone 1 first drafted it, would put a destination and an
   amount at rest in plaintext.
-  Evidence: `apps/server/src/db/schema.ts`, `approvals.envelope` ("Identifiers, hashes and times
-  only"); `e2e/test/release-gates.spec.ts`, "what an agent typed is in no column of the database
-  in the clear".
+  Evidence: `apps/server/src/db/schema.ts:319-320`, `approvals.envelope` ("Identifiers, hashes and
+  times only"); `e2e/test/release-gates.spec.ts:629`, "what an agent typed is in no column of the
+  database in the clear".
+- Observation (2026-11-15): a disabled agent is already final. No route turns it back on, and
+  `rotateAgentToken` refuses it (`apps/server/src/directory/routes.ts:676-680`). Disabling now
+  revokes the agent's mandates at the signer and cancels its waiting `grant-mandate` requests
+  (`routes.ts:701-746`, `apps/server/src/execution/mandates.ts:574-611`; gate
+  `release-gates.spec.ts:1428`). It does not cancel the agent's waiting payment requests. A
+  separate `removed` status, as drafted, adds nothing; see D12.
+- Observation (2026-11-15): the signer now keeps plaintext that people or agents typed, outside
+  the workspace key: each confirmation's envelope and subject (an intent with its memo, a policy,
+  a sweep, a mandate) in `confirmations`, the assertions made on the page in
+  `confirmation_assertions`, and each mandate's canonical JSON, purpose included, in
+  `mandates.mandate` (`apps/signer/src/db.ts:117-202`). Shredding the workspace key leaves all of
+  it readable on the signer host. The mandate tables are append-only by design ("Nothing is ever
+  deleted from these tables", `db.ts:160-166`). See D9.
+- Observation (2026-11-15): approvals are no longer made in the web app. Every envelope kind is
+  approved on the signer's confirmation page (`APPROVE_ORIGIN`, served by the keyless `approve`
+  service), whose lines and warnings the signer renders from its own records
+  (`packages/protocol/src/confirmation.ts`, `renderConfirmation`). The trusted-display gap the
+  draft's threat model listed for deletion is closed for everything the signer knows: the wallet
+  set, addresses and destroy time. Balances stay outside it.
+- Observation (2026-11-15): `appendAudit` locks the workspace row `FOR NO KEY UPDATE`
+  (`apps/server/src/audit.ts:55-70`). A `FOR UPDATE` taken after inserting rows that refer to
+  the workspace deadlocked concurrent proposals. The tombstone transaction in Milestone 4 must
+  append its audit event first and must not take a stronger lock on `workspaces`.
 
 ## Decision Log
 
-Recommended decisions, pending the owner. Each names its open question (D1-D7) in Risks and
-Open Questions.
+Recommended decisions, pending the owner unless marked taken. Each names its open question
+(D1-D12) in Risks and Open Questions.
 
 - Decision (pending D1): deletion destroys wallet keys at the signer, after a delay the signer
   enforces, authorized by a `delete-workspace` envelope at the admin threshold that names the
-  exact wallet set.
+  exact wallet set, approved on the signer's confirmation page.
   Rationale: destroying a key with assets is irreversible, so it must meet the same bar as
   signing; the signer cannot check balances, so a delay and a free cancel are the protection.
-  Date/Author: 2026-11-14 / delegated agent
+  Date/Author: 2026-11-14 / delegated agent; confirmation page added 2026-11-15
 - Decision (pending D2): `SIGNER_MIN_DESTROY_DELAY_SECONDS` defaults to 604800 (7 days).
   Rationale: long enough for a person to notice a request they did not mean; short enough to end
   a workspace within a week.
   Date/Author: 2026-11-14 / delegated agent
-- Decision (D3, taken by the owner 2026-11-14): a new `sweep-wallet` envelope; its destination
-  must be in the wallet's current recipient allowlist, or be the address of a treasury wallet of
-  the same workspace other than the swept one.
+- Decision (D3, taken by the owner 2026-11-14, built): a new `sweep-wallet` envelope; its
+  destination must be in the wallet's current recipient allowlist, or be the address of a
+  treasury wallet of the same workspace other than the swept one.
   Rationale: emptying a wallet must not need an agent or a raised cap, and a sweep has no cap, so
   its destination must have been approved earlier.
   Date/Author: 2026-11-14 / delegated agent
@@ -163,24 +199,65 @@ Open Questions.
   Rationale: a shredded key is gone only when the KEK that wrapped it is gone everywhere.
   Date/Author: 2026-11-14 / delegated agent
 - Decision (pending D7): finalize waits while any transaction of the workspace is `signed`,
-  `broadcast` or `stuck`.
+  `broadcast` or `stuck`. Once stuck-transaction repricing lands, people clear a stuck one with
+  its `cancel-transaction` approval, which its plan allows while paused.
   Rationale: finding 5 of the report.
-  Date/Author: 2026-11-14 / delegated agent
+  Date/Author: 2026-11-14 / delegated agent; cancel path added 2026-11-15
 - Decision: clone is a template at the control plane; no signer change; no key is ever copied.
   Rationale: report, finding 9 and options for clone.
   Date/Author: 2026-11-14 / delegated agent
 - Decision: a deleted workspace leaves a tombstone (ids, statuses, timestamps, hashes, addresses,
-  the audit chain, the signer's decision log, used nonces); names and labels are cleared;
-  memberships, invites, approver mirrors and assertions are deleted.
+  the audit chain, the signer's decision log, used nonces, mandate ids with their hashes, times
+  and counts); names and labels are cleared; memberships, invites, approver mirrors, assertions,
+  notification preferences and undelivered notifications are removed.
   Rationale: used nonces and approval ids must stay to refuse replays; the chain stays verifiable
   without the shredded key; nothing readable about what people typed remains.
-  Date/Author: 2026-11-14 / delegated agent
+  Date/Author: 2026-11-14 / delegated agent; mandates and notifications added 2026-11-15
+- Decision (pending D8): applying a `retire-wallet` or `delete-workspace` approval revokes, in the
+  same signer transaction, every live mandate of the wallet or workspace with reason `requested`,
+  and the control plane cancels waiting `grant-mandate` requests for them. A cancelled retirement
+  or deletion does not bring a mandate back.
+  Rationale: a mandate signs without a person, so it must end when people decide to end the
+  wallet, not a week later; reusing `requested` avoids rebuilding a SQLite table whose `CHECK`
+  lists the reasons.
+  Date/Author: 2026-11-15 / PlanRefreshLifecycle
+- Decision (pending D9): finalize deletes the workspace's rows in `confirmations`,
+  `confirmation_assertions` and `possession_challenges`, and blanks `mandates.mandate`, keeping
+  mandate ids, hashes, times, revocations and `mandate_uses`, with `secure_delete` on.
+  Rationale: after the workspace key is shredded these are the only readable copies of memos and
+  purposes; ids and hashes are enough for replay refusal and the decision log.
+  Date/Author: 2026-11-15 / PlanRefreshLifecycle
+- Decision (pending D10): the notification outbox announces a scheduled retirement or deletion
+  when its approval is applied, and again 24 hours before `destroyAfter`.
+  Rationale: the delay protects only if someone notices; the outbox, Web Push and the signed
+  webhook exist now.
+  Date/Author: 2026-11-15 / PlanRefreshLifecycle
+- Decision (pending D11): a template carries the workspace's notification content level
+  (`notification_detail`) and no mandate; a record carries every mandate and use, opened; neither
+  carries push subscriptions, notification preferences, quiet hours or the delivery log.
+  Rationale: mandates are authority and must be granted again by the clone's people; the
+  per-person settings belong to a person, not to a workspace.
+  Date/Author: 2026-11-15 / PlanRefreshLifecycle
+- Decision (pending D12): no `removed` agent status. "Remove agent" is the existing disable,
+  which additionally cancels the agent's waiting `approve-intent` requests and revokes them at the
+  signer.
+  Rationale: disabled is already final and already ends mandates; a second status would mean two
+  names for one state.
+  Date/Author: 2026-11-15 / PlanRefreshLifecycle
 
 ## Outcomes & Retrospective
 
 - Outcome (2026-11-14): the sweep is built and passes its unit and Anvil tests locally (see
   `Progress`). Its release gate and the UI job need CI.
   Remaining: retire, delete, remove agent, export, clone, and Milestones 3, 5 to 8.
+- Outcome (2026-11-15): the sweep is proven in CI (run 43710836888, `stack (amd64)`, gate at
+  `release-gates.spec.ts:686`), and the `ui` journey covers its card. Delivered by other plans
+  since the draft: the signer's migration mechanism (restore fence), approval on the signer's
+  confirmation page (trusted display), and disabling an agent ending its mandates (mandates).
+  Evidence: CI run 43710836888 (six jobs green); `specs/trusted-display.md`,
+  `specs/approval-mandates.md`.
+  Remaining: retire, delete, export, clone, the disable extension (D12), and Milestones 1 to 8 as
+  rewritten below.
 
 ## Context and Orientation
 
@@ -196,8 +273,12 @@ Relevant repo rules:
 
 Terms used here, beyond those in the v0.1 plan (`specs/agent-workspaces-v0.1.md:194-208`):
 
-- **Sweep**: one transaction that moves a caller-chosen amount of one asset out of a wallet to a
-  destination the approvers allowed earlier.
+- **Sweep**: one transaction that moves the whole balance of one asset out of a wallet to a
+  destination the approvers allowed earlier. Built.
+- **Confirmation page**: the page on `APPROVE_ORIGIN`, served by the keyless `approve` service,
+  where people approve every envelope with a passkey. The signer renders what it says.
+- **Mandate**: a bounded, time-limited approval in advance that lets one agent pay listed
+  recipients from one wallet without a person each time. Only the signer counts its uses.
 - **Retire**: start the destruction of one wallet's key. During the delay the wallet signs
   nothing; it can be cancelled.
 - **Held**: a wallet whose retirement was cancelled. Its key exists; it signs nothing until a new
@@ -208,112 +289,172 @@ Terms used here, beyond those in the v0.1 plan (`specs/agent-workspaces-v0.1.md:
 - **Tombstone**: what stays after finalize, so ids cannot be reused and replays stay refused.
 - **Template**: an export of configuration only. **Record**: an export of history.
 
-Current behavior (source-read; see the report for line numbers):
+Current behavior on main (`2911c20`), source-read:
 
-- `apps/server/src/db/schema.ts`: workspace-owned tables `workspaces`, `memberships`,
-  `approver_credentials`, `invites`, `wallets`, `agents`, `approvals`, `approval_assertions`,
-  `approval_rejections`, `intents`, `transactions`, `audit_events`, `nonce_reservations`.
-  `agents.status` is `active` or `disabled`. `transactions.intent_id` is not null.
-- `apps/server/src/directory/routes.ts:300-330` pauses through the signer; `700-720` disables an
-  agent in the control plane only.
-- `apps/server/src/directory/kinds.ts` registers the non-signing approval kinds
-  (`set-policy`, `add-approver`, `remove-approver`, `set-admin-threshold`, `resume-workspace`);
-  `apps/server/src/execution/intents.ts:956` registers `approve-intent`.
-- `apps/server/src/execution/chains.ts:116-144` reads native and ERC-20 balances.
-- `apps/server/src/audit.ts`: the per-workspace hash chain; details sealed with a salt.
-- `packages/keys/src/data-key-store.ts`: `getOrCreate`, `get`, `rewrap`, `shred`; scopes `run`
-  and `workspace`; `tenant_id` recorded per key. `packages/keys/src/cli.ts`: `rewrap`, `shred`.
-- `packages/world/src/index.ts:55-65`: each run key is created with the workspace as tenant.
-- `apps/signer/src/db.ts`: the signer's tables; no migrations; `secure_delete` off.
-- `apps/signer/src/signer.ts`: `authorizedChange` (357-397) is the shape of every non-signing
-  envelope; `sign` (710-828) is the signing rule; `pauseWorkspace` (461-470).
+- `apps/server/src/db/schema.ts`: workspace-owned tables `workspaces` (with `paused`,
+  `notification_detail`, the audit head), `memberships`, `approver_credentials`, `invites`,
+  `wallets`, `agents`, `approvals` (kinds include `mandate-use`; sealed `detail` and
+  `confirmation`), `approval_assertions`, `approval_rejections`, `mandates` (mirror, sealed
+  `mandate`), `intents`, `transactions` (`intent_id` nullable; status adds `rejected`),
+  `audit_events`, `nonce_reservations`, `notification_deliveries` (outbox, per workspace and
+  approval), `notification_preferences` (per person and workspace). Per person, not per
+  workspace: `users` (with `quiet_hours`), `credentials`, `sessions`, `ceremonies`,
+  `push_subscriptions`. Migrations `0000` to `0006` exist (`0006_push_subscriptions.sql`).
+  `agents.status` is `active` or `disabled`.
+- `apps/server/src/directory/routes.ts:301-325` pauses through the signer; `701-746` disables an
+  agent, then `revokeAgentMandates` (`apps/server/src/execution/mandates.ts:574-611`) cancels its
+  waiting `grant-mandate` requests and revokes its mandates at the signer. Waiting
+  `approve-intent` requests of the agent are left as they are.
+- Approval kinds: `apps/server/src/directory/kinds.ts:427` registers `set-policy`,
+  `add-approver`, `remove-approver`, `set-admin-threshold`, `resume-workspace`;
+  `apps/server/src/execution/index.ts:30-38` registers `approve-intent` (`intents.ts:799`),
+  `sweep-wallet` (`sweeps.ts:259`) and the mandate kinds (`mandates.ts:525`). Each handler
+  (`apps/server/src/approvals/kinds.ts:92-130`) supplies `confirmationSubject`, the structure the
+  signer's confirmation page shows; kinds whose envelope carries everything return
+  `envelope-only`.
+- `apps/server/src/execution/index.ts:133-160` (`startBackground`, called from
+  `apps/server/src/main.ts:68`) runs one sweeper every 3 seconds (`SWEEP_INTERVAL_MS`): it wakes
+  and recovers approval runs and delivers due notifications (`deliverDueNotifications`).
+- `apps/server/src/notify/outbox.ts`: a delivery is dropped with `approval_ended` once its
+  approval ended (`:216`), so cancelling a deletion's pending approvals also silences their
+  notifications.
+- `apps/server/src/execution/chains.ts:116`: `balances` reads native and ERC-20 balances.
+- `apps/server/src/audit.ts:55-112`: the per-workspace hash chain; details sealed with a salt;
+  workspace row locked `FOR NO KEY UPDATE`. `entryHash` (`:43`) is module-private; `verifyAudit`
+  (`:131`) is exported.
+- `apps/server/src/execution/approvals.ts:250` (`cancel`): ends a pending request and wakes its
+  run; it does not revoke the approval id at the signer.
+- `packages/keys/src/data-key-store.ts`: `getOrCreate`, `get` (`:173`), `rewrap` (`:208`),
+  `shred` (`:264`); scopes `run` and `workspace`; `tenant_id` recorded per key. No
+  `shredTenant`. `packages/keys/src/cli.ts`: `rewrap`, `shred`.
+- `packages/world/src/index.ts:55-65`: each run key is created with the workspace as tenant
+  (`apps/server/src/execution/workflow-runtime.ts:140`).
+- `apps/signer/src/db.ts`: the signer's tables at schema version 5, with `PRAGMA user_version`
+  migrations (`:204-250`); `secure_delete` is not set.
+- `apps/signer/src/signer.ts` (line numbers at `2911c20`): `authorizedChange` (`:430`) is the
+  shape of every non-signing envelope; `pauseWorkspace` (`:533`); `resumeWorkspace` (`:544`);
+  `sign` (`:886`); `assertSweepAllowed` (`:974`) and `sweep` (`:996`); `revokeApproval`
+  (`:1073`). Every envelope is checked against the restore fence (`envelope_fenced`).
+- `apps/signer/src/mandates.ts`: grant, sign under, revoke; `revokeMandatesOnFence`,
+  `revokeWorkspaceMandatesByOperator`; revocation reasons `requested`, `grantor_removed`,
+  `operator`. A grant is not refused while the workspace is paused.
+- `apps/signer/src/confirmations.ts`: opens a confirmation per approval, keeps its envelope and
+  subject, renders it with `renderConfirmation`, marks it `superseded` when the signer would
+  refuse it anyway.
 - `apps/signer/src/vault.ts`: `Vault` has `createWallet` and `signEvmTransaction` only.
-- `apps/signer/src/admin.ts`: `enroll-approver`, `verify-log`.
-- `packages/protocol/src/envelopes.ts`, `packages/protocol/src/signer/api.ts`: the contract.
-- `packages/api/src/routes.ts`: the REST contract shared by UI, scripts and tests.
-- `e2e/run.sh:61` runs `release-gates.spec.ts`; `:81` runs `browser.spec.ts`.
+- `apps/signer/src/admin.ts`: `enroll-approver`, `verify-log`, `fence`, `list-mandates`,
+  `revoke-mandate`.
+- `packages/protocol/src/envelopes.ts`: nine envelope kinds, `sweep-wallet` and `grant-mandate`
+  included. `packages/protocol/src/signer/api.ts`: routes with a `control` or `confirm` scope;
+  `WorkspaceState` and `WalletState` have no lifecycle state.
+- `packages/protocol/src/confirmation.ts`: `ConfirmationSubject`, `ConfirmationWarning`,
+  `renderConfirmation`.
+- `packages/api/src/routes.ts`: the REST contract shared by UI, scripts and tests (`requestSweep`
+  at `:265`).
+- `e2e/run.sh:67` runs `release-gates.spec.ts`; `:87` runs `browser.spec.ts`.
+- In flight, not on main: stuck-transaction repricing
+  ([#22](https://github.com/askgina/os/issues/22)) adds signer schema version 6, a
+  `cancel-transaction` envelope and a table of signing attempts. Re-check its names when it lands.
 
 How the pieces fit together:
 
-A person acts in the web UI. The control plane opens an approval request whose envelope is the
-passkey challenge, collects assertions, and then a handler for that approval kind calls the
-signer with the authorization. The signer verifies every assertion against its own approver
-registry and threshold, records the envelope nonce as used, and applies the effect in one SQLite
-transaction, writing a decision-log entry. This plan adds three envelope kinds that go through
-exactly that path, three request-signature-only signer calls that only remove authority or run a
-step already authorized, and a control-plane sweeper that drives deletion to its end.
+A person acts in the web UI. The control plane opens an approval request, and the signer opens a
+confirmation for it holding the envelope and its subject. People approve on the confirmation page
+on `APPROVE_ORIGIN`; the control plane collects the assertions from the signer, and a handler for
+that approval kind calls the signer with the authorization. The signer verifies every assertion
+against its own approver registry and threshold, checks the restore fence, records the envelope
+nonce as used, and applies the effect in one SQLite transaction, writing a decision-log entry.
+This plan adds two envelope kinds that go through exactly that path, four request-signature-only
+signer calls that only remove authority or run a step already authorized, and a lifecycle step
+in the control plane's sweeper that drives deletion to its end.
 
 Assumptions:
 
-- The v0.1 Compose layout: one signer, one Postgres, one keyring file. Multi-machine custody is
-  [#25](https://github.com/askgina/os/issues/25).
+- The Compose layout on main: one signer, one `approve` service, one Postgres, one keyring file.
+  Multi-machine custody is [#25](https://github.com/askgina/os/issues/25).
 - `@open-wallet-standard/core` stays at 1.4.5. Its `deleteWallet`, `revokeApiKey`, `listApiKeys`
   and `exportWallet` are used as declared in its `index.d.ts`. If 1.4.5 behaves otherwise, the
   real-OWS test in Milestone 2 fails and the vault code changes, not the protocol.
+- Stuck-transaction repricing lands before Milestone 2 starts. If not, Milestone 2 takes version
+  6 and repricing renumbers.
 
 ## Plan of Work
 
+The sweep parts of Milestones 1, 2, 4, 6 and 7 are delivered (see `Progress`) and removed from
+the text below. What remains is retire, delete, export, clone, the disable extension, and person
+erasure if chosen.
+
 ### Milestone 1: protocol
 
-Scope: the hashed structures and the signer contract. First, because every later milestone
-depends on them and their digests are pinned.
+Scope: the hashed structures, the confirmation view and the signer contract. First, because every
+later milestone depends on them and their digests are pinned.
+
+Delivered: `Sweep`, `sweepHash`, `SweepWalletEnvelope`, the `sweep` route and
+`sweep_destination_not_allowed` (with the sweep).
 
 Files and interfaces:
 
 - `packages/protocol/src/envelopes.ts`: add
   - `WalletRef = z.strictObject({ walletId: WalletId, address: Address })`.
-  - `SweepWalletEnvelope`: header plus `type: "sweep-wallet"`, `walletId`, `chainId: ChainId`,
-    `asset: AssetRef`, `to: Address`, `maxFeeWei: PositiveAmount`. Refine: `to` is not the zero
-    address; for an ERC-20 `asset`, `to !== asset`.
   - `RetireWalletEnvelope`: header plus `type: "retire-wallet"`, `wallet: WalletRef`,
     `destroyAfter: EpochSeconds`.
   - `DeleteWorkspaceEnvelope`: header plus `type: "delete-workspace"`,
     `wallets: z.array(WalletRef).max(256)` sorted by `walletId` without duplicates (may be empty),
     `destroyAfter: EpochSeconds`.
-  - Add all three to the `Envelope` union. `destroyAfter > issuedAt` is checked by refine.
-- `packages/protocol/src/signer/api.ts`:
-  - Routes: `sweep` `POST /v1/wallets/:walletId/sweep`; `retireWallet`
-    `POST /v1/wallets/:walletId/retire`; `cancelRetireWallet`
+  - Add both to the `Envelope` union. `destroyAfter > issuedAt` is checked by refine.
+- `packages/protocol/src/confirmation.ts`:
+  - Both kinds are `envelope-only` subjects (add them to the `envelope-only` case of
+    `matchSubject`).
+  - `renderConfirmation`: titles "Retire a wallet" and "Delete this workspace"; one `address`
+    line per wallet with its id, the signer's wallet label as an `unchecked` line, the destroy
+    time as text. `RenderInput` gains the signer's records of the listed wallets.
+  - `ConfirmationWarning` gains `keys_destroyed` (what is left in these wallets is lost after the
+    destroy time) and `balances_unchecked` (the signer cannot see balances), in that order before
+    the existing ones.
+- `packages/protocol/src/signer/api.ts`, all `control` scope:
+  - Routes: `retireWallet` `POST /v1/wallets/:walletId/retire`; `cancelRetireWallet`
     `POST /v1/wallets/:walletId/retire/cancel`; `finalizeRetireWallet`
     `POST /v1/wallets/:walletId/retire/finalize`; `deleteWorkspace`
     `POST /v1/workspaces/:workspaceId/delete`; `cancelDeleteWorkspace`
     `POST /v1/workspaces/:workspaceId/delete/cancel`; `finalizeDeleteWorkspace`
     `POST /v1/workspaces/:workspaceId/delete/finalize`.
-  - `SweepRequest = { authorization, amount: PositiveAmount, transaction: TransactionParams }`;
-    response `SignResponse`.
   - `retireWallet` and `deleteWorkspace` take `AuthorizedRequest`. The cancel and finalize calls
     take `z.strictObject({ workspaceId })` (wallet routes) or no body (workspace routes).
-  - `WorkspaceState` gains `state: "active" | "deleting" | "deleted"` and
-    `destroyAfter: EpochSeconds.nullable()`. `WalletState` gains
+  - `WorkspaceState` gains `state: "active" | "deleting" | "deleted"`,
+    `destroyAfter: EpochSeconds.nullable()` and `minDestroyDelaySeconds`. `WalletState` gains
     `state: "active" | "retiring" | "held" | "destroyed"` and `destroyAfter`.
   - `SignerErrorCode` gains `workspace_deleting`, `workspace_deleted`, `wallet_retired`,
-    `wallet_set_mismatch`, `destroy_delay_out_of_range`, `destroy_not_due`,
-    `sweep_destination_not_allowed`, all 403 except `destroy_not_due` (409).
+    `wallet_set_mismatch`, `destroy_delay_out_of_range` (all 403) and `destroy_not_due` (409).
 - `packages/protocol/src/signer/client.ts`: one method per new route.
 - `packages/protocol/test/lifecycle-envelopes.test.ts`: accept and reject cases for each schema;
   pinned digest vectors; an assertion over one kind does not verify as another kind.
-- `docs/approval-protocol.md` §5 table rows and §11 vectors for the three kinds.
+- `packages/protocol/test/confirmation.test.ts` (extend): both kinds render every wallet and the
+  two warnings.
+- `docs/approval-protocol.md` §5 table rows, §8 the destroy rule, §10 the new routes, §11 vectors.
 
 Work: follow the existing envelope style (strict objects, header spread, sorted sets via
 `isSortedUnique`). Pin the vectors by computing them in the test from fixed inputs and comparing
-with literal hex, as `packages/protocol/test/digests.test.ts` does.
+with literal hex, as `packages/protocol/test/digests.test.ts` does. If stuck-transaction
+repricing's envelope lands first, append after `cancel-transaction`.
 
 Acceptance:
 
 - CI job `test` (`bun run test`) passes `packages/protocol/test/lifecycle-envelopes.test.ts`,
-  including: a `delete-workspace` envelope with unsorted wallets is rejected; a
-  `sweep-wallet` with `to` equal to the zero address is rejected; the three pinned digests match.
+  including: a `delete-workspace` envelope with unsorted wallets is rejected; a `retire-wallet`
+  with `destroyAfter ≤ issuedAt` is rejected; the two pinned digests match; every existing vector
+  is unchanged.
 - CI job `check` passes (`bun run check`, `bun run typecheck`).
 
 ### Milestone 2: signer
 
 Scope: `apps/signer`. The irreversible steps live here.
 
+Delivered: `PRAGMA user_version` migrations (restore fence) and `sweep` (with the sweep).
+
 Files and interfaces:
 
 - `apps/signer/src/db.ts`:
-  - Migrations by `PRAGMA user_version`. Version 1 is the v0.1 schema (a file with tables and
-    `user_version = 0` is taken as version 1). Version 2:
+  - The next schema version (7 if repricing has taken 6):
 
     ```sql
     ALTER TABLE workspaces ADD COLUMN state TEXT NOT NULL DEFAULT 'active'
@@ -335,84 +476,82 @@ Files and interfaces:
   - `exportOwsWalletSecret(options: { vaultPath; passphraseFile }, walletId): string`, a
     module function, not a `Vault` method, so nothing reachable over HTTP can call it.
 - `apps/signer/src/signer.ts`:
-  - `sweep(request)`: shaped like `sign`. Checks in order: envelope type and workspace; wallet
-    exists, belongs to the workspace, `state = 'active'`; workspace `state = 'active'` (paused is
-    allowed: a sweep is how a paused workspace is emptied); assertions at the **admin**
-    threshold, admin TTL; `gas × maxFeePerGas ≤ envelope.maxFeeWei` and priority fee ≤ max fee;
-    if the wallet has a policy, `envelope.maxFeeWei ≤ policy.fees.maxPerTxWei` and `chainId` is
-    in `policy.chains`; destination rule: `to` is in the current policy's `recipients.addresses`
-    when its mode is `allowlist`, or `to` is the address of the workspace's treasury wallet and
-    the swept wallet is not that treasury; else `sweep_destination_not_allowed`. Inside the
-    transaction: replay check, approvers still present, consume nonce, build the transfer (native
-    `value = amount`; ERC-20 `transfer(to, amount)`), sign, `isSignedBy`, record approval
-    `signed`, signature and spend. One approval, one signature.
-  - `retireWallet(walletId, authorization)`: through `authorizedChange`. Checks:
-    `envelope.wallet` equals the signer's wallet id and address; wallet state `active` or `held`;
-    `destroyAfter − issuedAt` within the configured range. Apply: state `retiring`,
-    `destroy_after`.
+  - `retireWallet(walletId, authorization)`: through `authorizedChange` (so the restore fence
+    applies). Checks: `envelope.wallet` equals the signer's wallet id and address; wallet state
+    `active` or `held`; `destroyAfter − issuedAt` within the configured range. Apply: state
+    `retiring`, `destroy_after`; revoke every live mandate of the wallet with reason `requested`
+    (D8).
   - `cancelRetireWallet(walletId, workspaceId)`: request signature only. `retiring` → `held`.
-    Decision `cancel-retire-wallet`.
+    Decision `cancel-retire-wallet`. Mandates stay revoked.
   - `finalizeRetireWallet(walletId, workspaceId)`: request signature only. Refuses with
     `destroy_not_due` before `destroy_after`. Then `vault.destroyWallet`, and in one transaction:
     `sealed_credential = x''`, `state = 'destroyed'`, `destroyed_at`,
-    `UPDATE signatures SET signed_transaction = '' WHERE wallet_id = ?`, decision
-    `destroy-wallet`. Then `PRAGMA wal_checkpoint(TRUNCATE)`. A repeat on a destroyed wallet
-    returns its state.
+    `UPDATE signatures SET signed_transaction = '' WHERE wallet_id = ?` (and the same for any
+    signed attempt kept by repricing's table, once it lands), decision `destroy-wallet`. Then
+    `PRAGMA wal_checkpoint(TRUNCATE)`. A repeat on a destroyed wallet returns its state.
   - `deleteWorkspace(workspaceId, authorization)`: through `authorizedChange`. Checks: the
     envelope's wallet set equals the signer's wallets of this workspace whose state is not
     `destroyed` (`wallet_set_mismatch` otherwise); delay range; workspace state `active`. Apply:
     `paused = 1`, `state = 'deleting'`, `destroy_after`; every listed wallet `retiring` with the
-    same `destroy_after`.
+    same `destroy_after`; every live mandate of the workspace revoked with reason `requested`.
   - `cancelDeleteWorkspace(workspaceId)`: request signature only. `deleting` → `active` with
     `paused = 1` (resuming still needs `resume-workspace`); wallets that were set `retiring` by
     this deletion go back to `active`. Decision `cancel-delete-workspace`.
   - `finalizeDeleteWorkspace(workspaceId)`: request signature only. `destroy_not_due` before
     `destroy_after`. Destroy every wallet as above; `DELETE FROM approvers WHERE workspace_id`;
-    `state = 'deleted'`; decision `delete-workspace`. Keep `used_nonces`, `approvals`, `spends`,
-    `policies`, `decisions`.
-  - Everywhere else: `sign`, `setPolicy`, `addApprover`, `removeApprover`, `setAdminThreshold`,
-    `resumeWorkspace` refuse with `workspace_deleting` or `workspace_deleted` by workspace state,
-    and `sign` refuses `wallet_retired` for a wallet not `active`. `setPolicy` on a `held`
-    wallet sets it back to `active` (a new policy approved at the admin threshold is the way back).
-    `createWallet` refuses in a workspace that is not `active`.
+    delete the workspace's `possession_challenges`, `confirmation_assertions` and
+    `confirmations`; `UPDATE mandates SET mandate = ''` for the workspace (D9); `state =
+    'deleted'`; decision `delete-workspace`. Keep `used_nonces`, `approvals`, `spends`,
+    `policies`, `decisions`, mandate ids, hashes, times, `mandate_grantors` and `mandate_uses`.
+  - Everywhere else: `sign`, `sweep`, `signUnderMandate`, `grantMandate`, `setPolicy`,
+    `addApprover`, `removeApprover`, `setAdminThreshold`, `resumeWorkspace` and
+    `openConfirmation` refuse with `workspace_deleting` or `workspace_deleted` by workspace state;
+    `sign`, `sweep`, `signUnderMandate` and `grantMandate` refuse `wallet_retired` for a wallet not
+    `active`. Repricing and `cancel-transaction`, once they land, refuse for a destroyed wallet
+    only, so a stuck transaction can still be cleared during the delay (D7). `setPolicy` on a
+    `held` wallet sets it back to `active`. `createWallet` refuses in a workspace that is not
+    `active`. A confirmation of another kind that is open when a retirement or deletion applies
+    shows `superseded`.
   - `createWorkspace` for an id that exists in state `deleted` answers `conflict`.
-- `apps/signer/src/index.ts`: route the seven new contract routes.
+- `apps/signer/src/index.ts`: route the six new contract routes.
 - `apps/signer/src/admin.ts`: `export-wallet --workspace <ws> --wallet <wal> --out <path>`.
   Refuses a destroyed wallet; writes the mnemonic to `--out` with mode 0600 (refuses if the file
   exists); appends decision `export-wallet-by-operator`; prints one JSON line without the secret.
 - Tests:
-  - `apps/signer/test/lifecycle.test.ts` (test vault):
-    sweep to an allowlisted address signs once and replays the same transaction; sweep to an
-    address outside the allowlist, and to the treasury from the treasury, is refused; sweep below
-    the admin threshold is refused; sweep of a `retiring` wallet is refused; retire then `sign`
-    is refused with `wallet_retired`; finalize before `destroy_after` is `destroy_not_due`;
-    finalize after it destroys the key (the test vault no longer has it) and a second finalize
-    returns the same state; cancel makes the wallet `held`, `sign` still refused, a new policy
-    makes it `active`; delete with a wallet missing from the envelope, or an extra one, is
-    `wallet_set_mismatch`; delete with a delay below the minimum is
-    `destroy_delay_out_of_range`; during `deleting`, `addApprover`, `setPolicy` and
+  - `apps/signer/test/lifecycle.test.ts` (test vault): retire then `sign`, `sweep` and
+    `signUnderMandate` are refused with `wallet_retired`; retiring revokes the wallet's live
+    mandates with reason `requested` and no other wallet's; finalize before `destroy_after` is
+    `destroy_not_due`; finalize after it destroys the key (the test vault no longer has it) and a
+    second finalize returns the same state; cancel makes the wallet `held`, `sign` still refused,
+    a new policy makes it `active`, the mandate stays revoked; delete with a wallet missing from
+    the envelope, or an extra one, is `wallet_set_mismatch`; delete with a delay below the minimum
+    is `destroy_delay_out_of_range`; a `delete-workspace` envelope issued before the restore fence
+    is `envelope_fenced`; during `deleting`, `addApprover`, `setPolicy`, `grantMandate` and
     `resumeWorkspace` are refused; cancel leaves `paused`; after finalize every route for the
-    workspace except `getWorkspace` and `listDecisions` is refused, `createWorkspace` with the
-    same id is `conflict`, a reused envelope nonce is still `nonce_reused`, and `verify-log`
-    passes.
+    workspace except `getWorkspace` and `listDecisions` is refused, the workspace has no
+    confirmation rows and blank mandate texts, `createWorkspace` with the same id is `conflict`, a
+    reused envelope nonce is still `nonce_reused`, and `verify-log` passes.
+  - `apps/signer/test/confirmations.test.ts`: the confirmation of a `delete-workspace` envelope
+    lists the signer's wallets and shows `superseded` once the wallet set changed.
   - `apps/signer/test/ows.test.ts`: with real OWS 1.4.5, `destroyWallet` leaves no file under
     `wallets/` or `keys/` naming the wallet, and a second call succeeds.
   - `apps/signer/test/admin.test.ts`: `export-wallet` writes a 0600 file whose mnemonic derives
     the wallet's address, refuses an existing `--out` and a destroyed wallet, and logs the
     decision.
-  - `apps/signer/test/migrations.test.ts`: a SQLite file created with the v0.1 schema (copied
-    into `apps/signer/test/fixtures/signer-v1.sql`) opens, migrates to version 2, and keeps its
-    rows and decision-log head.
+  - The migration: a database at the previous version opens, migrates, and keeps its rows and
+    decision-log head, tested the way `apps/signer/test/fence.test.ts` and
+    `apps/signer/test/mandates.test.ts` test theirs.
 
 Acceptance:
 
-- CI job `test` passes the four files above.
+- CI job `test` passes the files above.
 - CI jobs `stack (amd64)`, `stack (arm64)`, `stack (tls)` still pass (the signer image starts on
-  a fresh volume at version 2).
+  a fresh volume at the new version).
 
 ### Milestone 3: key store
 
-Scope: `packages/keys`. Shred every run key of one workspace.
+Scope: `packages/keys`. Shred every run key of one workspace. Unchanged since the draft; nothing
+of it is built.
 
 Files and interfaces:
 
@@ -420,7 +559,8 @@ Files and interfaces:
   - In `migrateKeys`: `CREATE INDEX IF NOT EXISTS data_keys_tenant_idx ON os_keys.data_keys (scope, tenant_id) WHERE shredded_at IS NULL`.
   - `shredTenant(scope: KeyScope, tenantId: string): Promise<{ shredded: number }>`: one
     `UPDATE … SET kek_id = NULL, wrapped_key = NULL, shredded_at = now() WHERE scope = $1 AND tenant_id = $2 AND shredded_at IS NULL RETURNING key_id`;
-    evict each returned id from the cache.
+    evict each returned id from the cache. [unconfirmed] the tombstone columns are exactly these;
+    follow what `shred` (`:264`) writes.
 - `packages/keys/src/cli.ts`: `shred-tenant <run|workspace> <tenant id>`, exit 0 with a count
   (0 is not an error: a repeat finds nothing).
 - `packages/keys/test/data-key-store.test.ts`, `packages/keys/test/cli.test.ts`: two tenants'
@@ -432,48 +572,53 @@ Acceptance:
 
 - CI job `test` passes the cases above.
 
-### Milestone 4: control plane, sweep, retire, delete, remove agent
+### Milestone 4: control plane, retire, delete, disable
 
 Scope: `apps/server`, `packages/api`. Depends on Milestones 1 to 3.
 
+Delivered: the `sweep-wallet` kind, `requestSweep`, nullable `transactions.intent_id` (with the
+sweep); disabling an agent revokes its mandates and cancels its waiting grants (with mandates).
+
 Files and interfaces:
 
-- `apps/server/src/db/migrations/0002_lifecycle.sql` and `apps/server/src/db/schema.ts`:
+- `apps/server/src/db/migrations/<next>_lifecycle.sql` (`0007` on today's main) and
+  `apps/server/src/db/schema.ts`:
   - `workspaces.lifecycle text NOT NULL DEFAULT 'active'` (`active`, `deleting`, `deleted`),
     `workspaces.destroy_after timestamptz`, `workspaces.deleted_at timestamptz`.
   - `wallets.lifecycle text NOT NULL DEFAULT 'active'` (`active`, `retiring`, `held`,
     `destroyed`), `wallets.destroy_after timestamptz`.
-  - `agents.status` admits `removed`.
-  - `transactions.intent_id` becomes nullable; `transactions.kind text NOT NULL DEFAULT 'intent'`
-    (`intent`, `sweep`), with `CHECK ((kind = 'intent') = (intent_id IS NOT NULL))`.
+  - `NotificationEvent` gains `lifecycle.scheduled` and `lifecycle.due_soon` (D10), keyed to the
+    retire or delete approval's id like every outbox row.
 - `apps/server/src/lifecycle/kinds.ts`: approval kind handlers in `registerLifecycleKinds`,
-  called at boot next to `registerDirectoryKinds` (`apps/server/src/directory/kinds.ts:416`) and
-  `registerIntentKind` (`apps/server/src/execution/intents.ts:954`):
-  - `sweep-wallet`: opening requires owner role and a wallet in `active` lifecycle; threshold is
-    the workspace's admin threshold. The server does not pre-filter the destination (the web UI
-    offers only allowed ones); the signer's refusal becomes the approval's `failure_code`, so the
-    release gate can prove the signer enforces it. Applying: read the balance (`chains.balances`), compute the
-    amount (native: `balance − gas × maxFeePerGas`, refused with `nothing_to_sweep` when not
-    positive; ERC-20: `balanceOf`), reserve a nonce (`nonce_reservations`), call
-    `signer.sweep`, insert a `transactions` row with `kind = 'sweep'`, broadcast and watch with
-    the existing steps in `apps/server/src/execution/steps.ts`.
+  called from `registerExecution` (`apps/server/src/execution/index.ts:30-38`) next to the
+  others. Both use `confirmationSubject: envelopeOnly` as the directory kinds do.
   - `retire-wallet`: opening requires owner role; the envelope's wallet is read from the signer
-    (`getWallet`), never from the control plane's mirror. Applying: `signer.retireWallet`,
-    mirror the state.
+    (`getWallet`), never from the control plane's mirror. Applying: `signer.retireWallet`, mirror
+    the state, cancel waiting `grant-mandate` and `sweep-wallet` requests for the wallet, mark the
+    wallet's mandate mirrors ended, append `wallet.retiring`, write the D10 outbox rows.
   - `delete-workspace`: opening requires owner role and a paused workspace; the envelope's
-    wallet set is built from the signer's own answer (`getWallet` for each mirrored wallet, plus
-    a check that the signer reports no other). Applying: `signer.deleteWorkspace`, mirror.
+    wallet set is built from the signer's own answer (`getWallet` for each mirrored wallet, plus a
+    check that the signer reports no other). Applying: `signer.deleteWorkspace`, mirror, cancel
+    every waiting request of the workspace except itself, mark mandate mirrors ended, append
+    `workspace.deleting`, write the D10 outbox rows.
+  - The mandate mirror already maps the signer's `requested` to `MandateEndedReason` `revoked`
+    (`apps/server/src/execution/mandates.ts:121`, `packages/api/src/dto.ts:410-417`); no new
+    reason is needed.
+- `apps/server/src/directory/routes.ts` `disableAgent` (D12): also cancel the agent's waiting
+  `approve-intent` requests (`ctx.approvals.cancel`, then `signer.revokeApproval`, because
+  `cancel` alone does not revoke at the signer), in the same best-effort step that revokes its
+  mandates.
 - `apps/server/src/lifecycle/preflight.ts`: `deletionPreflight(ctx, workspaceId)` returns per
   wallet the balances of native coin and every asset in its policy, `source: "control-plane"`,
-  and blockers: `pending_approvals`, `unfinished_runs`, `unmined_transactions`,
-  `nonzero_balance`. Advisory; the UI shows it on the request and on the approval card.
-- `apps/server/src/lifecycle/finalize.ts`: `startLifecycleSweeper(ctx)`, started by
-  `startBackground` (`apps/server/src/execution/index.ts`, called from `apps/server/src/main.ts:68`),
-  every 60 seconds:
+  and blockers: `pending_approvals`, `unfinished_runs` (mandate uses included),
+  `unmined_transactions`, `nonzero_balance`. Advisory; the web approval page shows it.
+- `apps/server/src/lifecycle/finalize.ts`: `finalizeDue(ctx)`, called from the existing
+  sweeper in `apps/server/src/execution/index.ts` and throttled to once a minute:
   1. For each wallet `retiring` and each workspace `deleting` whose `destroy_after` passed.
   2. Cancel pending approvals of the subject (status `cancelled`, `signer.revokeApproval`,
      resume outbox set to `needed` so the run ends). If a run of the workspace is not finished
-     (`approvals.run_id` of rows not in a final status), skip this round.
+     (`approvals.run_id` of rows not in a final status, `mandate-use` rows included), skip this
+     round.
   3. If a transaction of the subject is `signed`, `broadcast` or `stuck`, skip and keep the
      blocker visible (pending D7).
   4. Append the audit event (`wallet.destroyed` or `workspace.deleted`) unless the newest event
@@ -482,11 +627,14 @@ Files and interfaces:
      means the clocks differ: skip this round.
   6. For a workspace: `keys.shredTenant("run", workspaceId)`, then
      `keys.shred("workspace", workspaceId)`.
-  7. Tombstone in one transaction: `workspaces.name = 'Deleted workspace'`,
-     `lifecycle = 'deleted'`, `deleted_at`; `wallets.label = ''`, `lifecycle = 'destroyed'`;
-     agents `status = 'removed'`, `name = 'Removed agent'`,
+  7. Tombstone in one transaction, audit append first (it takes the workspace row
+     `FOR NO KEY UPDATE`; nothing here may take `FOR UPDATE`): `workspaces.name = 'Deleted
+     workspace'`, `lifecycle = 'deleted'`, `deleted_at`; `wallets.label = ''`,
+     `lifecycle = 'destroyed'`; agents `status = 'disabled'`, `name = 'Removed agent'`,
      `token_hash = 'removed:' || id`; delete `memberships`, `invites`, `approver_credentials`,
-     `approval_assertions`, `approval_rejections`, `nonce_reservations` of the workspace.
+     `approval_assertions`, `approval_rejections`, `nonce_reservations` and
+     `notification_preferences` of the workspace; set every `notification_deliveries` row of the
+     workspace still `pending` to `dropped` with `last_code = 'workspace_deleted'`.
   8. Log `lifecycle.finalized` with ids and counts, and print the keyring rotation commands
      once per workspace deletion (pending D5).
 - `apps/server/src/lifecycle/routes.ts` and `packages/api/src/routes.ts`:
@@ -494,149 +642,157 @@ Files and interfaces:
   - `requestDeleteWorkspace` `POST /api/v1/workspaces/:workspaceId/delete`
     `{ destroyAfter }` → `ApprovalSummary`. Refused with `conflict` unless paused.
   - `cancelDeleteWorkspace` `POST /api/v1/workspaces/:workspaceId/delete/cancel`: any member.
-  - `requestSweep` `POST /api/v1/workspaces/:workspaceId/wallets/:walletId/sweep`
-    `{ chainId, asset, to, maxFeeWei }` → `ApprovalSummary`.
   - `requestRetireWallet`, `cancelRetireWallet` on
     `/api/v1/workspaces/:workspaceId/wallets/:walletId/retire[/cancel]`.
-  - `removeAgent` `POST /api/v1/workspaces/:workspaceId/agents/:agentId/remove`: owner;
-    `status = 'removed'`, pending intents of the agent cancelled and revoked at the signer. The
-    wallet stays; the UI then offers sweep and retire.
-  - The MCP gateway (`apps/server/src/mcp/gateway.ts`) treats `removed` like `disabled`; every
-    route refuses a workspace whose lifecycle is not `active` with `conflict`, except pause, the
-    cancel routes and reads.
+  - Every route refuses a workspace whose lifecycle is not `active` with `conflict`, except
+    pause, the cancel routes, notification settings and reads. The MCP gateway already refuses a
+    disabled agent (`apps/server/src/mcp/gateway.ts:454`); it also refuses every agent of a
+    workspace that is not `active`.
 - Tests, with the fake signer, the soft authenticator and the test chain:
   - `apps/server/test/lifecycle/delete.test.ts`: request, approve, cancel, request again,
     approve, advance the clock, sweeper finalizes; afterwards opening any sealed column of the
     workspace throws `DataKeyUnavailableError`, and so does reading a payload of any of its runs
-    through the World; the audit chain still verifies and its last
-    action is `workspace.deleted`; the run of a pending approval ended before shredding; an
-    unmined transaction blocks finalize until it confirms; a crash between steps 5 and 6
-    (simulated by throwing once) completes on the next round.
-  - `apps/server/test/lifecycle/sweep.test.ts`: native sweep leaves less than
-    `gas × maxFeePerGas` behind; ERC-20 sweep leaves zero; a disabled agent's wallet is swept.
-  - `apps/server/test/lifecycle/agent.test.ts`: a removed agent's token gets 403 at the gateway;
-    its pending intents end `cancelled` and are revoked at the signer.
+    through the World; the audit chain still verifies and its last action is
+    `workspace.deleted`; the run of a pending approval ended before shredding; an unmined
+    transaction blocks finalize until it confirms; a live mandate is revoked when the deletion is
+    applied, not at finalize; no `pending` delivery of the workspace remains; a crash between
+    steps 5 and 6 (simulated by throwing once) completes on the next round; a proposal racing the
+    tombstone does not deadlock.
+  - `apps/server/test/lifecycle/retire.test.ts`: retire, cancel to `held`, new policy back to
+    `active`; retire again and finalize.
+  - `apps/server/test/directory/directory.test.ts` (extend): disabling cancels the agent's
+    waiting payment requests and revokes them at the signer.
 
 Acceptance:
 
-- CI job `test` passes the three files; `bun run build:workflows` still builds (the workflow
+- CI job `test` passes the files above; `bun run build:workflows` still builds (the workflow
   bundle is unchanged).
 
 ### Milestone 5: export and clone
 
 Scope: `apps/server/src/lifecycle/`. Independent of Milestones 2 to 4 except for the shared
-schema; may run in parallel with Milestone 4.
+schema; may run in parallel with Milestone 4. Nothing of it is built.
 
 Files and interfaces:
 
 - `apps/server/src/lifecycle/template.ts`: `WorkspaceTemplate` (zod, strict):
-  `{ format: "askgina.os/workspace-template/v1", name, adminThreshold, wallets: [{ ref, kind, label, agent: { name } | null, policy: PolicyTemplate | null }], members: [{ userId, role }] }`.
+  `{ format: "askgina.os/workspace-template/v1", name, adminThreshold, notificationDetail, wallets: [{ ref, kind, label, agent: { name } | null, policy: PolicyTemplate | null }], members: [{ userId, role }] }`.
   `PolicyTemplate` is `WalletPolicy` without `v`, `workspaceId`, `walletId`, `revision`,
-  `previousHash`, and with `requesters` as wallet `ref`s of template agents.
+  `previousHash`, and with `requesters` as wallet `ref`s of template agents. No mandate (D11).
   `toTemplate(ctx, workspaceId)` and `instantiatePolicy(template, ids)` (revision 1, new ids).
 - `apps/server/src/lifecycle/export.ts`: `writeRecord(ctx, workspaceId, sink)` streams JSON Lines:
   a header `{ format: "askgina.os/workspace-record/v1", workspaceId, exportedAt, auditHead: { seq, hash }, signerDecisionHead: { seq, hash } }`,
   then `audit` lines (chained fields, `salt`, opened `detail`), `intent`, `transaction`,
-  `policy-revision` and `signer-decision` lines. Owner role and a passkey sign-in no older than
-  300 seconds (`sessions.created_at`); appends `workspace.exported`.
-- `apps/server/src/audit.ts`: export `auditEntryHash(fields)` and the sealed-detail digest so the
-  verifier uses the same code.
+  `policy-revision`, `mandate` (opened, with its status and counts from the signer) and
+  `signer-decision` lines. Owner role and a passkey sign-in no older than 300 seconds
+  (`sessions.created_at`); appends `workspace.exported`.
+- `apps/server/src/audit.ts`: export `entryHash` and the sealed-detail digest so the verifier uses
+  the same code.
 - `apps/server/src/lifecycle/verify-record.ts`: `verifyRecord(lines)` and a CLI
   (`node apps/server/src/lifecycle/verify-record.ts <file>`) that recomputes every audit hash,
-  every detail digest from `salt` and `detail`, the chain links, the head, and the signer
-  decision chain; exit 0 when valid, 2 with the first broken line otherwise.
+  every detail digest from `salt` and `detail`, the chain links, the head, every mandate hash, and
+  the signer decision chain; exit 0 when valid, 2 with the first broken line otherwise.
 - `apps/server/src/lifecycle/clone.ts`: `cloneWorkspace(ctx, session, { sourceId | template, name, includeAgents, includeMembers })`:
   create the workspace through the existing directory path (the person cloning is its first
   approver at the signer), create the treasury and agents through the existing paths (new
   wallets, tokens shown once), open one `set-policy` approval per wallet with the instantiated
-  policy, create invites for template members with their roles (same installation only; a
-  template from elsewhere has its members dropped). The template's admin threshold is shown as a
-  reminder, not applied, because it cannot exceed the number of approvers yet. Appends
-  `workspace.cloned` with the source id (or the template digest) in its detail.
+  policy, set the notification content level, create invites for template members with their
+  roles (same installation only; a template from elsewhere has its members dropped). The
+  template's admin threshold is shown as a reminder, not applied, because it cannot exceed the
+  number of approvers yet. Appends `workspace.cloned` with the source id (or the template digest)
+  in its detail.
 - Routes in `packages/api/src/routes.ts`: `exportTemplate`
   `GET /api/v1/workspaces/:workspaceId/export/template`; `exportRecord`
   `GET /api/v1/workspaces/:workspaceId/export/record`; `cloneWorkspace`
   `POST /api/v1/workspaces/:workspaceId/clone`; `importTemplate` `POST /api/v1/workspaces/import`.
 - Tests: `apps/server/test/lifecycle/export.test.ts` (a record verifies; changing one byte of an
   audit detail, deleting the last line, or reordering two lines fails verification; no line
-  contains an agent token, a session id, a sealed blob or a signed raw transaction);
+  contains an agent token, a session id, a sealed blob, a confirmation link token, a push
+  endpoint or a signed raw transaction);
   `apps/server/test/lifecycle/clone.test.ts` (the clone's wallets have new addresses; the
-  signer holds no policy for them until the `set-policy` approvals are approved; the clone has no
-  intents, approvals other than the policy proposals, transactions, or audit events other than
-  its own; a template that names an address list keeps it; requesters point at the clone's
-  agents).
+  signer holds no policy and no mandate for them until people approve; the clone has no
+  intents, approvals other than the policy proposals, transactions, mandates, or audit events
+  other than its own; a template that names an address list keeps it; requesters point at the
+  clone's agents).
 
 Acceptance:
 
 - CI job `test` passes both files.
 
-### Milestone 6: web UI
+### Milestone 6: web UI and confirmation page
 
-Scope: `apps/web`.
+Scope: `apps/web`, `apps/approve`.
+
+Delivered: "Empty this wallet" and the sweep approval card (with the sweep).
 
 Files and interfaces:
 
 - `apps/web/src/routes/settings.tsx`: "Export" (template, record), "Clone", "Delete workspace"
-  with the preflight, a `destroyAfter` picker defaulting to the signer minimum, and a visible
-  countdown with "Cancel deletion" while `deleting`.
-- `apps/web/src/routes/wallet.tsx`: "Empty this wallet" (one sweep request per asset with a
-  balance), "Retire wallet", cancel.
-- `apps/web/src/routes/agent.tsx`: "Remove agent".
-- `apps/web/src/routes/approval.tsx`: cards for the three kinds. The delete and retire cards show
-  every wallet id and full address from the envelope, the destroy time, and the balances labelled
-  "read by the server; the signer cannot check balances". The sweep card shows asset, full
-  destination address and that caps do not apply.
-- `apps/web/dev/fixture-server.ts`: fixtures for the new routes.
-- `apps/web/test/journey.e2e.ts`: journeys "delete with balance shown and cancel", "sweep a
-  wallet", at the phone and desktop viewports used today.
+  with the preflight, a `destroyAfter` picker defaulting to the signer minimum (from
+  `WorkspaceState.minDestroyDelaySeconds`), and a visible countdown with "Cancel deletion" while
+  `deleting`.
+- `apps/web/src/routes/wallet.tsx`: "Retire wallet", cancel.
+- `apps/web/src/routes/agent.tsx`: the disable dialog says waiting payment requests end too.
+- `apps/web/src/routes/approval.tsx`: descriptions for the two kinds, with the balances labelled
+  "read by the server; the signer cannot check balances", and the link to the confirmation page.
+- `apps/approve/public/approve.js`: text for `keys_destroyed` and `balances_unchecked`.
+- `apps/web/src/lib/codes.ts`: text for the new signer error codes.
+- `apps/web/dev/fixture-server.ts` and `apps/web/dev/confirm/`: fixtures for the new routes and
+  the two confirmation views.
+- `apps/web/test/journey.e2e.ts`: journeys "delete with balance shown, confirm, and cancel" and
+  "retire a wallet", at the phone and desktop viewports used today.
 
 Acceptance:
 
 - CI job `ui` passes the new journeys (virtual authenticator, fixture server).
+- `apps/approve` tests pass in CI job `test` with the two warnings.
 
 ### Milestone 7: release gates and documentation
 
 Scope: `e2e/`, `.github/workflows/ci.yml` (only if a job needs a new variable), `docs/`,
 `deploy/README.md`.
 
+Delivered: the sweep gates (the draft's tests 1 and 2), by
+`release-gates.spec.ts:686` with the signer's and server's sweep tests.
+
 Files and interfaces:
 
 - `e2e/compose.e2e.yaml`: `SIGNER_MIN_DESTROY_DELAY_SECONDS: "0"` for the gate stack only.
 - `e2e/test/lifecycle.spec.ts`, run by `e2e/run.sh` on the first stack after
   `release-gates.spec.ts`:
-  1. "a wallet swept to its allowlisted address keeps only dust": native and ERC-20 on anvil.
-  2. "the signer refuses a sweep to an address the approvers never allowed": request a sweep to
-     an unlisted address through the API and approve it with the soft authenticator; the approval
-     ends `failed` with `sweep_destination_not_allowed` from the signer, and the chain shows no
-     transaction from the wallet.
-  3. "a deleted workspace signs nothing and nothing it stored can be opened": create, propose,
-     approve, plant markers, delete with `destroyAfter = now + 5`, wait for the sweeper; then
-     `docker compose exec signer ls` shows no vault file for its wallets; the plaintext scanner
-     (`packages/testkit/src/scan.ts`) finds no marker; the signer's SQLite, read with
+  1. "a deleted workspace signs nothing and nothing it stored can be opened": create, propose,
+     approve on the confirmation page, grant a mandate, plant markers, delete with
+     `destroyAfter = now + 5`, wait for the sweeper; then `docker compose exec signer ls` shows
+     no vault file for its wallets; the plaintext scanner (`packages/testkit/src/scan.ts`) finds
+     no marker in Postgres or in the signer's SQLite; the signer's SQLite, read with
      `docker compose exec signer node -e` and `node:sqlite`, shows the workspace `deleted`, its
-     wallets `destroyed` with empty `sealed_credential`, and a last decision `delete-workspace`;
-     `admin.ts verify-log` for the workspace exits 0.
-  4. "cancelling a deletion keeps the keys and leaves the workspace paused".
-  5. "a deletion waits for an unmined transaction": anvil automine off, approve, delete, the
+     wallets `destroyed` with empty `sealed_credential`, its mandate revoked with a blank text,
+     no confirmation rows, and a last decision `delete-workspace`; `admin.ts verify-log` for the
+     workspace exits 0.
+  2. "approving a deletion ends its mandates at once, and cancelling keeps the keys and leaves the
+     workspace paused".
+  3. "a deletion waits for an unmined transaction": anvil automine off, approve, delete, the
      sweeper skips; mine; it finalizes.
-  6. "after deletion and a keyring rotation, an old database copy cannot be opened": `pg_dump`
+  4. "after deletion and a keyring rotation, an old database copy cannot be opened": `pg_dump`
      before deletion; delete; rotate (`rotate-keyring.mjs add`, `cli.ts rewrap`,
      `prune --confirm-rewrapped`); restore the dump into a scratch database; opening a sealed
      column of the deleted workspace with the current keyring fails, and with the keyring copy
      saved before the rotation succeeds.
+  5. "a scheduled deletion is announced to the webhook, signed, with no sealed content" (if D10).
 - `e2e/run.sh`: run `lifecycle.spec.ts` after `release-gates.spec.ts` on the first stack.
-- `docs/approval-protocol.md`: §5 rows for `sweep-wallet`, `retire-wallet`,
-  `delete-workspace`; §8 the sweep rule and the destroy rule; §11 vectors.
+- `docs/approval-protocol.md`: §5 rows for `retire-wallet` and `delete-workspace`; §8 the destroy
+  rule; §10 the routes; §11 vectors.
 - `docs/threat-model.md`: a "Deleting and exporting" subsection with the table under "Threat
-  model after this change" below; "Out of scope" drops lifecycle.
-- `docs/architecture.md` "Where state lives": what a deleted workspace leaves.
-- `deploy/README.md`: "Deleting a workspace, and what backups still hold": the erasure window;
-  rotate after deletion; keep keyring backups on a stated retention; resolve the conflict with
-  `packages/keys/README.md:72-73` in one direction.
+  model after this change" below; "Out of scope for v0.1" (`:631-632`) drops the lifecycle item.
+- `docs/architecture.md` "Where state lives" (`:282-305`): what a deleted workspace leaves, in
+  each store.
+- `deploy/README.md` "Backups and restoring": the erasure window; rotate after deletion; keep
+  keyring backups on a stated retention; a restore after a deletion brings the workspace back
+  and is fenced like every restore.
 
 Acceptance:
 
-- CI jobs `stack (amd64)`, `stack (arm64)` pass `lifecycle.spec.ts` (all six tests). `stack
+- CI jobs `stack (amd64)`, `stack (arm64)` pass `lifecycle.spec.ts` (all its tests). `stack
   (tls)` skips the first stack as today.
 - CI job `check` passes (docs are Biome-formatted where applicable).
 
@@ -649,89 +805,101 @@ Files and interfaces:
 - `apps/server/src/identity/erase.ts`, route `POST /api/v1/me/erase` and an operator command
   `node apps/server/src/identity/erase-cli.ts --user <id>`: refuse while the person is the last
   approver able to meet any workspace's thresholds (they must be replaced first through
-  `remove-approver` approvals); remove memberships; revoke and delete `credentials`; delete
-  `sessions`; set `users.display_name = 'Erased person'`; append `member.erased` to each
-  workspace they belonged to. User ids stay in `audit_events.actor_id` and
-  `approval_assertions`.
+  `remove-approver` approvals, which also end every mandate they granted); remove memberships;
+  revoke and delete `credentials`; delete `sessions`, `push_subscriptions` and
+  `notification_preferences`; set `users.quiet_hours = NULL` and `users.display_name = 'Erased
+  person'`; drop their `pending` deliveries; append `member.erased` to each workspace they
+  belonged to. User ids stay in `audit_events.actor_id`, `approval_assertions`,
+  `notification_deliveries.user_id`, and at the signer in `approvers` history, `mandate_grantors`
+  and `confirmation_assertions` until those confirmations end.
 - `apps/server/test/identity/erase.test.ts`.
 
 Acceptance:
 
 - CI job `test` passes `erase.test.ts`: after erasure the person cannot sign in, their name
-  appears nowhere in the `os` schema, and every audit chain still verifies.
+  appears nowhere in the `os` schema, no push subscription of theirs remains, and every audit
+  chain still verifies.
 
 ## Interfaces and Dependencies
 
 Local interfaces:
 
-- `Signer.sweep(request: SweepRequest): Promise<SignResponse>`:
-  - Inputs: a `sweep-wallet` authorization at the admin threshold; `amount` in base units;
-    `TransactionParams`.
-  - Outputs: the signed transfer, idempotent per approval id.
-  - Failures: `envelope_mismatch`, `wallet_retired`, `workspace_deleting`, `workspace_deleted`,
-    `sweep_destination_not_allowed`, `fee_cap_exceeded`, `insufficient_approvals`,
-    `nonce_reused`, `approval_revoked`, `vault_error`.
+- `Signer.sweep(walletId, request: SweepRequest): Promise<SignResponse>`: built. This plan adds
+  the refusals `wallet_retired`, `workspace_deleting`, `workspace_deleted`.
 - `Signer.retireWallet`, `Signer.deleteWorkspace(id, authorization): Promise<WalletState | WorkspaceState>`:
-  - Failures: `wallet_set_mismatch`, `destroy_delay_out_of_range`, `conflict` (wrong state),
-    the verification codes of `authorizedChange`.
+  - Failures: `wallet_set_mismatch`, `destroy_delay_out_of_range`, `envelope_fenced`,
+    `conflict` (wrong state), the verification codes of `authorizedChange`.
 - `Signer.cancelRetireWallet`, `Signer.cancelDeleteWorkspace`: request signature only; `conflict`
   when not in `retiring` or `deleting`.
 - `Signer.finalizeRetireWallet`, `Signer.finalizeDeleteWorkspace`: request signature only;
   `destroy_not_due`; idempotent.
 - `Vault.destroyWallet(walletId): void`: throws `VaultError("failed")` on anything but success or
   not-found.
+- `renderConfirmation(input)`: renders `retire-wallet` and `delete-workspace` from the envelope
+  and the signer's wallet records.
 - `DataKeyStore.shredTenant(scope, tenantId): Promise<{ shredded: number }>`.
 - `deletionPreflight(ctx, workspaceId): Promise<DeletionPreflight>` (advisory).
+- `finalizeDue(ctx): Promise<{ finalized: number; skipped: number }>`.
 - `writeRecord(ctx, workspaceId, sink)`, `verifyRecord(lines): { ok: boolean; brokenAt: number | null }`.
 - `cloneWorkspace(ctx, session, input): Promise<{ workspaceId; approvals: ApprovalSummary[] }>`.
+
+Dependencies on other plans:
+
+- Trusted display (built): both new kinds are approved on the confirmation page.
+- Mandates (built): retire and delete revoke mandates; the record exports them.
+- Notifications (built, Ready for Review): D10 adds two events to its outbox.
+- Stuck-transaction repricing (in flight): signer schema version 6 and `cancel-transaction`, the
+  way out of a D7 blocker; its attempts table must be blanked at finalize.
+- Beyond one machine ([#25](https://github.com/askgina/os/issues/25), draft): the keyring and
+  backup custody behind D5.
 
 External dependencies:
 
 - `@open-wallet-standard/core` 1.4.5:
   - Version/source checked: installed `index.d.ts` (`deleteWallet`, `exportWallet`,
-    `listApiKeys`, `revokeApiKey`, `ApiKeyResult.id`).
+    `listApiKeys`, `revokeApiKey`, `ApiKeyResult.id`), as read for the report on 2026-11-14.
   - Expected behavior: `deleteWallet` removes the wallet file; `revokeApiKey` removes the key
     file; `exportWallet(name, passphrase)` returns the mnemonic (OWS research, F7).
   - Failure handling: classified by `classifyOwsError`; "not found" on destroy is success.
 - `node:sqlite` (Node 26): `PRAGMA secure_delete`, `PRAGMA user_version`,
   `PRAGMA wal_checkpoint(TRUNCATE)`, `ALTER TABLE … ADD COLUMN` with `CHECK` and a non-null
   default ([SQLite ALTER TABLE](https://www.sqlite.org/lang_altertable.html)).
-- `viem` (as pinned): `encodeFunctionData` for the ERC-20 sweep, as in `buildTransaction`.
 - Workflow 5.5.0 / `@workflow/world-postgres` 5.2.0: no API change; runs end through the
-  existing outbox before keys are shredded.
+  existing outbox before keys are shredded. Versions re-read in `apps/server/package.json` on
+  2026-11-15.
 
 ## Threat model after this change
 
 A compromised control plane (its process, or write access to its database):
 
-| Can                                                                                                                                                            | Cannot                                                                                                                                                           |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ask for a deletion, retirement or sweep, and show approvers a misleading card for it (the trusted-display gap, [#20](https://github.com/askgina/os/issues/20)) | Destroy a key without assertions at the admin threshold over an envelope naming that exact wallet set                                                            |
-| Report false balances on the delete card, so approvers acknowledge a loss they would not have                                                                  | Destroy a key before `destroyAfter`, or set a delay below the signer's minimum                                                                                   |
-| Cancel any deletion or retirement (only delays it; keys survive)                                                                                               | Make a cancelled deletion sign again: the workspace stays paused until `resume-workspace` is approved                                                            |
-| Choose the amount when it asks for a sweep (the person approves that exact amount)                                                                             | Sweep to a destination outside the wallet's allowlist other than the workspace's own treasury; sweep twice under one approval; exceed the envelope's fee ceiling |
-| Withhold or alter an export it produces; read every sealed value it could already read                                                                         | Export a wallet key: no route exists; only the signer host's admin CLI can                                                                                       |
-| Put a fabricated policy in a clone's proposals                                                                                                                 | Make any clone policy effective without the clone's approvers' passkeys; give a clone an existing key                                                            |
-| Leave runs unfinished or skip the sweeper, so deletion never completes                                                                                         | Revive a deleted workspace at the signer, reuse its approval ids or envelope nonces                                                                              |
+| Can                                                                                          | Cannot                                                                                                                                                                       |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ask for a deletion or retirement people did not want, and describe it falsely in the web app | Make the confirmation page show another wallet set, address or destroy time than the envelope people sign: the signer renders it from its own records                        |
+| Report false balances in the web app, so approvers acknowledge a loss they would not have    | Destroy a key without assertions at the admin threshold over an envelope naming that exact wallet set; destroy before `destroyAfter`; set a delay below the signer's minimum |
+| Cancel any deletion or retirement (only delays it; keys survive)                             | Make a cancelled deletion sign again: the workspace stays paused until `resume-workspace` is approved; revive a mandate the deletion revoked                                 |
+| Skip the disable extension or the cancel of waiting requests                                 | Keep a mandate of a retiring or deleting wallet signing: the signer revokes it in the transaction that applies the approval                                                  |
+| Withhold or alter an export it produces; read every sealed value it could already read       | Export a wallet key: no route exists; only the signer host's admin CLI can                                                                                                   |
+| Put a fabricated policy in a clone's proposals                                               | Make any clone policy effective without the clone's approvers' passkeys; give a clone an existing key or mandate                                                             |
+| Leave runs unfinished or skip the sweeper, so deletion never completes                       | Revive a deleted workspace at the signer, reuse its approval ids or envelope nonces                                                                                          |
 
-What a successful attack can gain: with a misled approver, a sweep pays out only to an address
-already on the wallet's allowlist or to the treasury, so the gain is bounded by what approvers
-already allowed. A misled deletion destroys funds without moving them: sabotage, not theft, and
-recoverable from the operator's backups until they expire.
+What a successful attack can gain: a misled deletion destroys funds without moving them:
+sabotage, not theft, and recoverable from the operator's backups until they expire. The sweep's
+bound is unchanged: it pays only to an allowlisted address or the workspace's treasury.
 
 The signer host and the operator's backups are unchanged from v0.1: whoever holds them holds the
 wallets, including destroyed ones still in backups. A deleted workspace's sealed data stays
 readable to whoever holds a pre-deletion database copy and a keyring copy from before the next
-rotation.
+rotation; its confirmation subjects and mandate texts stay readable in pre-deletion signer
+backups.
 
 ## Concrete Steps
 
 From the repository root, on a branch, once the owner says go:
 
-    rg -n "resume-workspace" packages/protocol/src apps/signer/src apps/server/src   # every place a new kind must also be wired
+    rg -n "resume-workspace|grant-mandate" packages/protocol/src apps/signer/src apps/server/src apps/approve apps/web/src   # every place a new kind must also be wired
     bun run check
     bun run typecheck
-    git push   # CI runs `test`, `ui`, `stack (amd64|arm64|tls)`
+    git push   # CI runs `check`, `test`, `ui`, `stack (amd64|arm64|tls)`
 
 Expected evidence in CI logs (jobs named as in `.github/workflows/ci.yml`):
 
@@ -745,31 +913,37 @@ Local runs of whole suites, builds or the stack wait for the owner's word, as in
 
 Automated validation (all in CI):
 
-- `bun run test`: the protocol, signer, keys and server tests named in Milestones 1 to 5 and 8.
+- `bun run test`: the protocol, signer, keys, approve and server tests named in Milestones 1 to 6
+  and 8.
 - `bun run check`, `bun run typecheck`: clean.
 - `ui` job: the two new journeys.
-- `stack (amd64)`, `stack (arm64)`: `e2e/test/lifecycle.spec.ts`, six tests.
+- `stack (amd64)`, `stack (arm64)`: `e2e/test/lifecycle.spec.ts`.
 
 Manual or runtime validation:
 
 - Start: `docker compose --profile dev up --build` with `SIGNER_MIN_DESTROY_DELAY_SECONDS=60`.
-- Exercise: create a workspace and agent, fund the wallet, empty it with "Empty this wallet",
-  pause, delete with the earliest time, wait.
-- Observe: the countdown, then "Deleted"; `docker compose exec signer ls /data/vault/wallets`
-  lists no file for the wallet; `node apps/signer/src/admin.ts verify-log --workspace <id>` exits
-  0.
+- Exercise: create a workspace and agent, grant a mandate, fund the wallet, empty it with "Empty
+  this wallet", pause, delete with the earliest time and approve on the confirmation page, wait.
+- Observe: the confirmation page lists the wallet and the destroy time; the mandate shows
+  revoked at once; the countdown, then "Deleted"; `docker compose exec signer ls
+  /data/vault/wallets` lists no file for the wallet; `node apps/signer/src/admin.ts verify-log
+  --workspace <id>` exits 0.
 
 Regression checks:
 
 - `release-gates.spec.ts` and `browser.spec.ts` unchanged and green: lifecycle adds states but
-  an `active` workspace behaves as in v0.1.
-- The restore gate ("a restored backup keeps wallets and waiting approvals, and refuses a spent
-  one") still passes with a signer database at version 2.
+  an `active` workspace behaves as on main.
+- The restore gate ("a restored and fenced backup keeps wallets, refuses an approval used after
+  the backup and every approval issued before the restore, and signs a new proposal",
+  `release-gates.spec.ts:753`) and "the operator's restore fence ends every live mandate"
+  (`:1741`) still pass with a signer database at the new version.
+- The sweep gate (`:686`) and "disabling an agent revokes its mandates at the signer and cancels
+  its waiting grants" (`:1428`) still pass.
 
 ## Idempotence and Recovery
 
-- Migrations: `0002_lifecycle.sql` runs once under the existing advisory lock; the signer's
-  `user_version` migration runs in one transaction and is skipped at version 2.
+- Migrations: the lifecycle server migration runs once under the existing advisory lock; the
+  signer's `user_version` migration runs in the open transaction and is skipped once applied.
 - Every signer lifecycle call is idempotent: replays of the same envelope return the state;
   finalize on a destroyed wallet or deleted workspace returns the state.
 - The sweeper repeats every step safely: audit append checks the newest event; signer finalize is
@@ -778,19 +952,26 @@ Regression checks:
 - If the signer destroyed keys and the control plane crashed before shredding, the next round
   shreds. If the vault deletion succeeded and the SQLite transaction failed, the retry finds
   "not found" in OWS and completes.
+- A restore of a backup taken during the delay brings back a `deleting` workspace whose
+  countdown continues: finalize needs no envelope, so the restore fence does not stop it. Cancel
+  it if the restore was meant to undo the deletion.
 - Backout: before the first deletion is finalized, reverting the branch is safe (the new columns
-  are ignored by v0.1 code; the signer's added columns have defaults). After a finalize, keys are
-  gone on the live system; recovery is restoring the backup set from before it, which also
-  restores the deleted workspace.
+  are ignored by older code; the signer's added columns have defaults). An older signer refuses
+  a database at a newer version (`SchemaTooNewError`), so roll back the signer only together
+  with its data volume from before the upgrade. After a finalize, keys are gone on the live
+  system; recovery is restoring the backup set from before it, fenced, which also restores the
+  deleted workspace and ends its mandates.
 
 ## Rollout and Operations
 
 - Config: `SIGNER_MIN_DESTROY_DELAY_SECONDS` (default 604800), `SIGNER_MAX_DESTROY_DELAY_SECONDS`
-  (default 7776000). No control-plane variable; the UI reads the minimum from a new field in the
-  signer's `getWorkspace` answer or from a fixed copy in config (choose the former in M2).
-- Migration order: signer image first (it accepts v0.1 requests unchanged), then the server.
+  (default 7776000). No control-plane variable; the UI reads the minimum from
+  `WorkspaceState.minDestroyDelaySeconds`.
+- Migration order: signer and `approve` images first (the signer accepts older requests
+  unchanged; the page needs the two warnings), then the server.
 - Monitoring: log events `lifecycle.finalize_skipped` with the blocker code, `lifecycle.finalized`;
-  signer decisions `delete-workspace`, `destroy-wallet`, `export-wallet-by-operator`.
+  signer decisions `retire-wallet`, `delete-workspace`, `destroy-wallet`,
+  `export-wallet-by-operator`, and the mandate revocations.
 - Operations doc: after a deletion, run the keyring rotation in `deploy/README.md` and note the
   date; deleted data leaves backups only when keyring copies older than that date are destroyed.
 - Branch workflow: one branch, one PR per milestone or a stack, CI green per PR, as in v0.1.
@@ -799,44 +980,84 @@ Regression checks:
 
 - Risk: a person deletes a workspace that still holds an asset the control plane did not read
   (an unlisted token, an NFT).
-  Mitigation: the delete card says the balance list is partial and server-reported; the delay;
-  keys remain in backups until they expire; the operator's `export-wallet` before restore.
+  Mitigation: the confirmation page says the signer cannot see balances; the web app says its
+  balance list is partial and server-reported; the delay and its notifications (D10); keys remain
+  in backups until they expire; the operator's `export-wallet` before restore.
 - Risk: a signed, unmined transaction is broadcast after the key is gone.
   Mitigation: finalize waits for it (D7); signed raw transactions are blanked in the signer and
-  the workspace key that seals `transactions.raw` is shredded; old backups still hold them.
+  the workspace key that seals `transactions.raw` is shredded; old backups still hold them. A
+  `rejected` transaction whose nonce no later transaction used stays valid too; see D7.
 - Risk: a compromised control plane stalls deletion forever by cancelling.
   Mitigation: visible state; the operator can run finalize from the signer host (add
   `admin.ts finalize-delete` only if this proves needed).
 - Risk: the signer migration breaks an existing signer database.
-  Mitigation: `migrations.test.ts` with a v0.1 fixture; release notes say "back up first".
+  Mitigation: migration test from the previous version; release notes say "back up first".
+- Risk: the signer's clock decides `destroyAfter`, as it decides mandate windows and the restore
+  fence. A clock running ahead destroys early.
+  Mitigation: the deploy guide's clock section already applies; the delay's minimum dwarfs any
+  plausible drift.
+- Risk: the tombstone transaction deadlocks with a concurrent proposal, as `FOR UPDATE` did.
+  Mitigation: append the audit event first, take no stronger lock (Milestone 4 step 7); test it.
 - Open question D1 (owner): what deletion does to keys. Options: (a) signer destroys them after
-  a delay, approved at the admin threshold (recommended); (b) destroy at once on approval;
-  (c) never destroy; deletion is a permanent pause and tombstone.
-- Open question D2 (owner): minimum delay. Options: 0; 72 hours; 7 days (recommended); 30 days.
-- Open question D3 (owner): sweep destinations. Options: allowlist or own treasury
-  (recommended); any address in the envelope; no sweep kind (raise caps with `set-policy`, then
-  agent intents).
+  a delay, approved at the admin threshold (recommended: irreversible acts need the signing bar
+  and a window to notice); (b) destroy at once on approval; (c) never destroy; deletion is a
+  permanent pause and tombstone. Still open.
+- Open question D2 (owner): minimum delay. Options: 0; 72 hours; 7 days (recommended: notifications
+  now reach people, and a week matches the mandate window chosen for #19); 30 days. Still open.
+- Open question D3 (owner): sweep destinations. Answered (2026-11-14): allowlist or own treasury.
+  Built and proven in CI; no longer open.
 - Open question D4 (owner): key export. Options: none at all; signer admin CLI only
-  (recommended); over HTTP encrypted to a recipient key in a passkey envelope.
+  (recommended: adds no power the host lacks, and fits next to `fence` and `revoke-mandate`);
+  over HTTP encrypted to a recipient key in a passkey envelope. Still open.
 - Open question D5 (owner): erasure from backups. Options: document only; rotate the keyring after
-  each deletion with a stated keyring backup retention (recommended); a KEK per workspace.
+  each deletion with a stated keyring backup retention (recommended: the only option that ends
+  the window without a keyring format change); a KEK per workspace. Still open; the docs
+  contradiction it was also about is resolved on main.
 - Open question D6 (owner and counsel): erasing a person under GDPR Article 17 while the audit
-  chain keeps their user id. Options: erase names, passkeys and sessions and keep ids
-  (recommended, Milestone 8, pending legal advice); change the chain to commit to
-  `HMAC(per-person salt, userId)` and delete the salt on erasure; no erasure feature.
-- Open question D7 (owner): finalize with an unmined transaction. Options: wait (recommended);
-  allow after an explicit acknowledgment in the envelope.
+  chain keeps their user id. Options: erase names, passkeys, sessions, push subscriptions,
+  notification settings and quiet hours and keep ids (recommended, Milestone 8, pending legal
+  advice: notifications added personal data that is easy to delete); change the chain to commit to
+  `HMAC(per-person salt, userId)` and delete the salt on erasure; no erasure feature. Still open.
+- Open question D7 (owner): finalize with an unmined transaction. Options: wait (recommended:
+  once repricing lands, its `cancel-transaction` clears a stuck one while paused, so waiting no
+  longer means waiting forever); allow after an explicit acknowledgment in the envelope. New
+  sub-question: also wait for a `rejected` transaction until a later one has used its nonce
+  (recommended: yes, it can still be mined).
+- Open question D8 (owner, new): mandates on retire and delete. Options: revoke when the approval
+  is applied, reason `requested` (recommended: a mandate signs without a person, so it must end
+  when people decide, and no table rebuild is needed); revoke at finalize; a new reason such as
+  `wallet_retired` (needs a SQLite table rebuild for the `CHECK`).
+- Open question D9 (owner, new): signer-side plaintext at finalize. Options: keep confirmations
+  and mandate texts; delete confirmation rows and blank mandate texts, keeping ids, hashes and
+  counts (recommended: they are the last readable copies of what people and agents typed); delete
+  the mandate rows too (breaks the append-only rule the counts rely on).
+- Open question D10 (owner, new): notify during the delay. Options: only the existing
+  `approval.opened` for the request; also when the deletion is applied and 24 hours before it
+  finalizes (recommended: the delay protects only if someone notices); a daily reminder until it
+  finalizes.
+- Open question D11 (owner, new): what clone and export carry of the new state. Options: template
+  with the notification content level and no mandate, record with mandates and uses
+  (recommended: authority is granted again, history is exported); also clone mandates as
+  proposals; leave mandates out of the record.
+- Open question D12 (owner, new): removing an agent. Options: disable is removal, extended to
+  cancel the agent's waiting payment requests (recommended: disabled is already final and
+  already ends mandates); a separate `removed` status as drafted.
 
 ## Artifacts and Notes
 
-Evidence is in the report. Key lines:
+Evidence on main (`2911c20`). Key lines:
 
-    apps/signer/src/db.ts:37        sealed_credential BLOB NOT NULL
-    apps/signer/src/db.ts:73        signed_transaction TEXT NOT NULL
-    packages/protocol/src/evaluate.ts:38   if (!policy.requesters.includes(intent.agentId)) {
+    apps/signer/src/db.ts:40                sealed_credential BLOB NOT NULL
+    apps/signer/src/db.ts:76                signed_transaction TEXT NOT NULL
+    apps/signer/src/db.ts:205-206           const MIGRATIONS = [VERSION_1 … VERSION_5]; SCHEMA_VERSION = MIGRATIONS.length
+    apps/server/src/execution/mandates.ts:590   for (const grant of waiting) await ctx.approvals.cancel(grant.id);
     apps/server/src/execution/workflow-runtime.ts:140   { [TENANT_START_OPTION]: input.workspaceId }
-    deploy/README.md:60-61          back up postgres-data, server-secrets, signer-data, signer-secrets and db-secrets together
-    packages/keys/README.md:72      keep it out of the database, out of backups that sit next to the database
+    apps/server/src/execution/transactions.ts:307   // Never accepted and no longer offered: its nonce is free again for this wallet.
+    deploy/README.md:120-121                Back up postgres-data, server-secrets, signer-data, signer-secrets and db-secrets together, from the same moment
+    packages/keys/README.md:72-75           A backup needs both the database and the keyring from the same moment … store the two archives encrypted, and apart if you can
+
+    CI run 43710836888 (98cc6a1), stack (amd64):
+      ✓ 19 test/release-gates.spec.ts:686:1 › a person empties a disabled agent's wallet to the treasury while paused, and the signer refuses any other destination (7.3s)
 
 ## Revision Notes
 
@@ -846,3 +1067,15 @@ Evidence is in the report. Key lines:
   amount, no `to` in the plaintext envelope); `transactions.intent_id` is nullable instead of a
   `kind` column; the signer's migrations start at version 2 for the restore fence. The milestone
   text above still describes retire, delete, export and clone as drafted.
+- 2026-11-15: Re-checked against main (`2911c20`) after trusted display, the v0.1 defect fixes,
+  mandates and notifications landed. The sweep is proven in CI and its parts are removed from
+  Milestones 1, 2, 4, 6 and 7. Retire and delete are approved on the signer's confirmation page
+  (new subject handling and warnings in Milestone 1, `approve` text in Milestone 6). The signer
+  version moves to the next free one (7 after repricing's 6) and the server migration to the next
+  free number (`0007`). Retire and delete revoke mandates; finalize removes signer-side
+  confirmations and blanks mandate texts; the tombstone drops undelivered notifications and
+  per-workspace notification preferences; person erasure covers push subscriptions, preferences
+  and quiet hours; the record exports mandates. "Remove agent" is folded into disable. The
+  lifecycle step runs from the existing 3-second sweeper; the tombstone respects the
+  `FOR NO KEY UPDATE` audit lock. Threat model, context, line references, validation and risks
+  updated. D3 marked answered; D8-D12 added. Nothing of retire, delete, export or clone is built.

@@ -4,8 +4,8 @@
 - Status: Draft
 - Owner(s): Eric Juta
 - Created: 2026-11-14
-- Last Updated: 2026-11-14
-- Links: [Ticket #26](https://github.com/askgina/os/issues/26) | [Map #18](https://github.com/askgina/os/issues/18) | [Research](./research/busy-fork.md) | [eve research](./research/eve-without-vercel-services.md) | PR: none
+- Last Updated: 2026-11-15
+- Links: [Ticket #26](https://github.com/askgina/os/issues/26) | [Map #18](https://github.com/askgina/os/issues/18) | [Research](./research/busy-fork.md) | [eve research](./research/eve-without-vercel-services.md) | Built on main since the draft: [trusted display](./trusted-display.md), [mandates](./approval-mandates.md), [notifications](./approval-notifications.md) | PR: none
 
 This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`,
 `Decision Log`, and `Outcomes & Retrospective` current as research,
@@ -24,16 +24,25 @@ stack, with no Vercel service.
 
 After this change an operator runs the fork's Compose file, signs in to the Hub, creates a bot,
 pastes an askgina/os agent token into its settings, and asks it to pay an invoice. The bot
-proposes the payment through the askgina/os MCP gateway and sends the person the approval link.
-The person approves with a passkey in the askgina/os inbox, the signer checks that passkey
-itself, and the bot reports the transaction once it is confirmed. Nothing a person clicks in the
-Busy chat can approve the payment.
+proposes the payment through the askgina/os MCP gateway and sends the person the approval link
+(`approvalUrl`, the request's page in the askgina/os web app). The person opens it as a page of
+its own, signs in, follows its link to the signer's confirmation page (`APPROVE_ORIGIN`), reads
+the payment there and approves it with a passkey; the signer checks that passkey itself, and the
+bot reports the transaction once it is confirmed. If a mandate a person granted that agent in
+advance covers the payment, the signer sends it with no person asked, and the bot says which
+mandate covered it instead of sending a link. Nothing a person clicks in the Busy chat can approve
+a payment, and neither askgina/os page can be shown inside the Busy chat: both refuse to be
+framed.
 
 Non-goals:
 
-- No change to the signer, the approval protocol, the envelope formats or the seven MCP tools'
-  behavior. The only askgina/os code change is packaging two packages and adding MCP tool
-  annotations.
+- No change to the signer, the approval protocol, the envelope formats, the confirmation page or
+  the seven MCP tools' behavior. The only askgina/os code change is packaging two packages and
+  adding MCP tool annotations.
+- No Busy-side notifications of waiting approvals. People learn about them from askgina/os's own
+  channels (its signed webhook and sidecars, Web Push), which this plan does not change (D14).
+- No granting, revoking or showing of mandates in the Busy Hub. Mandates are granted and revoked
+  in askgina/os only; a bot reads its own live ones through `whoami`.
 - Code tasks, firesides (second-opinion chats), bot-to-bot consultations and the macOS Desktop
   app stay switched off in this fork. AI Gateway and Vercel Token Pass billing are not offered.
 - Sealing the Busy Hub's own message, event and memory tables is not in this plan (see Decision
@@ -43,8 +52,12 @@ Non-goals:
 Success means:
 
 - A CI job brings up the fork's stack and the askgina/os stack together, creates a bot through
-  the Hub API, has it propose a 0.001 ETH transfer, approves it with Chromium's virtual
-  authenticator in the askgina/os inbox, and sees `confirmed` on Anvil and in the bot's reply.
+  the Hub API, has it propose a 0.001 ETH transfer, approves it on the signer's confirmation page
+  with the askgina/os person driver (`e2e/src/person.ts`, `Person.confirm`), and sees `confirmed`
+  on Anvil and in the bot's reply.
+- In the same job, after a person grants the bot's agent a mandate on the confirmation page, a
+  second transfer inside it comes back `authorizedBy: "mandate"` with no approval link, reaches
+  `confirmed` with no person asked, and the bot's reply names the mandate.
 - In that run, a forged answer posted to the Busy Hub leaves the askgina/os intent at
   `pending_approval`.
 - A DNS sinkhole that serves every fork container records zero lookups of `*.vercel.com`,
@@ -57,6 +70,10 @@ Success means:
 
 - [x] (2026-11-14 21:20Z) Research upstream, eve 0.91.0 and the askgina/os seams: [research/busy-fork.md](./research/busy-fork.md).
 - [x] (2026-11-14 21:40Z) Define the approach, the milestones and their gates (this file).
+- [x] (2026-11-15) Re-checked against main (`98cc6a1`): trusted display, mandates and
+      notifications are built; no milestone of this plan was delivered by them; Milestone 7, the
+      threat model and the gates now follow the confirmation page and mandates; new open decisions
+      D13 and D14.
 - [ ] Owner decisions D1, D2, D5, D6, D7, D8, D10 (Decision Log).
 - [ ] Milestone 0: askgina/os packages and tool annotations.
 - [ ] Milestone 1: fork repository, attribution and upstream gate.
@@ -90,10 +107,41 @@ Success means:
 - Observation: eve stores a continuation token in the run attribute `$eve.invocation_token` and
   reads it back; the World withholds it unless listed.
   Evidence: `eve@0.91.0:dist/src/internal/invocation/metadata.js`; research F5.
-- Observation: the eve example in this repository has no route to an external model and points
-  at a gateway port nothing listens on; a bot container here must avoid both mistakes.
-  Evidence: `examples/eve-agent/compose.yaml:79,90,103-107` against `compose.yaml:3,183-184` and
-  `deploy/Caddyfile.agents:9`.
+- Observation (2026-11-14, fixed since): when this plan was drafted the eve example had no route
+  to an external model and pointed at a gateway port nothing listened on. Commit `5da19e5` fixed
+  both, and a third mistake: the agent joins `internal`, `agents` and `egress`, `MCP_URL`
+  defaults to `http://agent-gateway/mcp` (the gateway's port 80), and the external network
+  defaults to `os_agents` (it was `askgina-os_agents`). That stack has still never been started, so
+  "a bot on `agents` plus an egress network" is unproven by any running stack; Milestones 4 and 7
+  are its first run.
+  Evidence: `examples/eve-agent/compose.yaml:80,91,104-112`; `compose.yaml:188-200,245-246`;
+  `deploy/Caddyfile.agents:9-18`.
+- Observation (2026-11-15): approvals now happen only on the signer's confirmation page. The
+  `approvalUrl` a proposal returns is the request's page on `PUBLIC_ORIGIN`; that page, for a
+  signed-in person, links to `APPROVE_ORIGIN/a/<approvalId>#<token>`, where the passkey prompt
+  runs. Both origins send `frame-ancestors 'none'` (the confirmation page also `X-Frame-Options:
+  DENY`), and the signer refuses an assertion the browser marks as made in a frame. So no Busy
+  chat, card or MCP App frame can host either page, and the bot never holds the confirmation link.
+  Evidence: `apps/server/src/notify/content.ts:11-13`; `packages/api/src/dto.ts:617`
+  (`confirmUrl`); `packages/api/src/csp.ts:22`; `apps/approve/src/app.ts:32,40,46`;
+  `packages/protocol/src/webauthn/verify-authorization.ts:57-69`; `docs/threat-model.md:133-141`.
+- Observation (2026-11-15): with mandates, a proposal can come back already approved, with
+  `authorizedBy: "mandate"`, a `mandateId`, and `approvalUrl` and `expiresAt` null. A skill that
+  always sends a link would send `null`.
+  Evidence: `apps/server/src/execution/intents.ts:236-243,430-438`;
+  `apps/server/src/mcp/gateway.ts:81,134-155`.
+- Observation (2026-11-15): the World now refuses, rather than withholds, an unlisted attribute
+  set by `setAttributes()` in a workflow body, and the SDK then fails the run. Whether eve 0.91.0
+  sets any unlisted `$eve.` key from a workflow body is unconfirmed.
+  Evidence: `packages/world/src/attributes.ts:43,77-80`; `packages/world/README.md:45-56`.
+- Observation (2026-11-15): Milestone 0 is still needed: the seven tools still carry no MCP
+  annotations, and both packages are still `private: true` with source-only exports and no build.
+  Evidence: `apps/server/src/mcp/gateway.ts:168-389`; `packages/world/package.json`;
+  `packages/keys/package.json`; `.github/workflows/ci.yml` (jobs `check`, `test`, `ui`, `stack`).
+- Observation (2026-11-15): the signed webhook is one URL per install and its body carries ids,
+  a kind, an expiry and a link only: no agent id and no intent id. A Busy Hub receiving it could
+  not tell which bot an approval belongs to.
+  Evidence: `compose.yaml:108`; `apps/server/src/notify/webhook.ts:19-42`.
 
 ## Decision Log
 
@@ -115,10 +163,14 @@ written for that option and names what changes if the owner chooses otherwise.
   (`specs/research/nextjs-as-control-plane-host.md`, finding 1).
   Date/Author: 2026-11-14 / research agent
 - Decision D3: the seven gateway tools carry eve approval `never()` in the fork. The askgina/os
-  passkey approval is the only approval.
+  passkey approval on the signer's confirmation page, or a mandate a person granted there, is the
+  only authorization.
   Rationale: Busy's card is a cookie-authenticated POST to the Hub that the signer cannot verify;
   a second prompt for the same payment teaches people to approve without reading (research F6).
-  Date/Author: 2026-11-14 / research agent
+  Since trusted display a Busy card could not approve even if wired to try: the signer accepts
+  only assertions made on the confirmation page's origin, outside any frame
+  (`docs/threat-model.md:133-141`).
+  Date/Author: 2026-11-14 / research agent; re-checked 2026-11-15
 - Decision D4: each bot holds its own askgina/os agent token and connects to the gateway
   directly over the askgina/os `agents` network. The Hub stores the token sealed and hands it to
   the runner, never to the browser or to the bot computer.
@@ -134,8 +186,9 @@ written for that option and names what changes if the owner chooses otherwise.
 - Decision D6, **Open (owner)**: in production the runner (which holds a Docker socket) runs on a
   host or VM other than the signer's. On one machine it is allowed for development only.
   Rationale: a Docker socket is root on its host; on the signer's host that is the "signer host"
-  attacker position (`docs/threat-model.md:139-143,216-218`).
-  Date/Author: 2026-11-14 / research agent
+  attacker position (`docs/threat-model.md:239-243`; "One machine running everything gives no
+  protection against that machine", `:564`).
+  Date/Author: 2026-11-14 / research agent; citation re-checked 2026-11-15
 - Decision D7, **Open (owner)**: the first fork accepts plaintext in the Busy Hub's own tables,
   keeps that database in its own Postgres that never joins askgina/os networks, and says so in
   its README. Alternatives: seal `messages.text`, `events.data` and `memories.content` and drop
@@ -170,12 +223,39 @@ written for that option and names what changes if the owner chooses otherwise.
   (`agent/agent.ts`, `channels/eve.ts`, `instructions.ts`, `lib/lazy-tools.ts`, `sandbox.ts`,
   `tools/web_fetch.ts`); building per bot leaves them unchanged.
   Date/Author: 2026-11-14 / research agent
+- Decision D13, **Open (owner)**, new 2026-11-15: an askgina/os agent that a Busy bot uses may
+  hold mandates, like any agent. The fork's README and bot settings page say that whoever
+  controls the Busy Hub holds every bot's agent token, and so can spend every live mandate of
+  those agents with no person asked, up to each mandate's worst case. Alternatives: the fork's
+  documentation forbids mandates for Busy bots (askgina/os cannot enforce it without a code
+  change); add an askgina/os agent flag that refuses mandates (a change to askgina/os, outside
+  this plan).
+  Recommendation: allow and document, with small caps. Reason: the signer already bounds the
+  loss to `min(maxTotal, maxUses × maxPerAction)` per asset (`docs/threat-model.md:291,297`), the
+  same position as any stolen agent token.
+  Date/Author: 2026-11-15 / plan refresh
+- Decision D14, **Open (owner)**, new 2026-11-15: the fork does not receive the askgina/os signed
+  webhook and posts nothing about waiting approvals into Busy chats beyond the bot's own reply.
+  Alternative: point `NOTIFY_WEBHOOK_URL` at the Busy Hub and post a chat message per
+  `approval.opened`, `approval.reminder` and `mandate.used`.
+  Recommendation: do not receive it. Reason: there is one webhook URL per install, so the Hub
+  would displace the operator's own receiver (for example the ntfy sidecar), and the body has no
+  agent or intent id, so the Hub cannot map an event to a bot; the bot already learns outcomes
+  from `get_intent`.
+  Date/Author: 2026-11-15 / plan refresh
 
 ## Outcomes & Retrospective
 
 - Outcome: research done; nothing built.
   Evidence: [research/busy-fork.md](./research/busy-fork.md).
   Remaining: every milestone below, after the owner decisions.
+- Outcome (2026-11-15): still nothing built. Trusted display, mandates and notifications landed
+  on main and delivered none of this plan's milestones; they changed what Milestone 7 drives (the
+  confirmation page instead of an in-app approval), what the bot must handle (mandate-covered
+  proposals) and the threat model (mandates spendable from the Hub).
+  Evidence: `specs/trusted-display.md`, `specs/approval-mandates.md`,
+  `specs/approval-notifications.md` (all Ready for Review); the re-check in Surprises & Discoveries.
+  Remaining: Milestones 0 to 8, after the owner decisions.
 
 ## Context and Orientation
 
@@ -199,12 +279,39 @@ Relevant repo rules:
 Current behavior:
 
 - askgina/os: an agent reaches the server only through the agent gateway (Caddy on the internal
-  `agents` network, port 80, path `/mcp`: `compose.yaml:132-144`, `deploy/Caddyfile.agents`). It
-  has seven tools (`apps/server/src/mcp/gateway.ts:65-73`). A proposal returns an `approvalUrl`;
-  a person approves with a passkey; the signer verifies it (`docs/approval-protocol.md`).
-- askgina/os: `@askgina/os-world/target` encrypts workflow payloads and withholds run attribute
-  values not listed in `WORLD_READABLE_ATTRIBUTE_KEYS` (`packages/world/README.md`). The eve
-  example runs on it (`examples/eve-agent`).
+  `agents` network, port 80, path `/mcp`: `compose.yaml:188-200,245-246`,
+  `deploy/Caddyfile.agents:9-18`). It has seven tools (`apps/server/src/mcp/gateway.ts:70-78`,
+  registered at `:168-389`, none with MCP annotations).
+- askgina/os proposals: `propose_transfer` and `propose_contract_call` return `{ intentId, status,
+  authorizedBy, mandateId, approvalUrl, expiresAt }` (`apps/server/src/execution/intents.ts:
+  236-243`). With `authorizedBy: "person"`, `approvalUrl` is the request's page on
+  `PUBLIC_ORIGIN` (`/w/<workspaceId>/approvals/<approvalId>`, `apps/server/src/notify/content.ts:
+  11-13`). That page shows a signed-in person a link to the signer's confirmation page on
+  `APPROVE_ORIGIN` (`/a/<approvalId>#<token>`), served by the keyless `apps/approve` service with
+  views the signer builds (`packages/protocol/src/confirmation.ts`); the passkey prompt runs there,
+  at top level, and the signer accepts only assertions made on that origin and not in a frame
+  (`specs/trusted-display.md`; `docs/threat-model.md:119-141`). With `authorizedBy: "mandate"`,
+  the status is already `approved`, `approvalUrl` and `expiresAt` are null, and the signer signs
+  with no person asked (`intents.ts:430-438`).
+- askgina/os reads: `get_intent` (with `waitSeconds` up to 50) and `list_intents` return
+  `intentId`, `status`, `authorizedBy`, `mandateId`, wallet, chain, title, recipient, amount,
+  asset, memo, `transactionHash`, `explorerUrl` and `failureCode` (`gateway.ts:134-155`).
+  `whoami` returns the agent, its workspace, chains, usable wallets with their policy, and
+  `mandates`: for each live mandate its `mandateId`, wallet, purpose, recipients, window,
+  per-asset caps with what was used, `maxFeePerActionWei`, `usesLeft` and `notAfter`
+  (`gateway.ts:168-230`).
+- askgina/os mandates: granted at the workspace's admin threshold on the confirmation page; they
+  cover only native and ERC-20 transfers of one agent from one wallet, never a contract call;
+  disabling the agent revokes them (`specs/approval-mandates.md`; `docs/threat-model.md:274-300`).
+- askgina/os notifications: an outbox delivers a signed, retried webhook to one
+  `NOTIFY_WEBHOOK_URL` per install with events `approval.opened`, `approval.reminder` and
+  `mandate.used`, whose bodies hold ids, a kind, an expiry and a link only
+  (`apps/server/src/notify/webhook.ts:19-42`); Web Push is off by default (`compose.yaml:108-113`;
+  `docs/threat-model.md:361-380`). This plan consumes neither (D14).
+- askgina/os: `@askgina/os-world/target` encrypts workflow payloads, stores `[withheld]` for run
+  attribute values not listed in `WORLD_READABLE_ATTRIBUTE_KEYS`, and refuses an unlisted
+  attribute set in a workflow body (`packages/world/README.md:41-61`). The eve example is wired to
+  run on it (`examples/eve-agent`), but its Compose stack has never been started.
 - Busy upstream: the Hub creates one Vercel project per bot and deploys the template with the
   bot's `config.json` (`fork:apps/hub/lib/bots/deploy.ts:65-147`, `lib/bots/files.ts:42-52`). Bots
   authenticate to the Hub with Vercel OIDC (`fork:templates/bot/agent/lib/hub.ts:1-16`,
@@ -404,8 +511,11 @@ Files and interfaces:
   `$eve.is_otel_trace_enabled`, `$eve.model`, `$eve.input_tokens`, `$eve.output_tokens`,
   `$eve.cache_read_tokens`, `$eve.cache_write_tokens`, `$eve.cost_usd`, `$eve.tool_count`). The
   runner passes the readable list as `WORLD_READABLE_ATTRIBUTE_KEYS`. Whether eve 0.91.0 needs any
-  key beyond rc.17's readable list (`examples/eve-agent/compose.yaml:77`) is settled by the
-  session round trip in this milestone's acceptance.
+  key beyond rc.17's readable list (`examples/eve-agent/compose.yaml:78`) is settled by the
+  session round trip in this milestone's acceptance. The World stores `[withheld]` for a withheld
+  key set at run creation or from a step, but refuses one set by `setAttributes()` in a workflow
+  body, which fails the run (`packages/world/README.md:50-54`); a withheld key that eve 0.91.0
+  sets from a workflow body must move to the readable list (with a reason) or the session fails.
 - `fork:templates/bot/world-readable-keys.test.ts`: new. Scans the installed eve `dist` for
   `$eve.` attribute literals and fails if any key is in neither list.
 - `fork:deploy/compose.selfhosted.yaml`: Hub, runner, `busy-postgres`, Caddy, DNS sinkhole
@@ -424,6 +534,8 @@ Acceptance (CI job `selfhosted-stack` in `fork:.github/workflows/fork.yml`):
 - A request to the Hub's bot routes with another bot's token, a revoked token, or no token
   returns 401.
 - `world-readable-keys.test.ts` passes.
+- The bot's logs for the whole spec contain no `setAttributes failed World validation`, and a
+  second message to the same session is answered (the session round trip).
 
 ### Milestone 5: computers on gVisor with per-bot volumes
 
@@ -513,8 +625,10 @@ Acceptance:
 
 ### Milestone 7: the askgina/os wallet connection
 
-Scope: a bot proposes through the gateway and a passkey approves. Depends on Milestone 0 and the
-CI deploy key.
+Scope: a bot proposes through the gateway; a person approves on the signer's confirmation page,
+or a mandate covers the payment. Depends on Milestone 0 and the CI deploy key. Trusted display
+and mandates, which this milestone drives, are already on askgina/os main; nothing here changes
+them.
 
 Files and interfaces:
 
@@ -523,10 +637,18 @@ Files and interfaces:
   auth: bearer token read from ASKGINA_OS_AGENT_TOKEN_FILE, approval: never(), tools: { allow:
   [the seven names] } })`. A comment states why `never()` (D3). Exact option names are checked
   against `eve@0.91.0:dist/src/public/definitions/connections/mcp.d.ts` when written.
-- `fork:templates/bot/agent/skills/wallet/SKILL.md`: new. Call `whoami` first; propose with a
-  memo; give the person the `approvalUrl` as a plain link; wait with `get_intent` and
-  `waitSeconds`; report a payment only at `confirmed`; never ask "OK?" with `ask_user` in place of
-  the passkey; never treat a chat answer as approval.
+- `fork:templates/bot/agent/skills/wallet/SKILL.md`: new. Call `whoami` first and read its
+  `wallets` and `mandates` (recipients, caps, `usesLeft`, `notAfter`). Propose with a memo. If
+  the answer says `authorizedBy: "person"`, give the person the `approvalUrl` as a plain link and
+  say that it opens as its own page in askgina/os, where they sign in and approve on the signer's
+  confirmation page; never put it in a card, an embed or a frame (both askgina/os origins refuse
+  framing). If it says `authorizedBy: "mandate"`, send no link: say that mandate `mandateId`
+  covered the payment and it is being sent. Wait with `get_intent` and `waitSeconds` (at most
+  50, repeated); report a payment only at `confirmed`, with `transactionHash` and `explorerUrl`;
+  on `stuck`, say it is sent but not yet confirmed and keep waiting. Never ask "OK?" with
+  `ask_user` in place of the passkey; never treat a chat answer as approval; never claim a
+  mandate exists that `whoami` did not list. A `policy_denied` refusal with a `mandate_` code
+  means the named mandate does not cover the payment: say so and propose without `mandateId`.
 - `fork:apps/hub/drizzle/0040_os_agent_token.sql`, `fork:apps/hub/lib/db/schema.ts`:
   `bots.os_agent_token_sealed` (sealed with `lib/mcp/crypto.ts`). `fork:apps/hub/app/api/bots/
   [slug]/route.ts` and bot settings UI accept the token write-only; reads return only
@@ -536,8 +658,10 @@ Files and interfaces:
   network named by `ASKGINA_OS_AGENTS_NETWORK` (default `os_agents`, the network Compose creates
   for the askgina/os project `os`). Computers never join it.
 - `fork:e2e/wallet/wallet.spec.ts`: new. Uses the person driver from askgina/os
-  (`e2e/src/person.ts`, Chromium virtual authenticator) from a checkout of askgina/os at a pinned
-  commit.
+  (`e2e/src/person.ts`, a software passkey: `Person.confirm(approvalId)` reads the approval
+  page's `confirmUrl`, approves on the confirmation page at `APPROVE_ORIGIN` and collects;
+  `Person.proposeMandate` and `Person.revokeMandate` manage mandates) from a checkout of
+  askgina/os at a pinned commit. The approval id is the last path segment of `approvalUrl`.
 
 Acceptance (CI job `wallet`, checks out askgina/os with `ASKGINA_OS_READ_KEY`, brings up its
 stack with the `dev` profile and the fork's stack):
@@ -548,9 +672,16 @@ stack with the `dev` profile and the fork's stack):
 - The spec posts `POST /api/bots/{slug}/answer` with a made-up `interactionId` and
   `optionId: "approve"`; the Hub returns an error; the askgina/os intent is still
   `pending_approval` five seconds later.
-- The person driver approves in the inbox; `get_intent` reaches `confirmed`; Anvil shows the
-  recipient's balance increased by exactly 0.001 ETH; the bot's last message contains the
-  transaction hash.
+- The person driver approves on the confirmation page; `get_intent` reaches `confirmed`; Anvil
+  shows the recipient's balance increased by exactly 0.001 ETH; the bot's last message contains
+  the transaction hash. The bot's message holding `approvalUrl` contains it as text or a link,
+  and the chat projection has no frame or embed for it.
+- A person grants the bot's agent a mandate (one recipient, 0.001 ETH per payment, two uses) and
+  approves it on the confirmation page. The bot's `whoami` lists it. The stub model proposes
+  0.001 ETH to that recipient: the answer is `authorizedBy: "mandate"` with that `mandateId` and
+  `approvalUrl` null, the Busy chat shows no approval interaction, the intent reaches
+  `confirmed` with no person approving, and the bot's reply names the mandate and sends no link.
+  After `Person.revokeMandate`, the same proposal comes back `authorizedBy: "person"`.
 - A second run with the computer: from inside the computer, `curl http://agent-gateway/mcp`
   fails to resolve or connect.
 
@@ -567,8 +698,9 @@ Files and interfaces:
 - `fork:FORK.md`, `fork:README.md`, `fork:docs/selfhosted.md` (new): install, networks, the
   plaintext Hub tables (D7), the runner host rule (D6), upgrade and rebase procedure.
 - `docs/threat-model.md` (askgina/os): a section "A Busy fork as the agent runtime" with the
-  content of the Threat Model section below; `docs/architecture.md`: one paragraph and the
-  `agents` network rule for third-party runtimes.
+  content of the Threat Model section below, and one row in its "Mandates" table for a
+  compromised Busy Hub; `docs/architecture.md`: one paragraph and the `agents` network rule for
+  third-party runtimes.
 - `examples/README.md` or `README.md` (askgina/os): link to the fork.
 
 Acceptance:
@@ -617,10 +749,26 @@ Local interfaces (fork):
 Local interfaces (askgina/os, unchanged in behavior):
 
 - MCP tools: `whoami`, `get_balances`, `propose_transfer`, `propose_contract_call`, `get_intent`,
-  `list_intents`, `cancel_intent` (`apps/server/src/mcp/gateway.ts:65-73`;
-  `specs/agent-workspaces-v0.1.md:396-406`). Only annotations are added.
+  `list_intents`, `cancel_intent` (`apps/server/src/mcp/gateway.ts:70-78`;
+  `specs/agent-workspaces-v0.1.md:398-408`). Only annotations are added. What the fork's skill
+  and gates read from them:
+  - `whoami`: `agent`, `workspaceId`, `chains`, `wallets[]` (with `policy`), `mandates[]`
+    (`mandateId`, `walletId`, `purpose`, `recipients`, `windowSeconds`, `assets[]` with
+    `maxPerAction`, `maxPerWindow`, `maxTotal`, `usedInWindow`, `usedTotal`,
+    `maxFeePerActionWei`, `usesLeft`, `notAfter`) (`gateway.ts:183-228`).
+  - `propose_transfer` (optional input `mandateId`) and `propose_contract_call`: `{ intentId,
+    status, authorizedBy: "person" | "mandate", mandateId, approvalUrl, expiresAt }`
+    (`apps/server/src/execution/intents.ts:236-243`). A contract call is never covered by a
+    mandate.
+  - `get_intent`, `list_intents`: the intent view with `status`, `authorizedBy`, `mandateId`,
+    `transactionHash`, `explorerUrl`, `failureCode` (`gateway.ts:134-155`).
+- Approval pages: `approvalUrl` on `PUBLIC_ORIGIN`, the confirmation page on `APPROVE_ORIGIN`;
+  both top-level only (`packages/api/src/csp.ts:22`, `apps/approve/src/app.ts:32,40`). The fork
+  links to the first and never embeds either.
+- Signed webhook (`apps/server/src/notify/webhook.ts:19-42`: `approval.opened`,
+  `approval.reminder`, `mandate.used`): not consumed by the fork (D14).
 - `@askgina/os-world/target`: configured by `WORKFLOW_POSTGRES_URL`, `WORLD_KEYRING_FILE`,
-  `WORLD_READABLE_ATTRIBUTE_KEYS` (`packages/world/README.md:41-60`).
+  `WORLD_READABLE_ATTRIBUTE_KEYS` (`packages/world/README.md:41-61`).
 
 External dependencies:
 
@@ -646,37 +794,53 @@ containers) sits on the agent side of the askgina/os gateway. No Busy component 
 
 A compromised askgina/os control plane (the server), after this change:
 
-- **Can:** everything v0.1 lists (`docs/threat-model.md:96-105`): read sealed content, show a
-  person a misleading approval card, pause workspaces. New: tell Busy bots false intent statuses
-  through `get_intent` (for example "confirmed" for a payment that never happened), so bots
-  report false outcomes in the Busy chat.
-- **Cannot:** produce a passkey assertion, exceed the signer's caps, reuse an approval, or change
-  policy or approvers without passkeys. The Busy fork gives it no new path to the signer and no
-  new authority: Busy holds no askgina/os credential except agent tokens, which only propose.
+- **Can:** everything `docs/threat-model.md:119-132` lists: read sealed content, show a person a
+  misleading card in its own pages, link a person to the confirmation page of a different
+  waiting request, pause workspaces; and, within live mandates, have the signer sign transfers
+  that fit them with no person (`:290`). New: tell Busy bots false intent statuses through
+  `get_intent` (for example "confirmed" for a payment that never happened, or "covered by a
+  mandate" for one that waits), so bots report false outcomes in the Busy chat.
+- **Cannot:** obtain an approval the signer accepts for anything the person did not see on the
+  signer's confirmation page, exceed the signer's or a mandate's caps, reuse an approval, change
+  policy or approvers, or grant or widen a mandate without passkeys (`:133-160`). The Busy fork
+  gives it no new path to the signer and no new authority: Busy holds no askgina/os credential
+  except agent tokens.
 
 A compromised Busy Hub:
 
 - **Can:** read every Busy conversation (plaintext tables, D7); unseal and use every bot's agent
-  token, so propose as any bot; deploy any code into any bot; answer any Busy card; show a person
-  a fake "approved" or "paid" message in the Busy chat.
-- **Cannot:** approve or sign. Its only route to askgina/os is the MCP gateway with agent tokens;
-  the signer accepts only passkey assertions it verifies against its own approver registry. It
-  cannot reach the askgina/os server, Postgres or signer: it is not on their networks.
+  token, so propose as any bot, and have the signer sign, with no person asked, transfers inside
+  every live mandate of those agents up to each mandate's worst case
+  (`docs/threat-model.md:291,297`; D13); deploy any code into any bot; answer any Busy card; show
+  a person a fake "approved" or "paid" message, or a lookalike approval link, in the Busy chat.
+- **Cannot:** approve a request or grant, widen or revive a mandate. Its only route to
+  askgina/os is the MCP gateway with agent tokens; no tool returns a confirmation link; the signer
+  accepts only passkey assertions made on the confirmation page's origin, outside any frame, and
+  verified against its own approver registry. It cannot frame the askgina/os pages. It cannot
+  reach the askgina/os server, Postgres, the `approve` service or the signer: it is not on their
+  networks. A lookalike link is the "lookalike host" position askgina/os already documents
+  (`docs/threat-model.md:180-191`).
 
-A compromised bot container: same as v0.1's "malicious or prompt-injected agent" and "stolen
-agent token" positions for its own agent, plus read access to its own World database and keyring.
+A compromised bot container: same as askgina/os's "malicious or prompt-injected agent" and
+"stolen agent token" positions for its own agent (`docs/threat-model.md:62-91`), including its
+own agent's live mandates, plus read access to its own World database and keyring.
 
 A compromised computer container (untrusted web or shell content): reaches the internet and the
 broker's API for its own computer only. It holds no agent token and cannot reach the gateway, the
 Hub's internal routes, Postgres or other computers. Escaping gVisor reaches the runner host.
 
 The runner: holds a Docker socket, so it is root on its host. If that host is the signer's host,
-this is the v0.1 "signer host" position (`docs/threat-model.md:139-143`), which is why D6 puts it
+this is the "signer host" position (`docs/threat-model.md:239-243`, and "One machine running
+everything gives no protection against that machine", `:564`), which is why D6 puts it
 elsewhere in production.
 
-Invariant check: the signer still decides whether a person approved and signs only what was
-approved. Busy's approval cards are switched off for the seven tools and no Busy component can
-create an approval.
+Notifications: no Busy component sends or receives askgina/os notifications (D14), so this plan
+adds nothing to `docs/threat-model.md:361-380`.
+
+Invariant check: the signer still decides whether a person approved, on its own confirmation
+page, or whether a mandate people granted covers a transfer, and signs only that. Busy's
+approval cards are switched off for the seven tools and no Busy component can create an
+approval or a mandate.
 
 ## Concrete Steps
 
@@ -718,8 +882,14 @@ Manual or runtime validation:
 - Start: `docker compose -f deploy/compose.selfhosted.yaml up -d` from the fork root, with an
   askgina/os stack running from its root.
 - Sign in to the Hub, create a bot with an OpenAI-compatible endpoint, paste an agent token, ask
-  it to pay 0.001 test ETH, open the link, approve with a phone passkey, see the confirmation in
-  both the inbox and the Busy chat.
+  it to pay 0.001 test ETH, open the link (it opens as its own page in askgina/os), follow it to
+  the signer's confirmation page, approve with a phone passkey there, and see the confirmation in
+  askgina/os and in the Busy chat. A real phone passkey on the confirmation page has not yet been
+  proven in askgina/os itself (its gates use virtual and software authenticators), so this step
+  is also the first such check.
+- Grant the bot's agent a small mandate in askgina/os, ask the bot what it may pay without
+  asking (it reads `whoami`), then ask it to pay inside the mandate: no link, a confirmed
+  transaction, and a `mandate.used` notification on the operator's webhook if one is configured.
 - Open the bot's computer in Live view and see the desktop.
 
 Regression checks:
@@ -768,6 +938,23 @@ Regression checks:
 - Risk: Hub plaintext (D7) is misread as covered by the World. Mitigation: the README states it
   and the threat model lists it.
 - Risk: trademark. Mitigation: D10.
+- Risk: a compromised Busy Hub spends every live mandate of its bots' agents. Mitigation: D13
+  (documented, small caps); the signer bounds each mandate's worst case; disabling an agent in
+  askgina/os revokes its mandates at once.
+- Risk: eve 0.91.0 sets a withheld `$eve.` attribute from a workflow body, which the World now
+  refuses, failing sessions. Mitigation: Milestone 4's session round trip and log check; move the
+  key to the readable list with a reason if its value can never carry typed text, else wait for
+  upstream's eve bump. Unconfirmed until Milestone 4 runs.
+- Risk: Busy renders a bot's link inside an MCP App frame or a preview card instead of as a plain
+  link, so the approval page fails to load there. Mitigation: Milestone 7's chat-projection check;
+  the skill sends the link as text. How Busy's chat renders links was not re-read for this
+  refresh (unconfirmed).
+- Risk: intent statuses change under stuck-transaction repricing (askgina/os#22), which is being
+  built. Mitigation: the skill reports only `confirmed` as paid and treats every other non-final
+  status as "not yet"; re-read `get_intent`'s description when Milestone 7 starts.
+- Risk: the eve example's Compose stack, the only askgina/os example of an agent on `agents` plus
+  an egress network, has never been started. Mitigation: Milestones 4 and 7 run that topology in
+  CI; a failure there is a finding for askgina/os too.
 - Open question: whether upstream would accept the provider-neutral seams of Milestones 2 and 3.
   Contacting upstream is the owner's call.
 
@@ -777,8 +964,18 @@ Regression checks:
     Upstream base: MatiSolina/busy 3dd91e16c0708bd02066377ba3e45aa06f4813c0 (v0.5.0)
     eve pinned by upstream: 0.91.0 (published 2026-10-30)
     Estimated fork size [INFERENCE]: 4,000 to 5,000 new or changed lines, about 40 upstream files
+    Re-checked against askgina/os main: 98cc6a1 (2026-11-15); milestones 0 to 8 remain, none delivered
 
 ## Revision Notes
 
 - 2026-11-14: First draft from the research for ticket #26. Written for the recommended option of
   every open owner decision.
+- 2026-11-15: Re-checked against main after trusted display, mandates and notifications landed.
+  Purpose, success criteria, Milestone 7 (skill, gates), Interfaces, Threat Model, manual
+  validation and Risks now follow the signer's confirmation page (approval links open as their
+  own page and cannot be framed) and mandates (`authorizedBy`, `mandateId`, `whoami.mandates`; a
+  compromised Hub can spend its bots' live mandates). Milestone 4 accounts for the World refusing
+  unlisted `setAttributes()` in a workflow body. The eve example's Compose observation is marked
+  fixed by `5da19e5` (still never started). Stale line references corrected. New open decisions
+  D13 (mandates for Busy bots) and D14 (no webhook into Busy). No milestone was delivered by
+  other plans; Milestone 0 is still needed.
