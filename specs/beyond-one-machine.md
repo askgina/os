@@ -1,7 +1,7 @@
 # Run on more than one machine: the signer on its own host first, then key providers, replicas, Kubernetes and HA Postgres
 
 - Branch: none yet
-- Status: Draft
+- Status: Ready for Review (built 2026-11-15; every milestone green in CI run 43744005029)
 - Owner(s): Eric Juta
 - Created: 2026-11-14
 - Last Updated: 2026-11-15
@@ -155,7 +155,8 @@ Success means:
       `Surprises & Discoveries`); run 43739857058 rendered both overlays, passed kubeconform,
       started kind and applied the overlay, then `make-secrets.sh` failed (it chowned the
       container's read-only `/secrets`); both fixed, written, not re-run.
-- [ ] Milestone 6: HA Postgres with CloudNativePG. Written (2026-11-15), not run, CI pending:
+- [x] Milestone 6: HA Postgres with CloudNativePG. Green on its first run (job `k8s-ha`, run
+      43744005029). Written (2026-11-15), not run, CI pending:
       `deploy/k8s/components/postgres-cnpg/` (Cluster `os-db`: 3 instances, `synchronous:
       { method: any, number: 1, dataDurability: required }`, `max_connections: "200"` with the
       formula, image `ghcr.io/cloudnative-pg/postgresql:18.7-202611122305-minimal-trixie` by
@@ -176,8 +177,11 @@ Success means:
       rather than a matrix entry of `k8s`, which only gains the CRD schema location; the
       notification-row check and the rolled-back-database gate (Compose) are not written.
       Left: CI green.
-- [ ] Milestone 7: documentation matches the code.
-- [ ] Run validation in CI and record evidence.
+- [x] (2026-11-15) Milestone 7: documentation matches the code (deploy guide, signer README,
+      threat model, architecture, README, protocol section 10, `deploy/split/.env.example`).
+      Not done: the plan's `config-docs.test.ts` that would compare documented settings with
+      the code.
+- [x] (2026-11-15) Run validation in CI and record evidence: see `Outcomes & Retrospective`.
 - [x] (2026-11-15) Re-checked against main at `2911c20`: Milestone 2 and its restore gate are CI-green (run 43710836888); the rest is rewritten for the trusted display, mandates and notifications. See `Revision Notes`.
 
 ## Surprises & Discoveries
@@ -448,6 +452,30 @@ Plan decisions (taken here, reopen in review if wrong):
   Date/Author: 2026-11-15 / MultiM1Split
 
 ## Outcomes & Retrospective
+
+- Outcome (2026-11-15, final): Milestones 1 to 7 are built on private `main` and green in CI.
+  Evidence: run 43744005029 at `388386d`, all twelve jobs: check, test, ui, packages,
+  `stack` amd64, arm64, tls, split, replicas and openbao, `k8s` and `k8s-ha`. That supersedes
+  every "CI pending" and "not run" in `Progress`.
+  Measured by `k8s-ha` on kind (three CloudNativePG instances, a synchronous standby
+  required): the primary was deleted while a payment was being signed; a standby was primary
+  after 19.8 s; the payment confirmed after 26.6 s with exactly one transaction; three
+  instances were ready again after 30.7 s and both server replicas after 31 s; every LISTEN a
+  replica held was back and both held the bundle lock, which answers the open question about
+  the World's listeners; a key shred on one replica was heard by the other in 0.2 to 0.3 s;
+  with both standbys gone a write waited 35.9 s and landed 3 s after a standby was allowed
+  back. `stack (replicas)`: the survivor finished a payment whose signing replica was killed,
+  with one transaction. `stack (openbao)`: a 20-second OpenBao outage failed closed and
+  recovered; rotation and rewrap kept old data readable.
+  Fix rounds on the way: a base64url value starting with a dash in the enroll command;
+  Kustomize running generators before components; a chown of a read-only root in the secrets
+  script; OpenBao's first `sys/init` on Raft needing more than five seconds; a gate that
+  approved before its notification could be sent.
+  Unproven: two real hosts under different administrators (CI runs both Compose projects on
+  one runner); a certificate from a public authority on the split edges; a production
+  Kubernetes cluster and its CNI (the probe must pass after every install); release gates
+  beyond the payment path on Kubernetes; cloud KMS providers (not built); a Postgres failover
+  under real load.
 
 - Outcome (2026-11-14): Milestone 2, the restore fence, is built and passes its unit tests locally (`apps/signer/test/fence.test.ts`, `apps/signer/test/admin.test.ts`). The rest of this plan is not built.
   Remaining: the restore gate on the real stack in CI; every other milestone.
