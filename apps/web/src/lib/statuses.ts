@@ -1,4 +1,4 @@
-import type { IntentDetail, IntentStatus } from "@askgina/os-api";
+import type { IntentDetail, IntentStatus, StuckReason } from "@askgina/os-api";
 
 export type TransactionStatus = NonNullable<IntentDetail["transaction"]>["status"];
 
@@ -53,4 +53,24 @@ export const transactionSentence: Record<TransactionStatus, string> = {
     "A zero-value transaction from the wallet to itself was included in its place. Nothing moved; the network fee was paid.",
   superseded:
     "Another transaction from this wallet took its place in line, so it can never be included. Nothing moved.",
+};
+
+/**
+ * Why a sent transaction is not mined yet, in words, as the control plane last found it. Says
+ * what a person can still do about it: a higher fee helps only when the fee is the reason.
+ */
+export const stuckReasonSentence: Record<StuckReason, string> = {
+  fee_too_low:
+    "Its network fee is too low for the network right now. Speeding it up offers a higher one, within the fee ceiling people approved.",
+  waiting_behind_nonce:
+    "An earlier transaction from this wallet on this network is not mined yet, and this one waits behind it. A higher fee here would not help.",
+  workspace_paused: "The workspace is paused, so its fee is not raised. It can still be cancelled.",
+  fee_ceiling_reached:
+    "A higher fee would pass the fee ceiling people approved, so it is not raised again. It can still be cancelled.",
+  reprice_window_closed:
+    "The signer raises a fee only for a limited time after the first signature, and that time has passed. It can still be cancelled.",
+  attempts_exhausted:
+    "The signer has signed it as many times as it allows, so it can be neither sped up nor cancelled. The network may still include it.",
+  reprice_refused:
+    "The signer refuses to raise its fee, for example because the approval in advance it was signed under was revoked. It can still be cancelled.",
 };

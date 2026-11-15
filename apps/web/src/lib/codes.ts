@@ -1,6 +1,7 @@
-import { ApiError } from "@askgina/os-api";
+import { ApiError, type StuckReason } from "@askgina/os-api";
 import type { MandateDenyCode, MandateGrantRefusal } from "@askgina/os-protocol";
 import { PushSetupError, type PushSetupFailure } from "./push.ts";
+import { stuckReasonSentence } from "./statuses.ts";
 
 /**
  * Why an approval in advance (a mandate) did not cover a payment: the signer's `mandate_denied`
@@ -53,6 +54,52 @@ const mandateRefusals: Record<MandateGrantRefusal | "agent_disabled", string> = 
 };
 
 /**
+ * Why the server refused to speed up a payment (`speedUp`): the `conflict` refusal's `detail`,
+ * which is `not_repriceable` or the reason the transaction cannot be repriced, and the
+ * `internal` refusal's `retry_later`. A fee that is too low is what a speed-up cures, so it is
+ * never a refusal.
+ */
+const speedUpRefusals: Record<
+  Exclude<StuckReason, "fee_too_low"> | "not_repriceable" | "retry_later",
+  string
+> = {
+  not_repriceable:
+    "Only a payment that was sent and is not mined yet can be sped up. This one was not sent yet, is already final, or another transaction took its place in line.",
+  waiting_behind_nonce: stuckReasonSentence.waiting_behind_nonce,
+  workspace_paused:
+    "The workspace is paused, so no fee is raised until it is resumed. Cancelling still works.",
+  fee_ceiling_reached: stuckReasonSentence.fee_ceiling_reached,
+  reprice_window_closed: stuckReasonSentence.reprice_window_closed,
+  attempts_exhausted: stuckReasonSentence.attempts_exhausted,
+  reprice_refused: stuckReasonSentence.reprice_refused,
+  retry_later:
+    "The network or the signer could not be reached, so nothing was sent. Try again in a moment.",
+};
+
+/**
+ * Why the server refused to open a request to cancel a payment or a sweep (`requestCancel`,
+ * `requestSweepCancel`): the refusal's `detail`. The same words explain a cancel request that
+ * was approved but could not be signed (its failure code).
+ */
+const cancelRefusals: Record<
+  | "not_sent"
+  | "transaction_final"
+  | "attempts_exhausted"
+  | "fee_ceiling_reached"
+  | "policy_missing",
+  string
+> = {
+  not_sent: "Nothing was sent to the network yet, so there is nothing to cancel.",
+  transaction_final:
+    "The transaction was already mined or replaced, so there was nothing left to cancel.",
+  attempts_exhausted:
+    "The signer has signed this transaction as many times as it allows, so it cannot sign a cancel. The network may still include it.",
+  fee_ceiling_reached:
+    "The wallet's fee ceiling per transaction is not enough to outbid the newest attempt, so a cancel could never be included first.",
+  policy_missing: "This wallet has no limits set, so no cancel can be approved for it.",
+};
+
+/**
  * Plain-language meanings for the failure codes the signer, the wallet policy and the chain
  * report. An unknown code is shown as it is, with a generic sentence, never hidden.
  */
@@ -101,6 +148,16 @@ const meanings: Record<string, string> = {
   over_fee_cap: "The fee ceiling is higher than the wallet allows.",
   reverted: "The transaction was mined but the contract refused it. Fees were still paid.",
   rejected: "The network never accepted the transaction, and it will not be sent again.",
+  transaction_cancelled:
+    "A cancel people approved was included in its place. Nothing moved; the network fee was paid.",
+  cancel_too_late:
+    "A cancel was signed, but the network included the payment first, so it went through as sent.",
+  nonce_used_elsewhere:
+    "Another transaction from this wallet took its place in line, so it can never be included. Nothing moved.",
+  not_sent: cancelRefusals.not_sent,
+  transaction_final: cancelRefusals.transaction_final,
+  attempts_exhausted: cancelRefusals.attempts_exhausted,
+  fee_ceiling_reached: cancelRefusals.fee_ceiling_reached,
   internal: "Something went wrong on the server.",
 };
 
@@ -149,6 +206,22 @@ export function explainNotificationError(error: unknown): string | null {
     return "Someone else just turned on notifications in this browser. Try again.";
   }
   return null;
+}
+
+/** The words for a refusal's `detail` from one of the records above, or null for another. */
+function refusalDetail(error: unknown, words: Record<string, string>): string | null {
+  if (!(error instanceof ApiError) || error.detail === undefined) return null;
+  return Object.hasOwn(words, error.detail) ? (words[error.detail] as string) : null;
+}
+
+/** Plain words for a refused speed-up; null leaves it to the API's own message. */
+export function explainSpeedUpError(error: unknown): string | null {
+  return refusalDetail(error, speedUpRefusals);
+}
+
+/** Plain words for a refused request to cancel; null leaves it to the API's own message. */
+export function explainCancelError(error: unknown): string | null {
+  return refusalDetail(error, cancelRefusals);
 }
 
 export function explainCode(code: string): string {

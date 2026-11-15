@@ -20,6 +20,11 @@ import { standInPushManager } from "./push-stand-in.ts";
  * use its `/__fixture/propose` endpoint; against a real server, point OS_WEB_PROPOSE_URL at an
  * equivalent helper that proposes over MCP with the agent's token.
  *
+ * Payments the fixture holds back from the chain (`/__fixture/settle`) show their attempts and
+ * why they are not mined: one is sped up, with no passkey, and is mined; another is cancelled
+ * through a cancel request approved on the confirmation page, and ends cancelled on chain. A
+ * viewer later reads a stuck one with no action.
+ *
  * Every captured screen is checked for content wider than the screen (`shot`).
  *
  * A second person joins as an approver. Before anyone can approve the change that adds them,
@@ -222,6 +227,17 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
       ? target.element.screenshot({ path })
       : on.screenshot({ path, fullPage: !target.viewport }));
   };
+  /**
+   * On a phone, a request's decision fits on the first screen, without scrolling. Only with real
+   * fonts: see ONE_SCREEN_PROJECTS.
+   */
+  const expectDecisionOnFirstScreen = async (decision: Locator) => {
+    const viewport = page.viewportSize();
+    const box = await decision.boundingBox();
+    if (ONE_SCREEN_PROJECTS.has(testInfo.project.name) && viewport && box) {
+      expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+    }
+  };
   /** Another person's browser, on the same kind of screen as the owner's, with a passkey. */
   const personPage = async (): Promise<{ person: Page; personProblems: string[] }> => {
     const { viewport, deviceScaleFactor, isMobile, hasTouch, colorScheme } = testInfo.project.use;
@@ -360,13 +376,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(page.getByRole("button", { name: "Reject" })).toBeVisible();
     // Approving happens only on the signer's page: nothing here asks for a passkey.
     await expect(page.getByRole("button", { name: /passkey/i })).toHaveCount(0);
-    // On a phone, the decision fits on the first screen, without scrolling. Only with real fonts:
-    // see ONE_SCREEN_PROJECTS.
-    const viewport = page.viewportSize();
-    const decision = await confirm.boundingBox();
-    if (ONE_SCREEN_PROJECTS.has(testInfo.project.name) && viewport && decision) {
-      expect(decision.y + decision.height).toBeLessThanOrEqual(viewport.height);
-    }
+    await expectDecisionOnFirstScreen(confirm);
     await shot("10-approval-payment-viewport", { viewport: true });
     await page.getByText("Technical details").click();
     await expect(page.getByText("Intent hash (SHA-256)")).toBeVisible();
@@ -402,6 +412,8 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await shot("14-approval-rejected");
   });
 
+  /** The payment left stuck for good, which a viewer reads later. */
+  let stuckUrl = "";
   await test.step("a stuck and a chain-rejected payment each say what happened in words", async () => {
     const settleUrl = `${baseURL}/__fixture/settle`;
     for (const [status, sentence, picture] of [
@@ -429,8 +441,63 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
       expect((await request.post(settleUrl, { data: { intentId: id, status } })).ok()).toBe(true);
       await page.reload();
       await expect(page.getByText(sentence)).toBeVisible();
+      if (status === "stuck") stuckUrl = new URL(page.url()).pathname;
       await shot(picture);
     }
+  });
+
+  await test.step("a stuck payment shows its attempts, speeds up, and a cancel goes through a passkey", async () => {
+    // Only the fixture can hold a payment back from the chain.
+    if (process.env.OS_WEB_BASE_URL) return;
+    const attempts = page.getByRole("list", { name: "Attempts" });
+    /** A payment approved, sent, and then held back by the network: its page, reloaded. */
+    const stuckPayment = async (amount: string) => {
+      const { id, approvalId } = await proposePayment(request, proposeUrl, token, amount);
+      await page.goto(approvalUrl.replace(/[^/]+$/, approvalId));
+      await approveOnSignerPage(page);
+      await expect(page.getByText("Approved.", { exact: true })).toBeVisible();
+      const settled = await request.post(`${baseURL}/__fixture/settle`, {
+        data: { intentId: id, status: "stuck" },
+      });
+      expect(settled.ok()).toBe(true);
+      await page.reload();
+      await expect(page.getByText("Not mined yet", { exact: true })).toBeVisible();
+      await expect(attempts.getByRole("listitem")).toHaveCount(1);
+    };
+
+    // Speeding up adds an attempt with a higher fee, with no passkey; the network includes it.
+    await stuckPayment("1100000000000000");
+    await expect(
+      page.getByText(/Its network fee is too low for the network right now\./),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Speed up" }).click();
+    await expect(attempts.getByText("Attempt 2: Same payment, higher fee")).toBeVisible();
+    await expect(page.getByText("Confirmed", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(attempts.getByText("Mined", { exact: true })).toHaveCount(1);
+    await shot("44-approval-sped-up");
+
+    // Cancelling is a request, approved with a passkey on the signer's page, and an attempt that
+    // takes the payment's place only if the network includes it first. Here it does.
+    await stuckPayment("1200000000000000");
+    await page.getByRole("button", { name: "Cancel payment" }).click();
+    await expect(
+      page.getByRole("heading", { name: /^Cancel payment: Send 0\.0012 ETH to 0x5290/ }),
+    ).toBeVisible();
+    await expect(page.getByText("An attempt, not a guarantee.")).toBeVisible();
+    const confirm = page.getByRole("link", { name: "Review and approve on the signer's page" });
+    await expectDecisionOnFirstScreen(confirm);
+    await shot("45-approval-cancel", { viewport: true });
+    await approveOnSignerPage(page);
+    await expect(page.getByText("Approved.", { exact: true })).toBeVisible();
+    await expect(page.getByText("Cancelled on chain", { exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
+    await shot("46-approval-cancel-done");
+    await page.getByRole("link", { name: "Open the payment" }).click();
+    await expect(page.getByText("Cancelled on chain", { exact: true })).toBeVisible();
+    await expect(attempts.getByText("Attempt 2: Cancel: nothing sent to itself")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Cancel payment" })).toHaveCount(0);
+    await shot("47-approval-cancelled");
   });
 
   const workspacePath = () => new URL(page.url()).pathname.replace(/\/approvals\/.*$/, "");
@@ -499,7 +566,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await shot("15-overview");
     await page.getByRole("link", { name: /Invoice payer/ }).click();
     await expect(page.getByText("Recent requests")).toBeVisible();
-    await expect(page.getByText("Confirmed", { exact: true })).toBeVisible();
+    await expect(page.getByText("Confirmed", { exact: true }).first()).toBeVisible();
     await shot("16-agent");
     await page.getByRole("link", { name: "Open wallet" }).click();
     await expect(page.getByText("ETH spent in the last 24 hours")).toBeVisible();
@@ -713,6 +780,14 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(page.getByText(/^Send 0\.005 ETH to /)).toBeVisible();
     await expect(page.getByText("Confirmed", { exact: true })).toBeVisible({ timeout: 15_000 });
     await shot("35-mandate-used");
+    // It has no request of its own: its own page shows its transaction.
+    await page.getByRole("link", { name: /^Send 0\.005 ETH to / }).click();
+    await expect(page.getByRole("heading", { name: /^Send 0\.005 ETH to 0x5290/ })).toBeVisible();
+    await expect(
+      page.getByRole("list", { name: "Attempts" }).getByText("Mined", { exact: true }),
+    ).toBeVisible();
+    await shot("48-payment-mandated");
+    await page.getByRole("link", { name: "← Approved in advance for Invoice payer" }).click();
 
     // The wallet's card and the agent's page show it, with its usage.
     await page.getByRole("link", { name: "← Invoice payer's wallet" }).click();
@@ -799,30 +874,35 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     // shows as the generic notification, which opens the workspace list.
     const { approvalId } = await proposePayment(request, proposeUrl, token, "3000000000000000");
     const approvalPath = `${base}/approvals/${approvalId}`;
-    await deliverPush(page, ownerSession, approvalMessage(`${baseURL}${approvalPath}`, 2));
-    await deliverPush(
-      page,
-      ownerSession,
-      approvalMessage(`https://evil.example${approvalPath}`, 1),
-    );
-    await expect
-      .poll(() => shownNotifications(page))
-      .toEqual(
-        expect.arrayContaining([
-          {
-            title: "Approval waiting",
-            body: "2 requests need your passkey",
-            tag: `approval-${approvalId}`,
-            path: approvalPath,
-          },
-          {
-            title: "Approval waiting",
-            body: "Open the app to see what waits for you.",
-            tag: "approval",
-            path: "/",
-          },
-        ]),
+    // The browser's debugging interface sometimes hands a message to a worker that is still
+    // starting and drops it, so the messages are handed over again until both show. A repeat
+    // replaces the notification with the same tag: the result is the same.
+    await expect(async () => {
+      await deliverPush(page, ownerSession, approvalMessage(`${baseURL}${approvalPath}`, 2));
+      await deliverPush(
+        page,
+        ownerSession,
+        approvalMessage(`https://evil.example${approvalPath}`, 1),
       );
+      await expect
+        .poll(() => shownNotifications(page), { timeout: 5_000 })
+        .toEqual(
+          expect.arrayContaining([
+            {
+              title: "Approval waiting",
+              body: "2 requests need your passkey",
+              tag: `approval-${approvalId}`,
+              path: approvalPath,
+            },
+            {
+              title: "Approval waiting",
+              body: "Open the app to see what waits for you.",
+              tag: "approval",
+              path: "/",
+            },
+          ]),
+        );
+    }).toPass({ timeout: 60_000 });
 
     // Another of Ada's browsers subscribes, as it would through this page there; she removes
     // it here.
@@ -926,6 +1006,20 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(seen.getByRole("radio")).toHaveCount(0);
     await expect(seen.getByRole("button")).toHaveCount(0);
     await shot("43-workspace-notification-level-viewer", { element: seen }, viewer);
+    if (!process.env.OS_WEB_BASE_URL) {
+      // A viewer reads a stuck payment's attempts and state, with no action.
+      await viewer.goto(stuckUrl);
+      await expect(viewer.getByText("Not mined yet", { exact: true })).toBeVisible();
+      await expect(
+        viewer.getByRole("list", { name: "Attempts" }).getByRole("listitem"),
+      ).toHaveCount(1);
+      await expect(
+        viewer.getByText("Owners and approvers can speed it up or cancel it."),
+      ).toBeVisible();
+      await expect(viewer.getByRole("button", { name: "Speed up" })).toHaveCount(0);
+      await expect(viewer.getByRole("button", { name: "Cancel payment" })).toHaveCount(0);
+      await shot("49-approval-stuck-viewer", {}, viewer);
+    }
     const refused = await viewer.evaluate(async (workspaceId) => {
       const response = await fetch(`/api/v1/workspaces/${workspaceId}/notification-detail`, {
         method: "POST",
@@ -967,10 +1061,15 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     // A notification pressed on this signed-out device: the worker shows it with the approval's
     // path (pressing it opens that path), which goes through sign-in and back to the approval.
     const pressed = `approval-${approvalUrl.split("/").pop()}`;
-    await deliverPush(page, ownerSession, approvalMessage(`${baseURL}${approvalUrl}`, 1));
-    await expect
-      .poll(async () => (await shownNotifications(page)).find((item) => item.tag === pressed)?.path)
-      .toBe(approvalUrl);
+    await expect(async () => {
+      await deliverPush(page, ownerSession, approvalMessage(`${baseURL}${approvalUrl}`, 1));
+      await expect
+        .poll(
+          async () => (await shownNotifications(page)).find((item) => item.tag === pressed)?.path,
+          { timeout: 5_000 },
+        )
+        .toBe(approvalUrl);
+    }).toPass({ timeout: 60_000 });
     await page.goto(approvalUrl);
     await expect(page).toHaveURL(/\/login\?next=/);
     await page.getByRole("button", { name: "Sign in with passkey" }).click();

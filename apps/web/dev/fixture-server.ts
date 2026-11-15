@@ -465,15 +465,20 @@ function waitingCancel(targetApprovalId: string | null): Approval | undefined {
   );
 }
 
-/** What a person may do with a transaction now, worked out when it is read, as the server does. */
+/**
+ * What a person may do with a transaction now, worked out when it is read, as the server does.
+ * While the workspace is paused nothing is repriced, so that is the reason a fee would not help.
+ */
 function liveTransaction(
   transaction: TransactionInfo,
   targetApprovalId: string | null,
   payment: boolean,
+  paused: boolean,
 ): TransactionInfo {
   const sent = isSent(transaction);
   const waiting = waitingCancel(targetApprovalId);
-  const reason = transaction.stuckReason;
+  const curable = transaction.stuckReason === null || transaction.stuckReason === "fee_too_low";
+  const reason = paused && curable ? "workspace_paused" : transaction.stuckReason;
   return {
     ...transaction,
     stuckReason: sent ? reason : null,
@@ -532,6 +537,13 @@ function openCancel(
     throw new Refusal("policy_denied", "This wallet has no approved policy.", "policy_missing");
   const current = input.transaction();
   if (!current) throw new Refusal("conflict", "Nothing was sent yet.", "not_sent");
+  if (current.stuckReason === "attempts_exhausted") {
+    throw new Refusal(
+      "conflict",
+      "The signer allows no more attempts for this transaction.",
+      "attempts_exhausted",
+    );
+  }
   const maxFeeWei = wallet.policy.fees.maxPerTxWei;
   const approval: Approval = openApproval({
     workspace,
@@ -583,6 +595,7 @@ function openCancel(
 /** A cancel request's subject as it is now: the payment or sweep, and its transaction. */
 function liveCancelSubject(
   subject: Extract<ApprovalSubject, { kind: "cancel-transaction" }>,
+  paused: boolean,
 ): ApprovalSubject {
   if (subject.intent) {
     const intent = stripIntent(state.intents.get(subject.intent.id) ?? subject.intent);
@@ -592,7 +605,7 @@ function liveCancelSubject(
   return sweep?.kind === "sweep-wallet" && sweep.transaction && subject.sweep
     ? {
         ...subject,
-        transaction: liveTransaction(sweep.transaction, subject.sweep.approvalId, false),
+        transaction: liveTransaction(sweep.transaction, subject.sweep.approvalId, false, paused),
       }
     : subject;
 }
@@ -774,12 +787,12 @@ function approvalDetail(approval: Approval, userId: string): ApprovalDetail {
     subject.kind === "approve-intent"
       ? { ...subject, intent: stripIntent(state.intents.get(subject.intent.id) ?? subject.intent) }
       : subject.kind === "cancel-transaction"
-        ? liveCancelSubject(subject)
+        ? liveCancelSubject(subject, workspace.paused)
         : subject.kind === "sweep-wallet"
           ? {
               ...subject,
               transaction: subject.transaction
-                ? liveTransaction(subject.transaction, approval.summary.id, false)
+                ? liveTransaction(subject.transaction, approval.summary.id, false, workspace.paused)
                 : null,
             }
           : subject.kind === "grant-mandate"
@@ -809,10 +822,13 @@ function approvalDetail(approval: Approval, userId: string): ApprovalDetail {
 }
 
 function stripIntent(intent: IntentDetail & { workspaceId?: string }): IntentDetail {
-  const { workspaceId: _workspace, ...rest } = intent;
+  const { workspaceId, ...rest } = intent;
+  const paused = state.workspaces.get(workspaceId ?? "")?.paused ?? false;
   return {
     ...rest,
-    transaction: rest.transaction ? liveTransaction(rest.transaction, targetOf(rest), true) : null,
+    transaction: rest.transaction
+      ? liveTransaction(rest.transaction, targetOf(rest), true, paused)
+      : null,
   };
 }
 
@@ -2207,6 +2223,10 @@ const handlers: Record<RouteName, Handler> = {
         "workspace_paused",
       );
     }
+    const reason = transaction.stuckReason;
+    if (reason !== null && reason !== "fee_too_low") {
+      throw new Refusal("conflict", "A higher fee cannot help this transaction now.", reason);
+    }
     // Within 15 seconds of the newest attempt nothing is added: two clicks make one attempt.
     const latest = transaction.attempts[transaction.attempts.length - 1];
     if (latest && now() - latest.signedAt >= 15) {
@@ -2494,8 +2514,29 @@ const server = createServer(async (req, res) => {
       if (!intent?.transaction)
         throw new Refusal("not_found", "No sent transaction for this intent.");
       if (input.status === "stuck") {
+        // Stuck means it waited a while: its attempts are dated back by the server's default
+        // `REPRICE_AFTER_SECONDS` (180), so a speed-up adds an attempt at once, and nothing of
+        // it is mined, whatever the fixture had settled before.
+        const attempts = intent.transaction.attempts.map((attempt) => ({
+          ...attempt,
+          status: "pending" as const,
+          signedAt: attempt.signedAt - 180,
+        }));
+        const newest = attempts[attempts.length - 1];
+        if (!newest) throw new Error("a transaction without its first attempt");
         intent.status = "stuck";
-        intent.transaction = { ...intent.transaction, status: "stuck", stuckReason: "fee_too_low" };
+        intent.failureCode = null;
+        intent.transactionHash = newest.hash;
+        intent.transaction = {
+          ...intent.transaction,
+          status: "stuck",
+          stuckReason: "fee_too_low",
+          hash: newest.hash,
+          explorerUrl: newest.explorerUrl,
+          blockNumber: null,
+          minedAttempt: null,
+          attempts,
+        };
         // Stays unmined until a speed-up or a cancel offers another attempt.
         state.sentAt.delete(intent.id);
       } else if (input.status === "rejected") {

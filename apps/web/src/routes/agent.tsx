@@ -18,6 +18,7 @@ import {
   useNow,
 } from "@/components/common.tsx";
 import { MandatesCard } from "@/components/mandate.tsx";
+import { IntentLink } from "@/components/transaction.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -323,17 +324,13 @@ function RecentIntents({ workspaceId, agentId }: { workspaceId: string; agentId:
             {mine.map((intent) => (
               <li key={intent.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
                 <div className="min-w-0 flex-1">
-                  {intent.approvalId ? (
-                    <Link
-                      to="/w/$workspaceId/approvals/$approvalId"
-                      params={{ workspaceId, approvalId: intent.approvalId }}
-                      className="font-medium underline-offset-4 hover:underline"
-                    >
-                      {intent.display.title}
-                    </Link>
-                  ) : (
-                    <p className="font-medium">{intent.display.title}</p>
-                  )}
+                  <IntentLink
+                    workspaceId={workspaceId}
+                    intent={intent}
+                    className="font-medium underline-offset-4 hover:underline"
+                  >
+                    {intent.display.title}
+                  </IntentLink>
                   {intent.mandateId ? (
                     <p className="text-xs">
                       <Link

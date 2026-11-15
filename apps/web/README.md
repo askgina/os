@@ -43,7 +43,8 @@ left, each asset's total and window against its caps), and ended ones with the r
 Each has its own page (`/w/<workspace>/mandates/<id>`) with the payments signed under it. Anyone
 who can approve can revoke one there or in the list: a confirmation, no passkey, because revoking
 only takes authority away. A payment signed under a mandate has no approval page; it says
-"Approved in advance" and links to its mandate.
+"Approved in advance", links to its mandate, and has its own page
+(`/w/<workspace>/payments/<intent>`), linked from the mandate's and the agent's lists.
 
 It is a Vite, React 19 and Tailwind 4 single-page app. It talks only to `/api/v1` through
 `createApiClient()` from `@askgina/os-api`. Signing in and adding a passkey go through
@@ -55,6 +56,31 @@ same happens when a session ends while a page is open. `src/lib/return-path.ts` 
 `next` may be: a path on this site with one leading `/`. It refuses `//host`, `/\host`, any
 backslash, schemes, absolute URLs, control characters, and an encoded `/`, `\` or control
 character in the path (`%2F`, `%5C`, `%09`), and then lands on the workspace list instead.
+
+## Stuck transactions
+
+Once a payment or a sweep is sent, its request's page (and a mandated payment's own page) shows
+its transaction: every attempt the signer signed for it, oldest first (the first signature, the
+same payment with a higher fee, or a cancel), each with its fee per gas in gwei, the most it can
+cost, its hash linked to the block explorer, and whether the network mined it. While it is not
+mined, the page says why in words (`stuckReasonSentence` in `src/lib/statuses.ts`): the fee is too
+low, an earlier transaction waits ahead of it, the workspace is paused, the next fee would pass
+the approved ceiling, the signer's time or number of attempts ran out, or the signer refuses. The
+page keeps reading it every 5 seconds while it is stuck.
+
+Owners and approvers get two buttons, each shown only when the transaction allows it
+(`canSpeedUp`, `canCancel`); a viewer reads the attempts and the state and is told who can act.
+"Speed up" asks for one more attempt with higher fees, within the ceiling people approved, with
+no passkey. "Cancel payment" (or "Cancel sweep", on a sweep's page; a sweep is never sped up)
+opens a `cancel-transaction` request and goes to it; while one waits, the transaction links to
+it instead. Its approval page is short, so the link to the signer's page stays on a phone's
+first screen: what it would stop, the wallet, the network, the most it may cost in fees, the
+attempts so far, and that it is an attempt, not a guarantee: if the network includes the payment
+first, the payment goes through (`cancel_too_late`). It is approved like any other request, on
+the signer's page with passkeys. Afterwards the page follows the payment until the network
+decides: "Cancelled on chain" (`voided`, nothing moved, a fee was paid) or the payment's own
+outcome. Every refusal of a speed-up or a cancel, and the outcomes `transaction_cancelled`,
+`cancel_too_late` and `nonce_used_elsewhere`, have their own sentences (`src/lib/codes.ts`).
 
 ## Notifications
 
@@ -129,6 +155,14 @@ only if the wallet's limits still allow it, a payment the agent proposes (throug
 against the wallet's limits too, and anything else goes to the inbox. It is a fixture: the real
 page is `apps/approve/public/`, and the stand-in says on screen that it checks no signature.
 
+A sent transaction's newest attempt is "mined" two seconds after it was offered.
+`/__fixture/settle` with `{ intentId, status: "stuck" }` holds a payment back instead: nothing of
+it is mined, its fee is too low, and its attempts are dated three minutes back (the server's
+`REPRICE_AFTER_SECONDS`), so Speed up adds an attempt at once; within 15 seconds of the newest
+one it adds none, as the server does. A cancel request, approved on the stand-in page, adds a
+cancel attempt, which is then mined and voids the payment. While the workspace is paused, a
+transaction cannot be sped up and says so.
+
 Notification settings are kept as the server keeps them, and the fixture refuses a subscription
 as the server does (`push_off`, `endpoint_refused`, a key that is not a P-256 point). Web Push is
 on with a key made at start; `OS_WEB_FIXTURE_WEB_PUSH=0` starts it off, and `/__fixture/web-push`
@@ -150,7 +184,9 @@ the React plugin's Fast Refresh: a change reloads the page.
 - `bunx vitest run test/<file>.test.ts`: plain logic, such as the status sentences, the
   operator command, the sign-in return path and the mandate editor's helpers (whole units to
   base units, the worst case, the end-time choices, the sentences, the meaning of every mandate
-  code). For notifications: `sw.test.ts` runs the real `public/sw.js` in a stand-in worker scope
+  code), and `transaction.test.ts` for sent transactions (attempt labels, fees in gwei, that a
+  viewer gets no action, every speed-up and cancel refusal in words). For notifications:
+  `sw.test.ts` runs the real `public/sw.js` in a stand-in worker scope
   (what each message shows, that only a page of this site opens, that it listens for nothing
   else), `push.test.ts` the support matrix (desktop, Android, iPhone and iPad in a tab and from
   the Home Screen, before and after iOS 16.4, blocked) and the state of this device, and
@@ -163,7 +199,10 @@ the React plugin's Fast Refresh: a change reloads the page.
   the agent pays under it with nobody asked, and the owner revokes it. Then notifications: off at
   the server first, then on for this device, a message shown by the worker, another device
   removed, a reminder switched off, quiet hours set, and the workspace's notifications allowed to
-  name the request, which a viewer sees but cannot change. After signing out, a notification's
+  name the request, which a viewer sees but cannot change. A stuck payment (held back by
+  `/__fixture/settle`) is sped up and is mined; another is cancelled through its request, approved
+  on the confirmation page, and ends "Cancelled on chain"; a viewer sees the first stuck payment's
+  attempts with no action. After signing out, a notification's
   path leads through sign-in back to its approval. Headless Chromium reaches no push service, so
   the browser's push subscription is a stand-in (`test/push-stand-in.ts`: real keys, a made-up
   endpoint) and messages reach the real worker through the DevTools protocol, unencrypted; the
@@ -185,8 +224,8 @@ the React plugin's Fast Refresh: a change reloads the page.
   journey with every letter 0.08em wider (appended to each stylesheet as it loads, so the
   Content-Security-Policy stays as it is), more than the difference between those fonts. Run it
   after any layout change. It is a stress run for sideways overflow and wrapping only: its text
-  runs taller than with any real font, so it skips the rule that a payment's decision fits on the
-  first phone screen. That rule holds on `phone-light` and `phone-dark`.
+  runs taller than with any real font, so it skips the rule that a request's decision (a payment,
+  or a cancel) fits on the first phone screen. That rule holds on `phone-light` and `phone-dark`.
 - `bunx tsc --noEmit` checks the types.
 
 ## Production

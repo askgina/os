@@ -1,4 +1,9 @@
-import type { ApprovalDetail, ApprovalSubject, WorkspaceDetail } from "@askgina/os-api";
+import type {
+  ApprovalDetail,
+  ApprovalSubject,
+  TransactionInfo,
+  WorkspaceDetail,
+} from "@askgina/os-api";
 import { canonicalJson, keyFingerprint } from "@askgina/os-protocol";
 import { useMutation } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
@@ -6,7 +11,6 @@ import {
   Ban,
   CheckCircle2,
   Clock,
-  ExternalLink,
   KeyRound,
   OctagonAlert,
   ShieldCheck,
@@ -35,6 +39,7 @@ import {
   mandateAssetInfos,
 } from "@/components/mandate.tsx";
 import { PolicyDiff } from "@/components/policy.tsx";
+import { IntentLink, TransactionPanel, type TransactionTarget } from "@/components/transaction.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
 import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import { Dialog } from "@/components/ui/dialog.tsx";
@@ -53,6 +58,7 @@ import { explainCode, explainMandateRefusal } from "@/lib/codes.ts";
 import { formatCountdown, formatTime, formatUnits, percentOf, shortAddress } from "@/lib/format.ts";
 import { formatEndTime, formatTimeLeft, formatWindow } from "@/lib/mandate.ts";
 import { intentSentence, transactionSentence } from "@/lib/statuses.ts";
+import { paymentTitle, transactionOpen } from "@/lib/transaction.ts";
 import { cn } from "@/lib/utils.ts";
 
 /**
@@ -124,6 +130,8 @@ function ApprovalView({
       ) : (
         <Outcome approval={approval} />
       )}
+
+      <SentTransaction approval={approval} workspace={workspace} />
 
       {approval.approvedBy.length > 0 || approval.rejectedBy ? (
         <section className="grid grid-cols-1 gap-1 text-sm">
@@ -224,7 +232,126 @@ function Subject({
       return <SweepSubject subject={subject} workspace={workspace} />;
     case "grant-mandate":
       return <MandateSubject approval={approval} subject={subject} workspace={workspace} />;
+    case "cancel-transaction":
+      return <CancelSubject approval={approval} subject={subject} workspace={workspace} />;
   }
+}
+
+type CancelTransactionSubject = Extract<ApprovalSubject, { kind: "cancel-transaction" }>;
+
+/** The network a cancel request is for: its envelope names it; a payment's intent does too. */
+function cancelChainId(approval: ApprovalDetail, subject: CancelTransactionSubject): string | null {
+  if (approval.envelope.type === "cancel-transaction") return approval.envelope.chainId;
+  return subject.intent?.chainId ?? null;
+}
+
+/**
+ * A request to cancel a sent payment or sweep: what it would stop, and that it is an attempt, not
+ * a guarantee. Short on purpose, so the link to the signer's page stays on a phone's first
+ * screen; the attempts so far are listed below it.
+ */
+function CancelSubject({
+  approval,
+  subject,
+  workspace,
+}: {
+  approval: ApprovalDetail;
+  subject: CancelTransactionSubject;
+  workspace: WorkspaceDetail;
+}) {
+  const { intent, sweep, wallet } = subject;
+  const what = intent ? "payment" : "sweep";
+  const stops = intent ? paymentTitle(intent.display) : (sweep?.title ?? "");
+  const chainId = cancelChainId(approval, subject);
+  const chain = workspace.chains.find((item) => item.chainId === chainId);
+  return (
+    <Summary title={`Cancel ${what}: ${stops}`}>
+      <Alert tone="warning" className="items-start py-2.5">
+        <TriangleAlert aria-hidden />
+        <p>
+          <strong>An attempt, not a guarantee.</strong> It takes the {what}'s place only if the
+          network includes it first. If the network includes the {what} first, the {what} goes
+          through as sent.
+        </p>
+      </Alert>
+      <Facts>
+        <Fact label="It would stop" wide>
+          {intent ? (
+            <IntentLink workspaceId={workspace.id} intent={intent} className={linkClass}>
+              {stops}
+            </IntentLink>
+          ) : sweep ? (
+            <Link
+              to="/w/$workspaceId/approvals/$approvalId"
+              params={{ workspaceId: workspace.id, approvalId: sweep.approvalId }}
+              className={linkClass}
+            >
+              {stops}
+            </Link>
+          ) : null}
+        </Fact>
+        <Fact label="From wallet">
+          {wallet.label} <span className="font-mono text-xs">{shortAddress(wallet.address)}</span>
+        </Fact>
+        <Fact label="Network">{chainId ? chainName(chainId, workspace.chains) : "Unknown"}</Fact>
+        <Fact label="Network fee, at most">
+          {formatUnits(subject.maxFeeWei, 18)} {chain?.nativeSymbol ?? ""}
+        </Fact>
+        <Fact label="Attempts so far">{subject.transaction.attempts.length}</Fact>
+      </Facts>
+      <p className="text-sm">
+        If it wins, nothing moves: the wallet sends nothing to itself at the {what}'s place in line
+        (account nonce {subject.txNonce}) and pays only the network fee.
+        {intent ? " The payment still counts toward the wallet's 24-hour limit." : ""}
+      </p>
+    </Summary>
+  );
+}
+
+/**
+ * The transaction a request signed, or, for a cancel request, the one it would stop, with every
+ * attempt. Owners and approvers can speed up a payment or cancel a payment or a sweep here.
+ */
+function SentTransaction({
+  approval,
+  workspace,
+}: {
+  approval: ApprovalDetail;
+  workspace: WorkspaceDetail;
+}) {
+  const subject = approval.subject;
+  let shown: {
+    transaction: TransactionInfo;
+    chainId: string | null;
+    target?: TransactionTarget;
+  } | null = null;
+  if (subject.kind === "approve-intent" && subject.intent.transaction) {
+    shown = {
+      transaction: subject.intent.transaction,
+      chainId: subject.intent.chainId,
+      target: { kind: "payment", intentId: subject.intent.id, approvalId: approval.id },
+    };
+  } else if (subject.kind === "sweep-wallet" && subject.transaction) {
+    shown = {
+      transaction: subject.transaction,
+      chainId: subject.sweep.chainId,
+      target: { kind: "sweep", approvalId: approval.id },
+    };
+  } else if (subject.kind === "cancel-transaction") {
+    shown = { transaction: subject.transaction, chainId: cancelChainId(approval, subject) };
+  }
+  if (!shown) return null;
+  const chainId = shown.chainId;
+  const chain = workspace.chains.find((item) => item.chainId === chainId);
+  return (
+    <TransactionPanel
+      transaction={shown.transaction}
+      workspaceId={workspace.id}
+      nativeSymbol={chain?.nativeSymbol ?? "native coin"}
+      role={workspace.role}
+      target={shown.target}
+    />
+  );
 }
 
 /**
@@ -402,13 +529,9 @@ function IntentSubject({
   const { intent, wallet, limits } = subject;
   const display = intent.display;
   const chain = workspace.chains.find((item) => item.chainId === intent.chainId);
-  const amount = `${display.amountFormatted} ${display.assetSymbol}`;
-  const sentence = display.rawCall
-    ? `Call contract ${shortAddress(display.to)}${display.amount === "0" ? "" : ` with ${amount}`}`
-    : `Send ${amount} to ${shortAddress(display.to)}`;
   const fee = formatUnits(intent.intent.maxFeeWei, 18);
   return (
-    <Summary title={sentence}>
+    <Summary title={paymentTitle(display)}>
       {display.rawCall ? (
         <Alert tone="danger" className="py-2.5">
           <OctagonAlert aria-hidden />
@@ -843,13 +966,70 @@ function RejectButton({
   );
 }
 
+/**
+ * Where an approved cancel stands: signed and sent, and what became of the payment or sweep it
+ * was meant to stop. The chain decides which of the two it includes.
+ */
+function CancelOutcome({
+  subject,
+  workspaceId,
+}: {
+  subject: CancelTransactionSubject;
+  workspaceId: string;
+}) {
+  const { intent, sweep, transaction } = subject;
+  const what = intent ? "payment" : "sweep";
+  return (
+    <>
+      {transactionOpen(transaction.status) ? (
+        <p>
+          The cancel was signed and sent. The network includes either it or the {what}, whichever
+          comes first.
+        </p>
+      ) : null}
+      {intent ? (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <IntentStatusBadge status={intent.status} />
+            <span className="text-muted-foreground">{intentSentence[intent.status]}</span>
+          </div>
+          {intent.failureCode ? (
+            <p className="text-muted-foreground">{explainCode(intent.failureCode)}</p>
+          ) : null}
+          <IntentLink workspaceId={workspaceId} intent={intent} className={cn(linkClass, "w-fit")}>
+            Open the payment
+          </IntentLink>
+        </>
+      ) : (
+        <>
+          <p className="text-muted-foreground">
+            The sweep's transaction: {transactionSentence[transaction.status]}
+          </p>
+          {sweep ? (
+            <Link
+              to="/w/$workspaceId/approvals/$approvalId"
+              params={{ workspaceId, approvalId: sweep.approvalId }}
+              className={cn(linkClass, "w-fit")}
+            >
+              Open the sweep
+            </Link>
+          ) : null}
+        </>
+      )}
+    </>
+  );
+}
+
 /** Where a decided request ended up, followed until it is final. */
 function Outcome({ approval }: { approval: ApprovalDetail }) {
   const subject = approval.subject;
   const intent = subject.kind === "approve-intent" ? subject.intent : null;
   const transaction =
     intent?.transaction ?? (subject.kind === "sweep-wallet" ? subject.transaction : null);
-  const signs = subject.kind === "approve-intent" || subject.kind === "sweep-wallet";
+  const signs =
+    subject.kind === "approve-intent" ||
+    subject.kind === "sweep-wallet" ||
+    subject.kind === "cancel-transaction";
   const mandate = subject.kind === "grant-mandate" ? subject.mandate : null;
   switch (approval.status) {
     case "approved":
@@ -887,21 +1067,8 @@ function Outcome({ approval }: { approval: ApprovalDetail }) {
                 Transaction: {transactionSentence[transaction.status]}
               </p>
             ) : null}
-            {transaction ? (
-              transaction.explorerUrl ? (
-                <a
-                  href={transaction.explorerUrl}
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  className="flex items-center gap-1 font-mono text-xs break-all text-accent underline-offset-4 hover:underline"
-                >
-                  {transaction.hash}
-                  <ExternalLink className="size-3 shrink-0" aria-hidden />
-                  <span className="sr-only">(opens the block explorer)</span>
-                </a>
-              ) : (
-                <code className="font-mono text-xs break-all">{transaction.hash}</code>
-              )
+            {subject.kind === "cancel-transaction" ? (
+              <CancelOutcome subject={subject} workspaceId={approval.workspaceId} />
             ) : null}
           </div>
         </Alert>

@@ -9,6 +9,7 @@ import { ApprovalsPage } from "@/routes/approvals.tsx";
 import { JoinPage, LoginPage, SetupPage } from "@/routes/auth.tsx";
 import { MandatePage } from "@/routes/mandate.tsx";
 import { MembersPage } from "@/routes/members.tsx";
+import { PaymentPage } from "@/routes/payment.tsx";
 import { SettingsPage } from "@/routes/settings.tsx";
 import { WalletPage } from "@/routes/wallet.tsx";
 import { WorkspaceLayout, WorkspaceOverview } from "@/routes/workspace.tsx";
@@ -112,6 +113,11 @@ const mandate = createRoute({
   path: "/mandates/$mandateId",
   component: MandatePage,
 });
+const payment = createRoute({
+  getParentRoute: () => workspace,
+  path: "/payments/$intentId",
+  component: PaymentPage,
+});
 const members = createRoute({
   getParentRoute: () => workspace,
   path: "/members",
@@ -130,7 +136,7 @@ const routeTree = rootRoute.addChildren([
   home,
   settings,
   approval,
-  workspace.addChildren([overview, approvals, wallet, agent, mandate, members, activity]),
+  workspace.addChildren([overview, approvals, wallet, agent, mandate, payment, members, activity]),
 ]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent" });

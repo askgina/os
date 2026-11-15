@@ -25,6 +25,7 @@ import {
   mandateAssetInfos,
   RevokeMandateButton,
 } from "@/components/mandate.tsx";
+import { IntentLink } from "@/components/transaction.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import {
@@ -224,7 +225,7 @@ function Payments({
         ) : (
           <ul className="divide-y rounded-md border">
             {[...detail.intents, ...more].map((intent) => (
-              <Payment key={intent.id} intent={intent} now={now} />
+              <Payment key={intent.id} intent={intent} workspaceId={workspaceId} now={now} />
             ))}
           </ul>
         )}
@@ -244,14 +245,27 @@ function Payments({
   );
 }
 
-function Payment({ intent, now }: { intent: IntentSummary; now: number }) {
+/** One payment under it; its own page has the transaction, and Speed up and Cancel. */
+function Payment({
+  intent,
+  workspaceId,
+  now,
+}: {
+  intent: IntentSummary;
+  workspaceId: string;
+  now: number;
+}) {
   return (
     <li className="grid grid-cols-1 gap-1 px-4 py-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <p className="min-w-0 font-medium wrap-anywhere">
+        <IntentLink
+          workspaceId={workspaceId}
+          intent={intent}
+          className="min-w-0 font-medium wrap-anywhere underline-offset-4 hover:underline"
+        >
           {intent.display.title} to{" "}
           <span className="font-mono text-sm">{shortAddress(intent.display.to)}</span>
-        </p>
+        </IntentLink>
         <IntentStatusBadge status={intent.status} />
       </div>
       <p className="text-xs text-muted-foreground">
