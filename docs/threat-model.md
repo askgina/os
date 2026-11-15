@@ -5,7 +5,8 @@ claim names the file that implements it or the plan section that fixes it. The p
 [`specs/agent-workspaces-v0.1.md`](../specs/agent-workspaces-v0.1.md); mandates follow
 [`specs/approval-mandates.md`](../specs/approval-mandates.md), reprices and cancels of a stuck
 transaction [`specs/stuck-transaction-repricing.md`](../specs/stuck-transaction-repricing.md),
-retiring a wallet and deleting a workspace [`specs/workspace-lifecycle.md`](../specs/workspace-lifecycle.md).
+retiring a wallet and deleting a workspace [`specs/workspace-lifecycle.md`](../specs/workspace-lifecycle.md),
+running on more than one machine [`specs/beyond-one-machine.md`](../specs/beyond-one-machine.md).
 Components and terms are introduced in [`architecture.md`](./architecture.md); the exact checks
 are in [`approval-protocol.md`](./approval-protocol.md).
 
@@ -24,7 +25,8 @@ are in [`approval-protocol.md`](./approval-protocol.md).
 ## Actors
 
 - **Operator.** Runs the stack and holds the keyring (or the OpenBao that holds its keys), the
-  signer volume and backups.
+  signer volume and backups. With the signer on its own host, each host can have its own
+  operator, and only the signer host's holds the signer volume.
 - **Members.** People with a role in a workspace: owner, approver or viewer.
 - **Agents.** Programs the operator brings, connected over MCP with a bearer token.
 - **Outsiders.** Anyone on the network who can reach the public entry point.
@@ -42,7 +44,9 @@ are in [`approval-protocol.md`](./approval-protocol.md).
 3. **Control plane → signer.** Requests carry an HMAC request signature
    ([`request-signature.ts`](../packages/protocol/src/signer/request-signature.ts)). Anything that
    adds authority also needs passkey assertions the signer verifies itself
-   ([`verify-authorization.ts`](../packages/protocol/src/webauthn/verify-authorization.ts)).
+   ([`verify-authorization.ts`](../packages/protocol/src/webauthn/verify-authorization.ts)). With
+   the signer on its own host, the requests travel inside mutual TLS, and the control plane's
+   certificate reaches the control routes only (see "Running on more than one machine").
 4. **Data at rest → keyring.** Content is encrypted under data keys that are wrapped by
    key-encryption keys outside Postgres: in a keyring file, or in an OpenBao Transit key when
    `KEY_PROVIDER=openbao` ([`packages/keys/src/`](../packages/keys/src/); see "Key providers").
@@ -57,7 +61,8 @@ are in [`approval-protocol.md`](./approval-protocol.md).
    ([`specs/trusted-display.md`](../specs/trusted-display.md)).
 6. **`approve` service → signer.** Requests carry an HMAC request signature under a second
    secret, which the signer accepts on its four confirmation routes and nowhere else
-   ([`signer/api.ts`](../packages/protocol/src/signer/api.ts), `scope`).
+   ([`signer/api.ts`](../packages/protocol/src/signer/api.ts), `scope`). With mutual TLS, only the
+   `approve` service's certificate reaches those routes.
 7. **Control plane → the operator's webhook receiver.** When `NOTIFY_WEBHOOK_URL` is set, the
    server POSTs identifiers, a kind, a time and a link, signed with HMAC-SHA-256 under a third
    secret, `notify-webhook-secret` ([`apps/server/src/notify/webhook.ts`](../apps/server/src/notify/webhook.ts)).
@@ -188,8 +193,9 @@ This covers code execution in the server and a script injected into a page on `P
   use the page meanwhile, the gap the confirmation page closes. A script injected into the
   confirmation page is the same case. The page limits that risk: one hand-written script with no
   dependencies, no inline script or style, text set with `textContent` only, Trusted Types
-  required (enforced by Chromium-based browsers), no third-party requests. On the same host,
-  root controls the service as it controls everything else.
+  required (enforced by Chromium-based browsers), no third-party requests. Root on the host that
+  runs the service controls it as it controls everything else there; with the signer on its own
+  host, that is the signer host.
 
 ### A lookalike host (phishing)
 
@@ -216,8 +222,9 @@ This covers code execution in the server and a script injected into a page on `P
 
 ### A network position between the services
 
-- **Can:** on the signing network, observe requests between server and signer, including
-  intents and assertions. The plan's layout puts no TLS on the internal networks.
+- **Can:** on one machine, on the signing network, observe requests between server and signer,
+  including intents and assertions: the internal networks there carry no TLS. Between two hosts,
+  see "Running on more than one machine".
 - **Stopped by:** the HMAC request signature detects altered requests and refuses timestamps more
   than 60 seconds off. Altering an intent or envelope breaks its hash or its passkey signature.
   The signing network is internal, with no route from the agents network. The same holds for the
@@ -793,6 +800,111 @@ Export, clone, import, erasing a person and the OpenBao provider have unit tests
 [`erase.test.ts`](../apps/server/test/identity/erase.test.ts),
 [`packages/keys/test/`](../packages/keys/test/)). No release gate runs them on the real stack.
 
+## Running on more than one machine
+
+[`deploy/README.md`](../deploy/README.md#running-the-signer-on-its-own-host) has the procedures;
+the plan is [`specs/beyond-one-machine.md`](../specs/beyond-one-machine.md).
+
+### The signer on its own host
+
+The signer, the `approve` service and the confirmation page's edge run on the signer's host; the
+server, Postgres, the public edge and the agent gateway on the control host
+([`deploy/split/`](../deploy/split/)). The server reaches the signer's port 8787 over mutual TLS
+1.3; each side accepts exactly the other's self-signed certificate, and the signer binds each
+client certificate to one scope before it checks the request signature
+([`apps/signer/src/index.ts`](../apps/signer/src/index.ts), `clientScopes`). What changes for
+each attacker position:
+
+- **Code execution in the control plane, or root on the control host.** Everything listed under
+  "Code execution in the control plane" still holds, including transfers it invents under a live
+  mandate and fees burned up to each ceiling. What no longer comes with it is the signer host:
+  the control host holds no vault, no `token-key`, no `vault-passphrase`, no confirm secret and
+  no signer or `approve` key, so it cannot read a wallet key, run the signer's admin commands,
+  set the fence or serve the confirmation page. The CI gate `split.spec.ts` checks that the
+  control project has no volume with those secrets and runs no `approve` service.
+- **The network between the hosts.** It sees TLS 1.3: when the hosts talk, how much, and the
+  signer's name the server asks for; TLS 1.3 encrypts both certificates and everything after
+  the handshake, intents and assertions included. It can drop or delay traffic, which stops
+  signing and approving. It cannot replay a captured request: the 60-second window of the request
+  signature applies inside a TLS session it cannot open. A client on that network without one of
+  the two client certificates gets no handshake (`split.spec.ts`).
+- **A stolen control certificate and key.** It still needs the request secret, and the reverse:
+  the certificate alone fails the request signature, and the secret alone fails the handshake.
+  Both are on the control host, so whoever has that host has both: the control-plane case. A
+  stolen confirm secret is useless from the control host, because the confirm routes take only
+  the `approve` service's certificate.
+- **The confirmation page's edge on the signer host takes internet traffic.** Caddy there serves
+  `APPROVE_ORIGIN` on ports 80 and 443 and reaches an ACME server for its certificate. It holds
+  no secret but that certificate. Its compromise is the case "A compromised `approve` service, or
+  Caddy, DNS or the certificate for `APPROVE_ORIGIN`"; an escape from its container is the signer
+  host case. The example rules in `deploy/split/nftables-signer.conf` drop every connection the
+  signer opens, and `approve` has only internal networks; `split.spec.ts` checks the signer cannot
+  reach the internet under those rules. They are an example the operator applies, not something
+  the stack enforces.
+- **The signer host.** Unchanged: everything for the wallets on it.
+
+Two more things the split brings:
+
+- **The operator command the members page shows.** For a workspace with no approver left, the
+  page shows owners the `enroll-approver` command to run on the signer host, starting with the
+  control plane's `SIGNER_ADMIN_COMMAND`. The server at start and the web app check that prefix
+  against a pattern with no shell metacharacters, but a compromised control plane chooses the
+  whole text. Whoever runs it on the signer host reads it first: the prefix must be the signer's
+  admin command, and the key must be the one the person reads out.
+- **Certificates expire.** Two years after `make-peer-certs.sh`, every handshake fails and
+  nothing is signed or approved until new ones are installed. The signer logs the days left at
+  every start and refuses to start with an expired certificate.
+
+A move of the signer to another host is a new database file: the signer fences itself, every
+waiting approval is refused, and every live mandate ends (decision D9 in the plan), because a
+move cannot be told from a copy.
+
+Proven: the release gates and `split.spec.ts` in CI job `stack (split)` (runs 43733608692 and
+43735023880), with both Compose projects on one runner. Not tested: two real hosts with different
+administrators.
+
+### Several server replicas
+
+- **Limits are shared.** The limits on one agent's requests (120 a minute) and on one client's
+  failed authentications (10 a minute) are token buckets in Postgres
+  ([`apps/server/src/rate-limit.ts`](../apps/server/src/rate-limit.ts)), so N replicas allow what
+  one does. The table is `UNLOGGED`: a database crash or failover resets every limit. The failed
+  authentication limit charges the address `FORWARDED_HOPS` entries from the end of
+  `X-Forwarded-For`; set too high, a client chooses the address it is charged to and is not
+  limited.
+- **One setup token per installation.** Replicas booting together mint one token, under one
+  lock; a later boot does not replace it. Until the first owner exists, whoever reads the server's
+  log, or can run `cli.ts setup-token` in a server container, can create the first owner, as on
+  one machine. `SETUP_TOKEN_IN_LOG=false` keeps it out of the log.
+- **A shred reaches every replica.** See "What is encrypted at rest".
+
+Proven: the unit tests, with two gateways on one database, in CI run 43736178714. The real-stack
+gate `stack (replicas)` is written and has not run.
+
+### Kubernetes
+
+The manifests in [`deploy/k8s/`](../deploy/k8s/) are written and have not run in CI. They claim
+isolation only as far as the isolation probe
+([`deploy/k8s/isolation-probe.yaml`](../deploy/k8s/isolation-probe.yaml)) and the gate
+`e2e/test/kubernetes.spec.ts` check it, and neither has run yet:
+
+- an agent pod gets no DNS, no Kubernetes API and no internet, and reaches only the gateway's MCP
+  endpoint;
+- any other pod in `os` reaches nothing;
+- from a namespace without policies, the edge answers and the server, the gateway, Postgres, the
+  chain, the signer and the confirmation service do not;
+- in the in-cluster layout, the signer reaches nothing, and the confirmation service only the
+  signer.
+
+Nothing else is claimed. A NetworkPolicy does nothing on a network plugin that does not enforce
+it, and kind's plugin fails open when its controller cannot start: only the probe shows it, so it
+runs after every install. Policies cannot block `localhost` inside a pod. Secrets are not
+encrypted in etcd by default, and cluster administration reaches every node, so whoever
+administers the cluster is the control plane; with the signer in the cluster (CI and evaluation
+only) they are the signer host. In production the signer and its confirmation page run outside
+the cluster. With notifications on, the server may open TCP 443 to any address, and its own
+checks of the webhook URL and push hosts are what limit it.
+
 ## What is encrypted at rest
 
 | Data                                                                                                                            | Where                                                                                                   | Encrypted?                                                                                 | Why                                                                                                                     |
@@ -822,7 +934,9 @@ a database full of readable data as clean, because the SDK compresses before it 
 The encrypting World never answers "no key". Upstream treats a missing key as "store plaintext",
 so every failure throws and the run stalls and retries instead of leaking. Shredding a key leaves
 a tombstone so a later read cannot mint a replacement ([`data-key-store.ts`](../packages/keys/src/data-key-store.ts)).
-In other processes, a cached key stays usable until its cache time (one minute by default)
+Every server replica listens for shreds and drops a shredded key from its cache at once; it
+caches nothing while that connection is down. A process that does not listen, such as a World
+started from `@askgina/os-world/target`, keeps a cached key until its cache time (one minute)
 expires.
 
 ## Limits
@@ -888,7 +1002,10 @@ host-only, away from the confirmation page altogether.
 
 **One machine running everything gives no protection against that machine.** The network
 separation between server and signer protects only when they run on different hosts with
-separate administration. On one host, root on that host is the signer host case.
+separate administration. On one host, root on that host is the signer host case. The split
+deployment puts the signer on its own host, but its CI gate runs both projects on one machine:
+two hosts with different administrators have not been tested (see "Running on more than one
+machine").
 
 **OWS signs in-process.** The OWS library runs inside the signer's process. It is a key store,
 not an isolation boundary, and its own policy is not used as an authority (OWS research,
@@ -959,8 +1076,9 @@ From the map's "Not yet specified" list ([askgina/os#1](https://github.com/askgi
   covered by anything but one approval per action.
 - Operations that are not EVM transactions: other chains, and off-chain venues.
 - Shipping agent runtimes or sandboxes.
-- Operating beyond one machine: cloud KMS key providers, HA Postgres, Kubernetes. OpenBao
-  Transit is a key provider (see "Key providers").
+- Cloud KMS key providers, and HA Postgres (CloudNativePG is planned and not built). The signer
+  on its own host, OpenBao Transit, several server replicas and the Kubernetes manifests are in
+  "Running on more than one machine" and "Key providers", each with what is proven.
 - Notifications outside the inbox beyond Web Push and the signed webhook with its sidecars (see
   "Notifications"): email, and chat adapters built into the control plane.
 - For stuck transactions: a new gas limit, legacy (type 0) and blob transactions, L2-specific

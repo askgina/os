@@ -1,6 +1,6 @@
 # @askgina/os-signer
 
-The signer holds every wallet key of a deployment and decides, on its own, whether to sign. It is a small HTTP service on internal networks that only the control plane and the keyless `approve` service (which serves the confirmation page) can reach.
+The signer holds every wallet key of a deployment and decides, on its own, whether to sign. It is a small HTTP service that only the control plane and the keyless `approve` service (which serves the confirmation page) can reach: on internal networks on one machine, or over mutual TLS when it runs on its own host (see "Mutual TLS").
 
 The control plane can ask the signer for things. It cannot make it sign. Every operation that adds authority (signing a transaction, changing a policy, adding an approver, lowering or raising a threshold, resuming a paused workspace) must carry passkey assertions over a statement of that exact operation (an _envelope_). The signer recomputes the envelope's digest, checks each assertion against its own registry of approvers, and acts at most once per approval and per nonce.
 
@@ -8,7 +8,7 @@ The contract is [`packages/protocol/src/signer/api.ts`](../../packages/protocol/
 
 ## What it trusts
 
-- **Its own SQLite file** (`$SIGNER_DATA_DIR/signer.sqlite`): workspaces, approvers, wallet policies with their hash chain, used nonces, signed transactions, the spend ledger, the decision log, the restore fence, open confirmations with the assertions made on them, the possession challenges of approver changes (table `possession_challenges`), mandates with their grantors and every use (tables `mandates`, `mandate_grantors`, `mandate_uses`), and every attempt after a first signature (table `signature_attempts`). Its schema version is `PRAGMA user_version`, now 6 (version 5 added the three mandate tables, version 6 `signature_attempts`); the signer migrates it in one transaction when it opens the file, and refuses to open a file written by a newer signer (`SchemaTooNewError`, logged as `schema_too_new`).
+- **Its own SQLite file** (`$SIGNER_DATA_DIR/signer.sqlite`): workspaces, approvers, wallet policies with their hash chain, used nonces, signed transactions, the spend ledger, the decision log, the restore fence, open confirmations with the assertions made on them, the possession challenges of approver changes (table `possession_challenges`), mandates with their grantors and every use (tables `mandates`, `mandate_grantors`, `mandate_uses`), and every attempt after a first signature (table `signature_attempts`). Its schema version is `PRAGMA user_version`, now 8 (version 5 added the three mandate tables, version 6 `signature_attempts`, version 7 the lifecycle columns, version 8 `venue_nonces` and `venue_signatures`); the signer migrates it in one transaction when it opens the file, and refuses to open a file written by a newer signer (`SchemaTooNewError`, logged as `schema_too_new`).
 - **Its vault** (`$SIGNER_DATA_DIR/vault`): an [Open Wallet Standard](https://github.com/open-wallet-standard/core) key store, one wallet with its own mnemonic per wallet id. OWS is used only to keep keys encrypted and sign; it enforces nothing. The signer builds every transaction itself from the approved intent (`to`, `value`, `data`, the chain; ERC-20 calldata is encoded here), so it never signs bytes a caller handed it.
 - **Two request-signing secrets**, one per scope. The control plane's (`SIGNER_HMAC_SECRET_FILE`) proves a request came from the control plane within the last minute; it reaches every route except the four confirm routes. The `approve` service's (`SIGNER_CONFIRM_SECRET_FILE`) reaches only those four, so a compromised confirmation page cannot sign, apply or read anything else. Pausing a workspace, revoking an approval and revoking a mandate need only the control plane's secret, because they only remove authority.
 - **The relying party** (`WEBAUTHN_RP_ID`, `SIGNER_APPROVAL_ORIGIN`). An assertion counts only when the browser made it on the confirmation page: at `SIGNER_APPROVAL_ORIGIN` exactly, top-level (not in a frame: no `crossOrigin: true`, no `topOrigin`), as a `webauthn.get`, under `WEBAUTHN_RP_ID`. The same rule holds when the signer signs, when it applies an admin change, and when it accepts an assertion on a confirmation route. An assertion made on any page the control plane serves is refused with `assertion_invalid`. No setting widens this: the earlier `WEBAUTHN_ORIGINS`, which let the control plane's own page approve, was removed (`specs/trusted-display.md`, milestone 3).
@@ -135,12 +135,28 @@ A payment needs its policy's threshold, a cancel its wallet's current policy's; 
 | `SIGNER_MAX_LIVE_MANDATES_PER_WALLET` | Live (not revoked, not past `notAfter`) mandates one wallet may hold: 1 to 64 (default 16).                                         |
 | `SIGNER_MAX_TX_ATTEMPTS`              | Attempts per approval, the first signature included: 2 to 64 (default 16).                                                          |
 | `SIGNER_REPRICE_WINDOW_SECONDS`       | How long after the first signature a reprice is signed with no person: 0 to 604800 (default 86400; 0 refuses every reprice).        |
+| `SIGNER_HOST`                         | The address to listen on (default `0.0.0.0`). On its own host, the private interface the control plane reaches.                     |
+| `SIGNER_TLS_CERT_FILE`                | Mutual TLS: the signer's certificate, PEM. With the next three, the listener speaks TLS 1.3 only. All four or none.                 |
+| `SIGNER_TLS_KEY_FILE`                 | Mutual TLS: the key of `SIGNER_TLS_CERT_FILE`.                                                                                      |
+| `SIGNER_TLS_CONTROL_CERT_FILE`        | Mutual TLS: the control plane's certificate, the one client allowed on control routes.                                              |
+| `SIGNER_TLS_APPROVE_CERT_FILE`        | Mutual TLS: the `approve` service's certificate, the one client allowed on the four confirm routes. Not the control certificate.    |
+| `SIGNER_HEALTH_PORT`                  | With TLS only: the plain health listener's port on `127.0.0.1` (default 8789; not 8788, which `approve` uses).                      |
 
 `WEBAUTHN_ORIGINS` is no longer read; remove it from an older environment. The signer refuses to start when a secret is missing or malformed, when the confirm secret equals the request secret, when `SIGNER_APPROVAL_ORIGIN` is not under the RP ID or equals `SIGNER_RETURN_ORIGIN` (the control plane's origin), or when a label file has a name or symbol that could pass for something else (symbols `^[A-Za-z0-9.]{1,11}$`, chain names printable ASCII up to 40 characters, decimals 0 to 36). It runs with umask 077, and on SIGTERM finishes requests in flight before closing the database.
 
 ```sh
 node src/main.ts
 ```
+
+## Mutual TLS
+
+When the signer runs on its own host ([`deploy/README.md`](../../deploy/README.md#running-the-signer-on-its-own-host)), set the four `SIGNER_TLS_*` files. The listener on `SIGNER_PORT` then accepts a TLS 1.3 connection only from a client presenting exactly one of the two client certificates; there is no certificate authority, and a client with no certificate, another one, or plain HTTP fails before any HTTP request is read. The certificate then decides the request's scope before the request signature is checked: the control plane's certificate reaches control routes only, the `approve` service's the four confirm routes only, and anything else is `unauthenticated`. The request signature is still required inside TLS, so a stolen certificate alone, or a stolen secret alone, opens nothing. `deploy/split/make-peer-certs.sh` makes the three certificates.
+
+At start the signer logs `tls_expiry` with the whole days left on each of the three certificates, keyed by variable name, and refuses to start with `tls_certificate_expired` when one has expired: every client would refuse it anyway. It also refuses a key that is not the certificate's, a client certificate equal to its own, the same certificate for both clients, and half a configuration (`SIGNER_TLS_*: set all four or none`).
+
+The main port then needs a client certificate, so a second listener, plain HTTP on `127.0.0.1:SIGNER_HEALTH_PORT`, answers `GET /healthz` and nothing else, for the container's health check. Without TLS there is no second listener and `GET /healthz` is on the main port, as on one machine.
+
+Tested: `test/tls.test.ts` in CI job `test`, and the release gates through two Compose projects in `stack (split)` (CI runs 43733608692 and 43735023880).
 
 ## Admin CLI
 

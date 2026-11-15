@@ -7,8 +7,9 @@ it there with a passkey. A separate signer service, the only component that can 
 keys, checks that passkey approval itself, checks the wallet's limits, and signs exactly one
 transaction. For routine payments, people can instead approve once, in advance, a mandate: one
 agent may pay listed recipients from one wallet up to stated amounts until a stated time, and the
-signer enforces it. Everything runs on your own machine: Postgres, a control plane, the signer, a
-keyless confirmation service and a reverse proxy in one Compose file. No hosted service is needed.
+signer enforces it. Everything runs on your own machines: Postgres, a control plane, the signer, a
+keyless confirmation service and a reverse proxy in one Compose file, or the signer and its
+confirmation page on a host of their own. No hosted service is needed.
 
 <p align="center">
   <img src="docs/images/approval-phone.png" width="320"
@@ -231,7 +232,9 @@ Two limits are worth knowing before you rely on this:
   come from the control plane and are partial; the signer sees none. A deletion people were
   misled into loses funds, and a compromised control plane can delay any deletion by cancelling
   it.
-- Running every service on one machine gives no protection against that machine.
+- Running every service on one machine gives no protection against that machine. The deploy
+  guide puts the signer and its confirmation page on a host of their own; that layout is tested
+  in CI with both halves on one machine, not yet on two hosts with different administrators.
 
 The full list is in [`docs/threat-model.md`](docs/threat-model.md).
 
@@ -245,8 +248,19 @@ stuck transaction repriced under its approval or cancelled with passkeys, tested
 chain only; retiring a wallet and deleting a workspace, with keys destroyed after a delay, tested
 on the full stack; exporting, copying and importing a workspace and erasing a person, with unit
 tests only; key-encryption keys in a keyring file or in OpenBao Transit, the OpenBao provider
-with unit tests only. Not in this release: mandates for contract calls or trades, other chains, a
-bundled agent runtime, cloud KMS key management. The
+with unit tests only.
+
+Beyond one machine ([`deploy/README.md`](deploy/README.md#running-the-signer-on-its-own-host)):
+
+- The signer and its confirmation page on their own host, over mutual TLS: every release gate
+  passes in CI across two Compose projects (`stack (split)`, run 43735023880).
+- Several server replicas on one Postgres: unit-tested in CI; the two-replica gate on the real
+  stack is written and has not run.
+- Kubernetes manifests (`deploy/k8s/`): written; their CI job has not run.
+- HA Postgres: not built.
+
+Not in this release: mandates for contract calls or trades, other chains, a bundled agent
+runtime, cloud KMS key management. The
 [map of open questions](https://github.com/askgina/os/issues/1) lists what is planned and why.
 
 ## Documentation

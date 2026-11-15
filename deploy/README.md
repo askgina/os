@@ -219,6 +219,9 @@ re-wraps the data keys; it does not re-encrypt the data.
 Do not prune if rewrap reported failures: a data key still wrapped under a removed key can never
 be read again. Back up `server-secrets` before and after.
 
+These commands are for one server. With more than one replica, rotate in two phases (see "More
+than one server replica").
+
 Rotate after every finished deletion (see "Backups and restoring"): `prune` removes the key that
 wrapped the deleted workspace's data keys from the live keyring, so older database copies no
 longer open with it.
@@ -238,8 +241,8 @@ setting):
   `OPENBAO_ADDR`, `OPENBAO_AUTH` (`token`, `approle` or `kubernetes`) and its credential files,
   `OPENBAO_TRANSIT_MOUNT` and `OPENBAO_TRANSIT_KEY` (default `transit` and `os-kek`),
   `OPENBAO_CA_FILE` and `OPENBAO_TIMEOUT_MS`. Use an `https:` address between hosts: the data
-  keys travel to OpenBao and back. `compose.yaml` does not pass these variables yet; add them
-  and the credential files to the `server` service in a `compose.override.yaml`.
+  keys travel to OpenBao and back. `compose.yaml` passes these variables from `.env`; put the
+  credential files in the `server-secrets` volume and name them there.
 
 Give the server's OpenBao identity the policy in [`openbao/policy.hcl`](openbao/policy.hcl):
 encrypt, decrypt and read on the one Transit key, nothing else. Replace `transit` and `os-kek`
@@ -256,14 +259,16 @@ keyring.
 
 **When OpenBao is down, the server fails closed.** Every operation that needs a key fails with
 `KeyProviderUnavailableError` until OpenBao answers again, apart from keys already cached (up to
-one minute): proposing and opening sealed content fail. Nothing falls back to the keyring file or to
-plaintext. Shredding does not need OpenBao. The server logs `keys.provider_unavailable` and
-`keys.provider_refresh_failed`. Whoever holds the server's OpenBao token, or controls OpenBao,
-unwraps every data key it is given: with a database copy, that reads everything.
+`DATA_KEY_CACHE_SECONDS`, one minute by default): proposing and opening sealed content fail.
+Nothing falls back to the keyring file or to plaintext. Shredding does not need OpenBao. The
+server logs `keys.provider_unavailable` and `keys.provider_refresh_failed`. Whoever holds the
+server's OpenBao token, or controls OpenBao, unwraps every data key it is given: with a database
+copy, that reads everything.
 
 The OpenBao provider has unit tests only: against a stand-in for the Transit API, and in CI
-against a development-mode OpenBao from `deploy/compose.test.yaml`. No release gate runs the
-stack with it.
+against a development-mode OpenBao from `deploy/compose.test.yaml` (green in CI run
+43732195805). No release gate has run the stack with it yet: the `stack (openbao)` CI entry
+(OpenBao as a real server, AppRole, a 20-second outage, rotation) is written and has not run.
 
 ## Adding an approver
 
@@ -478,8 +483,10 @@ key of one tenant by hand, for example the run keys of a workspace:
 
 It prints `{"event":"keys.shred_tenant",…,"shredded":<n>}` and exits 0, also when nothing was
 left to shred. Data under those keys can never be read again, and a workflow run still going
-retries forever, so shred only after its runs have finished. Other processes keep a cached key
-for up to one minute.
+retries forever, so shred only after its runs have finished. Every server replica drops a
+shredded key from its cache at once, because it listens for shreds; a process that does not
+listen, such as a World started from `@askgina/os-world/target`, keeps a cached key for up to
+one minute.
 
 **What a compromised control plane can do with this.** Ask for a retirement or deletion people
 did not want, describe it falsely in its own pages, or show false balances; cancel any of them,
@@ -624,6 +631,240 @@ or applied ends `failed` with `assertion_invalid`, and must be proposed again. A
 waits without approvals simply gains its link to the confirmation page. Set `APPROVE_ORIGIN`
 first if your layout needs another value than the default. `WEBAUTHN_ORIGINS` is no longer
 read anywhere.
+
+## Running the signer on its own host
+
+`compose.yaml` runs every trust domain on one machine, where root on that machine controls the
+wallets (`docs/threat-model.md`, "Running on more than one machine"). `deploy/split/` puts the
+signer, the confirmation page and that page's edge on a host of their own, administered apart
+from the control plane's host. The hosts share one connection, the server's to the signer's
+port 8787. It is mutual TLS 1.3 in which each side accepts exactly the other's certificate, with
+no certificate authority, and every request inside it still carries its request signature.
+
+|                        | Signer host                                                                                             | Control host                                                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Compose file, project  | `deploy/split/signer.compose.yaml`, `os-signer`                                                         | `deploy/split/control.compose.yaml`, `os-control`                                                                                 |
+| Services               | `init`, `signer`, `approve`, `caddy` (the `APPROVE_ORIGIN` site only, `deploy/split/Caddyfile.approve`) | `init`, `postgres`, `server`, `caddy` (the `PUBLIC_ORIGIN` site only, `deploy/split/Caddyfile.control`), `agent-gateway`, `anvil` |
+| Volumes                | `signer-data`, `signer-secrets`, `approve-secrets`, `caddy-data`                                        | `postgres-data`, `server-secrets`, `db-secrets`, `caddy-data`                                                                     |
+| Import directory       | `SIGNER_HOST_FILES`: `signer.crt`, `signer.key`, `control.crt`, `approve.crt`, `approve.key`            | `CONTROL_HOST_FILES`: `signer-request-secret`, `control.crt`, `control.key`, `signer.crt`                                         |
+| Reachable from outside | 80 and 443 for the confirmation page; 8787 on `SIGNER_BIND_ADDRESS`, for the control host               | 80 and 443 for `PUBLIC_ORIGIN`                                                                                                    |
+
+**The control host never holds** the vault and the signer's SQLite (`signer-data`), `token-key`,
+`vault-passphrase`, `confirm-request-secret`, `signer.key` or `approve.key`. It holds a copy of
+`signer-request-secret`, which reaches the signer's control routes only. `init --domain=control`
+makes none of those, and never makes a request secret of its own.
+
+### Setting it up
+
+1. **Names.** `APPROVE_ORIGIN` is on the signer host: a name under `OS_HOSTNAME` with its own
+   public DNS record pointing at that host, for example `https://approve.os.example.com`.
+   `PUBLIC_ORIGIN` stays on the control host. The signer also needs a private name,
+   `SIGNER_HOSTNAME` (for example `signer.os.internal`), that resolves to the signer host's
+   private address from the containers on the control host: a record in the DNS they use, or
+   Docker's `extra_hosts` on the `server` service in a second Compose file. The certificate
+   names DNS names only, no IP address, so the server must reach the signer by that name; an
+   address fails the TLS name check.
+2.  **Certificates,** on the signer host, into a new directory:
+
+        deploy/split/make-peer-certs.sh signer.os.internal /root/os-peer
+
+    It writes `signer`, `control` and `approve`, each a `.crt` and a `.key`: P-256, valid two
+    years (730 days), mode `0400`, never overwriting a file, and prints each certificate's SHA-256
+    fingerprint. `signer.crt` names the host name given and `signer`, the name `approve` uses on
+    the signer host.
+3.  **The signer host.** Set `OS_HOSTNAME`, `PUBLIC_ORIGIN` (the control host's origin),
+    `APPROVE_ORIGIN`, `SIGNER_BIND_ADDRESS` (the private address the control host reaches) and
+    `SIGNER_HOST_FILES` (the directory from step 2) in `deploy/split/.env` or the environment,
+    then:
+
+        docker compose -f deploy/split/signer.compose.yaml up -d --build
+        sudo nft -f deploy/split/nftables-signer.conf
+
+    `init` runs `init.mjs --domain=signer`: it makes the request secret, the confirm secret (and
+    the `approve` service's copy), `token-key` and `vault-passphrase`, and installs the
+    certificates from `/import`, mounted read-only, into this host's volumes. The signer
+    publishes 8787 on `SIGNER_BIND_ADDRESS` only. The nftables rules drop every new connection
+    from the bridge `os-signer0` (network `signer-wire`, the signer's only network with a route
+    out) to anywhere off it or to the host itself, and let the answers to the control host
+    through. `approve` is on internal networks only, so the edge is the one container on this
+    host that opens connections out, to the ACME server for its certificate. The rules are an
+    example: fit them to your host's firewall, and load them at boot (for example from
+    `/etc/nftables.conf`).
+4.  **Copy to the control host** `control.crt`, `control.key` and `signer.crt` from step 2, and
+    the request secret:
+
+        docker compose -f deploy/split/signer.compose.yaml exec signer cat /run/secrets/signer/signer-request-secret
+
+    Then delete `control.key` from the signer host: each key belongs on one host.
+5.  **The control host.** Put those four files in a directory, `CONTROL_HOST_FILES`. Set
+    `OS_HOSTNAME`, `PUBLIC_ORIGIN` and `APPROVE_ORIGIN` to the same values as on the signer host,
+    `SIGNER_HOSTNAME`, and any setting of `compose.yaml`'s server, then:
+
+        docker compose -f deploy/split/control.compose.yaml up -d --build
+
+    `init --domain=control` makes the keyring, `notify-webhook-secret`, `vapid-key.pem` and the
+    Postgres password, installs the three certificate files, and takes `signer-request-secret`
+    from `/import`; it refuses to start without it. The server calls
+    `https://${SIGNER_HOSTNAME}:8787` and accepts only the certificate in `signer.crt`.
+
+The settings the two Compose files set:
+
+| Setting                                                                                     | Read by | Meaning                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SIGNER_TLS_CERT_FILE`, `SIGNER_TLS_KEY_FILE`                                               | signer  | Its certificate and key.                                                                                                                                                                                                                                        |
+| `SIGNER_TLS_CONTROL_CERT_FILE`, `SIGNER_TLS_APPROVE_CERT_FILE`                              | signer  | The two client certificates it accepts. The control plane's reaches control routes only, the `approve` service's its four confirmation routes only; another route is refused `unauthenticated` before the request signature is checked. All four files or none. |
+| `SIGNER_HEALTH_PORT`                                                                        | signer  | With TLS, a plain listener on `127.0.0.1` that answers `GET /healthz` and nothing else, for the container's health check (default 8789).                                                                                                                        |
+| `SIGNER_HOST`                                                                               | signer  | The address it listens on (default `0.0.0.0` inside its container; Compose publishes the port on `SIGNER_BIND_ADDRESS` only).                                                                                                                                   |
+| `SIGNER_URL`, `SIGNER_TLS_CERT_FILE`, `SIGNER_TLS_KEY_FILE`, `SIGNER_TLS_PEER_CERT_FILE`    | server  | An `https:` `SIGNER_URL` needs all three files and an `http:` one takes none; the server refuses to start otherwise.                                                                                                                                            |
+| `SIGNER_ADMIN_COMMAND`                                                                      | server  | The prefix of the signer's admin commands that the members page shows owners (default `docker compose exec signer node src/admin.ts`; the control host's file sets the split form). Words of letters, digits and `_./:-`, single spaces; checked at start.      |
+| `SIGNER_URL`, `APPROVE_TLS_CERT_FILE`, `APPROVE_TLS_KEY_FILE`, `APPROVE_TLS_PEER_CERT_FILE` | approve | The same rule as the server's, with `SIGNER_URL=https://signer:8787`.                                                                                                                                                                                           |
+
+### Operating it
+
+Every `docker compose exec signer …` or `docker compose run --rm signer …` in this guide runs on
+the signer host as `docker compose -f deploy/split/signer.compose.yaml …`, and every server
+command on the control host with `-f deploy/split/control.compose.yaml`. Back up each host's
+volumes from the same moment, both stacks stopped; the volume names carry the project, for
+example `os-signer_signer-data`. Keep the import directories with the backups of their host.
+
+**Certificates.** At every start the signer logs `tls_expiry` with the days left on its own
+certificate and on both client certificates, and refuses to start, `tls_certificate_expired`,
+when one has expired. Neither the server nor `approve` checks: once a certificate expires, every
+handshake fails and nothing is signed or approved. Before the two years end, make a new set into
+a new directory with `make-peer-certs.sh`, put the files in both import directories, and on the
+signer host, then the control host:
+
+    docker compose -f deploy/split/signer.compose.yaml up -d init && docker compose -f deploy/split/signer.compose.yaml restart signer approve
+    docker compose -f deploy/split/control.compose.yaml up -d init && docker compose -f deploy/split/control.compose.yaml restart server
+
+`init` writes a file again whenever `/import` holds a different one. Requests made between the
+two restarts are refused.
+
+**Upgrading.** Upgrade the signer host first, then the control host, in one window: on each,
+`git pull` and `docker compose -f deploy/split/<host>.compose.yaml up -d --build` (see
+"Upgrading"). A newer control plane may ask an older signer for something it does not know; the
+signer refuses it, and the request fails closed and must be proposed again.
+
+**Moving the signer** to another host, from one machine to a split, or back, is a new database
+file, so the signer fences itself on the new host and logs `restore fence set` with
+`reason: new_database_file`. Every approval waiting at the move is refused, and every live
+mandate ends with reason `operator`. Nothing keeps them: the signer cannot tell a move from a
+copy, and a copy that skipped the fence could pay an approval twice. So:
+
+1. Wait until no request waits for approval, and tell people their mandates will end.
+2. Stop both stacks. Archive `signer-data` and `signer-secrets` as in "Backups and restoring".
+3. On the new host, restore them into empty volumes of its project, run `fence`
+   (`docker compose -f deploy/split/signer.compose.yaml run --rm signer node src/admin.ts fence`),
+   then start the signer host and the control host.
+4. Keep the name of `APPROVE_ORIGIN` and point it at the new host: the RP ID stays
+   `OS_HOSTNAME`, so nobody enrolls a passkey again. People grant again the mandates they want.
+5. Destroy the old host's copy of the volumes.
+
+**What is proven.** CI job `stack (split)` passes every release gate with the two projects on one
+runner, joined only by a network that carries the mutual TLS (runs 43733608692 and 43735023880).
+Its own gate, `e2e/test/split.spec.ts`, checks three things: the control project has no
+volume with a signer secret and runs no `approve` service; a client without the control
+certificate gets no handshake; the signer reaches nothing outside under the example nftables
+rules. Two real hosts with different administrators have not been tested.
+
+## More than one server replica
+
+The server can run as several replicas on one Postgres. Everything that decides between them is
+in the database: the limits on agent requests and on failed agent authentications (token
+buckets in `os.rate_limits`, counted by the database's clock), the setup token, the
+workflow-bundle lock, the notification outbox's leases, nonce reservations, and the once-a-minute
+finishing of retirements and deletions. A shred in any replica reaches every replica's key cache
+at once. `os.rate_limits` is `UNLOGGED`: a database crash or failover empties it, which only
+resets the limits.
+
+On Compose, add a `compose.override.yaml` and start as usual:
+
+    services:
+      server:
+        deploy:
+          replicas: 2
+
+Both edges find every replica through Docker's DNS (`dynamic a server 3000`, refreshed every
+second) and send a request that cannot reach its replica to another for up to 10 seconds. Every
+replica reads the same `server-secrets` volume, so all of them use one `notify-webhook-secret` and
+one `vapid-key.pem`; a replica with another VAPID key would break every push subscription. The
+split control host's edge (`deploy/split/Caddyfile.control`) proxies to one address and has not
+been run with replicas.
+
+| Setting                       | Default | Meaning                                                                                                                                                                                                                                                                                                                       |
+| ----------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATA_KEY_CACHE_SECONDS`      | 60      | How long a replica keeps an unwrapped data key, 0 to 600. A replica caches only while it listens for shreds, and forgets its cache when that connection drops.                                                                                                                                                                |
+| `FORWARDED_HOPS`              | 1       | How many proxies append to `X-Forwarded-For` before the server, 1 to 5: a failed agent authentication is charged to the entry this many from the end. 1 behind the bundled Caddy; 2 with a load balancer in front of it. Too high lets a client pick the address it is charged to; too low charges every client to one proxy. |
+| `SETUP_TOKEN_IN_LOG`          | `true`  | `false` keeps the setup token out of the log (see "The setup token").                                                                                                                                                                                                                                                         |
+| `WORKFLOW_WORKER_CONCURRENCY` | 10      | Workflow steps one replica runs at once. `compose.yaml` does not pass it.                                                                                                                                                                                                                                                     |
+
+**Upgrading: stop every replica first.** A workflow run is not pinned to the code that started
+it, so two versions of the workflow bundle on one database would replay the same run with
+different code. A replica refuses to start while one on another bundle runs (it logs
+`workflow.bundle_mismatch`), and a running one that finds another bundle stops and exits:
+
+    git pull
+    docker compose stop server
+    docker compose --profile dev up -d --build
+
+**Rotating the keyring in two phases.** A replica restarted after `add` would wrap new data keys
+under a key the others have not read yet, and they would fail every read of those keys. So the
+new key goes in inactive first:
+
+    docker compose run --rm init node /init/rotate-keyring.mjs add --inactive   # prints "added":"k2"
+    docker compose restart server                                                 # every replica reads k2
+    docker compose run --rm init node /init/rotate-keyring.mjs activate k2
+    docker compose restart server                                                 # every replica wraps under k2
+    docker compose exec server node packages/keys/src/cli.ts rewrap               # expect "failedCount":0
+    docker compose run --rm init node /init/rotate-keyring.mjs prune --confirm-rewrapped
+    docker compose restart server
+
+**Database connections.** Each replica opens up to `WORKFLOW_WORKER_CONCURRENCY + 14`
+connections, 24 by default: one per workflow worker, one listening for shreds, one holding the
+bundle lock, and the rest for requests and the World's listeners. The operator's commands add
+one or two while they run. Postgres needs `max_connections` of at least replicas × 24 plus that
+headroom; `compose.yaml` keeps Postgres's default of 100.
+
+**Readiness.** `GET /readyz` answers 200 `{"ok":true}` once this replica's database answers and
+its World delivers runs, and 503 otherwise; `/healthz` answers whenever the process is up.
+Compose's health check and the Kubernetes readiness probe use `/readyz`. It does not ask the key
+provider: during an OpenBao outage every replica stays ready, and what needs a key fails.
+
+**What is proven.** The unit tests of this work (two gateways sharing limits on one database,
+one setup token from boots at once, the bundle lock, shred eviction) passed in CI run
+43736178714, whose `test` job failed only on an unrelated protocol test, and every stack in that
+run passed with one replica. The `stack (replicas)` CI entry, two replicas behind both edges with
+one replica killed while it holds an approval, is written and has not run.
+
+## Kubernetes
+
+[`deploy/k8s/`](k8s/) holds Kustomize manifests for the control plane: `base` (the server, its
+edge, the agent gateway, the namespaces `os` and `os-agents`, and NetworkPolicies), components
+(`signer-external`, `signer-in-cluster`, `postgres-single`, `dev-chain`,
+`notifications-egress`), and two overlays:
+
+- `overlays/production-example`: the control plane in the cluster, and the signer with its
+  confirmation page on their own host as above, joined by mutual TLS (`signer-external`). In
+  production the signer and `approve` run outside the cluster: Secrets are not encrypted in etcd
+  by default, cluster administration reaches every node, and a confirmation page in the cluster
+  would give its administrators the page.
+- `overlays/kind`: everything in one kind cluster, for CI and evaluation only, with its Secrets
+  made by `deploy/k8s/make-secrets.sh`.
+
+The server's Deployment runs one replica with `strategy: Recreate` (the bundle rule above), uses
+`/readyz` as its readiness probe, and sets `SETUP_TOKEN_IN_LOG=false`; get the setup token with
+`kubectl exec -n os deploy/server -- node apps/server/src/cli.ts setup-token`. A NetworkPolicy
+does nothing on a network plugin that does not enforce it, and kind's plugin fails open when its
+controller cannot start, so run [`k8s/isolation-probe.yaml`](k8s/isolation-probe.yaml) after
+every install, upgrade or change of network plugin; its header has the commands. With
+`notifications-egress` the server may open TCP 443 to any address. Postgres is the operator's
+database in the production example; HA Postgres with CloudNativePG is not built.
+
+**Status: written, not run.** The `k8s` CI job (`kubeconform` on every manifest, then a kind
+cluster with the isolation probe, its control with a policy deleted, and the gate
+`e2e/test/kubernetes.spec.ts`, which includes one payment end to end) has not run yet, and
+`kubectl kustomize` has not been run on the manifests. The release gates do not run on
+Kubernetes. Nothing on Kubernetes is proven.
 
 ## Notifications
 
@@ -855,8 +1096,18 @@ page, not a worker.
 
 ## The setup token
 
-Until the first owner exists, every start of the server prints a one-time setup token and retires
-the previous one. Use the newest: `docker compose logs server | grep "setup token" | tail -1`.
+Until the first owner exists, the server needs a one-time setup token. The first boot mints it,
+once per installation however many replicas start, stores only its hash, and logs it:
+`docker compose logs server | grep "setup token" | tail -1`. A later boot keeps that token and
+logs `setup.token_pending` instead. To replace it, for example when the log is gone or someone
+else may have read it:
+
+    docker compose exec server node apps/server/src/cli.ts setup-token
+
+It prints `{"ok":true,"setupToken":"…"}`, and every earlier token stops working. Once the first
+owner exists it prints `{"ok":false,"code":"setup_done"}` and exits 3. With
+`SETUP_TOKEN_IN_LOG=false` no boot logs a token, and this command is the only way to get one; the
+Kubernetes manifests set it, because shipped logs are not a place for a secret.
 
 ## Stopping and removing
 

@@ -76,7 +76,8 @@ flowchart LR
   S -->|JSON-RPC| R
 ```
 
-The diagram is the network layout the plan fixes. The rules it encodes:
+The diagram is the one-machine layout of `compose.yaml`; the two-host layout is in "Two trust
+domains on two hosts" below. The rules it encodes:
 
 - **Agent.** It reaches only Caddy. It cannot resolve the server, Postgres or the signer by name.
   On MCP it has seven tools, and none of them signs, approves or administers (plan, "MCP tools").
@@ -106,6 +107,85 @@ The diagram is the network layout the plan fixes. The rules it encodes:
   It has no route that signs messages, typed data or raw hashes.
 - **Chain.** The server talks to EVM nodes over JSON-RPC to read balances, simulate, estimate
   fees, broadcast and watch receipts. The signer never talks to a chain.
+
+## Two trust domains on two hosts
+
+The stack has two trust domains. The signer's holds the wallet keys and decides; the control
+plane's holds everything else and asks. On one machine they share root. The split deployment
+([`deploy/split/`](../deploy/split/),
+[`deploy/README.md`](../deploy/README.md#running-the-signer-on-its-own-host)) gives each its own
+host:
+
+```mermaid
+flowchart LR
+  B[Browser with passkey]
+  subgraph signerHost [signer host]
+    E2[Caddy: APPROVE_ORIGIN only]
+    AP[approve]
+    G[signer]
+    V[(OWS vault and SQLite)]
+  end
+  subgraph controlHost [control host]
+    C[Caddy: PUBLIC_ORIGIN only]
+    S[server]
+    P[(Postgres)]
+    AG[agent-gateway]
+  end
+  B -->|PUBLIC_ORIGIN| C
+  B -->|APPROVE_ORIGIN| E2
+  C --> S
+  AG -->|/mcp| S
+  S --> P
+  S -->|mutual TLS, control certificate, control secret| G
+  E2 -->|internal network| AP
+  AP -->|mutual TLS, approve certificate, confirm secret| G
+  G --> V
+```
+
+- **What crosses between the hosts:** one connection, from the server to the signer's port 8787,
+  published only on the signer host's private address. It is TLS 1.3 in which each side accepts
+  exactly one certificate of the other, made by `deploy/split/make-peer-certs.sh`; there is no
+  certificate authority. The signer maps the client certificate to a scope (control or confirm)
+  before it checks the request signature, which every request still carries.
+- **What stays on the signer host:** the vault, the signer's SQLite, `token-key`,
+  `vault-passphrase`, the confirm secret, the confirmation page and its edge (plan decision D7:
+  a confirmation page on the control host would give that host the display again).
+  `init --domain=signer` makes these secrets; only the request secret and the control plane's
+  certificate and key are copied to the control host.
+- **What stays on the control host:** Postgres, the keyring (or the OpenBao credentials), the
+  webhook secret and the VAPID key. `init --domain=control` makes the keyring and the two
+  secrets, and takes the request secret from the operator's copy.
+- **Outbound:** the signer opens no connection; `deploy/split/nftables-signer.conf` is an example
+  of host rules that enforce it. The `approve` service has internal networks only. The signer
+  host's edge is the one container there that reaches out, to an ACME server.
+
+On Kubernetes ([`deploy/k8s/`](../deploy/k8s/)) the control plane runs in the cluster and, in
+production, the signer host stays outside it, joined by the same mutual TLS (plan decision D4).
+The `kind` overlay puts the signer in the cluster, for CI and evaluation only. The manifests have
+not run in CI yet.
+
+### More than one server replica
+
+The server keeps nothing between requests that another replica would need: every replica
+connects to the same Postgres and the same signer, and anything that must happen once is decided
+in the database.
+
+| What                                             | How replicas agree                                                                                |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| An agent's request limit, failed authentications | Token buckets in `os.rate_limits` (UNLOGGED), one row per bucket, counted by the database's clock |
+| The finishing of retirements and deletions       | One bucket in `os.rate_limits`: once a minute across all replicas                                 |
+| The setup token                                  | Minted once per installation under an advisory lock; `cli.ts setup-token` replaces it             |
+| Account nonces, reprices and cancels             | Advisory transaction locks per wallet and chain, and per approval                                 |
+| Notifications                                    | Outbox rows claimed with `FOR UPDATE SKIP LOCKED` and leased for 60 seconds                       |
+| Workflow steps                                   | The World's queue in Postgres; each replica runs `WORKFLOW_WORKER_CONCURRENCY` workers            |
+| Which workflow bundle runs                       | A shared advisory lock per bundle (class `18680`): a replica on another bundle refuses to start   |
+| A shredded data key                              | `NOTIFY os_keys_shred`; every replica listens and drops the key from its cache                    |
+
+Each replica answers `GET /readyz` with 200 once its database answers and its World delivers
+runs. On Compose the edges find replicas by DNS and send a request that cannot reach its replica
+to another; on Kubernetes a Service does. Upgrades stop every replica first, because a workflow
+run is not pinned to the bundle that started it. The two-replica gate on the real stack is
+written and has not run; the unit tests with two gateways on one database passed in CI.
 
 ## One payment, end to end
 
@@ -481,7 +561,9 @@ What each party can do with them is in
 | Workflow runs, steps, events, hooks, streams                                                                                                                                                                                                          | Postgres, schemas `workflow` and `graphile_worker`                                                                                                                                                              | The Workflow runtime                                                                                           |
 | Wrapped data keys and shred tombstones                                                                                                                                                                                                                | Postgres, schema `os_keys` ([`packages/keys/src/data-key-store.ts`](../packages/keys/src/data-key-store.ts))                                                                                                    | The server                                                                                                     |
 | Key-encryption keys                                                                                                                                                                                                                                   | Keyring JSON file outside Postgres ([`packages/keys/src/keyring.ts`](../packages/keys/src/keyring.ts)), or an OpenBao Transit key with `KEY_PROVIDER=openbao` ([`transit.ts`](../packages/keys/src/transit.ts)) | The operator                                                                                                   |
-| Shared request-signing secret                                                                                                                                                                                                                         | A file read by both server and signer                                                                                                                                                                           | The operator                                                                                                   |
+| Shared request-signing secret                                                                                                                                                                                                                         | A file read by both server and signer; with the signer on its own host, made there and copied to the control host                                                                                               | The operator                                                                                                   |
+| Mutual TLS certificates and keys between the hosts                                                                                                                                                                                                    | Files in each host's secret volumes, installed by `init` from the operator's import directory                                                                                                                   | The operator                                                                                                   |
+| Rate-limit buckets shared by every server replica                                                                                                                                                                                                     | Postgres, `os.rate_limits` (UNLOGGED: a crash or failover empties it)                                                                                                                                           | The server                                                                                                     |
 | Confirmation records, the hash of each link's token, assertions made on the confirmation page, possession challenges and proofs of new approver keys                                                                                                  | Signer's SQLite                                                                                                                                                                                                 | Only the signer                                                                                                |
 | Confirmation request secret                                                                                                                                                                                                                           | A file read by the signer and, as a copy, by the `approve` service                                                                                                                                              | The operator                                                                                                   |
 | Notifications waiting to be sent, and each one's outcome                                                                                                                                                                                              | Postgres, `os.notification_deliveries`                                                                                                                                                                          | The server                                                                                                     |
