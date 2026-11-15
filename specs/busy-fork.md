@@ -102,7 +102,7 @@ Success means:
       Unproven: a real endpoint end to end (Milestone 4's stub-model stack).
 - [x] (2026-11-15) `@askgina/os-world` and `@askgina/os-keys` 0.1.0 published privately to
       GitHub Packages from tag `world-v0.1.0` (askgina/os run 43727574831).
-- [ ] Milestone 4: bot runner, bot identity, bots on the encrypting World. Built (2026-11-15),
+- [x] Milestone 4: bot runner, bot identity, bots on the encrypting World. Built (2026-11-15),
       `askgina/busy` `c07f727` (`Ultracite` run 43731297018, with the runner's own test job).
       First real stack run green: `Fork` run 43732818581 at `0023585`, job `selfhosted-stack`:
       the three images build, the stack starts, a bot is created through the Hub, built and
@@ -112,9 +112,16 @@ Success means:
       packages; token hashes live in a table `bot_hub_tokens` (one row per token, bound to its
       build, older ones revoked at promotion); the runner commits the finished builder
       container as the bot image and runs the World's `bootstrap` at promotion; the runner API
-      gains `GET /v1/bots/{slug}`. Left for this box: the full gate (ciphertext scan with a
-      plaintext control bot, session round trip, token rules, redeploy, delete and shred, DNS),
-      written and pushed, CI pending.
+      gains `GET /v1/bots/{slug}`. The full gate is green: `Fork` run 43741972434 at `95795c1`,
+      14 of 14 steps (ciphertext scan with a plaintext control bot on the stock World, session
+      round trip, no `setAttributes` failure in bot logs, token rules with identity proven by
+      each bot reading only its own memory, redeploy rotating the token, delete shredding the
+      keyring and dropping the database, no DNS query for a Vercel zone with a canary proving the
+      sinkhole sees the Hub and the bots), on the tree that also holds Milestones 5 to 8
+      (`Ultracite` green at `3c6f6e4`, run 43741182196). Fix rounds on the way: the hosted
+      runner ran out of disk building the images; the Hub asked for `ai-gateway.vercel.sh` until
+      Milestone 8 refused the remaining Vercel ties; the token steps used the bot directory,
+      which Milestone 8 empties on self-hosted.
 - [ ] Milestone 5: computers on gVisor with per-bot volumes. Built (2026-11-15), CI pending:
       the runner's computer broker (`runsc` by default, refused when the runtime is absent),
       per-bot drives, a live-view proxy with single-use tokens, the Hub's `selfhosted`
