@@ -1605,6 +1605,8 @@ test("an order on Hyperliquid testnet: venue rules, the order, where it rests, i
   await addAuthenticator(page);
 
   let token = "";
+  let walletUrl = "";
+  let orderUrl = "";
   await test.step("the wallet's venue rules are set, with the caps said not to be loss caps", async () => {
     await setUpServer(page, "Ada Owner");
     await page.getByLabel("New workspace").fill("Trading desk");
@@ -1617,6 +1619,7 @@ test("an order on Hyperliquid testnet: venue rules, the order, where it rests, i
     await page.getByRole("link", { name: "Overview" }).click();
     await page.getByRole("link", { name: "Set this wallet's policy" }).click();
     await expect(page.getByRole("heading", { name: "Set this wallet's limits" })).toBeVisible();
+    walletUrl = page.url().split("#")[0] ?? "";
     await page.getByLabel("Most per transaction ETH").fill("0.05");
     await page.getByLabel("Most per 24 hours ETH").fill("0.2");
     await page.getByLabel("Allow orders on Hyperliquid testnet").check();
@@ -1679,6 +1682,24 @@ test("an order on Hyperliquid testnet: venue rules, the order, where it rests, i
     await expect(page.getByText("Venue order id", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Cancel order" })).toBeVisible();
     await shot("05-order-resting");
+    orderUrl = page.url();
+  });
+
+  await test.step("the wallet page shows the signer's count and the venue's report, labelled as such", async () => {
+    await page.goto(walletUrl);
+    const account = page.getByRole("heading", { name: "Hyperliquid testnet account" });
+    await expect(account).toBeVisible();
+    await expect(page.getByText("Order notional signed in the last 24 hours")).toBeVisible();
+    await expect(page.getByText("650 USD of 2,000 USD")).toBeVisible();
+    await expect(page.getByText("Counted by the signer.")).toBeVisible();
+    await expect(page.getByText("250 USD", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("No open positions.")).toBeVisible();
+    await expect(page.getByText("Buy 0.01 BTC at 65,000 USD")).toBeVisible();
+    await expect(
+      page.getByText("Reported by Hyperliquid through this server, not verified by the signer."),
+    ).toBeVisible();
+    await shot("06-wallet-venue");
+    await page.goto(orderUrl);
   });
 
   await test.step("the resting order is cancelled with no passkey", async () => {
@@ -1688,7 +1709,10 @@ test("an order on Hyperliquid testnet: venue rules, the order, where it rests, i
       page.getByText("It was cancelled at the venue before any of it filled."),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Cancel order" })).toHaveCount(0);
-    await shot("06-order-cancelled");
+    await shot("07-order-cancelled");
+    await page.goto(walletUrl);
+    await expect(page.getByRole("heading", { name: "Hyperliquid testnet account" })).toBeVisible();
+    await expect(page.getByText("No resting orders.")).toBeVisible();
   });
 
   expect(problems).toEqual([]);

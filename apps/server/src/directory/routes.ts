@@ -1,4 +1,4 @@
-import type { ApprovalSummary, AssetBalance, AuditEvent, PolicyDraft, Role } from "@askgina/os-api";
+import type { ApprovalSummary, AuditEvent, PolicyDraft, Role } from "@askgina/os-api";
 import {
   type AgentId,
   type AssetRef,
@@ -31,6 +31,7 @@ import {
   workspaces,
 } from "../db/schema.ts";
 import { revokeAgentMandates } from "../execution/mandates.ts";
+import { walletVenueAccount } from "../execution/orders.ts";
 import { fromSignerError, HttpError } from "../http/errors.ts";
 import { handle } from "../http/route.ts";
 import { finishRegistration, insertPasskey, startRegistration } from "../identity/ceremonies.ts";
@@ -936,7 +937,10 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
     for (const limit of policy?.assets ?? []) {
       if (limit.asset !== "native") assets.push({ chainId: limit.chainId, asset: limit.asset });
     }
-    const balances: AssetBalance[] = await ctx.chains.balances(wallet.address, assets);
+    const [balances, venue] = await Promise.all([
+      ctx.chains.balances(wallet.address, assets),
+      walletVenueAccount(ctx, wallet, policy, state.venueSpent),
+    ]);
     const [pending] = await ctx.db
       .select({ id: approvals.id })
       .from(approvals)
@@ -954,6 +958,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
       balances,
       spent: state.spent,
       pendingPolicyApprovalId: pending?.id ?? null,
+      ...(venue === null ? {} : { venue }),
     };
   });
 

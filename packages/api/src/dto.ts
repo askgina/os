@@ -279,12 +279,64 @@ export const AssetBalance = z.strictObject({
 });
 export type AssetBalance = z.infer<typeof AssetBalance>;
 
+/** A decimal as a venue writes it; a signed one may start with "-". Shown, never computed with. */
+const VenueDecimal = z.string().regex(/^-?\d{1,30}(\.\d{1,30})?$/);
+
+/**
+ * A wallet's account at a venue, for the wallet page. `spentTodayUsd6` is the signer's own count;
+ * `reported` is what the venue answered this server: not verified by the signer, which could
+ * misreport it, and null when the venue could not be read.
+ */
+export const VenueAccount = z.strictObject({
+  network: VenueNetwork,
+  /** The notional the signer counted against the daily cap in the last 24 hours, in micro-USD. */
+  spentTodayUsd6: Amount,
+  /** The policy's daily cap on new orders' notional; null when the policy has no rules here. */
+  maxNotionalPerDayUsd6: Amount.nullable(),
+  reported: z
+    .strictObject({
+      accountValueUsd: VenueDecimal,
+      withdrawableUsd: VenueDecimal,
+      positions: z
+        .array(
+          z.strictObject({
+            coin: z.string().max(32),
+            side: z.enum(["long", "short"]),
+            size: VenueDecimal,
+            entryPrice: VenueDecimal,
+            unrealizedPnlUsd: VenueDecimal,
+          }),
+        )
+        .max(100),
+      openOrders: z
+        .array(
+          z.strictObject({
+            coin: z.string().max(32),
+            side: z.enum(["buy", "sell"]),
+            /** What is left of it. */
+            size: VenueDecimal,
+            limitPrice: VenueDecimal,
+            venueOrderId: z.number().int().min(0),
+            cloid: z.string().max(66).nullable(),
+          }),
+        )
+        .max(100),
+    })
+    .nullable(),
+});
+export type VenueAccount = z.infer<typeof VenueAccount>;
+
 export const WalletDetail = WalletSummary.extend({
   balances: z.array(AssetBalance),
   /** What the signer has signed for in the last 24 hours, per asset. */
   spent: z.array(z.strictObject({ chainId: ChainId, asset: AssetRef, amount: Amount })),
   /** Set while a policy change is waiting for approval. */
   pendingPolicyApprovalId: ApprovalId.nullable(),
+  /**
+   * The wallet's account at a venue this server is configured for, when its policy has rules
+   * there or it has used one; absent otherwise.
+   */
+  venue: VenueAccount.optional(),
 });
 export type WalletDetail = z.infer<typeof WalletDetail>;
 

@@ -597,6 +597,43 @@ describe("the fake venue's rules", () => {
     expect(venue.withdrawals()).toEqual([
       { user: SDK_ADDRESS, destination: SDK_ADDRESS, amount: "2", nonce: NOW, receivedAt: NOW },
     ]);
+    const ledger = { type: "userNonFundingLedgerUpdates", user: SDK_ADDRESS, startTime: NOW };
+    expect((await post(venue, "/info", ledger)).body).toEqual([
+      {
+        time: NOW,
+        hash: `0x${NOW.toString(16).padStart(64, "0")}`,
+        delta: { type: "withdraw", usdc: "1", nonce: NOW, fee: "1" },
+      },
+    ]);
+    expect((await post(venue, "/info", { ...ledger, startTime: NOW + 1 })).body).toEqual([]);
+    const other = stranger.address.toLowerCase();
+    expect(
+      (
+        await post(venue, "/info", {
+          type: "userNonFundingLedgerUpdates",
+          user: other,
+          startTime: 0,
+        })
+      ).body,
+    ).toEqual([]);
+    expect(
+      (await post(venue, "/info", { type: "userNonFundingLedgerUpdates", user: SDK_ADDRESS }))
+        .status,
+    ).toBe(422);
+  });
+
+  it("lists an account's resting orders with what is left of them", async () => {
+    const venue = seeded();
+    venue.setBook(ETH, { bid: "1660", ask: "1670" });
+    await post(venue, "/exchange", await signL1(order("Gtc", { p: "1600" }), NOW, null));
+    await post(venue, "/exchange", await signL1(order("Ioc", { c: CLOID_B }), NOW + 1, null));
+    expect((await post(venue, "/info", { type: "openOrders", user: SDK_ADDRESS })).body).toEqual([
+      { coin: "ETH", limitPx: "1600", oid: 1, side: "B", sz: "0.1", timestamp: NOW },
+    ]);
+    venue.fillOrder(SDK_ADDRESS, CLOID_A);
+    expect((await post(venue, "/info", { type: "openOrders", user: SDK_ADDRESS })).body).toEqual(
+      [],
+    );
   });
 
   it("answers meta from the metadata a test sets", async () => {

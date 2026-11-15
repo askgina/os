@@ -39,6 +39,7 @@ import {
 import { Input, Select, Textarea } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
 import { Progress } from "@/components/ui/progress.tsx";
+import { VenueAccountCard } from "@/components/venue.tsx";
 import { api, keys, queryClient, useWallet, useWorkspace } from "@/lib/api.ts";
 import { assetInfo, chainName, formatAsset, NATIVE_DECIMALS } from "@/lib/assets.ts";
 import {
@@ -169,6 +170,8 @@ function WalletView({ wallet, workspace }: { wallet: WalletDetail; workspace: Wo
           })}
         </CardContent>
       </Card>
+
+      {wallet.venue ? <VenueAccountCard account={wallet.venue} /> : null}
 
       <Card>
         <CardHeader>

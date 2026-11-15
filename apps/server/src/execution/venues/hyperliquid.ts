@@ -45,6 +45,27 @@ export type ExchangeAnswer =
   | { kind: "accepted" }
   | { kind: "refused"; text: string };
 
+/**
+ * An account at the venue as the venue reports it: its value and what can be withdrawn, in USD,
+ * and its open positions (`size` signed: negative is short). Never verified by anyone here.
+ */
+export interface AccountState {
+  accountValue: string;
+  withdrawable: string;
+  positions: { coin: string; size: string; entryPrice: string; unrealizedPnl: string }[];
+}
+
+/** An order resting on the venue's book, as the venue reports it. */
+export interface OpenOrder {
+  coin: string;
+  side: "buy" | "sell";
+  /** What is left of it. */
+  remaining: string;
+  limitPrice: string;
+  venueOrderId: number;
+  cloid: string | null;
+}
+
 export interface HyperliquidClient {
   /** The perpetuals, in asset order (`POST /info {"type":"meta"}`). */
   meta(): Promise<PerpMeta[]>;
@@ -54,6 +75,15 @@ export interface HyperliquidClient {
   post(body: string): Promise<ExchangeAnswer>;
   /** The account's value in USD, as the venue reports it. Never verified by anyone here. */
   accountValue(user: `0x${string}`): Promise<string>;
+  /** The account's value and positions (`POST /info {"type":"clearinghouseState"}`). */
+  accountState(user: `0x${string}`): Promise<AccountState>;
+  /** The account's resting orders (`POST /info {"type":"openOrders"}`). */
+  openOrders(user: `0x${string}`): Promise<OpenOrder[]>;
+  /**
+   * The nonces of the account's withdrawals the venue took from `startTime` (milliseconds) on
+   * (`POST /info {"type":"userNonFundingLedgerUpdates"}`): a withdrawal's nonce is its `time`.
+   */
+  withdrawalNonces(user: `0x${string}`, startTime: number): Promise<number[]>;
 }
 
 const Meta = z.looseObject({
@@ -105,6 +135,39 @@ const Exchange = z.union([
 const ClearinghouseState = z.looseObject({
   marginSummary: z.looseObject({ accountValue: z.string() }),
 });
+
+const AccountStateAnswer = z.looseObject({
+  marginSummary: z.looseObject({ accountValue: z.string() }),
+  withdrawable: z.string(),
+  assetPositions: z.array(
+    z.looseObject({
+      position: z.looseObject({
+        coin: z.string(),
+        szi: z.string(),
+        entryPx: z.string().nullable(),
+        unrealizedPnl: z.string(),
+      }),
+    }),
+  ),
+});
+
+const OpenOrders = z.array(
+  z.looseObject({
+    coin: z.string(),
+    side: z.enum(["A", "B"]),
+    sz: z.string(),
+    limitPx: z.string(),
+    oid: z.number().int().min(0),
+    cloid: z.string().nullable().optional(),
+  }),
+);
+
+const LedgerUpdates = z.array(
+  z.looseObject({
+    time: z.number(),
+    delta: z.looseObject({ type: z.string(), nonce: z.number().int().optional() }),
+  }),
+);
 
 /** The venue's text, on one line and cut to {@link VENUE_TEXT_MAX} characters. */
 export function venueText(value: unknown): string {
@@ -216,6 +279,42 @@ export function createHyperliquidClient(options: {
     async accountValue(user) {
       const state = await read({ type: "clearinghouseState", user }, ClearinghouseState);
       return state.marginSummary.accountValue;
+    },
+
+    async accountState(user) {
+      const state = await read({ type: "clearinghouseState", user }, AccountStateAnswer);
+      return {
+        accountValue: state.marginSummary.accountValue,
+        withdrawable: state.withdrawable,
+        positions: state.assetPositions.map(({ position }) => ({
+          coin: position.coin,
+          size: position.szi,
+          entryPrice: position.entryPx ?? "0",
+          unrealizedPnl: position.unrealizedPnl,
+        })),
+      };
+    },
+
+    async openOrders(user) {
+      const orders = await read({ type: "openOrders", user }, OpenOrders);
+      return orders.map((order) => ({
+        coin: order.coin,
+        side: order.side === "B" ? "buy" : "sell",
+        remaining: order.sz,
+        limitPrice: order.limitPx,
+        venueOrderId: order.oid,
+        cloid: order.cloid ?? null,
+      }));
+    },
+
+    async withdrawalNonces(user, startTime) {
+      const updates = await read(
+        { type: "userNonFundingLedgerUpdates", user, startTime },
+        LedgerUpdates,
+      );
+      return updates.flatMap(({ delta }) =>
+        delta.type === "withdraw" && delta.nonce !== undefined ? [delta.nonce] : [],
+      );
     },
   };
 }

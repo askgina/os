@@ -78,6 +78,7 @@ import {
   routes,
   type SessionInfo,
   type TransactionInfo,
+  type VenueAccount,
   type WalletSummary,
   type WorkspaceDetail,
   type WorkspaceTemplate,
@@ -1360,6 +1361,70 @@ function proposeOrder(
   return stripIntent(detail);
 }
 
+/** A venue decimal ("0.01") in units of 10^-8, as the venue keeps sizes. */
+function toE8(text: string): bigint {
+  const [whole = "0", fraction = ""] = text.split(".");
+  return BigInt(whole + fraction.padEnd(8, "0").slice(0, 8));
+}
+
+/**
+ * The wallet's account at Hyperliquid testnet for the wallet page, as the server gives it when a
+ * policy has venue rules or the wallet has ordered there: the signer's 24-hour count against the
+ * daily cap, and what the stand-in venue reports: the account value the order card names, one
+ * position per coin from the filled orders (entered at the latest fill's price, no unrealised
+ * profit) and the orders resting on its book.
+ */
+function venueAccountOf(wallet: WalletSummary): VenueAccount | null {
+  const rules = wallet.policy?.venues?.hyperliquid;
+  const orders = [...state.intents.values()].filter(
+    (intent) => intent.walletId === wallet.id && intent.display.kind === "order",
+  );
+  if (rules === undefined && orders.length === 0) return null;
+  const network = rules?.network ?? "hyperliquid:testnet";
+  const held = new Map<string, { size: bigint; entryPrice: string }>();
+  const openOrders: NonNullable<VenueAccount["reported"]>["openOrders"] = [];
+  for (const intent of orders) {
+    const { display, order } = intent;
+    if (display.kind !== "order" || order === null) continue;
+    const filled = toE8(order.filledSize ?? "0");
+    if (filled > 0n) {
+      const position = held.get(display.coin) ?? { size: 0n, entryPrice: display.limitPrice };
+      position.size += display.side === "buy" ? filled : -filled;
+      position.entryPrice = order.averagePrice ?? display.limitPrice;
+      held.set(display.coin, position);
+    }
+    if (intent.status === "placed" && order.canCancel) {
+      openOrders.push({
+        coin: display.coin,
+        side: display.side,
+        size: formatAmount((toE8(display.size) - filled).toString(), 8),
+        limitPrice: display.limitPrice,
+        venueOrderId: order.venueOrderId ?? 0,
+        cloid: null,
+      });
+    }
+  }
+  return {
+    network,
+    spentTodayUsd6: (state.spent.get(`${wallet.id}|${network}|usd6`) ?? 0n).toString(),
+    maxNotionalPerDayUsd6: rules?.network === network ? rules.maxNotionalPerDayUsd6 : null,
+    reported: {
+      accountValueUsd: VENUE_ACCOUNT_VALUE_USD,
+      withdrawableUsd: VENUE_ACCOUNT_VALUE_USD,
+      positions: [...held]
+        .filter(([, position]) => position.size !== 0n)
+        .map(([coin, position]) => ({
+          coin,
+          side: position.size > 0n ? "long" : "short",
+          size: formatAmount((position.size > 0n ? position.size : -position.size).toString(), 8),
+          entryPrice: position.entryPrice,
+          unrealizedPnlUsd: "0",
+        })),
+      openOrders,
+    },
+  };
+}
+
 function formatAmount(amount: string, decimals: number): string {
   const value = BigInt(amount);
   const base = 10n ** BigInt(decimals);
@@ -2405,16 +2470,19 @@ const handlers: Record<RouteName, Handler> = {
         item.subject.kind === "set-policy" &&
         item.subject.wallet.id === wallet.id,
     );
+    const venue = venueAccountOf(wallet);
     return {
       ...wallet,
       balances: BALANCES,
+      // EVM only, as the signer's `spent`: a venue's count is in `venue`.
       spent: [...state.spent]
-        .filter(([key]) => key.startsWith(`${wallet.id}|`))
+        .filter(([key]) => key.startsWith(`${wallet.id}|eip155:`))
         .map(([key, amount]) => {
           const [, chainId, asset] = key.split("|");
           return { chainId, asset, amount: amount.toString() };
         }),
       pendingPolicyApprovalId: pending?.summary.id ?? null,
+      ...(venue === null ? {} : { venue }),
     };
   },
   requestPolicy: ({ params, body, userId }) => {

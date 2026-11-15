@@ -1,4 +1,9 @@
-import type { IntentStatus, OrderDisplay, TransferDisplay } from "@askgina/os-api";
+import {
+  type IntentStatus,
+  type OrderDisplay,
+  type TransferDisplay,
+  VenueAccount,
+} from "@askgina/os-api";
 import {
   type Cloid,
   type HyperliquidOrderOperation,
@@ -13,8 +18,9 @@ import {
   VenueIntent,
   type VenueNetwork,
   type WalletId,
+  type WalletPolicy,
 } from "@askgina/os-protocol";
-import { SignerError, type SignVenueResponse } from "@askgina/os-protocol/signer";
+import { SignerError, type SignVenueResponse, type WalletState } from "@askgina/os-protocol/signer";
 import { and, eq, inArray, lt } from "drizzle-orm";
 import { formatUnits } from "viem";
 import { ApprovalFailure, type ApprovalRow } from "../approvals/kinds.ts";
@@ -593,10 +599,48 @@ async function post(ctx: AppContext, f: Followed): Promise<Next> {
   return recordAnswer(ctx, f, answer);
 }
 
-/** Ask the venue for the order by its client order id and record what it says. */
+/**
+ * How far before a withdrawal's nonce its entry in the venue's ledger is looked for: the nonce is
+ * the signer's clock at signing, and the venue's clock may differ from it.
+ */
+const LEDGER_LOOKBACK_MS = 300_000;
+
+/**
+ * Ask the venue's ledger for a withdrawal by its nonce, which no second withdrawal of the account
+ * can share. Found: the venue took it, and the request ends accepted.
+ */
+async function checkWithdrawal(
+  ctx: AppContext,
+  f: Followed,
+): Promise<Next | "unknown" | "unreachable"> {
+  const { order, intent } = f;
+  let nonces: number[];
+  try {
+    nonces = await f.client.withdrawalNonces(f.account, order.actionNonce - LEDGER_LOOKBACK_MS);
+  } catch (error) {
+    if (error instanceof VenueError) return "unreachable";
+    throw error;
+  }
+  const found = nonces.includes(order.actionNonce);
+  ctx.log.info("venue withdrawal read", {
+    event: "venue.status",
+    approvalId: order.approvalId,
+    network: order.network,
+    status: found ? "accepted" : "unknown",
+  });
+  if (!found) return "unknown";
+  await record(ctx, order, intent, "accepted", {});
+  return { done: true, waitSeconds: 0 };
+}
+
+/**
+ * Ask the venue for the order by its client order id, or for a withdrawal by its nonce, and
+ * record what it says.
+ */
 async function check(ctx: AppContext, f: Followed): Promise<Next | "unknown" | "unreachable"> {
   const { order, intent, operation } = f;
-  if (order.cloid === null || operation.type !== "hyperliquid.order") return "unknown";
+  if (operation.type === "hyperliquid.withdraw") return checkWithdrawal(ctx, f);
+  if (order.cloid === null) return "unknown";
   let status: OrderStatusAnswer;
   try {
     status = await f.client.orderStatus(f.account, order.cloid as Cloid);
@@ -631,7 +675,8 @@ async function check(ctx: AppContext, f: Followed): Promise<Next | "unknown" | "
  * window passed first. `submitted` (the answer was lost, or the process died after posting):
  * the venue is asked for the order by its client order id before anything is posted again, and
  * the identical request is posted again only while the window is open (the venue's nonce rule
- * refuses a second copy anyway); a withdrawal, which has no client order id, is posted again.
+ * refuses a second copy anyway); a withdrawal, which has no client order id, is looked for in the
+ * venue's ledger by its nonce and posted again only when the venue has not taken it.
  * `placed`: read back with a wait growing from 5 to 60 seconds. `watch` false ends the round
  * after one look (the reconcile sweeper's use).
  */
@@ -806,6 +851,79 @@ export async function cancelIntentOrOrder(
   if (!order || !CANCELLABLE.includes(order.status)) return cancelIntent(ctx, row);
   await cancelVenueOrder(ctx, row, actor);
   return (await getIntentRow(ctx, row.id)).status;
+}
+
+// --- the wallet page --------------------------------------------------------------------------
+
+/** At most this many positions and resting orders are shown; the rest are not read. */
+const ACCOUNT_LIST_MAX = 100;
+
+/**
+ * The wallet's account at a configured venue: the one its policy has rules for, or else one it
+ * has used. Null when there is none. What the venue reports is read here and passed on, never
+ * checked; a venue that cannot be read, or answers what cannot be shown, is `reported: null`.
+ */
+export async function walletVenueAccount(
+  ctx: AppContext,
+  wallet: { id: WalletId; address: `0x${string}` },
+  policy: WalletPolicy | null,
+  venueSpent: WalletState["venueSpent"],
+): Promise<VenueAccount | null> {
+  const configured = ctx.config.venues.map((venue) => venue.network);
+  if (configured.length === 0) return null;
+  const rules = policy?.venues?.hyperliquid;
+  let network: VenueNetwork | null =
+    rules !== undefined && configured.includes(rules.network) ? rules.network : null;
+  if (network === null) {
+    const [used] = await ctx.db
+      .select({ network: venueOrders.network })
+      .from(venueOrders)
+      .where(and(eq(venueOrders.walletId, wallet.id), inArray(venueOrders.network, configured)))
+      .limit(1);
+    network = used?.network ?? null;
+  }
+  if (network === null) return null;
+  const client = venueClient(ctx, network);
+  let reported: VenueAccount["reported"] = null;
+  try {
+    const [state, open] = await Promise.all([
+      client.accountState(wallet.address),
+      client.openOrders(wallet.address),
+    ]);
+    const parsed = VenueAccount.shape.reported.safeParse({
+      accountValueUsd: state.accountValue,
+      withdrawableUsd: state.withdrawable,
+      positions: state.positions
+        .filter((position) => scaled(position.size.replace(/^-/, "")) !== 0n)
+        .slice(0, ACCOUNT_LIST_MAX)
+        .map((position) => ({
+          coin: position.coin,
+          side: position.size.startsWith("-") ? "short" : "long",
+          size: position.size.replace(/^-/, ""),
+          entryPrice: position.entryPrice,
+          unrealizedPnlUsd: position.unrealizedPnl,
+        })),
+      openOrders: open.slice(0, ACCOUNT_LIST_MAX).map((order) => ({
+        coin: order.coin,
+        side: order.side,
+        size: order.remaining,
+        limitPrice: order.limitPrice,
+        venueOrderId: order.venueOrderId,
+        cloid: order.cloid,
+      })),
+    });
+    if (parsed.success) reported = parsed.data;
+    else ctx.log.warn("venue account not shown", { event: "venue.account", network });
+  } catch (error) {
+    if (!(error instanceof VenueError)) throw error;
+    ctx.log.warn("venue account not read", { event: "venue.account", network });
+  }
+  return {
+    network,
+    spentTodayUsd6: venueSpent.find((entry) => entry.chainId === network)?.amount ?? "0",
+    maxNotionalPerDayUsd6: rules?.network === network ? rules.maxNotionalPerDayUsd6 : null,
+    reported,
+  };
 }
 
 // --- the approval page ------------------------------------------------------------------------

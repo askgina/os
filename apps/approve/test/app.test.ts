@@ -1,13 +1,20 @@
 import { randomBytes } from "node:crypto";
 import {
   type ApprovalId,
+  type ConfirmationSubject,
   ConfirmationView,
+  ConfirmationWarning,
   Envelope,
   envelopeChallenge,
+  intentHash,
   keyFingerprint,
   newId,
+  policyHash,
+  type RenderInput,
   renderConfirmation,
   type UserId,
+  type VenueIntent,
+  type WalletPolicy,
 } from "@askgina/os-protocol";
 import {
   CONFIRM_TOKEN_HEADER,
@@ -78,7 +85,20 @@ function viewOf(
     issuedAt: NOW,
     expiresAt: NOW + 3_600,
   });
-  const subject = { kind: "envelope-only" } as const;
+  return confirmationView(
+    envelope,
+    { kind: "envelope-only" },
+    { possessionProven: change?.possessionProven ?? false },
+  );
+}
+
+/** The view the signer sends for an envelope and its subject, rendered from `input`. */
+function confirmationView(
+  envelope: Envelope,
+  subject: ConfirmationSubject,
+  input: Partial<RenderInput>,
+): ConfirmationView {
+  const { approvalId } = envelope;
   const approvals = { collected: 0, required: 1 };
   const rendered = renderConfirmation({
     envelope,
@@ -90,10 +110,11 @@ function viewOf(
     spent24h: 0n,
     approvals,
     adminThreshold: 1,
-    possessionProven: change?.possessionProven ?? false,
+    possessionProven: false,
     treasuries: [],
     cancelTarget: null,
     wallets: [],
+    ...input,
   });
   return ConfirmationView.parse({
     v: 1,
@@ -115,6 +136,98 @@ function viewOf(
     },
     returnUrl: `http://localhost:8080/w/${envelope.workspaceId}/approvals/${approvalId}`,
   });
+}
+
+/**
+ * The view of an approved-intent request for a Hyperliquid testnet order (buy 0.01 of market 3
+ * at 65,000, good till cancelled), against the wallet's current policy: with or without venue
+ * rules, and with or without the market among them.
+ */
+function orderViewOf(policy: { venues: boolean; btc: boolean }): ConfirmationView {
+  const workspaceId = newId("ws");
+  const walletId = newId("wal");
+  const agentId = newId("agt");
+  const intent: VenueIntent = {
+    v: 1,
+    id: newId("int"),
+    workspaceId,
+    agentId,
+    walletId,
+    chainId: "hyperliquid:testnet",
+    operation: {
+      type: "hyperliquid.order",
+      asset: 3,
+      isBuy: true,
+      size: "0.01",
+      limitPx: "65000",
+      tif: "Gtc",
+      reduceOnly: false,
+    },
+    memo: "funding turned",
+    createdAt: NOW,
+  };
+  const current: WalletPolicy = {
+    v: 1,
+    workspaceId,
+    walletId,
+    revision: 1,
+    previousHash: null,
+    chains: ["eip155:8453"],
+    requesters: [agentId],
+    assets: [
+      {
+        chainId: "eip155:8453",
+        asset: "native",
+        maxPerTx: "1000000000000000000",
+        maxPerDay: "5000000000000000000",
+      },
+    ],
+    recipients: { mode: "any" },
+    contractCalls: { mode: "deny" },
+    fees: { maxPerTxWei: "10000000000000000" },
+    approvals: { threshold: 1, ttlSeconds: 3_600 },
+    ...(policy.venues
+      ? {
+          venues: {
+            hyperliquid: {
+              network: "hyperliquid:testnet",
+              markets: [
+                ...(policy.btc
+                  ? [{ asset: 3, coin: "BTC", maxNotionalPerOrderUsd6: "1000000000" }]
+                  : []),
+                { asset: 4, coin: "ETH", maxNotionalPerOrderUsd6: "500000000" },
+              ],
+              maxNotionalPerDayUsd6: "2000000000",
+              timeInForce: ["Gtc", "Ioc"],
+              submitWindowSeconds: 60,
+              withdrawals: false,
+            },
+          },
+        }
+      : {}),
+  };
+  const envelope = Envelope.parse({
+    v: 1,
+    type: "approve-intent",
+    approvalId: newId("apr"),
+    workspaceId,
+    nonce: randomBytes(16).toString("base64url"),
+    issuedAt: NOW,
+    expiresAt: NOW + 3_600,
+    intentHash: intentHash(intent),
+    walletId,
+    agentId,
+    chainId: intent.chainId,
+    policyHash: policyHash(current),
+  });
+  return confirmationView(
+    envelope,
+    { kind: "approve-intent", intent },
+    {
+      wallet: { label: "Market maker", address: `0x${"ab".repeat(20)}` },
+      currentPolicy: current,
+    },
+  );
 }
 
 type Answer = { status: number; body: unknown } | "unreachable";
@@ -672,6 +785,79 @@ describe("the page's passkey code", () => {
     ] as const) {
       expect(REFUSAL_TEXT[code]).not.toContain("_");
     }
+  });
+
+  it("an order shows its lines, and a market or venue the policy lacks is warned of in words", async () => {
+    // Every warning the signer can send has words on the page.
+    for (const warning of ConfirmationWarning.options) {
+      expect(WARNING_TEXT[warning]).toMatch(/^[A-Z].*\.$/);
+    }
+    const { app, signer } = setUp();
+    const shown = async (view: ConfirmationView) => {
+      signer.answer({ status: 200, body: view });
+      const response = await app.request(`/api/approvals/${view.approvalId}`, withToken());
+      expect(response.status).toBe(200);
+      return ConfirmationView.parse(await response.json());
+    };
+    const line = (view: ConfirmationView, label: string) =>
+      view.lines.find((entry) => entry.label === label)?.value;
+
+    const listed = await shown(orderViewOf({ venues: true, btc: true }));
+    expect(listed.title).toBe("Buy 0.01 BTC perpetual");
+    expect(listed.warnings).toEqual([]);
+    expect(listed.lines).toEqual(
+      expect.arrayContaining([
+        { label: "Market", value: "BTC perpetual, as named in the wallet's policy", kind: "text" },
+        { label: "Market index", value: "3", kind: "code" },
+        { label: "Side", value: "buy", kind: "text" },
+        { label: "Size", value: "0.01 BTC", kind: "amount" },
+        { label: "Limit price", value: "65,000 USD", kind: "amount" },
+        { label: "Notional at the limit price", value: "650 USD", kind: "amount" },
+        {
+          label: "Time in force",
+          value: "good till cancelled: rests on the book until filled or cancelled",
+          kind: "text",
+        },
+        { label: "Reduce-only", value: "no", kind: "text" },
+        {
+          label: "Submit window",
+          value: "must reach the venue within 1 minute of signing",
+          kind: "text",
+        },
+        {
+          label: "Funds at the venue",
+          value: "held by Hyperliquid; these caps limit new orders, not losses",
+          kind: "text",
+        },
+        { label: "Network", value: "Hyperliquid testnet (hyperliquid:testnet)", kind: "text" },
+        { label: "Spent in the last 24 hours", value: "0 USD of 2,000 USD", kind: "amount" },
+        { label: "Agent's note, not checked", value: "funding turned", kind: "unchecked" },
+      ]),
+    );
+
+    const unlisted = await shown(orderViewOf({ venues: true, btc: false }));
+    expect(unlisted.title).toBe("Buy 0.01 of market 3, not in the wallet's policy");
+    expect(unlisted.warnings).toEqual(["market_not_in_policy"]);
+    expect(unlisted.warnings.map((warning) => WARNING_TEXT[warning])).toEqual([
+      "This market is not one the wallet's policy allows, so the signer will refuse this order.",
+    ]);
+    expect(line(unlisted, "Market")).toBe(
+      "not in the wallet's policy: the signer would refuse this order",
+    );
+    expect(line(unlisted, "Size")).toBe("0.01");
+
+    const noRules = await shown(orderViewOf({ venues: false, btc: false }));
+    expect(noRules.warnings).toEqual(["market_not_in_policy", "venue_rules_missing"]);
+    expect(noRules.warnings.map((warning) => WARNING_TEXT[warning])).toEqual([
+      "This market is not one the wallet's policy allows, so the signer will refuse this order.",
+      "The wallet's policy has no rules for this venue, so the signer will refuse this request.",
+    ]);
+    expect(line(noRules, "Submit window")).toBe(
+      "none: the wallet's policy has no rules for this venue",
+    );
+    expect(line(noRules, "Venue rules")).toBe(
+      "none for this network: the signer would refuse this",
+    );
   });
 
   it("base64url round-trips every length", () => {

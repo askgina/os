@@ -145,7 +145,52 @@ Success means:
         `repricing`, `confirmation`, `directory`, `export`, `clone`, notify `content` and `push`
         tests and the `packages/api` tests pass, each file alone; Biome clean on the changed
         files.
+  - [x] (2026-11-15) What the server and web halves left. The wallet page's venue section:
+        `WalletDetail.venue` (optional `VenueAccount` in `packages/api`: `network`, the
+        signer's `spentTodayUsd6` from `WalletState.venueSpent`, the policy's
+        `maxNotionalPerDayUsd6` or null, and `reported`: account value, withdrawable, positions
+        and resting orders as the venue answered, null when it could not be read or answered
+        what cannot be shown), filled by `walletVenueAccount` in `orders.ts` for the configured
+        venue the policy has rules for, or else one the wallet has orders on, and absent
+        otherwise; the client gained `accountState`, `openOrders` (the venue documents no
+        `cloid` there, so resting orders show its order id) and `withdrawalNonces`;
+        `VenueAccountCard` in `apps/web/src/components/venue.tsx` shows the signer's count
+        against the cap, then the venue's report under "Reported by Hyperliquid through this
+        server, not verified by the signer."; the fixture server and the order journey (a
+        step on the wallet page with the order resting, and none after its cancel). The
+        withdrawal after a lost answer is looked up in the venue's ledger before any repost
+        (see Surprises); the testkit's fake answers `openOrders` and
+        `userNonFundingLedgerUpdates`. The approve page test renders an order view's lines and
+        the words of `market_not_in_policy` and `venue_rules_missing`. Local checks only, CI
+        pending: `tsc --noEmit` clean in `apps/server`, `packages/api`, `apps/web`,
+        `apps/approve` and `packages/testkit`; `orders.test.ts` (13 tests; the lost-withdrawal
+        test fails without the fix, ending `failed`), `directory.test.ts` (32), the testkit's
+        `fake-hyperliquid.test.ts` (19) and the approve `app.test.ts` (11) pass, each file
+        alone; the web journeys pass on phone-light (4/4) and phone-wide-font (4/4); Biome
+        clean on the changed files. Not run: phone-dark and desktop journeys.
 - [ ] Milestone 6: fake venue, release gates, documentation.
+  - [x] (2026-11-15) The fake venue (`packages/testkit/src/fake-hyperliquid.ts`, its HTTP entry
+        `e2e/src/fake-hyperliquid.mts`, overlay `e2e/compose.venue.yaml`) and its wiring:
+        `e2e/run.sh` runs `e2e/test/venue.spec.ts` on a third, fresh stack
+        (`<project>-venue`, `E2E_VENUE=1`) after the lifecycle gates, in the default run only
+        (CI `stack` amd64 and arm64; not TLS, split or a variant); `compose.yaml` passes
+        `VENUES_FILE` through (empty: no venue) and `.env.example` documents it. Gates written:
+        exactly eight tools and only the testnet venue in `whoami`; an IOC order approved on the
+        signer's page (market, index, side, size, limit price, notional, time in force, the
+        memo as unchecked) becomes one accepted request whose signer, recovered by the fake and
+        again in the test, is the wallet, whose body is byte for byte the signer's
+        `venue_signatures.request`, and the intent ends `filled`; a resting GTC order is
+        cancelled by the agent while the workspace is paused, no passkey used, the cancel the
+        only other request and byte for byte `venue_cancels.request`; refusals before any
+        approval (market, order type, per-order cap, mainnet order, mainnet policy draft); a
+        live mandate still leaves an order to a person and the signer logs no `sign-venue`
+        (D7); a request whose 5-second window passed while the server was cut off from the
+        venue is never posted and ends `expired`; a server killed after signing and before
+        posting sends exactly one request after restart. Local checks only, nothing run
+        against a stack, CI pending: `tsc --noEmit` clean in `e2e`; `bash -n e2e/run.sh`; the
+        plain, e2e, venue, replicas, OpenBao, TLS and both split Compose combinations parse;
+        Biome clean on the changed files. Left: the replay, daily-cap, plaintext, signer-network
+        and mainnet-boot gates, the webhook order gate, the withdrawal gate and the documents.
 - [ ] Manual testnet proof (D6; not CI; needs a funded testnet account; required before any
       mainnet decision under D2).
 
@@ -280,13 +325,28 @@ Success means:
 - Observation (Milestone 5): `orderStatus` reports remaining and original size but no average
   price, so `averagePrice` is only known when the post's own answer was `filled`; a resting
   order that fills later shows its filled size and no average price.
-- Observation (Milestone 5): a withdrawal has no client order id, so after a lost answer it is
-  posted again; if the first copy had been accepted, the venue refuses the copy for its nonce
-  and the intent ends `failed` (`venue_refused`) although the money moved. Not reachable in the
-  tests; a withdrawal's outcome would need the venue's ledger (`userNonFundingLedgerUpdates`).
+- Observation (Milestone 5): a withdrawal has no client order id, so after a lost answer it was
+  posted again; if the first copy had been accepted, the venue refused the copy for its nonce
+  and the intent ended `failed` (`venue_refused`) although the money moved. Fixed: before any
+  repost, the follow-up reads the venue's ledger (`POST /info
+  {"type":"userNonFundingLedgerUpdates","user","startTime"}`, from 5 minutes before the
+  withdrawal's nonce) and ends the request `accepted` (intent `confirmed`) when a `withdraw`
+  entry carries its nonce, which no other withdrawal of the account can share; only a
+  withdrawal the venue has not taken is posted again. The fake venue answers that read from the
+  withdrawals it took. That the real venue's `withdraw` ledger entry carries `nonce` is from its
+  API documentation, not yet seen (manual testnet proof, D6).
+  Evidence: `orders.test.ts` "after a lost answer, finds the withdrawal in the venue's ledger
+  and does not post it again" and "… posts a withdrawal the venue did not take once more".
 - Observation (Milestone 5): the follow-up watches a posted order for one hour (5 to 60 seconds
   apart), then `reconcileOpenOrders` reads it every 5 minutes; a venue removed from
   `VENUES_FILE` after signing ends an unposted request `expired` once its window passed.
+- Observation (Milestone 6): the plan's method for the expiry and crash gates, pausing the
+  `fake-hyperliquid` container, cannot show "never posted": a paused container's kernel still
+  completes the TCP handshake and buffers the request, which the fake reads on unpause. The gates
+  instead disconnect the server's container from the Compose `chain` network (the only one the
+  fake is on) and connect it again, so nothing the server posts in between can reach the venue.
+  The venue gates run on a stack of their own rather than in `release-gates.spec.ts`, so every
+  other gate keeps running as a deployment without `VENUES_FILE` does.
 - Observation (Milestone 2): the SDK writes `r` and `s` with `to_hex`, which drops leading zero
   digits (three of the vector values have 63 digits); the tests compare them as numbers. The SDK
   signs `withdraw3` with `signatureChainId` `0x66eee` on both networks; this plan uses `0xa4b1`

@@ -416,4 +416,98 @@ describe("withdrawing from the venue", () => {
     });
     expect(await status(row.id)).toBe("confirmed");
   });
+
+  /** An approved withdrawal of 3 USDC to the wallet's own address, signed and not yet posted. */
+  async function approvedWithdrawal() {
+    const answer = await call("propose_transfer", {
+      chainId: "hyperliquid:testnet",
+      to: trader.address,
+      amount: "3",
+      asset: "usdc",
+      memo: "rebalance",
+    });
+    const row = await intentRow(answer.intentId);
+    expect((await f.t.approve(row.approvalId, [f.t.owner])).status).toBe("executed");
+    return row;
+  }
+  const withdrawalsPosted = () =>
+    venue.exchangeLog().filter((entry) => entry.actionType === "withdraw3").length;
+
+  it("after a lost answer, finds the withdrawal in the venue's ledger and does not post it again", async () => {
+    const row = await approvedWithdrawal();
+    const sent = withdrawalsPosted();
+    const taken = venue.withdrawals().length;
+    // The venue takes the withdrawal and the answer never arrives.
+    venue.failNext({ endpoint: "exchange", mode: "drop" });
+    expect((await followUp(row.approvalId)).done).toBe(false);
+    expect(await status(row.id)).toBe("submitted");
+    expect(venue.withdrawals()).toHaveLength(taken + 1);
+    expect(await followUp(row.approvalId)).toEqual({ done: true, waitSeconds: 0 });
+    expect(await status(row.id)).toBe("confirmed");
+    expect(withdrawalsPosted()).toBe(sent + 1);
+    expect(venue.withdrawals()).toHaveLength(taken + 1);
+  });
+
+  it("after an answer that says nothing, posts a withdrawal the venue did not take once more", async () => {
+    const row = await approvedWithdrawal();
+    const taken = venue.withdrawals().length;
+    // The request never reaches the venue's ledger: a server error before it is read.
+    venue.failNext({ endpoint: "exchange", mode: "http", status: 502 });
+    expect((await followUp(row.approvalId)).done).toBe(false);
+    expect(await status(row.id)).toBe("submitted");
+    expect(venue.withdrawals()).toHaveLength(taken);
+    expect(await followUp(row.approvalId)).toEqual({ done: true, waitSeconds: 0 });
+    expect(await status(row.id)).toBe("confirmed");
+    expect(venue.withdrawals()).toHaveLength(taken + 1);
+  });
+});
+
+describe("the wallet page", () => {
+  const getWallet = (walletId: string) =>
+    f.t.owner.browser.api.call("getWallet", { params: { workspaceId: f.workspaceId, walletId } });
+
+  it("shows the venue's report of the account and the signer's 24-hour count against the cap", async () => {
+    const owner = trader.address.toLowerCase();
+    const open = venue.orders().filter((entry) => entry.user === owner && entry.status === "open");
+    expect(open.length).toBeGreaterThan(0);
+    const state = await f.t.ctx.signer.getWallet(trader.walletId);
+    const spent = state.venueSpent.find((entry) => entry.chainId === "hyperliquid:testnet");
+    expect(BigInt(spent?.amount ?? "0")).toBeGreaterThan(0n);
+
+    const detail = await getWallet(trader.walletId);
+    expect(detail.venue).toMatchObject({
+      network: "hyperliquid:testnet",
+      spentTodayUsd6: spent?.amount,
+      maxNotionalPerDayUsd6: "5000000000",
+      reported: {
+        accountValueUsd: expect.stringMatching(/^\d/),
+        withdrawableUsd: expect.stringMatching(/^\d/),
+      },
+    });
+    expect(detail.venue?.reported?.positions).toContainEqual(
+      expect.objectContaining({ coin: "BTC", side: "long" }),
+    );
+    expect(detail.venue?.reported?.openOrders).toEqual(
+      open.map((entry) => ({
+        coin: entry.coin,
+        side: entry.isBuy ? "buy" : "sell",
+        size: entry.size,
+        limitPrice: entry.limitPx,
+        venueOrderId: entry.oid,
+        cloid: null,
+      })),
+    );
+  });
+
+  it("keeps the signer's count when the venue cannot be read, and has no section without a venue", async () => {
+    venue.failNext({ endpoint: "info", mode: "http", status: 500, count: 2 });
+    const unread = await getWallet(trader.walletId);
+    expect(unread.venue).toMatchObject({
+      network: "hyperliquid:testnet",
+      spentTodayUsd6: expect.stringMatching(/^[1-9]/),
+      reported: null,
+    });
+    const bystander = await f.newAgent("Bystander");
+    expect(await getWallet(bystander.walletId)).not.toHaveProperty("venue");
+  });
 });

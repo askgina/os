@@ -27,6 +27,9 @@
  *   that does not are rejected; refused orders are kept with the venue's historical status
  *   (`tickRejected`, `minTradeNtlRejected`, …) so `orderStatus` finds them by cloid.
  * - A withdrawal pays the bridge's 1 USDC out of its amount and must be larger than it.
+ * - `/info` answers `meta`, `orderStatus` (by order id or cloid), `clearinghouseState`,
+ *   `openOrders` and `userNonFundingLedgerUpdates`, whose entries here are the withdrawals
+ *   taken, each with its nonce, from `startTime` (to `endTime`, when given) in milliseconds.
  *
  * Where it is stricter than the venue, so a request it accepts is one the venue would accept:
  * an action's keys must be exactly the venue's fields in the venue's order (the order the SDK
@@ -1143,6 +1146,56 @@ export class FakeHyperliquid {
       if (typeof user !== "string" || !ADDRESS.test(user))
         return unreadable("user: expected an address");
       return json(200, this.#clearinghouseState(user.toLowerCase() as Address));
+    }
+    if (request.type === "openOrders") {
+      const { user } = request;
+      if (typeof user !== "string" || !ADDRESS.test(user))
+        return unreadable("user: expected an address");
+      const owner = user.toLowerCase();
+      return json(
+        200,
+        this.#orders
+          .filter((order) => order.user === owner && order.status === "open")
+          .map((order) => ({
+            coin: order.coin,
+            limitPx: order.limitPx,
+            oid: order.oid,
+            side: order.isBuy ? "B" : "A",
+            sz: formatFixed(order.sizeFx - order.filledFx),
+            timestamp: order.timestamp,
+          })),
+      );
+    }
+    if (request.type === "userNonFundingLedgerUpdates") {
+      // Only withdrawals move this fake's ledger.
+      const { user, startTime, endTime } = request;
+      if (typeof user !== "string" || !ADDRESS.test(user))
+        return unreadable("user: expected an address");
+      if (!isUint(startTime)) return unreadable("startTime: expected milliseconds");
+      if (endTime !== undefined && endTime !== null && !isUint(endTime)) {
+        return unreadable("endTime: expected milliseconds");
+      }
+      const owner = user.toLowerCase();
+      return json(
+        200,
+        this.#withdrawals
+          .filter(
+            (entry) =>
+              entry.user === owner &&
+              entry.receivedAt >= startTime &&
+              (typeof endTime !== "number" || entry.receivedAt <= endTime),
+          )
+          .map((entry) => ({
+            time: entry.receivedAt,
+            hash: `0x${entry.nonce.toString(16).padStart(64, "0")}`,
+            delta: {
+              type: "withdraw",
+              usdc: formatFixed((toFixed(entry.amount) ?? 0n) - WITHDRAWAL_FEE),
+              nonce: entry.nonce,
+              fee: formatFixed(WITHDRAWAL_FEE),
+            },
+          })),
+      );
     }
     return unreadable(`unknown variant \`${String(request.type)}\``);
   }
