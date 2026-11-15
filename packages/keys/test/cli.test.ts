@@ -140,11 +140,37 @@ describe("keys CLI", () => {
     expect(again.lines[0]).toMatchObject({ shredded: false });
   });
 
+  test("shred-tenant destroys one tenant's run keys, and a repeat exits 0 with 0", async () => {
+    const store = new DataKeyStore({ pool, provider: new LocalKeyring(k2), cacheTtlMs: 0 });
+    await store.getOrCreate("run", "wrun_ta1", "ws_ta");
+    await store.getOrCreate("run", "wrun_ta2", "ws_ta");
+    const other = await store.getOrCreate("run", "wrun_tb1", "ws_tb");
+    const env = { DATABASE_URL: db.url, KEYRING_FILE: ringFile("k2-tenant.json", k2) };
+    const first = await runCli(["shred-tenant", "run", "ws_ta"], env);
+    expect(first.code).toBe(0);
+    expect(first.lines).toEqual([
+      { event: "keys.shred_tenant", scope: "run", tenantId: "ws_ta", shredded: 2 },
+    ]);
+    for (const id of ["wrun_ta1", "wrun_ta2"]) {
+      await expect(store.get("run", id)).rejects.toBeInstanceOf(DataKeyUnavailableError);
+      await expect(store.getOrCreate("run", id)).rejects.toBeInstanceOf(DataKeyUnavailableError);
+    }
+    expect(Buffer.from(await store.get("run", "wrun_tb1"))).toEqual(Buffer.from(other));
+    const again = await runCli(["shred-tenant", "run", "ws_ta"], env);
+    expect(again.code).toBe(0);
+    expect(again.lines).toEqual([
+      { event: "keys.shred_tenant", scope: "run", tenantId: "ws_ta", shredded: 0 },
+    ]);
+  });
+
   test.each([
     [[]],
     [["rotate"]],
     [["shred", "run"]],
     [["shred", "table", "x"]],
+    [["shred-tenant", "run"]],
+    [["shred-tenant", "table", "ws_x"]],
+    [["shred-tenant", "run", "ws_x", "extra"]],
     [["rewrap", "--batch", "0"]],
   ])("bad arguments %j exit 1 without touching the database", async (args) => {
     const result = await runCli(args, {

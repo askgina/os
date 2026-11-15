@@ -238,6 +238,50 @@ describe("shred", () => {
   });
 });
 
+describe("shredTenant", () => {
+  test("destroys one tenant's run keys and leaves another tenant's readable", async () => {
+    const [tenantA, tenantB] = [newId("ws_"), newId("ws_")];
+    const [a1, a2, b1] = [newId(), newId(), newId()];
+    const s = store(k1, 60_000);
+    await s.getOrCreate("run", a1, tenantA);
+    await s.getOrCreate("run", a2, tenantA);
+    const bKey = await s.getOrCreate("run", b1, tenantB);
+    // The tenant's own workspace key lives in another scope and is not touched.
+    const wsKey = await s.getOrCreate("workspace", tenantA, tenantA);
+
+    expect(await s.shredTenant("run", tenantA)).toEqual({ shredded: 2 });
+
+    // Evicted from this store's cache as well as destroyed in the database.
+    for (const id of [a1, a2]) {
+      await expect(s.get("run", id)).rejects.toBeInstanceOf(DataKeyUnavailableError);
+      await expect(s.getOrCreate("run", id, tenantA)).rejects.toBeInstanceOf(
+        DataKeyUnavailableError,
+      );
+      await expect(store().getOrCreate("run", id)).rejects.toBeInstanceOf(DataKeyUnavailableError);
+    }
+    const rows = await query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM os_keys.data_keys WHERE key_id = ANY($1) AND wrapped_key IS NULL AND kek_id IS NULL AND shredded_at IS NOT NULL",
+      [[a1, a2]],
+    );
+    expect(rows[0]?.n).toBe(2);
+    expect(hex(await store().get("run", b1))).toBe(hex(bKey));
+    expect(hex(await store().get("workspace", tenantA))).toBe(hex(wsKey));
+
+    expect(await s.shredTenant("run", tenantA)).toEqual({ shredded: 0 });
+    expect(await s.shredTenant("run", newId("ws_"))).toEqual({ shredded: 0 });
+  });
+
+  test("migration creates the partial tenant index", async () => {
+    await store().ensureMigrated();
+    const rows = await query<{ indexdef: string }>(
+      "SELECT indexdef FROM pg_indexes WHERE schemaname = 'os_keys' AND indexname = 'data_keys_tenant_idx'",
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.indexdef).toContain("(scope, tenant_id)");
+    expect(rows[0]?.indexdef).toContain("WHERE (shredded_at IS NULL)");
+  });
+});
+
 describe("cache", () => {
   test("another process's cached key outlives a shred until its TTL runs out, then fails", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });

@@ -20,7 +20,8 @@ controls a running server process.
 - `LocalKeyring`: a keyring file `{ "active": "k2", "keys": { "k1": "<base64>", "k2": "<base64>" } }`
   (each key 32 bytes, canonical base64). `LocalKeyring.generate()` makes a new one. It
   implements `KeyProvider`, so a KMS-backed provider can replace it without other changes.
-- `DataKeyStore`: `getOrCreate(scope, id, tenantId?)`, `get`, `rewrap`, `shred`, in the table
+- `DataKeyStore`: `getOrCreate(scope, id, tenantId?)`, `get`, `rewrap`, `shred`,
+  `shredTenant(scope, tenantId)`, in the table
   `os_keys.data_keys`, created by its own idempotent migration. The wrapping is bound to the
   scope (`run` or `workspace`), the id, the tenant and the KEK id, so a wrapped key copied to
   another row does not unwrap. A call that names a different tenant than the key was created
@@ -39,7 +40,7 @@ scope, id, tenant id, KEK id and timestamps. Ciphertext lengths reveal plaintext
 
 ## Operations
 
-Both commands read `DATABASE_URL` and `KEYRING_FILE` and print one JSON line with ids and counts.
+Every command reads `DATABASE_URL` and `KEYRING_FILE` and prints one JSON line with ids and counts.
 
 Rotate the KEK:
 
@@ -61,6 +62,14 @@ everything encrypted under the old one is unreadable for good. Exit code 3 means
 live key (already shredded, or never created); the tombstone is in place either way.
 Processes that already hold the key in memory keep it for up to their cache TTL (one minute by
 default); a shred is complete across the fleet only after that.
+
+Shred every run key of one workspace (each key that was created with that tenant id):
+
+    node packages/keys/src/cli.ts shred-tenant run ws_…
+
+Each key becomes a tombstone as with `shred`. It exits 0 and reports the count as `shredded`;
+0 is not an error, since a repeat finds nothing left. Keys created without a tenant id are not
+found this way. The same cache TTL applies.
 
 ## Hazards
 

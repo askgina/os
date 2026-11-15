@@ -34,6 +34,9 @@ export async function migrateKeys(pool: Pool): Promise<void> {
       PRIMARY KEY (scope, key_id),
       CHECK ((shredded_at IS NULL) = (wrapped_key IS NOT NULL AND kek_id IS NOT NULL))
     )`);
+    // Serves shredTenant: the live keys of one tenant in one scope.
+    await client.query(`CREATE INDEX IF NOT EXISTS data_keys_tenant_idx
+      ON ${TABLE} (scope, tenant_id) WHERE shredded_at IS NULL`);
   } finally {
     await client.query("SELECT pg_advisory_unlock($1)", [MIGRATION_LOCK]).catch(() => {});
     client.release();
@@ -272,6 +275,31 @@ export class DataKeyStore {
       [scope, keyId],
     );
     return result.rows[0]?.existed === true;
+  }
+
+  /**
+   * Destroy every live key of one tenant in one scope, for example every run key of a workspace
+   * that is being deleted, leaving each as a tombstone the way {@link shred} does. Only keys
+   * created with that `tenantId` are found; a key created without a tenant is not. Other
+   * processes may keep serving these keys from their cache until their TTL runs out. Returns how
+   * many live keys were destroyed; a repeat finds none and returns 0.
+   */
+  async shredTenant(scope: KeyScope, tenantId: string): Promise<{ shredded: number }> {
+    await this.ensureMigrated();
+    const { rows } = await this.#pool.query<{ key_id: string }>(
+      `UPDATE ${TABLE} SET kek_id = NULL, wrapped_key = NULL, shredded_at = now()
+       WHERE scope = $1 AND tenant_id = $2 AND shredded_at IS NULL
+       RETURNING key_id`,
+      [scope, tenantId],
+    );
+    for (const row of rows) this.#cache.delete(`${scope}\n${row.key_id}`);
+    // A key this process cached under the tenant is gone from the database either way.
+    for (const [cacheKey, entry] of this.#cache) {
+      if (entry.tenantId === tenantId && cacheKey.startsWith(`${scope}\n`)) {
+        this.#cache.delete(cacheKey);
+      }
+    }
+    return { shredded: rows.length };
   }
 
   /** Drop unwrapped keys from this process's memory. */
