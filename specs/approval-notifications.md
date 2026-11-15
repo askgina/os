@@ -1,7 +1,7 @@
 # Tell approvers about a waiting approval outside the inbox
 
 - Branch: main
-- Status: In Progress
+- Status: Ready for Review
 - Owner(s): Eric Juta
 - Created: 2026-11-14
 - Last Updated: 2026-11-15
@@ -41,10 +41,10 @@ Success means:
 - [x] (2026-11-15) Milestones 1 and 2 are commit `371c2ce`, CI run 43705883757 green (check, test, ui, stack amd64/arm64/tls). Milestone 1: notification outbox and signed webhook (`apps/server/src/notify/`, migration `0005_notifications`). The webhook also reports `mandate.used`. First start creates `notify-webhook-secret`; Compose passes it.
 - [x] (2026-11-15) Milestone 2: Web Push sender (RFC 8291, RFC 8292), reproducing the RFC 8291 Appendix A body byte for byte. First start creates `vapid-key.pem`.
 - [x] (2026-11-15) Milestone 3: subscriptions, preferences, content levels, API (commit `e8ae6ff`, migration `0006_push_subscriptions`, seven routes). CI run 43707841094: test, ui and stack amd64/arm64/tls green; `check` red on one unformatted Markdown table, fixed in the next commit. All six jobs green at `3bf1a7b`, CI run 43709103267.
-- [ ] Milestone 4: web app manifest, service worker, return path after sign-in.
+- [x] (2026-11-15) Milestone 4: web app manifest, service worker, notification settings, return path after sign-in (commit `98cc6a1`). CI run 43710836888 green on check, test, ui (five projects) and stack amd64/arm64/tls, including a browser gate that the built app serves `/manifest.webmanifest` and `/sw.js` and that the worker activates under the Content-Security-Policy (activation on the stacks without TLS only).
 - [x] (2026-11-15) Milestone 5: expiry reminders and quiet hours (same commit and run as Milestone 3). The webhook is not held by quiet hours.
 - [x] (2026-11-15) Milestone 6: ntfy sidecar example (`examples/ntfy-sidecar`, its own Compose overlay), docs, threat model, two webhook release gates (commits `b03f277`, `ec28864`). CI run 43709103267 green at `3bf1a7b` on check, test, ui and stack amd64/arm64/tls. No release gate turns Web Push on: push delivery is tested against a local stand-in push service in the server tests only. The sidecar's overlay has not been started against a real ntfy server.
-- [ ] Manual staging check: a real phone receives a push and opens the approval.
+- [ ] Manual staging check: a real phone receives a push and opens the approval. Not done: needs the owner's phone and a staging build.
 
 ## Surprises & Discoveries
 
@@ -97,9 +97,20 @@ Decisions D1 to D7 were taken by the owner on 2026-11-15: Eric chose the recomme
 
 ## Outcomes & Retrospective
 
-- Outcome: none yet; nothing is built.
-  Evidence: not applicable.
-  Remaining: everything in `Plan of Work`.
+- Outcome (2026-11-15): built on main, green in CI run 43710836888 at `98cc6a1`. An opened approval
+  writes its notifications in the same transaction; the webhook is signed, retried and survives a
+  crash; people can turn on Web Push per device when the operator enables it, with per-workspace
+  switches, reminders and quiet hours; a workspace owner sets how much a notification reveals.
+  Evidence: `apps/server/test/notify/*`, `apps/web/test/{sw,push,quiet-hours,return-path}.test.ts`,
+  `examples/ntfy-sidecar/test/bridge.test.ts`, the two webhook release gates and the browser gate.
+  Unproven: no real phone has received a push; no release gate turns Web Push on (delivery is
+  tested against a local stand-in push service; subscription and delivery are simulated in the UI
+  journey); a real tap on a notification; the sidecar's Compose overlay against a real ntfy server.
+  Known limits: a device subscribed after a request opens gets nothing for that request; the
+  subscription failure count is recorded and not acted on; reminders go to push devices only.
+  Remaining: the manual phone check. Older sections of this file still name the drafted migration
+  numbers (0002, 0003) and `examples/notify-ntfy`; the built ones are `0005_notifications`,
+  `0006_push_subscriptions` and `examples/ntfy-sidecar`.
 
 ## Context and Orientation
 
