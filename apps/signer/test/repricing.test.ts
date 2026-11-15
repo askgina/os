@@ -7,7 +7,7 @@ import {
   type ApprovalId,
   type ApproveIntentEnvelope,
   type CancelTransactionEnvelope,
-  type Intent,
+  type EvmIntent,
   newId,
   type Operation,
 } from "@askgina/os-protocol";
@@ -47,7 +47,7 @@ const MAX_FEE_PER_GAS = INTENT_CEILING / 21_000n;
 
 /** A payment approved with a passkey and signed once. */
 interface Payment {
-  intent: Intent;
+  intent: EvmIntent;
   envelope: ApproveIntentEnvelope;
   params: TransactionParams;
   signed: SignResponse;

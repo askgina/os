@@ -11,14 +11,16 @@ import {
   type ChainId,
   canonicalJson,
   type Envelope,
+  type EvmIntent,
   envelopeChallenge,
   evaluateIntent,
   evmChainNumber,
   type Hex,
-  type Intent,
   intentHash,
   intentSpend,
+  type Network,
   policyHash,
+  type SpendAsset,
   type Sweep,
   sweepHash,
   type UserId,
@@ -879,7 +881,7 @@ export function createSignerCore(options: SignerCoreOptions) {
     }
   }
 
-  function buildTransaction(intent: Intent, params: TransactionParams): EvmTransaction {
+  function buildTransaction(intent: EvmIntent, params: TransactionParams): EvmTransaction {
     const { operation } = intent;
     const base = transactionBase(intent.chainId, params);
     switch (operation.type) {
@@ -1358,6 +1360,9 @@ export interface SignerRecords {
    * is not a signed approval of the envelope's workspace, wallet, chain and account nonce.
    */
   cancelTarget(envelope: CancelTransactionEnvelope): CancelTarget | null;
-  /** What the wallet signed for in the last 24 hours in one asset, as the caps count it. */
-  spentInLastDay(walletId: string, chainId: ChainId, asset: AssetRef): bigint;
+  /**
+   * What the wallet signed for in the last 24 hours in one asset on one chain, or in `usd6` on
+   * one venue network, as the caps count it.
+   */
+  spentInLastDay(walletId: string, chainId: Network, asset: SpendAsset): bigint;
 }

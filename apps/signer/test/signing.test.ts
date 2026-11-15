@@ -1,8 +1,8 @@
 import {
   AssertionResponse,
   type Authorization,
+  type EvmIntent,
   envelopeChallenge,
-  type Intent,
   newId,
   policyHash,
 } from "@askgina/os-protocol";
@@ -183,23 +183,27 @@ describe("signing an approved intent", () => {
     const alterations = [
       [
         "amount",
-        (i: Intent): unknown => ({ ...i, operation: { ...i.operation, valueWei: "2" } }),
+        (i: EvmIntent): unknown => ({ ...i, operation: { ...i.operation, valueWei: "2" } }),
         "intent_mismatch",
       ],
       [
         "recipient",
-        (i: Intent): unknown => ({ ...i, operation: { ...i.operation, to: TOKEN } }),
+        (i: EvmIntent): unknown => ({ ...i, operation: { ...i.operation, to: TOKEN } }),
         "intent_mismatch",
       ],
-      ["memo", (i: Intent): unknown => ({ ...i, memo: "something else" }), "intent_mismatch"],
+      ["memo", (i: EvmIntent): unknown => ({ ...i, memo: "something else" }), "intent_mismatch"],
       [
         "fee ceiling",
-        (i: Intent): unknown => ({ ...i, maxFeeWei: "999999999999999999" }),
+        (i: EvmIntent): unknown => ({ ...i, maxFeeWei: "999999999999999999" }),
         "intent_mismatch",
       ],
-      ["chain", (i: Intent): unknown => ({ ...i, chainId: "eip155:1" }), "envelope_mismatch"],
-      ["wallet", (i: Intent): unknown => ({ ...i, walletId: newId("wal") }), "envelope_mismatch"],
-      ["agent", (i: Intent): unknown => ({ ...i, agentId: newId("agt") }), "envelope_mismatch"],
+      ["chain", (i: EvmIntent): unknown => ({ ...i, chainId: "eip155:1" }), "envelope_mismatch"],
+      [
+        "wallet",
+        (i: EvmIntent): unknown => ({ ...i, walletId: newId("wal") }),
+        "envelope_mismatch",
+      ],
+      ["agent", (i: EvmIntent): unknown => ({ ...i, agentId: newId("agt") }), "envelope_mismatch"],
     ] as const;
     for (const [field, alter, code] of alterations) {
       it(field, async () => {
@@ -209,7 +213,7 @@ describe("signing an approved intent", () => {
         await refused(
           // The altered intent is still well formed; only the approval no longer covers it.
           world.t.client.sign({
-            intent: alter(intent) as Intent,
+            intent: alter(intent) as EvmIntent,
             authorization,
             transaction: txParams(),
           }),

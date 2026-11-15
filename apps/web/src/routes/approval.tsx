@@ -636,7 +636,8 @@ function IntentSubject({
   const { intent, wallet, limits } = subject;
   const display = intent.display;
   const chain = workspace.chains.find((item) => item.chainId === intent.chainId);
-  const fee = formatUnits(intent.intent.maxFeeWei, 18);
+  // A venue intent pays no network fee; this summary shows only EVM payments so far.
+  const fee = formatUnits("maxFeeWei" in intent.intent ? intent.intent.maxFeeWei : "0", 18);
   return (
     <Summary title={paymentTitle(display)}>
       {display.rawCall ? (

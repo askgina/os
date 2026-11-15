@@ -15,6 +15,14 @@ import {
   WalletId,
   WorkspaceId,
 } from "./primitives.ts";
+import {
+  HYPERLIQUID_MAX_PERP_ASSET,
+  isVenueNetwork,
+  orderNotionalUsd6,
+  PositiveDecimal,
+  type SpendAsset,
+  VenueNetwork,
+} from "./venues.ts";
 
 /** Send the chain's native coin. */
 export const TransferOperation = z.strictObject({
@@ -45,6 +53,7 @@ export const CallOperation = z.strictObject({
 });
 export type CallOperation = z.infer<typeof CallOperation>;
 
+/** What an EVM intent does on its chain. */
 export const Operation = z.discriminatedUnion("type", [
   TransferOperation,
   Erc20TransferOperation,
@@ -74,10 +83,11 @@ export const Memo = z
   .refine((value) => !hasUnsafeMemoCharacter(value), "memo contains control or bidi characters");
 
 /**
- * One operation an agent asks a wallet to perform. An intent is immutable: its hash is what a
- * person approves and what the signer signs for, so changing any field makes a different intent.
+ * One operation an agent asks a wallet to perform on an EVM chain. An intent is immutable: its
+ * hash is what a person approves and what the signer signs for, so changing any field makes a
+ * different intent.
  */
-export const Intent = z
+export const EvmIntent = z
   .strictObject({
     v: z.literal(PROTOCOL_VERSION),
     id: IntentId,
@@ -121,22 +131,107 @@ export const Intent = z
       });
     }
   });
+export type EvmIntent = z.infer<typeof EvmIntent>;
+
+/**
+ * A limit order on a Hyperliquid perpetual market. The signer builds the venue's order action
+ * from these fields alone, and picks its nonce, expiry and client order id itself.
+ */
+export const HyperliquidOrderOperation = z.strictObject({
+  type: z.literal("hyperliquid.order"),
+  /** The perpetual's index in the venue's `meta.universe`, bound to a coin name in the policy. */
+  asset: z.number().int().min(0).max(HYPERLIQUID_MAX_PERP_ASSET),
+  isBuy: z.boolean(),
+  size: PositiveDecimal,
+  limitPx: PositiveDecimal,
+  /** Add liquidity only, good till cancelled, or immediate or cancel. */
+  tif: z.enum(["Alo", "Gtc", "Ioc"]),
+  reduceOnly: z.boolean(),
+});
+export type HyperliquidOrderOperation = z.infer<typeof HyperliquidOrderOperation>;
+
+/**
+ * Withdraw USDC from the wallet's Hyperliquid account. The destination is never a field: the
+ * signer always withdraws to the wallet's own address.
+ */
+export const HyperliquidWithdrawOperation = z.strictObject({
+  type: z.literal("hyperliquid.withdraw"),
+  /** In USDC. */
+  amount: PositiveDecimal,
+});
+export type HyperliquidWithdrawOperation = z.infer<typeof HyperliquidWithdrawOperation>;
+
+/** What a venue intent does at its venue. */
+export const VenueOperation = z.discriminatedUnion("type", [
+  HyperliquidOrderOperation,
+  HyperliquidWithdrawOperation,
+]);
+export type VenueOperation = z.infer<typeof VenueOperation>;
+
+/**
+ * One operation an agent asks a wallet to perform at a venue. It has no fee ceiling: a venue
+ * action pays no gas. The network keeps the field name `chainId`, so the envelope check and every
+ * existing digest stay as they are.
+ */
+export const VenueIntent = z.strictObject({
+  v: z.literal(PROTOCOL_VERSION),
+  id: IntentId,
+  workspaceId: WorkspaceId,
+  agentId: AgentId,
+  walletId: WalletId,
+  chainId: VenueNetwork,
+  operation: VenueOperation,
+  /** The agent's stated reason. Hashed, so the text a person read is the text that was approved. */
+  memo: Memo,
+  createdAt: EpochSeconds,
+});
+export type VenueIntent = z.infer<typeof VenueIntent>;
+
+/**
+ * An intent on an EVM chain or at a venue. Both are hashed under the same tag: an EVM intent
+ * hashes exactly as it did before venue intents existed, and a venue intent can never parse as
+ * an EVM one or the other way round, because their `chainId` values never overlap.
+ */
+export const Intent = z.union([EvmIntent, VenueIntent]);
 export type Intent = z.infer<typeof Intent>;
+
+export function isVenueIntent(intent: Intent): intent is VenueIntent {
+  return isVenueNetwork(intent.chainId);
+}
 
 /** The digest that an approval and a signature are bound to. */
 export function intentHash(intent: Intent): Digest {
   return digestHex(DomainTag.intent, Intent.parse(intent));
 }
 
-/** What an intent moves out of the wallet, for caps and budgets. Fees are not included. */
-export function intentSpend(intent: Intent): { asset: AssetRef; amount: bigint } {
+/**
+ * What an intent moves out of the wallet, for caps and budgets. Fees are not included. `daily`
+ * says whether it counts against a daily cap: an EVM spend always does; an order's notional
+ * (`usd6`) does unless the order is reduce-only; a withdrawal from the venue moves nothing the
+ * caps measure, since it can only go to the wallet's own address.
+ */
+export function intentSpend(intent: EvmIntent): {
+  asset: AssetRef;
+  amount: bigint;
+  daily: boolean;
+};
+export function intentSpend(intent: Intent): { asset: SpendAsset; amount: bigint; daily: boolean };
+export function intentSpend(intent: Intent): { asset: SpendAsset; amount: bigint; daily: boolean } {
   const { operation } = intent;
   switch (operation.type) {
     case "evm.transfer":
-      return { asset: "native", amount: BigInt(operation.valueWei) };
+      return { asset: "native", amount: BigInt(operation.valueWei), daily: true };
     case "evm.erc20.transfer":
-      return { asset: operation.token, amount: BigInt(operation.amount) };
+      return { asset: operation.token, amount: BigInt(operation.amount), daily: true };
     case "evm.call":
-      return { asset: "native", amount: BigInt(operation.valueWei) };
+      return { asset: "native", amount: BigInt(operation.valueWei), daily: true };
+    case "hyperliquid.order":
+      return {
+        asset: "usd6",
+        amount: orderNotionalUsd6(operation.size, operation.limitPx),
+        daily: !operation.reduceOnly,
+      };
+    case "hyperliquid.withdraw":
+      return { asset: "usd6", amount: 0n, daily: false };
   }
 }

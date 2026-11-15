@@ -5,12 +5,18 @@ import {
   ApproveIntentEnvelope,
   CancelTransactionEnvelope,
   ChainId,
+  Cloid,
+  Decimal,
   Envelope,
+  EvmIntent,
   evmChainNumber,
   GrantMandateEnvelope,
   Hex,
+  HyperliquidRules,
   Intent,
   isSortedUnique,
+  isVenueIntent,
+  isVenueNetwork,
   MandateId,
   Memo,
   mandateHash,
@@ -18,9 +24,11 @@ import {
   newId,
   normalizePolicy,
   PositiveAmount,
+  PositiveDecimal,
   Sweep,
   SweepWalletEnvelope,
   sortedUnique,
+  VenueIntent,
   WalletId,
   WalletPolicy,
   WorkspaceId,
@@ -47,6 +55,8 @@ import {
   cancelTransaction,
   DIGEST_A,
   grantMandate,
+  HL_TESTNET,
+  hyperliquidRules,
   intent,
   MAINNET,
   MANDATE,
@@ -58,6 +68,7 @@ import {
   sweepWallet,
   T0,
   TOKEN,
+  venueIntent,
   WALLET,
   WS,
 } from "./fixtures.ts";
@@ -260,6 +271,89 @@ describe("intent", () => {
   });
 });
 
+describe("canonical decimals", () => {
+  it.each(["0.0147", "100", "1670.1", "0.00000001", "0", "0.5", "99999999999999999999.99999999"])(
+    "accepts %s",
+    (value) => {
+      expect(ok(Decimal, value)).toBe(true);
+    },
+  );
+  it.each([
+    "1.0",
+    "01",
+    "1e3",
+    ".5",
+    "1.",
+    "0.000000001",
+    "-1",
+    "+1",
+    " 1",
+    "1,000",
+    "100000000000000000000",
+  ])("refuses %s", (value) => {
+    expect(ok(Decimal, value)).toBe(false);
+  });
+  it("a positive decimal is not zero", () => {
+    expect(ok(PositiveDecimal, "0")).toBe(false);
+    expect(ok(PositiveDecimal, "0.00000001")).toBe(true);
+  });
+  it("a cloid is 16 bytes of lowercase hex", () => {
+    expect(ok(Cloid, `0x${"ab".repeat(16)}`)).toBe(true);
+    expect(ok(Cloid, `0x${"AB".repeat(16)}`)).toBe(false);
+    expect(ok(Cloid, `0x${"ab".repeat(15)}`)).toBe(false);
+  });
+});
+
+describe("venue intent", () => {
+  const order = venueIntent().operation;
+  if (order.type !== "hyperliquid.order") throw new TypeError("the fixture is an order");
+
+  it("accepts an order and a withdrawal, as an intent and as a venue intent only", () => {
+    expect(ok(Intent, venueIntent())).toBe(true);
+    expect(ok(VenueIntent, venueIntent())).toBe(true);
+    expect(ok(EvmIntent, venueIntent())).toBe(false);
+    expect(ok(VenueIntent, intent())).toBe(false);
+    const withdraw = venueIntent({ operation: { type: "hyperliquid.withdraw", amount: "12.5" } });
+    expect(ok(Intent, withdraw)).toBe(true);
+    expect(isVenueIntent(venueIntent())).toBe(true);
+    expect(isVenueIntent(intent())).toBe(false);
+    expect(isVenueNetwork(HL_TESTNET)).toBe(true);
+    expect(isVenueNetwork(BASE)).toBe(false);
+  });
+
+  it("refuses an asset index above 9999, an unknown time in force and bad decimals", () => {
+    expect(ok(Intent, venueIntent({ operation: { ...order, asset: 9999 } }))).toBe(true);
+    expect(ok(Intent, venueIntent({ operation: { ...order, asset: 10_000 } }))).toBe(false);
+    expect(ok(Intent, venueIntent({ operation: { ...order, asset: -1 } }))).toBe(false);
+    expect(ok(Intent, venueIntent({ operation: { ...order, asset: 1.5 } }))).toBe(false);
+    expect(ok(Intent, venueIntent({ operation: { ...order, tif: "Fok" as never } }))).toBe(false);
+    expect(ok(Intent, venueIntent({ operation: { ...order, size: "0" } }))).toBe(false);
+    expect(ok(Intent, venueIntent({ operation: { ...order, limitPx: "1.0" } }))).toBe(false);
+    expect(
+      ok(Intent, venueIntent({ operation: { type: "hyperliquid.withdraw", amount: "0" } })),
+    ).toBe(false);
+  });
+
+  it("refuses an EVM operation on a venue network and a venue operation on an EVM chain", () => {
+    expect(ok(Intent, { ...venueIntent(), operation: intent().operation })).toBe(false);
+    expect(ok(Intent, { ...intent(), operation: order })).toBe(false);
+    expect(ok(Intent, { ...venueIntent(), chainId: BASE })).toBe(false);
+    expect(ok(Intent, { ...intent(), chainId: HL_TESTNET })).toBe(false);
+  });
+
+  it("refuses a fee ceiling, a destination and any other unknown member", () => {
+    expect(ok(Intent, { ...venueIntent(), maxFeeWei: "1" })).toBe(false);
+    expect(
+      ok(Intent, {
+        ...venueIntent(),
+        operation: { type: "hyperliquid.withdraw", amount: "1", destination: ALICE },
+      }),
+    ).toBe(false);
+    expect(ok(Intent, { ...venueIntent(), operation: { ...order, cloid: null } })).toBe(false);
+    expect(ok(Intent, { ...venueIntent(), chainId: "hyperliquid:devnet" })).toBe(false);
+  });
+});
+
 describe("wallet policy", () => {
   it("accepts the fixture and its normalized form is identical", () => {
     expect(ok(WalletPolicy, policy())).toBe(true);
@@ -357,6 +451,51 @@ describe("wallet policy", () => {
         ok(WalletPolicy, policy({ assets: [{ ...limit, maxPerTx: "1", maxPerDay: bad }] })),
       ).toBe(false);
     }
+  });
+
+  it("accepts venue rules, and normalizePolicy sorts their markets and times in force", () => {
+    const withVenues = policy({ venues: { hyperliquid: hyperliquidRules() } });
+    expect(ok(WalletPolicy, withVenues)).toBe(true);
+    expect(normalizePolicy(withVenues)).toEqual(withVenues);
+    const rules = hyperliquidRules();
+    const shuffled = policy({
+      venues: {
+        hyperliquid: {
+          ...rules,
+          markets: [...rules.markets].reverse(),
+          timeInForce: ["Ioc", "Gtc"],
+        },
+      },
+    });
+    expect(ok(WalletPolicy, shuffled)).toBe(false);
+    expect(normalizePolicy(shuffled)).toEqual(withVenues);
+  });
+
+  it("refuses venue rules whose markets are unsorted, repeated or capped above the daily cap", () => {
+    const rules = hyperliquidRules();
+    const [btc, eth] = rules.markets;
+    if (btc === undefined || eth === undefined) throw new TypeError("fixture");
+    const bad = (changes: Partial<HyperliquidRules>) =>
+      ok(WalletPolicy, policy({ venues: { hyperliquid: { ...rules, ...changes } } }));
+    expect(bad({ markets: [eth, btc] })).toBe(false);
+    expect(bad({ markets: [btc, { ...btc }] })).toBe(false);
+    expect(bad({ markets: [btc, { ...eth, coin: "BTC" }] })).toBe(false);
+    expect(bad({ markets: [] })).toBe(false);
+    expect(bad({ markets: [{ ...btc, maxNotionalPerOrderUsd6: "2000000001" }] })).toBe(false);
+    expect(bad({ markets: [{ ...btc, maxNotionalPerOrderUsd6: "2000000000" }] })).toBe(true);
+    expect(bad({ markets: [{ ...btc, coin: "btc" }] })).toBe(false);
+    expect(bad({ markets: [{ ...btc, asset: 10_000 }] })).toBe(false);
+    expect(bad({ timeInForce: [] })).toBe(false);
+    expect(bad({ timeInForce: ["Gtc", "Gtc"] })).toBe(false);
+    expect(bad({ submitWindowSeconds: 4 })).toBe(false);
+    expect(bad({ submitWindowSeconds: 301 })).toBe(false);
+    expect(bad({ maxNotionalPerDayUsd6: "1.5" })).toBe(false);
+    expect(ok(HyperliquidRules, { ...rules, extra: true })).toBe(false);
+  });
+
+  it("has one form without venue rules: an empty venues member is refused", () => {
+    expect(ok(WalletPolicy, policy({ venues: {} }))).toBe(false);
+    expect(ok(WalletPolicy, { ...policy(), venues: { other: {} } })).toBe(false);
   });
 
   it("refuses unknown keys and out-of-range approval settings", () => {

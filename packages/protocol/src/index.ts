@@ -8,3 +8,4 @@ export * from "./policy.ts";
 export * from "./primitives.ts";
 export { SignerDecision } from "./signer/api.ts";
 export * from "./sweep.ts";
+export * from "./venues.ts";

@@ -3,8 +3,8 @@ import {
   type CancelTransactionEnvelope,
   type ConfirmationSubject,
   type Envelope,
+  type EvmIntent,
   envelopeChallenge,
-  type Intent,
   type Mandate,
   mandateHash,
   newId,
@@ -61,7 +61,7 @@ function assertAt(
 const tokenOf = (path: string) => path.slice(path.indexOf("#") + 1);
 
 /** A payment's envelope, with no assertions yet, and the subject the control plane sends. */
-function paymentRequest(world: World, intent: Intent = intentFor(world)) {
+function paymentRequest(world: World, intent: EvmIntent = intentFor(world)) {
   const { envelope } = approveIntent(world, intent, { people: [] });
   return { envelope, subject: { kind: "approve-intent", intent } as ConfirmationSubject, intent };
 }
@@ -73,7 +73,7 @@ async function open(t: TestSigner, envelope: Envelope, subject: ConfirmationSubj
   return tokenOf(path);
 }
 
-async function payment(world: World, t: TestSigner, intent?: Intent) {
+async function payment(world: World, t: TestSigner, intent?: EvmIntent) {
   const request = paymentRequest(world, intent);
   const token = await open(t, request.envelope, request.subject);
   return { ...request, token };
@@ -84,7 +84,7 @@ describe("opening a confirmation", () => {
     const t = startSigner();
     const world = await setUpWorld(t);
     const { envelope, intent } = paymentRequest(world);
-    const subject = (other: Intent): ConfirmationSubject => ({
+    const subject = (other: EvmIntent): ConfirmationSubject => ({
       kind: "approve-intent",
       intent: other,
     });

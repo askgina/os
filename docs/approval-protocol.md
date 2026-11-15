@@ -25,6 +25,17 @@ Source: [`primitives.ts`](../packages/protocol/src/primitives.ts).
 | `Nonce`          | Exactly 16 random bytes as unpadded base64url (22 characters).                                                                                                                                                                                                                                              | `AAAAAAAAAAAAAAAAAAAAAA`                     |
 | `AssetRef`       | The string `"native"` for the chain's coin, or an ERC-20 contract `Address`.                                                                                                                                                                                                                                |                                              |
 
+Venue primitives, from [`venues.ts`](../packages/protocol/src/venues.ts):
+
+| Name              | Encoding                                                                                                                                                                                                                  | Example               |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| `VenueNetwork`    | `"hyperliquid:testnet"` or `"hyperliquid:mainnet"`. Takes the place of a `ChainId` in a venue intent and its envelope.                                                                                                     | `hyperliquid:testnet` |
+| `Network`         | A `ChainId` or a `VenueNetwork`.                                                                                                                                                                                          |                       |
+| `Decimal`         | A canonical decimal string matching `^(0\|[1-9][0-9]{0,19})(\.[0-9]{0,7}[1-9])?$`: no sign, exponent, leading zero (except `0.`), trailing zero or trailing point, at most 8 fraction digits. One value, one string. | `"0.0147"`, `"1670.1"` |
+| `PositiveDecimal` | A `Decimal` that is not `"0"`.                                                                                                                                                                                            |                       |
+| `Cloid`           | `0x` and 32 lowercase hex digits (16 bytes), Hyperliquid's client order id.                                                                                                                                              |                       |
+| `SpendAsset`      | An `AssetRef`, or `"usd6"`: micro-USD (10^-6 USD) of order notional at a venue.                                                                                                                                          |                       |
+
 **Sets.** Hashed structures store sets as JSON arrays sorted in strictly ascending order by
 plain string comparison (UTF-16 code units, as JavaScript `<` compares). Strict order also
 forbids duplicates. A set in any other order is invalid, not re-sorted. This gives one set one
@@ -107,9 +118,26 @@ Operations, discriminated by `type`:
 No address in an operation may be the zero address, and an `evm.erc20.transfer` may not send a
 token to the token's own contract: both lose the funds and are easy to miss on an approval card.
 
-**Spend.** `intentSpend(intent)` is what the intent moves out of the wallet, without fees:
-`(native, valueWei)` for `evm.transfer` and `evm.call`; `(token, amount)` for
-`evm.erc20.transfer`.
+**Venue intent.** An intent whose `chainId` is a `VenueNetwork` is a venue intent. It has the
+same members as above except `maxFeeWei`, which it MUST NOT carry (a venue action pays no gas),
+and its `operation` is one of:
+
+| `type`                 | Fields                                                                                                                                                       | Meaning                                                                                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hyperliquid.order`    | `asset`: integer 0–9999, `isBuy: boolean`, `size: PositiveDecimal`, `limitPx: PositiveDecimal`, `tif`: `"Alo"`, `"Gtc"` or `"Ioc"`, `reduceOnly: boolean` | A limit order on the perpetual at index `asset` of the venue's `meta.universe`. The signer picks the order's nonce, expiry and `Cloid` itself. |
+| `hyperliquid.withdraw` | `amount: PositiveDecimal`                                                                                                                                    | Withdraw `amount` USDC. There is no destination field: the signer always withdraws to the wallet's own address.                               |
+
+An EVM operation on a venue network, a venue operation on an EVM chain, and an unknown venue
+network are invalid. Both kinds of intent are hashed under `askgina.os/v1/intent`; an EVM intent
+hashes exactly as it did before venue intents existed, and the two can never be confused, because
+their `chainId` values never overlap.
+
+**Spend.** `intentSpend(intent)` is what the intent moves out of the wallet, without fees, and
+whether it counts against a daily cap: `(native, valueWei)` for `evm.transfer` and `evm.call`;
+`(token, amount)` for `evm.erc20.transfer`; each of these counts. For `hyperliquid.order` it is
+`("usd6", ceil(size × limitPx × 10^6))`, computed exactly from both values scaled by 10^8
+(`orderNotionalUsd6`), and it counts unless the order is reduce-only. For `hyperliquid.withdraw`
+it is `("usd6", 0)` and does not count: the money can only go back to the wallet itself.
 
 ## 4. Wallet policy
 
@@ -136,6 +164,24 @@ copy and enforces it when it signs.
 `maxPerDay` covers any rolling 24 hours. Each limit's `chainId` MUST be in `chains`, and
 `maxPerTx` MUST NOT exceed `maxPerDay`.
 
+**Venue rules.** A policy MAY carry `venues: { hyperliquid: HyperliquidRules }`. When present,
+`venues` MUST name at least one venue, so a policy without venue rules has one form, the one it
+had before venues existed, and hashes as it did then. `HyperliquidRules` is:
+
+| Field                   | Type                                                                                        | Meaning                                                                                       |
+| ----------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `network`               | `VenueNetwork`                                                                              | The only network these rules allow.                                                           |
+| `markets`               | 1 to 64 `{ asset: 0–9999, coin, maxNotionalPerOrderUsd6: PositiveAmount }`, sorted by `asset` | The perpetuals the wallet may trade. `coin` is 1 to 16 of `A-Z 0-9`, unique: the name people approved for that index. |
+| `maxNotionalPerDayUsd6` | `PositiveAmount`                                                                            | Most notional of orders that are not reduce-only in any rolling 24 hours, in micro-USD.       |
+| `timeInForce`           | sorted set of `"Alo"`, `"Gtc"`, `"Ioc"`, at least one                                       | The times in force an order may use.                                                          |
+| `submitWindowSeconds`   | integer 5–300                                                                               | How long after signing the venue still accepts an order (its `expiresAfter`).                |
+| `withdrawals`           | boolean                                                                                     | Whether USDC may be withdrawn, always to the wallet's own address.                           |
+
+Asset indices MUST be strictly ascending; no two markets may name the same coin; no market's
+`maxNotionalPerOrderUsd6` may exceed `maxNotionalPerDayUsd6`. The caps limit the notional of new
+orders, counted when signed. They do not limit losses: only the account's value at the venue does.
+`chains`, `fees` and `assets` do not apply to a venue intent.
+
 ## 5. Envelopes and authorizations
 
 Source: [`envelopes.ts`](../packages/protocol/src/envelopes.ts). An envelope states one thing a
@@ -158,7 +204,7 @@ The kinds and their extra fields:
 
 | `type`                | Extra fields                                                                                          | Authorizes                                                                                                                                                                                                                                                                                                                                                                     |
 | --------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `approve-intent`      | `intentHash: Digest`, `walletId`, `agentId`, `chainId`, `policyHash: Digest`                          | Sign exactly one transaction for exactly one intent under exactly one policy revision.                                                                                                                                                                                                                                                                                         |
+| `approve-intent`      | `intentHash: Digest`, `walletId`, `agentId`, `chainId: Network`, `policyHash: Digest`                 | Sign exactly one transaction, or one venue action, for exactly one intent under exactly one policy revision. `chainId` is the intent's chain or venue network.                                                                                                                                                                                                                 |
 | `set-policy`          | `walletId`, `policyHash: Digest`, `previousPolicyHash: Digest \| null`                                | Replace a wallet's policy. `previousPolicyHash` is `null` only for the wallet's first policy.                                                                                                                                                                                                                                                                                  |
 | `add-approver`        | `userId`, `credentialId: Base64Url`, `publicKey: Base64Url` (the COSE public key)                     | Let one more passkey approve for this workspace.                                                                                                                                                                                                                                                                                                                               |
 | `remove-approver`     | `userId`, `credentialId: Base64Url`                                                                   | Stop one passkey from approving for this workspace.                                                                                                                                                                                                                                                                                                                            |
@@ -302,9 +348,9 @@ it.
 
 Source: [`evaluate.ts`](../packages/protocol/src/evaluate.ts).
 `evaluateIntent(policy, intent, spent)` is pure and deterministic. `spent(chainId, asset)` returns
-what the wallet already signed for that asset on that chain in the last 24 hours. The signer runs
-it with its own ledger and its answer is final. The control plane runs the same function only to
-tell an agent early that a proposal cannot pass.
+what the wallet already signed for that asset on that chain, or in `usd6` on that venue network,
+in the last 24 hours. The signer runs it with its own ledger and its answer is final. The control
+plane runs the same function only to tell an agent early that a proposal cannot pass.
 
 Rules, in this order. The first that fails decides:
 
@@ -324,6 +370,18 @@ Rules, in this order. The first that fails decides:
 9. `spent(chainId, asset) + amount > maxPerDay` → `over_daily_cap`.
 10. Otherwise allow, with the spend `(chainId, asset, amount)`.
 
+For a venue intent, rules 1 and 2 above, then, the first that fails deciding:
+
+3. The policy has no `venues.hyperliquid`, or its `network ≠ intent.chainId` → `venue_not_allowed`.
+4. For `hyperliquid.order`: `asset` is not one of `markets` → `market_not_allowed`; `tif` is not in
+   `timeInForce` → `order_type_not_allowed`; the notional is above the market's
+   `maxNotionalPerOrderUsd6` → `over_per_tx_cap` (reduce-only orders included); the order is not
+   reduce-only and `spent(network, "usd6") + notional > maxNotionalPerDayUsd6` → `over_daily_cap`.
+5. For `hyperliquid.withdraw`: `withdrawals` is false → `withdrawal_not_allowed`.
+6. Otherwise allow, with the spend `(network, "usd6", amount)`.
+
+The policy codes together are `POLICY_DENY_CODES`.
+
 ### Mandates
 
 Source: [`mandate.ts`](../packages/protocol/src/mandate.ts).
@@ -340,7 +398,9 @@ Rules, in this order. The first that fails decides:
 1. `intent.workspaceId ≠ mandate.workspaceId` or `intent.walletId ≠ mandate.walletId` →
    `mandate_wallet_mismatch`.
 2. `intent.agentId ≠ mandate.agentId` → `mandate_agent_mismatch`.
-3. The operation is `evm.call`, whatever its value → `mandate_operation_not_allowed`.
+3. The intent is a venue intent (an order or a withdrawal), or the operation is `evm.call`,
+   whatever its value → `mandate_operation_not_allowed`. No venue intent is signed under a
+   mandate.
 4. Compute the spend. No `MandateAssetLimit` for `(chainId, asset)` → `mandate_asset_not_allowed`.
 5. The operation's `to` is not in `recipients` → `mandate_recipient_not_allowed`.
 6. `maxFeeWei > maxFeePerActionWei` → `mandate_over_fee_cap`.
@@ -1214,6 +1274,96 @@ by `walletId`, and the same destroy time:
 
 Challenge (base64url) = `Eh-cbJJV6jfq43fRilytGeljY5_IabAPNBhMfw-GHX4`
 
+Venue order intent JSON (canonical): buy 0.01 of the perpetual at index 3 at a limit of 65,000
+USD, immediate or cancel, on Hyperliquid testnet. Its notional is `650000000` micro-USD:
+
+```json
+{
+  "agentId": "agt_01jd0000000000000000000002",
+  "chainId": "hyperliquid:testnet",
+  "createdAt": 1700000000,
+  "id": "int_01jd0000000000000000000004",
+  "memo": "the funding rate turned",
+  "operation": {
+    "asset": 3,
+    "isBuy": true,
+    "limitPx": "65000",
+    "reduceOnly": false,
+    "size": "0.01",
+    "tif": "Ioc",
+    "type": "hyperliquid.order"
+  },
+  "v": 1,
+  "walletId": "wal_01jd0000000000000000000003",
+  "workspaceId": "ws_01jd0000000000000000000001"
+}
+```
+
+`intentHash` = `63bde93a4524d11d4c53e02ecec81f9e791b3aaf54fb079369255f476edc8afd`
+
+Policy JSON with venue rules (canonical): the policy above with `venues` added. Without
+`venues` it hashes to the policy vector above, unchanged:
+
+```json
+{
+  "approvals": { "threshold": 1, "ttlSeconds": 3600 },
+  "assets": [
+    {
+      "asset": "native",
+      "chainId": "eip155:8453",
+      "maxPerDay": "5000000000000000000",
+      "maxPerTx": "1000000000000000000"
+    }
+  ],
+  "chains": ["eip155:8453"],
+  "contractCalls": { "mode": "deny" },
+  "fees": { "maxPerTxWei": "10000000000000000" },
+  "previousHash": null,
+  "recipients": { "mode": "any" },
+  "requesters": ["agt_01jd0000000000000000000002"],
+  "revision": 1,
+  "v": 1,
+  "venues": {
+    "hyperliquid": {
+      "markets": [
+        { "asset": 3, "coin": "BTC", "maxNotionalPerOrderUsd6": "1000000000" },
+        { "asset": 4, "coin": "ETH", "maxNotionalPerOrderUsd6": "500000000" }
+      ],
+      "maxNotionalPerDayUsd6": "2000000000",
+      "network": "hyperliquid:testnet",
+      "submitWindowSeconds": 60,
+      "timeInForce": ["Gtc", "Ioc"],
+      "withdrawals": true
+    }
+  },
+  "walletId": "wal_01jd0000000000000000000003",
+  "workspaceId": "ws_01jd0000000000000000000001"
+}
+```
+
+`policyHash` = `874aa65f8d6cd314029f14ad0f3c232a2ed00ef7428b901fc35f20266d6a2241`
+
+Its `approve-intent` envelope JSON (canonical):
+
+```json
+{
+  "agentId": "agt_01jd0000000000000000000002",
+  "approvalId": "apr_01jd0000000000000000000005",
+  "chainId": "hyperliquid:testnet",
+  "expiresAt": 1700000600,
+  "intentHash": "63bde93a4524d11d4c53e02ecec81f9e791b3aaf54fb079369255f476edc8afd",
+  "issuedAt": 1700000000,
+  "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+  "policyHash": "874aa65f8d6cd314029f14ad0f3c232a2ed00ef7428b901fc35f20266d6a2241",
+  "type": "approve-intent",
+  "v": 1,
+  "walletId": "wal_01jd0000000000000000000003",
+  "workspaceId": "ws_01jd0000000000000000000001"
+}
+```
+
+Challenge (base64url) = `4lbDbs7a1SSdmNuM3linOaNBTSVRK1HCVDYIPl0NhjY`
+
 ## 12. Versioning
 
 `v` is `1` in every hashed structure, and the domain tags carry `v1`. Any change to the shape or
@@ -1241,3 +1391,18 @@ the same way, within version 1 (owner decision D1 of
 the existing `askgina.os/v1/authorize` tag, no existing digest or test vector changed, and a
 signer that does not know them refuses them as invalid envelopes. The lifecycle fields of
 `WorkspaceState` and `WalletState` and the new error codes hash nothing.
+
+Venue intents were added within version 1 by a different kind of additive change (owner
+decision D5 of [`specs/non-evm-operations.md`](../specs/non-evm-operations.md), 2026-11-15): an
+existing hashed union MAY gain a new member, and an existing structure MAY gain a new optional
+member, provided that (1) every existing value keeps its digest, because the new member is
+absent from it and no existing value can parse as the new one; (2) the new form has exactly one
+encoding, so an empty or defaulted new member is invalid rather than a second form of an old
+value; and (3) a verifier that does not know the change refuses every value that uses it as
+invalid. `Intent` gained the venue intent under the same `askgina.os/v1/intent` tag (its
+`VenueNetwork` `chainId` never overlaps a `ChainId`, and an older verifier refuses it as an
+invalid intent); `WalletPolicy` gained the optional `venues` member (absent means no venue rules,
+an empty `venues` is invalid, and an older verifier refuses a policy that has it as an unknown
+member); `ApproveIntentEnvelope.chainId` widened to `Network`. No existing digest or test vector
+changed. The signer's `/v1/sign`, mandate-use and reprice requests still take only EVM intents
+and refuse a venue intent as `invalid_request`.

@@ -73,7 +73,14 @@ Success means:
       each as the recommended option (see `Decision Log`). D2 (mainnet: legal and geographic)
       stays open with Eric; until he answers, venues are testnet only and a mainnet venue is
       refused at boot.
-- [ ] Milestone 1: protocol shapes, venue policy and evaluation.
+- [x] (2026-11-15) Milestone 1: protocol shapes, venue policy and evaluation, the order and
+      withdrawal confirmation view, the four deny codes, `docs/approval-protocol.md` §1, §3, §4,
+      §5, §7, §11 (three vectors, reproduced with OpenSSL) and §12. Local checks only, CI
+      pending: `tsc --noEmit` clean in `packages/protocol`, `packages/api`, `apps/signer`,
+      `apps/server`, `apps/web`, `apps/approve` and `e2e`; protocol `digests`, `schemas`,
+      `evaluate`, `mandate`, `confirmation`, `signer-client`, `lifecycle-envelopes` and
+      `verify-authorization` tests, signer `confirmations`, `signing` and `mandates` tests and
+      the approve `app` test pass, each file alone; Biome clean on the changed files.
 - [ ] Milestone 2: the Hyperliquid encoder in the signer, proven against the SDK vectors.
 - [ ] Milestone 3: the vault's typed-data method, proven with real OWS.
 - [ ] Milestone 4: the signer's venue routes and records.
@@ -128,6 +135,23 @@ Success means:
   `operation.to` and `intent.maxFeeWei` for every other operation; a venue intent has neither.
   Widening `Intent` without an explicit refusal there would not compile, which is the safe
   failure, but the refusal must be written.
+- Observation (Milestone 1, 2026-11-15): widening `Intent` did break consumers that read EVM
+  fields from a parsed intent, as the plan expected, in more places than it listed: the control
+  plane's `readIntent` and `propose` (`apps/server/src/execution/intents.ts`), repricing
+  (`repricing.ts`), the web app's fixture server and two pages that show `maxFeeWei`
+  (`approval.tsx`, `payment.tsx`, through `IntentDetail.intent` in `packages/api`), and one
+  release gate. Each was narrowed to `EvmIntent` (the control plane parses stored intents with
+  `EvmIntent.parse`, so it refuses a venue intent until Milestone 5 handles one) or guarded with
+  `"maxFeeWei" in intent`. `SignRequest`, `SignUnderMandateRequest` and `RepriceRequest` were
+  narrowed to `EvmIntent` in this milestone rather than in Milestone 4, so `/v1/sign`, a mandate
+  use and a reprice refuse a venue intent as `invalid_request` from now on.
+  Evidence: `tsc --noEmit` in each workspace before and after.
+- Observation (Milestone 1): the plan's coin pattern `^[A-Z0-9]{1,16}$` cannot name Hyperliquid's
+  lower-case-prefixed perpetuals (for example `kPEPE`); such a market cannot be put in a policy.
+  This only narrows what can be traded. Not changed; revisit if one is wanted.
+- Observation (Milestone 1): an empty `venues: {}` would have been a second encoding of "no venue
+  rules" with a different `policyHash`, so `VenueRules` refuses it (it must name a venue). This is
+  rule (2) of the additive-change rule now written in `docs/approval-protocol.md` §12.
 - Observation (2026-11-15 re-check): a Web Push message at the `summary` level labels every
   `approve-intent` request "Payment waiting" (`apps/server/src/notify/content.ts:63`). An order
   is an `approve-intent` request under this plan, so it would be announced as a payment. Neither
@@ -274,7 +298,22 @@ legal and geographic question and stays open with Eric. Each was re-checked agai
 
 ## Outcomes & Retrospective
 
-- Outcome: none yet. Nothing in this plan is built. The research behind it was source reading
+- Outcome (Milestone 1, 2026-11-15, local checks only, CI pending): `packages/protocol/src/venues.ts`
+  (`VenueNetwork`, `Network`, `Decimal`, `PositiveDecimal`, `Cloid`, `SpendAsset`,
+  `decimalToScaled`, `orderNotionalUsd6`, `HYPERLIQUID_MAX_PERP_ASSET`, `VENUE_NETWORK_NAMES`);
+  `EvmIntent`, `VenueIntent`, `HyperliquidOrderOperation`, `HyperliquidWithdrawOperation`,
+  `VenueOperation`, `isVenueIntent` and the widened `Intent` and `intentSpend` (now with `daily`);
+  `HyperliquidMarket`, `HyperliquidTimeInForce`, `HyperliquidRules`, `VenueRules` and
+  `WalletPolicy.venues`; `ApproveIntentEnvelope.chainId: Network`; the venue branch of
+  `evaluateIntent` with `venue_not_allowed`, `market_not_allowed`, `order_type_not_allowed` and
+  `withdrawal_not_allowed`; the venue refusal in `evaluateMandate`; the order, withdrawal and
+  policy views with the warnings `market_not_in_policy` and `venue_rules_missing` (and their
+  texts on the `approve` page). Existing digests and vectors unchanged; three new vectors
+  (`intentHash` `63bde93a…8afd`, `policyHash` `874aa65f…2241`, challenge
+  `4lbDbs7a1SSdmNuM3linOaNBTSVRK1HCVDYIPl0NhjY`). The signer's `spentInLastDay` already takes a
+  `Network` and a `SpendAsset`, so the confirmation of a venue intent reads its `usd6` ledger;
+  nothing writes that ledger before Milestone 4.
+- Outcome (before Milestone 1): nothing in this plan was built. The research behind it was source reading
   only; no order, typed data or OWS call was run. On 2026-11-15 the plan was re-checked against
   main: no venue code exists (`packages/protocol/src/venues.ts`, `apps/signer/src/venues/`,
   `apps/server/src/execution/venues/` and `packages/testkit/src/fake-hyperliquid.ts` are absent;

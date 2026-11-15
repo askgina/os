@@ -12,7 +12,7 @@ import {
   type Authorization,
   type ChainLabel,
   type Envelope,
-  type Intent,
+  type EvmIntent,
   intentHash,
   type Mandate,
   mandateHash,
@@ -351,7 +351,11 @@ export async function setUpWorld(
   return { t, workspaceId, walletId, agentId, people, address: wallet.address, policy };
 }
 
-export function intentFor(world: World, operation?: Operation, memo = "pay the invoice"): Intent {
+export function intentFor(
+  world: World,
+  operation?: Operation,
+  memo = "pay the invoice",
+): EvmIntent {
   return {
     v: 1,
     id: newId("int"),
@@ -368,7 +372,7 @@ export function intentFor(world: World, operation?: Operation, memo = "pay the i
 
 export function approveIntent(
   world: World,
-  intent: Intent,
+  intent: EvmIntent,
   options: { people?: Person[]; ttlSeconds?: number; policyHash?: string } = {},
 ): Authorization {
   const envelope: Envelope = {
@@ -475,12 +479,12 @@ export async function grantMandate(
 }
 
 /** A token transfer of `amount` base units to `to` by the world's agent. */
-export function tokenIntent(world: World, amount: bigint, to: Address = RECIPIENT): Intent {
+export function tokenIntent(world: World, amount: bigint, to: Address = RECIPIENT): EvmIntent {
   return intentFor(world, { type: "evm.erc20.transfer", token: TOKEN, to, amount: String(amount) });
 }
 
 /** One use of a mandate: a new use id for `intent`, at the next account nonce. */
-export function useRequest(intent: Intent): SignUnderMandateRequest {
+export function useRequest(intent: EvmIntent): SignUnderMandateRequest {
   return { approvalId: newId("apr"), intent, transaction: txParams() };
 }
 

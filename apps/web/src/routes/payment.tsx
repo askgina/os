@@ -114,7 +114,8 @@ function PaymentView({ intent, workspace }: { intent: IntentDetail; workspace: W
             </Field>
             <Field label="Network">{chainName(intent.chainId, workspace.chains)}</Field>
             <Field label="Network fee, at most">
-              {formatUnits(intent.intent.maxFeeWei, 18)} {nativeSymbol}
+              {formatUnits("maxFeeWei" in intent.intent ? intent.intent.maxFeeWei : "0", 18)}{" "}
+              {nativeSymbol}
             </Field>
             <Field label="Approved">
               {intent.mandateId ? (

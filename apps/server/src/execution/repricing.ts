@@ -3,7 +3,7 @@ import type {
   ApproveIntentEnvelope,
   Authorization,
   ChainId,
-  Intent,
+  EvmIntent,
   MandateId,
   UserId,
   WalletPolicy,
@@ -205,7 +205,7 @@ export async function catchUpAttempts(
   // A payment's attempts, cancels included, are all asked for again through its reprice route.
   const [approval] = await tx.select().from(approvals).where(eq(approvals.id, target));
   const binding = approval ? bindingOf(approval) : null;
-  let bound: (Binding & { intent: Intent }) | null = null;
+  let bound: (Binding & { intent: EvmIntent }) | null = null;
   if (binding !== null && transaction.intentId !== null) {
     const [row] = await tx.select().from(intents).where(eq(intents.id, transaction.intentId));
     if (!row) throw new Error("a transaction's intent no longer exists");
@@ -279,7 +279,7 @@ async function ceilingOf(
   tx: Transaction,
   input: {
     approvalId: ApprovalId;
-    intent: Intent;
+    intent: EvmIntent;
     latest: Attempt;
     policy: WalletPolicy | null;
   },

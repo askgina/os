@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
-  type Intent,
+  type EvmIntent,
   type Mandate,
   type MandateId,
   mandateHash,
@@ -43,7 +43,7 @@ import {
 /** An address on no list. */
 const STRANGER = "0x00000000000000000000000000000000000000dd" as const;
 
-const use = (world: World, mandateId: MandateId, intent: Intent) =>
+const use = (world: World, mandateId: MandateId, intent: EvmIntent) =>
   world.t.client.signUnderMandate(mandateId, useRequest(intent));
 
 async function decisionsOf(world: World) {
@@ -343,8 +343,8 @@ describe("signing under a mandate", () => {
       requesters: [world.agentId, helper].sort(),
     });
     const { mandate } = await grantMandate(world, { maxFeePerActionWei: String(10n ** 14n) });
-    const cheap = (intent: Intent): Intent => ({ ...intent, maxFeeWei: String(10n ** 14n) });
-    const cases: [Intent, string][] = [
+    const cheap = (intent: EvmIntent): EvmIntent => ({ ...intent, maxFeeWei: String(10n ** 14n) });
+    const cases: [EvmIntent, string][] = [
       [{ ...cheap(tokenIntent(world, 1n)), agentId: helper }, "mandate_agent_mismatch"],
       // A contract call is never signed under a mandate, not even one that moves no coin.
       [

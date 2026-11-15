@@ -8,7 +8,7 @@ import {
   Authorization,
   Envelope,
 } from "../envelopes.ts";
-import { Intent } from "../intent.ts";
+import { EvmIntent } from "../intent.ts";
 import { Mandate, mandateHash } from "../mandate.ts";
 import { WalletPolicy } from "../policy.ts";
 import {
@@ -318,10 +318,11 @@ export type TransactionParams = z.infer<typeof TransactionParams>;
 /**
  * Sign one EIP-1559 transaction for an approved intent. Carries an `approve-intent` envelope.
  * Repeating the request for an approval that was already signed returns the same signed
- * transaction; it never produces a second signature.
+ * transaction; it never produces a second signature. Only an EVM intent: a venue intent is
+ * `invalid_request` here.
  */
 export const SignRequest = z.strictObject({
-  intent: Intent,
+  intent: EvmIntent,
   authorization: Authorization,
   transaction: TransactionParams,
 });
@@ -399,8 +400,8 @@ const NextAttempt = {
  * Repeating a request for an attempt that exists with the same fees returns it.
  */
 export const RepriceRequest = z.union([
-  z.strictObject({ intent: Intent, envelope: ApproveIntentEnvelope, ...NextAttempt }),
-  z.strictObject({ intent: Intent, mandateId: MandateId, ...NextAttempt }),
+  z.strictObject({ intent: EvmIntent, envelope: ApproveIntentEnvelope, ...NextAttempt }),
+  z.strictObject({ intent: EvmIntent, mandateId: MandateId, ...NextAttempt }),
 ]);
 export type RepriceRequest = z.infer<typeof RepriceRequest>;
 
@@ -477,7 +478,8 @@ export type RevokeMandateRequest = z.infer<typeof RevokeMandateRequest>;
  */
 export const SignUnderMandateRequest = z.strictObject({
   approvalId: ApprovalId,
-  intent: Intent,
+  /** Only an EVM intent: no venue intent is ever signed under a mandate. */
+  intent: EvmIntent,
   transaction: TransactionParams,
 });
 export type SignUnderMandateRequest = z.infer<typeof SignUnderMandateRequest>;

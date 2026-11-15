@@ -355,6 +355,7 @@ describe("automatic repricing", () => {
         bumped(original.maxPriorityFeePerGas ?? 0n),
       );
       const { intent } = await intentOf(payment.intentId);
+      if (!("maxFeeWei" in intent)) throw new Error("a payment is an EVM intent");
       expect((repriced.gas ?? 0n) * (repriced.maxFeePerGas ?? 0n)).toBeLessThanOrEqual(
         BigInt(intent.maxFeeWei),
       );
@@ -519,6 +520,7 @@ describe("automatic repricing", () => {
       }
       expect((await transactionRow(payment.approvalId)).stuckReason).toBe("fee_ceiling_reached");
       const { intent } = await intentOf(payment.intentId);
+      if (!("maxFeeWei" in intent)) throw new Error("a payment is an EVM intent");
       for (const row of await attemptRows(payment.approvalId)) {
         expect(BigInt(row.gas) * BigInt(row.maxFeePerGas)).toBeLessThanOrEqual(
           BigInt(intent.maxFeeWei),

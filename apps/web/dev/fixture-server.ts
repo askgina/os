@@ -81,9 +81,9 @@ import {
   AssertionResponse,
   checkMandateAgainstPolicy,
   type Envelope,
+  type EvmIntent,
   envelopeChallenge,
   evaluateMandate,
-  type Intent,
   intentHash,
   keyFingerprint,
   type Mandate,
@@ -1019,13 +1019,13 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
             data: "0xa9059cbb0000000000000000000000001111111111111111111111111111111111111111" as `0x${string}`,
           }
         : { type: "evm.transfer" as const, to, valueWei: amount };
-  const intent: Intent = {
+  const intent: EvmIntent = {
     v: 1,
     id: newId("int"),
-    workspaceId: workspace.id as Intent["workspaceId"],
+    workspaceId: workspace.id as EvmIntent["workspaceId"],
     agentId: agent.id,
     walletId: wallet.id,
-    chainId: chainId as Intent["chainId"],
+    chainId: chainId as EvmIntent["chainId"],
     operation,
     maxFeeWei: "300000000000000",
     memo: body.memo ?? "",
@@ -1310,7 +1310,7 @@ function endMandate(record: FixtureMandate, reason: "revoked" | "agent_disabled"
 }
 
 /** Why this mandate does not cover the intent now, with the signer's code, or null. */
-function mandateRefusal(record: FixtureMandate, intent: Intent): string | null {
+function mandateRefusal(record: FixtureMandate, intent: EvmIntent): string | null {
   const status = mandateStatus(record);
   if (status === "revoked") return "mandate_revoked";
   if (status === "not_yet_valid") return "mandate_not_yet_valid";
@@ -1331,7 +1331,7 @@ function coveringMandate(
   workspace: Workspace,
   agentId: string,
   walletId: string,
-  intent: Intent,
+  intent: EvmIntent,
   pinned: string | undefined,
 ): FixtureMandate | null {
   if (pinned === undefined && intent.operation.type === "evm.call") return null;
@@ -1363,7 +1363,7 @@ function coveringMandate(
 /** The wallet policy's own verdict on a payment, which the signer applies under a mandate too. */
 function policyRefusal(
   policy: WalletPolicy,
-  intent: Intent,
+  intent: EvmIntent,
   asset: string,
   amount: bigint,
   spentToday: bigint,

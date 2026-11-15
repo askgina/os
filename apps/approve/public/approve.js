@@ -75,6 +75,10 @@ export const WARNING_TEXT = {
   first_policy: "This is the wallet's first policy: everything below is new.",
   possession_unproven:
     "The person being added has not yet proven on this page that they hold this passkey. Approving waits until they have.",
+  market_not_in_policy:
+    "This market is not one the wallet's policy allows, so the signer will refuse this order.",
+  venue_rules_missing:
+    "The wallet's policy has no rules for this venue, so the signer will refuse this request.",
 };
 
 /** @type {Record<SignerErrorCode, string>} */

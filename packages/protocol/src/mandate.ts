@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { DomainTag, digestHex } from "./canonical.ts";
-import { type Intent, intentSpend, Memo } from "./intent.ts";
+import { type Intent, intentSpend, isVenueIntent, Memo } from "./intent.ts";
 import { type AssetLimit, assetLimitKey, type WalletPolicy } from "./policy.ts";
 import {
   Address,
@@ -301,6 +301,10 @@ export function evaluateMandate(
   }
   if (intent.agentId !== mandate.agentId) {
     return { allowed: false, code: "mandate_agent_mismatch" };
+  }
+  // Mandates cover transfers only: an order or a withdrawal at a venue always needs people.
+  if (isVenueIntent(intent)) {
+    return { allowed: false, code: "mandate_operation_not_allowed" };
   }
   const { operation } = intent;
   // The signer cannot measure what calldata moves, so no call is ever signed under a mandate,

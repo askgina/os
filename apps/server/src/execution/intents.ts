@@ -10,9 +10,9 @@ import {
   type AgentId,
   type ApprovalId,
   type ChainId,
+  EvmIntent,
   evaluateIntent,
   type Hex,
-  Intent,
   type IntentId,
   intentHash,
   intentSpend,
@@ -87,12 +87,12 @@ const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
 export async function readIntent(
   ctx: AppContext,
   row: IntentRow,
-): Promise<{ intent: Intent; presentation: Presentation }> {
+): Promise<{ intent: EvmIntent; presentation: Presentation }> {
   const [intent, presentation] = await Promise.all([
     ctx.sealer.open(row.workspaceId, payloadLocation(row.id), row.payload),
     ctx.sealer.open(row.workspaceId, presentationLocation(row.id), row.presentation),
   ]);
-  return { intent: Intent.parse(intent), presentation: presentation as Presentation };
+  return { intent: EvmIntent.parse(intent), presentation: presentation as Presentation };
 }
 
 async function intentRow(ctx: AppContext, id: string, executor: Executor = ctx.db) {
@@ -360,7 +360,7 @@ async function propose(
   // biome-ignore lint/complexity/useMathMinMax: Math.min does not take bigints
   const maxFeeWei = wanted < ceiling ? wanted : ceiling;
   const id = newId("int");
-  const intent = Intent.parse({
+  const intent = EvmIntent.parse({
     v: PROTOCOL_VERSION,
     id,
     workspaceId: agent.workspaceId,
@@ -667,7 +667,7 @@ async function executeIntent(
   ctx: AppContext,
   approval: ApprovalRow,
   detail: IntentApprovalDetail,
-  sign: (intent: Intent, transaction: TransactionParams) => Promise<SignResponse>,
+  sign: (intent: EvmIntent, transaction: TransactionParams) => Promise<SignResponse>,
 ): Promise<void> {
   const row = await intentRow(ctx, detail.intentId);
   if (await transactionOf(ctx, approval.id)) return;

@@ -1,6 +1,12 @@
-import { type Intent, intentSpend } from "./intent.ts";
+import {
+  type EvmIntent,
+  type Intent,
+  intentSpend,
+  isVenueIntent,
+  type VenueIntent,
+} from "./intent.ts";
 import { assetLimitKey, type WalletPolicy } from "./policy.ts";
-import type { AssetRef, ChainId } from "./primitives.ts";
+import { isVenueNetwork, type Network, type SpendAsset } from "./venues.ts";
 
 export const POLICY_DENY_CODES = [
   "wallet_mismatch",
@@ -12,15 +18,26 @@ export const POLICY_DENY_CODES = [
   "over_per_tx_cap",
   "over_daily_cap",
   "over_fee_cap",
+  /** The policy has no rules for the intent's venue network. */
+  "venue_not_allowed",
+  /** The order's asset index is not one of the policy's markets. */
+  "market_not_allowed",
+  /** The order's time in force is not one the policy allows. */
+  "order_type_not_allowed",
+  /** The policy's venue rules do not allow withdrawals. */
+  "withdrawal_not_allowed",
 ] as const;
 export type PolicyDenyCode = (typeof POLICY_DENY_CODES)[number];
 
 export type PolicyDecision =
-  | { allowed: true; spend: { chainId: ChainId; asset: AssetRef; amount: bigint } }
+  | { allowed: true; spend: { chainId: Network; asset: SpendAsset; amount: bigint } }
   | { allowed: false; code: PolicyDenyCode };
 
-/** What the wallet has already signed for one asset on one chain in the last 24 hours. */
-export type SpentLookup = (chainId: ChainId, asset: AssetRef) => bigint;
+/**
+ * What the wallet has already signed for one asset on one chain, or in `usd6` on one venue
+ * network, in the last 24 hours.
+ */
+export type SpentLookup = (chainId: Network, asset: SpendAsset) => bigint;
 
 /**
  * Decide whether a policy allows an intent. Pure and deterministic: the signer runs it with its
@@ -38,7 +55,18 @@ export function evaluateIntent(
   if (!policy.requesters.includes(intent.agentId)) {
     return { allowed: false, code: "requester_not_allowed" };
   }
-  if (!policy.chains.includes(intent.chainId)) {
+  return isVenueIntent(intent)
+    ? evaluateVenueIntent(policy, intent, spent)
+    : evaluateEvmIntent(policy, intent, spent);
+}
+
+function evaluateEvmIntent(
+  policy: WalletPolicy,
+  intent: EvmIntent,
+  spent: SpentLookup,
+): PolicyDecision {
+  // The schema keeps venue networks out of an EVM intent; refused here as well, never trusted.
+  if (isVenueNetwork(intent.chainId) || !policy.chains.includes(intent.chainId)) {
     return { allowed: false, code: "chain_not_allowed" };
   }
   if (BigInt(intent.maxFeeWei) > BigInt(policy.fees.maxPerTxWei)) {
@@ -76,4 +104,45 @@ export function evaluateIntent(
     return { allowed: false, code: "over_daily_cap" };
   }
   return { allowed: true, spend };
+}
+
+// `policy.chains`, `policy.fees` and the per-asset caps do not apply to a venue intent: it pays
+// no gas and moves nothing on an EVM chain. Its caps are the venue rules' notional caps.
+function evaluateVenueIntent(
+  policy: WalletPolicy,
+  intent: VenueIntent,
+  spent: SpentLookup,
+): PolicyDecision {
+  const rules = policy.venues?.hyperliquid;
+  if (rules === undefined || rules.network !== intent.chainId) {
+    return { allowed: false, code: "venue_not_allowed" };
+  }
+  const { asset, amount, daily } = intentSpend(intent);
+  const spend = { chainId: intent.chainId, asset, amount };
+  const { operation } = intent;
+  switch (operation.type) {
+    case "hyperliquid.order": {
+      const market = rules.markets.find((candidate) => candidate.asset === operation.asset);
+      if (market === undefined) {
+        return { allowed: false, code: "market_not_allowed" };
+      }
+      if (!rules.timeInForce.includes(operation.tif)) {
+        return { allowed: false, code: "order_type_not_allowed" };
+      }
+      if (amount > BigInt(market.maxNotionalPerOrderUsd6)) {
+        return { allowed: false, code: "over_per_tx_cap" };
+      }
+      // A reduce-only order counts against its market's per-order cap only, so a position can
+      // still be closed when the daily cap is spent.
+      if (daily && spent(intent.chainId, asset) + amount > BigInt(rules.maxNotionalPerDayUsd6)) {
+        return { allowed: false, code: "over_daily_cap" };
+      }
+      return { allowed: true, spend };
+    }
+    case "hyperliquid.withdraw":
+      if (!rules.withdrawals) {
+        return { allowed: false, code: "withdrawal_not_allowed" };
+      }
+      return { allowed: true, spend };
+  }
 }

@@ -4,8 +4,9 @@ import type {
   CancelTransactionEnvelope,
   DeleteWorkspaceEnvelope,
   Envelope,
+  EvmIntent,
   GrantMandateEnvelope,
-  Intent,
+  HyperliquidRules,
   Mandate,
   MandateAssetLimit,
   RemoveApproverEnvelope,
@@ -15,6 +16,7 @@ import type {
   SetPolicyEnvelope,
   Sweep,
   SweepWalletEnvelope,
+  VenueIntent,
   WalletPolicy,
 } from "../src/index.ts";
 
@@ -46,13 +48,16 @@ export const OTHER_WALLET_ADDRESS = "0x7777777777777777777777777777777777777777"
 export const USDC_BASE = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" as const;
 export const BASE = "eip155:8453" as const;
 export const MAINNET = "eip155:1" as const;
+export const HL_TESTNET = "hyperliquid:testnet" as const;
+/** The asset index the fixture venue rules bind to `BTC`. */
+export const BTC_ASSET = 3;
 export const NONCE = "AAAAAAAAAAAAAAAAAAAAAA";
 export const DIGEST_A = "a".repeat(64);
 export const DIGEST_B = "b".repeat(64);
 
 export const T0 = 1_700_000_000;
 
-export function intent(overrides: Partial<Intent> = {}): Intent {
+export function intent(overrides: Partial<EvmIntent> = {}): EvmIntent {
   return {
     v: 1,
     id: INTENT,
@@ -64,6 +69,45 @@ export function intent(overrides: Partial<Intent> = {}): Intent {
     maxFeeWei: "1000000000000000",
     memo: "pay invoice 42",
     createdAt: T0,
+    ...overrides,
+  };
+}
+
+/** Buy 0.01 BTC perpetual at a limit of 65,000 USD, immediate or cancel: 650 USD notional. */
+export function venueIntent(overrides: Partial<VenueIntent> = {}): VenueIntent {
+  return {
+    v: 1,
+    id: INTENT,
+    workspaceId: WS,
+    agentId: AGENT,
+    walletId: WALLET,
+    chainId: HL_TESTNET,
+    operation: {
+      type: "hyperliquid.order",
+      asset: BTC_ASSET,
+      isBuy: true,
+      size: "0.01",
+      limitPx: "65000",
+      tif: "Ioc",
+      reduceOnly: false,
+    },
+    memo: "the funding rate turned",
+    createdAt: T0,
+    ...overrides,
+  };
+}
+
+export function hyperliquidRules(overrides: Partial<HyperliquidRules> = {}): HyperliquidRules {
+  return {
+    network: HL_TESTNET,
+    markets: [
+      { asset: BTC_ASSET, coin: "BTC", maxNotionalPerOrderUsd6: "1000000000" },
+      { asset: 4, coin: "ETH", maxNotionalPerOrderUsd6: "500000000" },
+    ],
+    maxNotionalPerDayUsd6: "2000000000",
+    timeInForce: ["Gtc", "Ioc"],
+    submitWindowSeconds: 60,
+    withdrawals: true,
     ...overrides,
   };
 }

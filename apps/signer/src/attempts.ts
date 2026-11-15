@@ -7,9 +7,9 @@ import {
   type CancelTransactionEnvelope,
   type ChainId,
   Envelope,
+  type EvmIntent,
   evmChainNumber,
   type Hex,
-  type Intent,
   intentHash,
   mandateUseDigest,
   type Operation,
@@ -135,7 +135,7 @@ export interface AttemptInternals {
     digest: string,
   ): void;
   envelopeDigest(envelope: Envelope): string;
-  buildTransaction(intent: Intent, params: TransactionParams): EvmTransaction;
+  buildTransaction(intent: EvmIntent, params: TransactionParams): EvmTransaction;
   /** Sign with the wallet's key and check the signature; records nothing. */
   signWith(wallet: WalletRow, unsigned: EvmTransaction): { signed: Hex; transactionHash: Hex };
 }

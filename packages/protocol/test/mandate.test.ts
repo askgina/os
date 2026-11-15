@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   checkMandateAgainstPolicy,
+  type EvmIntent,
   evaluateIntent,
   evaluateMandate,
-  type Intent,
   MANDATE_DENY_CODES,
   MANDATE_GRANT_REFUSALS,
   type Mandate,
@@ -34,13 +34,14 @@ import {
   T0,
   TOKEN,
   USDC_BASE,
+  venueIntent,
 } from "./fixtures.ts";
 
 const ZERO = "0x0000000000000000000000000000000000000000" as const;
 const ok = (value: unknown) => MandateSchema.safeParse(value).success;
 
 /** A USDC payment from the fixture wallet by the fixture agent, inside every fixture cap. */
-const pay = (amount = "100000000", overrides: Partial<Intent> = {}): Intent =>
+const pay = (amount = "100000000", overrides: Partial<EvmIntent> = {}): EvmIntent =>
   intent({
     operation: { type: "evm.erc20.transfer", token: USDC_BASE, to: ALICE, amount },
     maxFeeWei: "2000000000000000",
@@ -319,6 +320,20 @@ describe("evaluateMandate", () => {
     }
   });
 
+  it("never covers an order or a withdrawal at a venue", () => {
+    expect(denied(evaluateMandate(mandate(), venueIntent(), usage()))).toBe(
+      "mandate_operation_not_allowed",
+    );
+    const withdraw = venueIntent({ operation: { type: "hyperliquid.withdraw", amount: "1" } });
+    expect(denied(evaluateMandate(mandate(), withdraw, usage()))).toBe(
+      "mandate_operation_not_allowed",
+    );
+    // The wallet and the agent are still checked first, as for any intent.
+    expect(denied(evaluateMandate(mandate(), venueIntent({ agentId: OTHER_AGENT }), usage()))).toBe(
+      "mandate_agent_mismatch",
+    );
+  });
+
   it("covers only its assets on their chains", () => {
     const native = intent({ maxFeeWei: "2000000000000000" });
     expect(denied(evaluateMandate(mandate(), native, usage()))).toBe("mandate_asset_not_allowed");
@@ -443,7 +458,7 @@ describe("the wallet's policy stays the outer limit", () => {
   const both = (
     subject: Mandate,
     against: WalletPolicy,
-    payment: Intent,
+    payment: EvmIntent,
     spent24h: bigint,
     used: MandateUsage,
   ) => {

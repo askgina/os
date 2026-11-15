@@ -1893,6 +1893,7 @@ test("a payment the chain does not mine is signed again with a higher fee by its
     expect(raised.hash).not.toBe(original.hash);
     expectRaised(original, raised);
     // Every attempt stays inside the ceiling the person approved and the policy's fee cap.
+    if (!("maxFeeWei" in intent.intent)) throw new Error("a payment is an EVM intent");
     const ceiling = BigInt(intent.intent.maxFeeWei);
     expect(ceiling).toBeLessThanOrEqual(BigInt(wei("0.01")));
     for (const attempt of transaction.attempts) {

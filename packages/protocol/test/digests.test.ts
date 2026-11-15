@@ -3,8 +3,8 @@ import {
   canonicalJson,
   DomainTag,
   digestHex,
+  type EvmIntent,
   envelopeChallenge,
-  type Intent,
   intentHash,
   type Mandate,
   mandateHash,
@@ -25,6 +25,8 @@ import {
   changedEnvelopes,
   envelopeVariants,
   grantMandate,
+  HL_TESTNET,
+  hyperliquidRules,
   INTENT,
   intent,
   MAINNET,
@@ -38,6 +40,7 @@ import {
   T0,
   TARGET_APPROVAL,
   TOKEN,
+  venueIntent,
   WALLET,
   WS,
 } from "./fixtures.ts";
@@ -85,6 +88,15 @@ const MANDATE_USE_DIGEST = "96fe14af43d24b9388d45b9f7a478c48a1d37c944056f9b5319d
 const CANCEL_ENVELOPE_JSON = `{"approvalId":"${APPROVAL}","chainId":"eip155:8453","expiresAt":1700000600,"issuedAt":1700000000,"maxFeeWei":"2000000000000000","nonce":"AAAAAAAAAAAAAAAAAAAAAA","targetApprovalId":"${TARGET_APPROVAL}","txNonce":7,"type":"cancel-transaction","v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
 const CANCEL_ENVELOPE_CHALLENGE = "FYp0khasgxD2rQxW3vUf47xd5PbsXrKOGUXaK1L_2ro";
 
+// Added with venue intents, by widening `Intent` and `WalletPolicy` within version 1. The vectors
+// above did not change.
+const VENUE_INTENT_JSON = `{"agentId":"${AGENT}","chainId":"hyperliquid:testnet","createdAt":1700000000,"id":"${INTENT}","memo":"the funding rate turned","operation":{"asset":3,"isBuy":true,"limitPx":"65000","reduceOnly":false,"size":"0.01","tif":"Ioc","type":"hyperliquid.order"},"v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+const VENUE_INTENT_HASH = "63bde93a4524d11d4c53e02ecec81f9e791b3aaf54fb079369255f476edc8afd";
+const VENUE_POLICY_JSON = `{"approvals":{"threshold":1,"ttlSeconds":3600},"assets":[{"asset":"native","chainId":"eip155:8453","maxPerDay":"5000000000000000000","maxPerTx":"1000000000000000000"}],"chains":["eip155:8453"],"contractCalls":{"mode":"deny"},"fees":{"maxPerTxWei":"10000000000000000"},"previousHash":null,"recipients":{"mode":"any"},"requesters":["${AGENT}"],"revision":1,"v":1,"venues":{"hyperliquid":{"markets":[{"asset":3,"coin":"BTC","maxNotionalPerOrderUsd6":"1000000000"},{"asset":4,"coin":"ETH","maxNotionalPerOrderUsd6":"500000000"}],"maxNotionalPerDayUsd6":"2000000000","network":"hyperliquid:testnet","submitWindowSeconds":60,"timeInForce":["Gtc","Ioc"],"withdrawals":true}},"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+const VENUE_POLICY_HASH = "874aa65f8d6cd314029f14ad0f3c232a2ed00ef7428b901fc35f20266d6a2241";
+const VENUE_ENVELOPE_JSON = `{"agentId":"${AGENT}","approvalId":"${APPROVAL}","chainId":"hyperliquid:testnet","expiresAt":1700000600,"intentHash":"${VENUE_INTENT_HASH}","issuedAt":1700000000,"nonce":"AAAAAAAAAAAAAAAAAAAAAA","policyHash":"${VENUE_POLICY_HASH}","type":"approve-intent","v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+const VENUE_ENVELOPE_CHALLENGE = "4lbDbs7a1SSdmNuM3linOaNBTSVRK1HCVDYIPl0NhjY";
+
 describe("pinned digest vectors", () => {
   it("intentHash", () => {
     expect(canonicalJson(intent())).toBe(INTENT_JSON);
@@ -100,6 +112,31 @@ describe("pinned digest vectors", () => {
     const envelope = approveIntent({ intentHash: INTENT_HASH, policyHash: POLICY_HASH });
     expect(canonicalJson(envelope)).toBe(ENVELOPE_JSON);
     expect(Buffer.from(envelopeChallenge(envelope)).toString("base64url")).toBe(ENVELOPE_CHALLENGE);
+  });
+
+  it("a venue order intent, a policy with venue rules, and their approve-intent envelope", () => {
+    expect(canonicalJson(venueIntent())).toBe(VENUE_INTENT_JSON);
+    expect(intentHash(venueIntent())).toBe(VENUE_INTENT_HASH);
+    const withVenues = policy({ venues: { hyperliquid: hyperliquidRules() } });
+    expect(canonicalJson(withVenues)).toBe(VENUE_POLICY_JSON);
+    expect(policyHash(withVenues)).toBe(VENUE_POLICY_HASH);
+    const envelope = approveIntent({
+      chainId: HL_TESTNET,
+      intentHash: VENUE_INTENT_HASH,
+      policyHash: VENUE_POLICY_HASH,
+    });
+    expect(canonicalJson(envelope)).toBe(VENUE_ENVELOPE_JSON);
+    expect(Buffer.from(envelopeChallenge(envelope)).toString("base64url")).toBe(
+      VENUE_ENVELOPE_CHALLENGE,
+    );
+  });
+
+  it("a policy without venue rules hashes as it did before they existed", () => {
+    const { venues: _none, ...withoutVenues } = policy({
+      venues: { hyperliquid: hyperliquidRules() },
+    });
+    expect(policyHash(withoutVenues)).toBe(POLICY_HASH);
+    expect(canonicalJson(policy())).not.toContain("venues");
   });
 
   it("sweepHash and the sweep-wallet envelope's challenge", () => {
@@ -243,12 +280,13 @@ describe("every mandate field is bound", () => {
 
 describe("canonical form", () => {
   it("does not depend on key insertion order", () => {
-    const reordered = Object.fromEntries(Object.entries(intent()).reverse()) as Intent;
+    const reordered = Object.fromEntries(Object.entries(intent()).reverse()) as EvmIntent;
     expect(intentHash(reordered)).toBe(INTENT_HASH);
   });
 
   it("refuses to hash values that are not valid intents or policies", () => {
-    expect(() => intentHash({ ...intent(), extra: 1 } as Intent)).toThrow();
+    expect(() => intentHash({ ...intent(), extra: 1 } as EvmIntent)).toThrow();
+    expect(() => intentHash({ ...venueIntent(), maxFeeWei: "1" } as never)).toThrow();
     expect(() => policyHash({ ...policy(), chains: [MAINNET, MAINNET] })).toThrow();
     expect(() => envelopeChallenge(approveIntent({ expiresAt: T0 }))).toThrow();
   });
@@ -259,7 +297,7 @@ describe("canonical form", () => {
 });
 
 describe("every intent field is bound", () => {
-  const changes: Partial<Intent>[] = [
+  const changes: Partial<EvmIntent>[] = [
     { id: `int_01jd000000000000000000000z` },
     { workspaceId: `ws_01jd000000000000000000000z` },
     { agentId: OTHER_AGENT },
@@ -301,6 +339,24 @@ describe("every intent field is bound", () => {
         .filter((key) => key !== "v")
         .sort(),
     );
+  });
+});
+
+describe("every venue order field is bound", () => {
+  const order = venueIntent().operation;
+  if (order.type !== "hyperliquid.order") throw new TypeError("the fixture is an order");
+  it.each([
+    ["chainId", { chainId: "hyperliquid:mainnet" }],
+    ["memo", { memo: "the funding rate turned again" }],
+    ["asset", { operation: { ...order, asset: 4 } }],
+    ["isBuy", { operation: { ...order, isBuy: false } }],
+    ["size", { operation: { ...order, size: "0.011" } }],
+    ["limitPx", { operation: { ...order, limitPx: "65001" } }],
+    ["tif", { operation: { ...order, tif: "Gtc" } }],
+    ["reduceOnly", { operation: { ...order, reduceOnly: true } }],
+    ["withdraw", { operation: { type: "hyperliquid.withdraw", amount: "0.01" } }],
+  ] as const)("%s", (_field, change) => {
+    expect(intentHash(venueIntent(change))).not.toBe(VENUE_INTENT_HASH);
   });
 });
 

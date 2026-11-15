@@ -17,6 +17,7 @@ import {
   WalletId,
   WorkspaceId,
 } from "./primitives.ts";
+import { Network } from "./venues.ts";
 
 /**
  * An envelope states one thing a person authorizes. Its digest is the WebAuthn challenge, so a
@@ -34,14 +35,17 @@ const envelopeHeader = {
   expiresAt: EpochSeconds,
 };
 
-/** Sign exactly one transaction for exactly one intent under exactly one policy revision. */
+/**
+ * Sign exactly one transaction, or one venue action, for exactly one intent under exactly one
+ * policy revision. `chainId` is the intent's EVM chain or venue network.
+ */
 export const ApproveIntentEnvelope = z.strictObject({
   ...envelopeHeader,
   type: z.literal("approve-intent"),
   intentHash: Digest,
   walletId: WalletId,
   agentId: AgentId,
-  chainId: ChainId,
+  chainId: Network,
   policyHash: Digest,
 });
 export type ApproveIntentEnvelope = z.infer<typeof ApproveIntentEnvelope>;

@@ -14,6 +14,7 @@ import {
   WalletId,
   WorkspaceId,
 } from "./primitives.ts";
+import { HYPERLIQUID_MAX_PERP_ASSET, VenueNetwork } from "./venues.ts";
 
 /** Caps for one asset on one chain. An asset with no entry cannot leave the wallet. */
 export const AssetLimit = z.strictObject({
@@ -40,6 +41,81 @@ export const ContractCallRule = z.discriminatedUnion("mode", [
   z.strictObject({ mode: z.literal("allowlist"), targets: sortedSet(Address, 256) }),
 ]);
 export type ContractCallRule = z.infer<typeof ContractCallRule>;
+
+/**
+ * One Hyperliquid perpetual a wallet may trade. The asset index is what is signed; the coin name
+ * is how people and agents name it, bound to the index by the people who approve the policy.
+ */
+export const HyperliquidMarket = z.strictObject({
+  asset: z.number().int().min(0).max(HYPERLIQUID_MAX_PERP_ASSET),
+  coin: z.string().regex(/^[A-Z0-9]{1,16}$/, "expected 1 to 16 capital letters or digits"),
+  /** Largest notional of one order, in micro-USD. A reduce-only order is capped by it too. */
+  maxNotionalPerOrderUsd6: PositiveAmount,
+});
+export type HyperliquidMarket = z.infer<typeof HyperliquidMarket>;
+
+export const HyperliquidTimeInForce = z.enum(["Alo", "Gtc", "Ioc"]);
+export type HyperliquidTimeInForce = z.infer<typeof HyperliquidTimeInForce>;
+
+/**
+ * What a wallet may do on Hyperliquid. The caps limit the notional of new orders, counted when
+ * signed; they do not limit losses, which only the account's value at the venue bounds.
+ */
+export const HyperliquidRules = z
+  .strictObject({
+    network: VenueNetwork,
+    /** Sorted by asset, one entry per asset and per coin. */
+    markets: z.array(HyperliquidMarket).min(1).max(64),
+    /** Most notional of orders that are not reduce-only in any rolling 24 hours, in micro-USD. */
+    maxNotionalPerDayUsd6: PositiveAmount,
+    timeInForce: sortedSet(HyperliquidTimeInForce, 3).min(1),
+    /** How long after signing an order the venue still accepts it (its `expiresAfter`). */
+    submitWindowSeconds: z.number().int().min(5).max(300),
+    /** Whether USDC may be withdrawn, always to the wallet's own address. */
+    withdrawals: z.boolean(),
+  })
+  .superRefine((rules, context) => {
+    rules.markets.forEach((market, index) => {
+      const previous = rules.markets[index - 1];
+      if (previous !== undefined && previous.asset >= market.asset) {
+        context.addIssue({
+          code: "custom",
+          path: ["markets", index, "asset"],
+          message: "markets must be sorted by asset without duplicates",
+        });
+      }
+      if (rules.markets.findIndex((other) => other.coin === market.coin) !== index) {
+        context.addIssue({
+          code: "custom",
+          path: ["markets", index, "coin"],
+          message: "a coin is named by two markets",
+        });
+      }
+      const capsParsed =
+        PositiveAmount.safeParse(market.maxNotionalPerOrderUsd6).success &&
+        PositiveAmount.safeParse(rules.maxNotionalPerDayUsd6).success;
+      if (
+        capsParsed &&
+        BigInt(market.maxNotionalPerOrderUsd6) > BigInt(rules.maxNotionalPerDayUsd6)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["markets", index, "maxNotionalPerOrderUsd6"],
+          message: "a market's per-order cap cannot exceed the daily cap",
+        });
+      }
+    });
+  });
+export type HyperliquidRules = z.infer<typeof HyperliquidRules>;
+
+/**
+ * Venue rules, one member per venue. Optional and never empty, so a policy without venue rules
+ * has exactly one form, the one it had before venues existed, and hashes as it did then.
+ */
+export const VenueRules = z
+  .strictObject({ hyperliquid: HyperliquidRules.optional() })
+  .refine((venues) => venues.hyperliquid !== undefined, "venues must name at least one venue");
+export type VenueRules = z.infer<typeof VenueRules>;
 
 /**
  * Everything a wallet is allowed to do. The signer holds the authoritative copy and enforces it
@@ -72,6 +148,8 @@ export const WalletPolicy = z
       /** Longest time an approval of an intent may stay usable. */
       ttlSeconds: z.number().int().min(60).max(86_400),
     }),
+    /** What the wallet may do at venues. Absent: nothing; every venue intent is refused. */
+    venues: VenueRules.optional(),
   })
   .superRefine((policy, context) => {
     if ((policy.revision === 1) !== (policy.previousHash === null)) {
@@ -147,5 +225,16 @@ export function normalizePolicy(policy: WalletPolicy): WalletPolicy {
       policy.contractCalls.mode === "allowlist"
         ? { mode: "allowlist", targets: sortedUnique(policy.contractCalls.targets) }
         : policy.contractCalls,
+    ...(policy.venues?.hyperliquid === undefined
+      ? {}
+      : {
+          venues: {
+            hyperliquid: {
+              ...policy.venues.hyperliquid,
+              markets: [...policy.venues.hyperliquid.markets].sort((a, b) => a.asset - b.asset),
+              timeInForce: sortedUnique(policy.venues.hyperliquid.timeInForce),
+            },
+          },
+        }),
   });
 }

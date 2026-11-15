@@ -4,9 +4,9 @@ import {
   canonicalJson,
   checkMandateAgainstPolicy,
   type Envelope,
+  type EvmIntent,
   evaluateIntent,
   evaluateMandate,
-  type Intent,
   intentHash,
   Mandate,
   type MandateId,
@@ -171,7 +171,7 @@ export interface MandateInternals {
   findApproval(approvalId: string): ApprovalRow | undefined;
   storedSignature(approvalId: string): SignResponse;
   signAndRecord(input: SignAndRecordInput): SignResponse;
-  buildTransaction(intent: Intent, params: TransactionParams): EvmTransaction;
+  buildTransaction(intent: EvmIntent, params: TransactionParams): EvmTransaction;
   assertFeeWithin(params: TransactionParams, maxFeeWei: string): void;
   /** A deleted workspace answers nothing about its mandates: their text is blanked. */
   assertNotDeleted(workspaceId: string): WorkspaceRow;

@@ -15,9 +15,24 @@ import {
   type SweepWalletEnvelope,
   type WalletRef,
 } from "./envelopes.ts";
-import { Intent, intentHash, intentSpend, type Operation } from "./intent.ts";
+import {
+  type EvmIntent,
+  type HyperliquidOrderOperation,
+  Intent,
+  intentHash,
+  intentSpend,
+  isVenueIntent,
+  type Operation,
+  type VenueIntent,
+} from "./intent.ts";
 import { Mandate, mandateHash, mandateWorstCase } from "./mandate.ts";
-import { assetLimitKey, policyHash, WalletPolicy } from "./policy.ts";
+import {
+  assetLimitKey,
+  type HyperliquidRules,
+  type HyperliquidTimeInForce,
+  policyHash,
+  WalletPolicy,
+} from "./policy.ts";
 import {
   Address,
   ApprovalId,
@@ -32,6 +47,7 @@ import {
 } from "./primitives.ts";
 import type { SignerErrorCode } from "./signer/api.ts";
 import { Sweep, sweepHash } from "./sweep.ts";
+import { orderNotionalUsd6, VENUE_NETWORK_NAMES, type VenueNetwork } from "./venues.ts";
 
 /**
  * What a person reads before they approve, built by the signer from what it holds: the envelope,
@@ -234,7 +250,9 @@ export type ConfirmationLine = z.infer<typeof ConfirmationLine>;
 /**
  * Shown before the lines. Always listed in this order. `keys_destroyed`: whatever is left in the
  * listed wallets is lost once their keys are destroyed. `balances_unchecked`: the signer cannot
- * see balances, so nothing it shows says the wallets are empty.
+ * see balances, so nothing it shows says the wallets are empty. `market_not_in_policy`: an
+ * order's asset index is not one of the current policy's markets, so the signer would refuse it.
+ * `venue_rules_missing`: the wallet's current policy has no rules for the intent's venue network.
  */
 export const ConfirmationWarning = z.enum([
   "keys_destroyed",
@@ -246,6 +264,8 @@ export const ConfirmationWarning = z.enum([
   "over_remaining_daily_cap",
   "first_policy",
   "possession_unproven",
+  "market_not_in_policy",
+  "venue_rules_missing",
 ]);
 export type ConfirmationWarning = z.infer<typeof ConfirmationWarning>;
 
@@ -331,7 +351,10 @@ export type RenderInput = {
   assets: readonly AssetLabel[];
   /** The signer's current policy of the envelope's wallet. */
   currentPolicy: WalletPolicy | null;
-  /** What the wallet signed for in the last 24 hours, in the intent's asset on its chain. */
+  /**
+   * What the wallet signed for in the last 24 hours, in the intent's asset on its chain, or for a
+   * venue intent in `usd6` of order notional on its venue network.
+   */
   spent24h: bigint;
   approvals: { collected: number; required: number };
   adminThreshold: number;
@@ -422,6 +445,10 @@ function renderMatched(out: Output, matched: Matched): string {
 }
 
 function renderIntent(out: Output, intent: Intent): string {
+  return isVenueIntent(intent) ? renderVenueIntent(out, intent) : renderEvmIntent(out, intent);
+}
+
+function renderEvmIntent(out: Output, intent: EvmIntent): string {
   const title = renderOperation(out, intent);
   const native = unitOf(out, intent.chainId, "native");
   push(out, "Network", chainName(out, intent.chainId), "text");
@@ -434,7 +461,7 @@ function renderIntent(out: Output, intent: Intent): string {
   return title;
 }
 
-function renderOperation(out: Output, intent: Intent): string {
+function renderOperation(out: Output, intent: EvmIntent): string {
   const { operation, chainId } = intent;
   switch (operation.type) {
     case "evm.transfer": {
@@ -462,6 +489,153 @@ function renderOperation(out: Output, intent: Intent): string {
       return "Call a contract";
     }
   }
+}
+
+// --- venue intents ----------------------------------------------------------------------------
+
+const TIME_IN_FORCE: Record<HyperliquidTimeInForce, { name: string; effect: string }> = {
+  Alo: { name: "add liquidity only", effect: "cancelled if it would fill at once" },
+  Gtc: { name: "good till cancelled", effect: "rests on the book until filled or cancelled" },
+  Ioc: { name: "immediate or cancel", effect: "whatever does not fill at once is cancelled" },
+};
+
+const VENUE_FUNDS = "Funds at the venue";
+const VENUE_FUNDS_TEXT = "held by Hyperliquid; these caps limit new orders, not losses";
+
+/** The current policy's rules for a venue network, when it has any. */
+function venueRules(out: Output, network: VenueNetwork): HyperliquidRules | null {
+  const rules = out.input.currentPolicy?.venues?.hyperliquid;
+  return rules !== undefined && rules.network === network ? rules : null;
+}
+
+function venueName(network: VenueNetwork): string {
+  return `${VENUE_NETWORK_NAMES[network]} (${network})`;
+}
+
+function renderVenueIntent(out: Output, intent: VenueIntent): string {
+  const rules = venueRules(out, intent.chainId);
+  if (rules === null) out.warnings.add("venue_rules_missing");
+  const { operation } = intent;
+  const title =
+    operation.type === "hyperliquid.order"
+      ? orderLines(out, rules, operation)
+      : withdrawLines(out, rules, operation.amount);
+  push(out, "Network", venueName(intent.chainId), "text");
+  venueLimitLines(out, rules, intent);
+  walletLines(out, intent.walletId);
+  push(out, "Proposed by agent", intent.agentId, "code");
+  if (intent.memo !== "") push(out, AGENT_NOTE, uncheckedText(intent.memo), "unchecked");
+  return title;
+}
+
+function orderLines(
+  out: Output,
+  rules: HyperliquidRules | null,
+  order: HyperliquidOrderOperation,
+): string {
+  const market = rules?.markets.find((candidate) => candidate.asset === order.asset);
+  if (market === undefined) out.warnings.add("market_not_in_policy");
+  const side = order.isBuy ? "Buy" : "Sell";
+  const size = decimalText(order.size);
+  push(
+    out,
+    "Market",
+    market === undefined
+      ? "not in the wallet's policy: the signer would refuse this order"
+      : `${market.coin} perpetual, as named in the wallet's policy`,
+    "text",
+  );
+  push(out, "Market index", String(order.asset), "code");
+  push(out, "Side", order.isBuy ? "buy" : "sell", "text");
+  push(out, "Size", market === undefined ? size : `${size} ${market.coin}`, "amount");
+  push(out, "Limit price", `${decimalText(order.limitPx)} USD`, "amount");
+  push(
+    out,
+    "Notional at the limit price",
+    usdText(orderNotionalUsd6(order.size, order.limitPx)),
+    "amount",
+  );
+  const tif = TIME_IN_FORCE[order.tif];
+  push(out, "Time in force", `${tif.name}: ${tif.effect}`, "text");
+  push(
+    out,
+    "Reduce-only",
+    order.reduceOnly ? "yes: it can only make a position smaller" : "no",
+    "text",
+  );
+  push(out, "Cancelling", "the agent may cancel this order without asking again", "text");
+  push(
+    out,
+    "Submit window",
+    rules === null
+      ? "none: the wallet's policy has no rules for this venue"
+      : `must reach the venue within ${formatDuration(rules.submitWindowSeconds)} of signing`,
+    "text",
+  );
+  push(out, VENUE_FUNDS, VENUE_FUNDS_TEXT, "text");
+  return market === undefined
+    ? `${side} ${size} of market ${order.asset}, not in the wallet's policy`
+    : `${side} ${size} ${market.coin} perpetual`;
+}
+
+function withdrawLines(out: Output, rules: HyperliquidRules | null, amount: string): string {
+  const text = `${decimalText(amount)} USDC`;
+  push(out, "Amount", text, "amount");
+  push(out, "To", "this wallet's own address", "text");
+  const { wallet } = out.input;
+  if (wallet !== null) addressLines(out, "Wallet's own address", wallet.address);
+  if (rules !== null) {
+    push(
+      out,
+      "Withdrawals",
+      rules.withdrawals ? "allowed by the wallet's policy" : "not allowed by the wallet's policy",
+      "text",
+    );
+  }
+  return `Withdraw ${text} from Hyperliquid`;
+}
+
+/** The order's notional against its market's per-order cap and the venue's daily cap. */
+function venueLimitLines(out: Output, rules: HyperliquidRules | null, intent: VenueIntent): void {
+  if (out.input.currentPolicy === null) {
+    push(out, "Wallet policy", "none is set for this wallet", "text");
+    return;
+  }
+  if (rules === null) {
+    push(out, "Venue rules", "none for this network: the signer would refuse this", "text");
+    return;
+  }
+  const { operation } = intent;
+  if (operation.type !== "hyperliquid.order") return;
+  const market = rules.markets.find((candidate) => candidate.asset === operation.asset);
+  if (market !== undefined) {
+    push(out, "Limit per order", usdText(market.maxNotionalPerOrderUsd6), "amount");
+  }
+  const spent = out.input.spent24h;
+  push(
+    out,
+    "Spent in the last 24 hours",
+    `${usdText(spent)} of ${usdText(rules.maxNotionalPerDayUsd6)}`,
+    "amount",
+  );
+  const { amount, daily } = intentSpend(intent);
+  if (!daily) {
+    push(out, "Daily cap", "does not count: the order is reduce-only", "text");
+    return;
+  }
+  if (spent + amount > BigInt(rules.maxNotionalPerDayUsd6)) {
+    out.warnings.add("over_remaining_daily_cap");
+  }
+}
+
+function usdText(amount: bigint | string): string {
+  return `${formatUnits(BigInt(amount), 6)} USD`;
+}
+
+/** A canonical decimal with its whole part grouped: "65000" → "65,000", "1670.1" → "1,670.1". */
+function decimalText(value: string): string {
+  const [whole = "0", fraction] = value.split(".");
+  return fraction === undefined ? groupDigits(whole) : `${groupDigits(whole)}.${fraction}`;
 }
 
 function recipientLines(out: Output, label: string, to: Address): void {
@@ -886,6 +1060,7 @@ function renderPolicy(out: Output, next: WalletPolicy): string {
           members: contractCalls.targets,
         },
   );
+  venuePolicyLines(out, current?.venues?.hyperliquid ?? null, next.venues?.hyperliquid ?? null);
   policyField(
     out,
     "Largest network fee per transaction",
@@ -911,6 +1086,81 @@ function renderPolicy(out: Output, next: WalletPolicy): string {
     "text",
   );
   return current === null ? "Set a wallet's first policy" : "Change a wallet's policy";
+}
+
+/**
+ * The Hyperliquid rules of a policy, against the current ones. Nothing when neither policy has
+ * any, so a policy without venue rules reads as it did before venues existed.
+ */
+function venuePolicyLines(
+  out: Output,
+  before: HyperliquidRules | null,
+  after: HyperliquidRules | null,
+): void {
+  if (after === null) {
+    if (before !== null) {
+      push(out, "Hyperliquid", "removed: no order or withdrawal can be signed there", "text");
+    }
+    return;
+  }
+  const show = (field: (rules: HyperliquidRules) => string) =>
+    change(before && field(before), field(after));
+  push(
+    out,
+    "Hyperliquid network",
+    show((rules) => venueName(rules.network)),
+    "text",
+  );
+  const marketText = (market: HyperliquidRules["markets"][number]) =>
+    `${market.coin} (index ${market.asset}): up to ${usdText(market.maxNotionalPerOrderUsd6)} per order`;
+  const was = new Map((before?.markets ?? []).map((market) => [market.asset, marketText(market)]));
+  const now = new Map(after.markets.map((market) => [market.asset, marketText(market)]));
+  const assets = [...new Set([...was.keys(), ...now.keys()])].sort((a, b) => a - b);
+  let changed = 0;
+  for (const asset of assets) {
+    const old = was.get(asset);
+    const next = now.get(asset);
+    if (before === null && next !== undefined) {
+      push(out, "Market allowed", next, "text");
+    } else if (old === undefined && next !== undefined) {
+      changed += 1;
+      push(out, "Market added", next, "text");
+    } else if (old !== undefined && next === undefined) {
+      changed += 1;
+      push(out, "Market removed", old, "text");
+    } else if (old !== undefined && next !== undefined && old !== next) {
+      changed += 1;
+      push(out, "Market changed", `${old} → ${next}`, "text");
+    }
+  }
+  if (before !== null && changed === 0) {
+    push(out, "Hyperliquid markets", `unchanged (${after.markets.length})`, "text");
+  }
+  push(
+    out,
+    "Hyperliquid notional per 24 hours",
+    show((rules) => usdText(rules.maxNotionalPerDayUsd6)),
+    "amount",
+  );
+  push(
+    out,
+    "Hyperliquid time in force",
+    show((rules) => rules.timeInForce.map((tif) => TIME_IN_FORCE[tif].name).join(", ")),
+    "text",
+  );
+  push(
+    out,
+    "Hyperliquid submit window",
+    show((rules) => formatDuration(rules.submitWindowSeconds)),
+    "text",
+  );
+  push(
+    out,
+    "Hyperliquid withdrawals",
+    show((rules) => (rules.withdrawals ? "allowed, to the wallet's own address only" : "none")),
+    "text",
+  );
+  push(out, VENUE_FUNDS, VENUE_FUNDS_TEXT, "text");
 }
 
 /** One field of a policy: its new value, with the current one when there is a current policy. */
