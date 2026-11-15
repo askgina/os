@@ -4,7 +4,7 @@
 - Status: Draft
 - Owner(s): Eric Juta
 - Created: 2026-11-14
-- Last Updated: 2026-11-14
+- Last Updated: 2026-11-15
 - Links: [Ticket #25](https://github.com/askgina/os/issues/25) | [Map #18](https://github.com/askgina/os/issues/18) | [Research report](./research/beyond-one-machine.md) | [v0.1 plan](./agent-workspaces-v0.1.md)
 
 This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`,
@@ -15,26 +15,26 @@ asking for generic next steps.
 
 ## Purpose / Big Picture
 
-v0.1 runs on one machine. Root on that machine is the signer host, so the separation between the control plane and the signer protects nothing against whoever administers it (`docs/threat-model.md:216-218`). This plan takes the product to several machines in the order that pays off first in security, then in availability.
+The product runs on one machine. Root on that machine is the signer host, so the separation between the control plane and the signer protects nothing against whoever administers it (`docs/threat-model.md:564-566`). This plan takes the product to several machines in the order that pays off first in security, then in availability.
 
 After this plan:
 
-1. An operator can run the signer on its own host, administered by different people, reached only over mutual TLS. A person who takes over the control-plane host can no longer enroll an approver, read the vault or exceed a policy, because none of that is on that host. This is the one step in the plan that improves security.
-2. A signer restored from a backup, or moved to a standby host, cannot be made to sign an approval it already signed before the backup. The operator runs `fence` before starting it.
+1. An operator can run the signer on its own host, administered by different people, reached only over mutual TLS. The confirmation page, where every approval is made (the keyless `approve` service at `APPROVE_ORIGIN`, `specs/trusted-display.md`), runs in the signer's trust domain too (D7). A person who takes over the control-plane host can then no longer enroll an approver, move the restore fence, revoke a mandate from the operator's command line, read the vault, exceed a policy or show a false confirmation page, because none of that is on that host. This is the one step in the plan that improves security.
+2. A signer restored from a backup, or moved to a standby host, cannot be made to sign an approval it already signed before the backup. This is built (Milestone 2, delivered): the operator runs `fence` before starting it, and the signer fences a database file it did not open last by itself.
 3. The control plane can keep its key-encryption keys in OpenBao Transit instead of a file, with a migration path from the file keyring.
 4. The control plane runs as several replicas: crash one in the middle of a payment and the other finishes it with exactly one transaction.
 5. The control plane installs on Kubernetes from Kustomize manifests, with NetworkPolicies that reproduce the Compose isolation as far as Kubernetes allows. Postgres can be a three-instance CloudNativePG cluster with synchronous replication.
 
-Every step keeps the v0.1 invariant: the signer decides whether a human approved and signs only what was approved. The control plane is never trusted for that. Nothing in this plan moves a decision out of the signer or a key into the control plane.
+Every step keeps the invariant: the signer decides whether a human approved and signs only what was approved, or what a live mandate it holds covers. The control plane is never trusted for that. Nothing in this plan moves a decision out of the signer or a key into the control plane.
 
-Non-goals: replicating the signer; AWS or Google Cloud KMS providers (the interface is the contract; implementations are a later ticket); wallet keys in an HSM or cloud KMS; zero-downtime upgrades of the workflow bundle; autoscaling; service meshes; multi-region; Postgres HA outside Kubernetes (Patroni and similar); hosted or multi-tenant operation.
+Non-goals: replicating the signer; AWS or Google Cloud KMS providers (the interface is the contract; implementations are a later ticket); wallet keys in an HSM or cloud KMS; zero-downtime upgrades of the workflow bundle; autoscaling; service meshes; multi-region; Postgres HA outside Kubernetes (Patroni and similar); hosted or multi-tenant operation; moving the notification webhook secret or the VAPID key into a key provider (they stay files in the control plane's secrets).
 
 Success means:
 
-- CI job `stack (split)` passes every release gate with the signer and the control plane in two Compose projects that share nothing but one network carrying mutual TLS, and proves the control project holds no signer secret.
-- `apps/signer/test/fence.test.ts` shows a restored signer signs a used approval again without a fence and refuses it with `envelope_fenced` after one.
+- CI job `stack (split)` passes every release gate with the signer and the control plane in two Compose projects that share nothing but one network carrying mutual TLS, with the `approve` service on the signer's side, and proves the control project holds no signer secret and no confirm secret.
+- Delivered: `apps/signer/test/fence.test.ts` shows a restored signer signs a used approval again without a fence and refuses it with `envelope_fenced` after one; the release gate "a restored and fenced backup keeps wallets, refuses an approval used after the backup and every approval issued before the restore, and signs a new proposal" passes on the real stack (CI run 43710836888).
 - CI job `stack (openbao)` passes every release gate with `KEY_PROVIDER=openbao`, and the World's ciphertext-at-rest test passes on both providers, including a 20 second OpenBao outage in the middle of a run.
-- CI job `stack (replicas)` passes every release gate with two server replicas, plus a gate that kills the replica running a signing step and still ends in one transaction.
+- CI job `stack (replicas)` passes every release gate with two server replicas, plus a gate that kills the replica running a signing step and still ends in one transaction, and a gate that shows one notification delivery per row across both replicas.
 - CI job `k8s` installs the kind overlay, passes the Kubernetes isolation gates and the release gates that do not need Compose, and, on the CloudNativePG variant, survives a primary failover during a payment with one transaction and a whole audit chain.
 - Out of scope and stays out: signer replication, cloud KMS adapters, zero-downtime workflow upgrades.
 
@@ -51,73 +51,91 @@ Success means:
 - [ ] Milestone 6: HA Postgres with CloudNativePG.
 - [ ] Milestone 7: documentation matches the code.
 - [ ] Run validation in CI and record evidence.
+- [x] (2026-11-15) Re-checked against main at `2911c20`: Milestone 2 and its restore gate are CI-green (run 43710836888); the rest is rewritten for the trusted display, mandates and notifications. See `Revision Notes`.
 
 ## Surprises & Discoveries
 
-- Observation: account-nonce reservations are control-plane state, not signer state. They live in `os.nonce_reservations` under a per-wallet, per-chain `pg_advisory_xact_lock`, so they already serialize across server replicas.
-  Evidence: `apps/server/src/execution/intents.ts:648-697`; `specs/agent-workspaces-v0.1.md:153-155`.
-- Observation: a signer restored from a backup older than its last signature forgets the used nonce, the approval and the spend, and signs the same authorization again (with any account nonce) while the envelope is unexpired, for up to 24 hours by default. `deploy/README.md:82-83` says waiting approvals "can still be approved after the restore", which is also how a person pays twice after a whole-stack restore of an older backup.
-  Evidence: `apps/signer/src/signer.ts:716,756-768`; `apps/signer/src/config.ts:17`; research finding 6.
+- Observation: account-nonce reservations are control-plane state, not signer state. They live in `os.nonce_reservations` under a per-wallet, per-chain `pg_advisory_xact_lock`, so they already serialize across server replicas. A stuck transaction keeps its nonce (v0.1 defect fix), which is the same lock and the same table.
+  Evidence: `apps/server/src/execution/transactions.ts:109-165` (the allocator moved there from `intents.ts`); `specs/agent-workspaces-v0.1.md:153-155`.
+- Observation: a signer restored from a backup older than its last signature forgot the used nonce, the approval and the spend, and signed the same authorization again while the envelope was unexpired, for up to 24 hours by default. At drafting time `deploy/README.md` promised that waiting approvals "can still be approved after the restore". Since `018d2f5` the guide says every restore is fenced and that approvals waiting at the backup are shown closed and must be proposed again (`deploy/README.md:136-175`), so D5 (a) and the guide agree.
+  Evidence: `apps/signer/src/signer.ts:381-402` (fence check, then the used-nonce check); `apps/signer/src/config.ts:22`; research finding 6.
 - Observation: OpenBao Transit's `rewrap` endpoint takes no `associated_data`, so AAD-bound data keys are rewrapped by decrypt and encrypt, which is what `DataKeyStore.rewrap` already does.
   Evidence: [Transit API](https://openbao.org/api-docs/secret/transit/), "Rewrap data" parameters.
 - Observation: runs are not pinned to a workflow bundle. The Postgres World's deployment id is the constant `'postgres'`, and the approval workflow id has no content hash, so two replicas on different bundles can replay the same run with different code.
-  Evidence: `@workflow/world-postgres` 5.2.0 `dist/queue.js:351-353`; generated `apps/server/.well-known/workflow/v1/manifest.json:84-87`.
+  Evidence: `@workflow/world-postgres` 5.2.0 `dist/queue.js:351-353`; generated `apps/server/.well-known/workflow/v1/manifest.json:87`.
 - Observation: after a key-provider outage, a run can wait hours before its next attempt: Graphile's backoff is `exp(min(attempts, 10))` seconds, about 6 hours per attempt from the tenth, and core fails the run on delivery 49.
   Evidence: `@workflow/world-postgres` 5.2.0 `dist/queue.js:105-118`.
 - Observation: Kubernetes NetworkPolicy cannot block `localhost` inside a pod and cannot hide Service names from DNS, so two Compose properties (the loopback-only delivery listener is private to one container; agents cannot resolve internal names) need other measures.
-  Evidence: [Network Policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/); `e2e/test/release-gates.spec.ts:269-301`.
+  Evidence: [Network Policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/); `e2e/test/release-gates.spec.ts:557-590`.
 - Observation: with asynchronous replication, a lost commit removes an audit entry and the workspace's audit head together, so `verifyAudit` still passes and the loss is invisible; a lost shred commit brings a destroyed key back.
-  Evidence: `apps/server/src/audit.ts:55-108`; `packages/keys/src/data-key-store.ts:264-275`; research finding 8.
+  Evidence: `apps/server/src/audit.ts:55-130`; `packages/keys/src/data-key-store.ts:264-275`; research finding 8.
 - Observation: a backup of a stopped signer and the stopped signer are the same bytes, so nothing inside the data can tell a restart from a restore. What differs is the file: SQLite never replaces its main file, while a copy, an extracted archive or a move gets a new creation time even where the filesystem reuses the inode number. A disk snapshot rolled back in place keeps both, and `cp -a` onto an existing file writes in place and keeps both too.
   Evidence: a local probe with Node 26 on ext4 (rewriting in place kept `ino` and `birthtimeNs`; deleting and recreating reused the `ino` with a new `birthtimeNs`); `apps/signer/test/fence.test.ts`, "without a fence, a restore that keeps the file signs an approval a second time".
 - Observation: the signer's SQLite had no schema version; every table was `CREATE TABLE IF NOT EXISTS`, so a column or a table added later had no migration step.
   Evidence: `apps/signer/src/db.ts` before this change.
+- Observation (2026-11-15): moving the signer to another host is a new database file, so the signer fences itself on the new host, and every move of the fence revokes every live mandate with reason `operator`. A move therefore ends all mandates as well as every waiting approval.
+  Evidence: `apps/signer/src/fence.ts:55-74,94-109`; `deploy/README.md:161-175`; release gate "the operator's restore fence ends every live mandate" (`e2e/test/release-gates.spec.ts:1741`).
+- Observation (2026-11-15): mandate windows and lifetimes, the daily cap and the fence are all counted by the signer's own clock; the control plane's clock matters only for the 60 second request signature and the `issuedAt` it writes into envelopes (refused when more than 30 seconds ahead of the signer).
+  Evidence: `apps/signer/src/mandates.ts:183-196`; `apps/signer/src/signer.ts:63,266`; `packages/protocol/src/webauthn/verify-authorization.ts:53-54,128`; `deploy/README.md:177-178,260`.
+- Observation (2026-11-15): the notification outbox is already replica-safe. Due rows are claimed under `FOR UPDATE SKIP LOCKED` and leased for 60 seconds in one short transaction, sent outside it, and an outcome is recorded only while the lease still holds; a sender that dies leaves its row to be sent again after the lease. Delivery is at least once, and the guide tells receivers to dedupe.
+  Evidence: `apps/server/src/notify/outbox.ts:28-39,162-196,399-420`; `deploy/README.md:403-419`.
+- Observation (2026-11-15): two transactions that inserted rows referring to one workspace and then appended to its audit chain deadlocked under `FOR UPDATE` on the workspace row; `appendAudit` now takes `FOR NO KEY UPDATE`. Concurrent proposals on several replicas meet the same lock, so the fix is a precondition for Milestone 4, already met.
+  Evidence: `apps/server/src/audit.ts:61-70`; commit `307c404`.
 
 ## Decision Log
 
-Owner decisions. Each is open; the plan is written for the recommended option and every milestone that depends on one says so.
+Owner decisions. Each is open unless marked; the plan is written for the recommended option and every milestone that depends on one says so.
 
-- Decision D1 (owner, open): order of directions. Options: (a) signer split and fence first, then key provider, replicas, Kubernetes, HA Postgres; (b) Kubernetes first; (c) key provider first.
-  Recommended: (a). Rationale: it is the only direction that changes what a compromised control-plane host can do; the rest is availability.
+- Decision D1 (owner, open): order of directions. Options: (a) signer split first (the fence is already built), then key provider, replicas, Kubernetes, HA Postgres; (b) Kubernetes first; (c) key provider first.
+  Recommended: (a). Rationale: it is still the only direction that changes what a compromised control-plane host can do; the rest is availability.
 - Decision D2 (owner, open): first non-file key provider. Options: (a) OpenBao Transit; (b) AWS KMS; (c) Google Cloud KMS; (d) none, file keyring only.
   Recommended: (a). Rationale: self-hostable, MPL-licensed, a small HTTP API, and a real server can run in CI; cloud KMS cannot be proven without a cloud account.
 - Decision D3 (owner, open): Kubernetes packaging. Options: (a) Kustomize base and overlays; (b) Helm chart; (c) both; (d) documentation only.
   Recommended: (a). Rationale: plain YAML that `kubectl` applies and `kubeconform` checks, with no release Secrets holding rendered values.
-- Decision D4 (owner, open): where the signer may run when the control plane is on Kubernetes. Options: (a) outside the cluster only, on its own host; (b) in a separate cluster; (c) in the same cluster, documented as "cluster administrators are the signer host".
-  Recommended: (a) for production; the in-cluster component exists for CI and evaluation only. Rationale: Secrets are unencrypted in etcd by default and cluster administration reaches every node.
-- Decision D5 (owner, taken 2026-11-14): what a restore promises. Options: (a) every restore is fenced, so approvals waiting at backup time must be proposed again; (b) keep the v0.1 promise that waiting approvals survive a restore, and fence only when the operator knows the backup is older than the last signature.
-  Chosen: (a). Rationale: the operator cannot know from the backup whether a payment happened after it; (b) can pay twice.
+- Decision D4 (owner, open): where the signer and the `approve` service may run when the control plane is on Kubernetes. Options: (a) outside the cluster only, on the signer's own host; (b) in a separate cluster; (c) in the same cluster, documented as "cluster administrators are the signer host".
+  Recommended: (a) for production; the in-cluster component exists for CI and evaluation only. Rationale: Secrets are unencrypted in etcd by default and cluster administration reaches every node, and an `approve` service in the cluster gives cluster administrators the confirmation page.
+- Decision D5 (owner, taken 2026-11-14, applied): what a restore promises. Options: (a) every restore is fenced, so approvals waiting at backup time must be proposed again; (b) keep the v0.1 promise that waiting approvals survive a restore.
+  Chosen: (a). Rationale: the operator cannot know from the backup whether a payment happened after it; (b) can pay twice. Status 2026-11-15: built in `018d2f5`; `deploy/README.md:136-175`, `docs/approval-protocol.md:385-428` and `docs/threat-model.md:245-262` all say (a), so the earlier contradiction with the deploy guide is gone. Nothing left to decide.
 - Decision D6 (owner, open): Postgres durability on Kubernetes. Options: (a) CloudNativePG, 3 instances, `dataDurability: required`; (b) `preferred`; (c) asynchronous.
-  Recommended: (a). Rationale: no acknowledged audit entry or shred is ever lost; writes pause when no standby is available, which stalls approvals but loses nothing.
+  Recommended: (a). Rationale: no acknowledged audit entry, shred, mandate grant or notification row is ever lost; writes pause when no standby is available, which stalls approvals but loses nothing.
+- Decision D7 (owner, open, new 2026-11-15): where the confirmation page runs in a split deployment (the `approve` service, the edge that serves `APPROVE_ORIGIN`, its TLS certificate and the copy of the confirm secret). Options: (a) on the signer host, with its own small edge, the signer itself still unpublished except to the control host; (b) on a third host with its own administrators, reaching the signer over mutual TLS; (c) on the control host.
+  Recommended: (a). Rationale: (c) gives a control-host compromise the confirmation page and so reopens the display gap the trusted display closed (`specs/trusted-display.md`, "Risks", says it runs with the signer on split hosts), and (b) adds a third set of administrators without lowering the worst case, since root on the signer host already controls everything.
+- Decision D8 (owner, open, new 2026-11-15): server egress on Kubernetes when the signed webhook or Web Push is on. Options: (a) allow the server pods TCP 443 to any address while either is configured, and rely on the server's own checks (`NOTIFY_WEBHOOK_URL` is one fixed URL, `WEB_PUSH_ENDPOINT_HOSTS` limits push endpoints); (b) only the CIDRs the operator lists, which push services with changing addresses cannot meet; (c) no notifications on Kubernetes.
+  Recommended: (a). Rationale: a NetworkPolicy cannot name a host, and the Compose server already reaches the internet for RPC; the host checks stay in the server.
+- Decision D9 (owner, open, new 2026-11-15): whether a planned move of the signer to a new host may keep live mandates and waiting approvals. Options: (a) no: a move is a new database file, the signer fences itself and every live mandate ends (today's code); (b) add a hand-over command that lets the operator vouch that no copy is kept, and skip the fence.
+  Recommended: (a). Rationale: the signer cannot tell a move from a copy, and a kept copy plus a skipped fence is exactly the double payment the fence exists to stop; people grant mandates again.
 
 Plan decisions (taken here, reopen in review if wrong):
 
 - Decision: mutual TLS lives in the signer process, with self-signed certificates where each side trusts exactly the other's certificate. No certificate authority.
   Rationale: protection that does not depend on how the network between hosts is configured; no CA key to guard. A tunnel (WireGuard, Tailscale) may be added by the operator but is not relied on.
   Date/Author: 2026-11-14 / research agent
+- Decision (2026-11-15): with TLS on, the signer trusts two client certificates, the control plane's and the `approve` service's, and binds each to its request-signature scope: a control-scope route presented with the `approve` certificate, or a confirm-scope route with the control certificate, is refused as `unauthenticated` before the HMAC is checked.
+  Rationale: the signer already has two scopes with two secrets (`docs/approval-protocol.md`, section 10, "Two secrets, two scopes"; `apps/signer/src/index.ts:236`); binding the certificate to the scope keeps a stolen confirm secret useless from the control host, and keeps the `approve` service on the same TLS listener instead of a second plain one.
+  Date/Author: 2026-11-15 / plan refresh
 - Decision: the HMAC request signature stays as it is, inside TLS.
-  Rationale: it binds method, path, time and body (`docs/approval-protocol.md:307-331`); TLS alone does not bind a request to the moment it was made.
+  Rationale: it binds method, path, time and body (`docs/approval-protocol.md`, section 10); TLS alone does not bind a request to the moment it was made.
   Date/Author: 2026-11-14 / research agent
-- Decision: the restore fence is a time, set by the operator on the signer host, compared with the envelope's passkey-covered `issuedAt` plus `CLOCK_SKEW_SECONDS`. The replay check (an approval already signed in this database) still comes first.
-  Rationale: research finding 6; `packages/protocol/src/webauthn/verify-authorization.ts:44,62-69`.
-  Date/Author: 2026-11-14 / research agent
+- Decision: the restore fence is a time, set by the operator on the signer host, compared with the envelope's passkey-covered `issuedAt` plus `CLOCK_SKEW_SECONDS`. Built: the check runs before the replay check (`apps/signer/src/signer.ts:381-402`; `docs/approval-protocol.md:385-386`), and again inside the signing transaction.
+  Rationale: research finding 6; `packages/protocol/src/webauthn/verify-authorization.ts:53-54,128`.
+  Date/Author: 2026-11-14 / research agent; order corrected 2026-11-15 to match the code
 - Decision: the signer also fences by itself. It records its database file's identity (inode and creation time) in `signer_meta` and, on opening any other file that is not a newly created database, sets the fence to its clock and records `fence-set-on-new-database-file`. A v0.1 file has no recorded identity and is fenced once on its first open.
   Rationale: the owner asked that the fence cannot be skipped silently, and that the signer learns of a restore without the control plane. The documented restore (archives extracted into empty volumes) and every move between hosts create new files, so a forgotten `fence` step is caught; a snapshot rolled back in place is not, which is why the step stays (see `Surprises & Discoveries`).
   Date/Author: 2026-11-14 / FixSignerDefects
-- Decision: `fence` takes no `--at`, prints `{ ok, action: "fence-set-by-operator", fenceAt }` like the other admin commands, and moves the fence only forward; a move appends one decision per workspace, a repeat in the same second appends nothing.
+- Decision: `fence` takes no `--at`, prints `{ ok, action: "fence-set-by-operator", fenceAt }` like the other admin commands, and moves the fence only forward; a move appends one decision per workspace, a repeat in the same second appends nothing. Every move also revokes every live mandate (added with mandates, `apps/signer/src/fence.ts:72`).
   Rationale: "now" is the only safe value after a restore; an earlier one could let a used approval through, a later one only refuses more. One output shape for every admin command.
   Date/Author: 2026-11-14 / FixSignerDefects
 - Decision: the control plane needs no special case. `envelope_fenced` is a permanent signer refusal like any other: the approval ends `failed` with that code, the intent ends `failed` with `failureCode: "envelope_fenced"` (not a new `approval_fenced`), and the nonce reservation is released by the existing path.
   Rationale: one code from the signer to the agent; nothing to translate.
   Date/Author: 2026-11-14 / FixSignerDefects
-- Decision: the signer's SQLite gets `PRAGMA user_version` migrations: version 1 is the v0.1 schema (idempotent, so a v0.1 file at `user_version` 0 is taken as version 1), version 2 adds `signer_meta`. Migrations run in one `BEGIN IMMEDIATE` transaction; a file at a newer version is refused (`schema_too_new`).
-  Rationale: the fence needs a table, and later milestones and plans (workspace lifecycle) need columns.
-  Date/Author: 2026-11-14 / FixSignerDefects
+- Decision: the signer's SQLite gets `PRAGMA user_version` migrations: version 1 is the v0.1 schema (idempotent, so a v0.1 file at `user_version` 0 is taken as version 1), version 2 adds `signer_meta`. Migrations run in one `BEGIN IMMEDIATE` transaction; a file at a newer version is refused (`schema_too_new`). On main the schema is at version 5 (3 confirmations, 4 possession challenges, 5 mandates); stuck-transaction repricing is adding version 6. Nothing in this plan adds a signer schema version.
+  Rationale: the fence needed a table, and later plans needed tables.
+  Date/Author: 2026-11-14 / FixSignerDefects; versions updated 2026-11-15
 - Decision: a Transit KEK id is `bao:<mount>/<key>@<version>`, and `wrap` passes that `key_version`.
   Rationale: rotation must change `kek_id`, or `DataKeyStore.rewrap` (`kek_id <> active`) never moves a row.
   Date/Author: 2026-11-14 / research agent
 - Decision: `KeyProvider.hasKek` is removed; the composite provider routes by KEK id prefix.
-  Rationale: its only caller is its own unit test (research finding 2).
+  Rationale: its only caller is its own unit test (research finding 2; still true on main).
   Date/Author: 2026-11-14 / research agent
 - Decision: key-provider health is not part of `/readyz`.
   Rationale: a provider outage would mark every replica unready and take down sign-in and every route that does not need a key.
@@ -131,6 +149,9 @@ Plan decisions (taken here, reopen in review if wrong):
 - Decision: the server Deployment uses `strategy: Recreate`, and a boot guard refuses to start the queue while a live replica runs a different workflow bundle.
   Rationale: runs are not pinned to a bundle (see `Surprises & Discoveries`). Zero-downtime upgrades are out of scope.
   Date/Author: 2026-11-14 / research agent
+- Decision (2026-11-15): the notification outbox needs no change for replicas; every replica reads the same `notify-webhook-secret` and `vapid-key.pem`, from one Secret on Kubernetes and from the shared `server-secrets` files on Compose.
+  Rationale: rows are claimed with `SKIP LOCKED` and a lease (see `Surprises & Discoveries`); a replica with another VAPID key would break every subscription, and one with another webhook secret would send signatures the receiver refuses.
+  Date/Author: 2026-11-15 / plan refresh
 - Decision: on Kubernetes, agent pods get no DNS and reach the gateway through the `AGENT_GATEWAY_SERVICE_HOST` variable that Kubernetes injects for Services in the same namespace; the gateway runs in `os-agents`.
   Rationale: keeps the v0.1 gate "an agent cannot resolve internal names" meaningful.
   Date/Author: 2026-11-14 / research agent
@@ -142,110 +163,115 @@ Plan decisions (taken here, reopen in review if wrong):
 
 - Outcome (2026-11-14): Milestone 2, the restore fence, is built and passes its unit tests locally (`apps/signer/test/fence.test.ts`, `apps/signer/test/admin.test.ts`). The rest of this plan is not built.
   Remaining: the restore gate on the real stack in CI; every other milestone.
+- Outcome (2026-11-15): Milestone 2 is delivered and CI-green. Built in `018d2f5`; mandates (`b60495d`) made every move of the fence revoke every live mandate.
+  Evidence: CI run 43710836888 at `98cc6a1`: job `test` passes `apps/signer/test/fence.test.ts` (10 tests) and `apps/signer/test/admin.test.ts` (4 tests); `stack (amd64)` and `stack (arm64)` pass `e2e/test/release-gates.spec.ts:753` ("a restored and fenced backup …") and `:1741` ("the operator's restore fence ends every live mandate"), 32 passed in `stack (amd64)`.
+  Remaining: Milestones 1 and 3 to 7. Nothing else in this plan is built; no other plan built any of it.
 
 ## Context and Orientation
 
 Relevant repo rules:
 
 - Read `AGENTS.md` at the repository root before changing files. `docs/references/` is context, not authority.
-- The owner's standing rule reserves local builds, whole test suites, coverage and `e2e/run.sh` for CI unless he names the command (`specs/agent-workspaces-v0.1.md:108-109`). Locally: `bun run check`, `bunx tsc --noEmit` in one package, and single test files.
+- The owner's standing rule reserves local builds, whole test suites, coverage and `e2e/run.sh` for CI unless he names the command (`specs/agent-workspaces-v0.1.md:109-110`). Locally: `bun run check`, `bunx tsc --noEmit` in one package, and single test files.
 - Every claim in a status update says whether it is written, type-checked, single-test-passed, CI-green or unproven.
 
-Terms used here (v0.1 terms are in `docs/architecture.md:21-35`):
+Terms used here (the product's terms are in `docs/architecture.md`, "Words used on this page"):
 
-- **Trust domain**: a set of secrets and state that only one group of administrators controls. v0.1 has two: the control plane (server, Postgres, keyring) and the signer (vault, SQLite, token key, vault passphrase).
-- **Split deployment**: the signer on one host, the control plane on another, each with its own administrators and backups.
-- **Restore fence**: a time recorded in the signer's database; the signer refuses every envelope issued before it.
+- **Trust domain**: a set of secrets and state that only one group of administrators controls. Today there are two: the control plane (server, Postgres, keyring, notification webhook secret, VAPID key) and the signer (vault, SQLite, token key, vault passphrase, the two request secrets, and the `approve` service's read-only copy of the confirm secret).
+- **Confirmation page**: the page at `APPROVE_ORIGIN`, served by the keyless `approve` service, where every passkey approval is made. The signer accepts an approval only when the browser made it there, top-level.
+- **Split deployment**: the signer (and, under D7, the confirmation page) on one host, the control plane on another, each with its own administrators and backups.
+- **Restore fence**: a time recorded in the signer's database; the signer refuses every envelope issued before it, and every move of it ends every live mandate.
+- **Mandate**: an approval in advance, held and counted by the signer, under which it signs an agent's transfers with no person asked (`specs/approval-mandates.md`).
 - **Key provider**: the code behind `KeyProvider` that wraps and unwraps data keys under a key-encryption key (KEK).
 - **Replica**: one server process; several share one Postgres.
 - **CNPG**: CloudNativePG, the Kubernetes operator for Postgres clusters.
 
-Current behavior (each line is source-read; see the research report for detail):
+Current behavior (each line is source-read on main at `2911c20`):
 
-- The signer serves plain HTTP on `0.0.0.0:8787` and relies on a Docker `internal` network (`apps/signer/src/main.ts:34`; `compose.yaml:181-182`).
-- One `init` container writes both trust domains' secrets on one host (`deploy/init/init.mjs:35-59`).
-- The keyring is one JSON file read at boot by the server, the World target and the keys CLI (`apps/server/src/main.ts:30`; `packages/world/src/target.ts:53`; `packages/keys/src/cli.ts:66-68`).
-- Rate limits are in process memory (`apps/server/src/mcp/gateway.ts:388-448`); the setup token is re-minted by every boot (`apps/server/src/identity/setup.ts:21-33`); the key cache is per process and a shred evicts only locally (`packages/keys/src/data-key-store.ts:264-266`).
-- Sessions, WebAuthn ceremonies, nonce reservations, audit appends, run starts and migrations are coordinated in Postgres (`docs/threat-model.md:31-33`; `apps/server/src/identity/ceremonies.ts:42-57`; `intents.ts:648-697`; `audit.ts:55-108`; `approvals.ts:198-210`; `db/migrate.ts:13-50`).
-- The Workflow queue is Graphile Worker 0.16.6 with in-process delivery for the only queue prefix, `jobLockStaleSeconds: 30` (`apps/server/src/execution/index.ts:114-121`; `workflow-runtime.ts:118-131`).
-- The operator recovery command shown in the UI is hard-coded to Compose (`apps/web/src/lib/operator.ts:25`).
+- The signer serves plain HTTP on `0.0.0.0:8787` (`apps/signer/src/main.ts:50`) and relies on two Docker `internal` networks: `signing` to the server and `approve-signer` to the `approve` service (`compose.yaml:76,237-244`).
+- The `approve` service serves the confirmation page on port 8788, holds only `confirm-request-secret` (`APPROVE_SIGNER_SECRET_FILE`), and reaches the signer's four confirm-scope routes with `createConfirmClient`, which accepts a `fetch` (`apps/approve/src/config.ts:5-13`; `apps/approve/src/main.ts:20-25`; `packages/protocol/src/signer/client.ts:58,283`). Caddy publishes it as a second site and drops the `Cookie` header (`deploy/Caddyfile:28-39`).
+- The signer refuses to start when the confirm secret equals the request secret, and when `SIGNER_APPROVAL_ORIGIN` is not under `WEBAUTHN_RP_ID` or equals `SIGNER_RETURN_ORIGIN` (`apps/signer/src/config.ts:136-159`).
+- One `init` container writes every trust domain's secrets on one host: the keyring, `notify-webhook-secret`, `vapid-key.pem`, the shared `signer-request-secret`, `confirm-request-secret` and its `approve` copy (rewritten whenever it differs from the signer's), `token-key`, `vault-passphrase` and the Postgres password (`deploy/init/init.mjs:45-92`).
+- The keyring is one JSON file read at boot by the server, the World target and the keys CLI (`apps/server/src/main.ts:30`; `packages/world/src/target.ts:53`; `packages/keys/src/cli.ts:59-68`). `KeyProvider` still has the four members the research found (`packages/keys/src/keyring.ts:8-15`), and `parseKeyringFile` still accepts any KEK id (`:36-39`).
+- Per-process state that decides something: rate limits (`apps/server/src/mcp/gateway.ts:413-471`, client key from the last `X-Forwarded-For` entry at `:423-424`); the setup token, re-minted on every boot before setup (`apps/server/src/identity/setup.ts:21-33`); the data-key cache, where a shred evicts only locally (`packages/keys/src/data-key-store.ts:264-266`). Caches that only save work: MCP handlers (`gateway.ts:414,505-519`), chain clients and token metadata (`apps/server/src/execution/chains.ts:57-60`), time-zone formatters (`apps/server/src/notify/schedule.ts:62`).
+- Coordinated in Postgres, so already shared by replicas: sessions and passkey sign-in ceremonies (`apps/server/src/identity/ceremonies.ts:42-56`); nonce reservations (`apps/server/src/execution/transactions.ts:109-165`); audit appends under `FOR NO KEY UPDATE` on the workspace row (`apps/server/src/audit.ts:55-72`); run starts (`apps/server/src/execution/approvals.ts:294`); opening a confirmation (`approvals.ts:452`); the setup step (`apps/server/src/identity/routes.ts:89`); migrations (`apps/server/src/db/migrate.ts:17-47`, now `0000` to `0006`, the last two being `0005_notifications` and `0006_push_subscriptions`); the notification outbox (`apps/server/src/notify/outbox.ts:162-196`).
+- One sweeper per process runs every 3 seconds: it wakes decided approvals, starts runs for orphaned requests and sends due notifications (`apps/server/src/execution/index.ts:23,57-127,144-151`).
+- The Workflow queue is Graphile Worker 0.16.6 with in-process delivery for the only queue prefix, `jobLockStaleSeconds: 30` (`apps/server/src/execution/index.ts:139`; `apps/server/src/execution/workflow-runtime.ts:128`).
+- Signer state is one SQLite file at schema version 5 (`apps/signer/src/db.ts`); mandates, their uses and the daily cap are counted there by the signer's clock (`apps/signer/src/mandates.ts:183-196`; `apps/signer/src/signer.ts:63,266`). The restore fence is built (`apps/signer/src/fence.ts`; `apps/signer/src/admin.ts` command `fence`; `signer.ts:381-386`).
+- The signer's operator commands are `enroll-approver`, `verify-log`, `fence`, `list-mandates` and `revoke-mandate` (`apps/signer/src/admin.ts:12-35`). The UI shows only `enroll-approver`, hard-coded to Compose (`apps/web/src/lib/operator.ts:25`; `apps/web/src/routes/members.tsx:234`), built from `pendingPasskeys` in the members response (`packages/api/src/dto.ts:160-173`).
+- The server reaches the internet for RPC, the notification webhook and Web Push (it sits on the non-internal `control` and `chain` networks, `compose.yaml:120`).
 
-How the pieces fit together after the plan:
+How the pieces fit together after the plan (D7 (a)):
 
 ```text
- people  --HTTPS-->  edge (Caddy or ingress)  -->  server replicas  -->  Postgres (single, or CNPG primary)
+ people  --HTTPS PUBLIC_ORIGIN-->  edge (Caddy or ingress)  -->  server replicas  -->  Postgres (single, or CNPG primary)
+ people  --HTTPS APPROVE_ORIGIN-->  approve edge (signer host)  -->  approve  ==mutual TLS + confirm HMAC==>  signer
  agents  -->  agent-gateway (os-agents)  --/mcp-->  server replicas
  server replicas  --wrap/unwrap-->  OpenBao Transit (optional; otherwise the keyring file)
- server replicas  ==mutual TLS + HMAC==>  signer (own host; SQLite and OWS vault; no outbound)
+ server replicas  ==mutual TLS + control HMAC==>  signer (own host; SQLite and OWS vault; no outbound)
+ server replicas  --HTTPS-->  webhook receiver, push services (when configured)
 ```
 
 Assumptions:
 
-- Hosts in a split deployment keep clocks within 30 seconds (NTP). The request signature allows 60 seconds and the fence uses 30.
+- Hosts in a split deployment keep clocks within 30 seconds (NTP). The request signature allows 60 seconds and the fence uses 30. The signer host's clock alone decides mandate windows and lifetimes, the daily cap and the fence (`deploy/README.md:260`).
 - The signer host has local block storage. SQLite over a network file system is not supported.
+- Under D7 (a), the signer host accepts HTTPS from people on `APPROVE_ORIGIN` through its own edge, and DNS for that name points at it. The subdomain layout is the only one that fits: the port layout puts `APPROVE_ORIGIN` on `OS_HOSTNAME`, which names the control host (`deploy/README.md:15-34`).
 - Postgres poolers, if any, run in session mode: migrations take session advisory locks and Graphile uses `LISTEN`.
 - The operator runs OpenBao themselves; this plan does not deploy or operate OpenBao.
 
 ## Plan of Work
 
-Milestones are ordered by the recommended D1. Milestones 1 and 2 are one release. Milestones 3 and 4 are independent of each other. Milestone 5 depends on 1 (external signer) and 4 (replicas). Milestone 6 depends on 5.
+Milestones are ordered by the recommended D1. Milestone 2 is delivered. Milestones 3 and 4 are independent of each other. Milestone 5 depends on 1 (external signer and `approve`) and 4 (replicas). Milestone 6 depends on 5.
 
-### Milestone 1: The signer on its own host
+### Milestone 1: The signer and the confirmation page on their own host
 
-Scope: mutual TLS between server and signer, one `init` per trust domain, a Compose file per host, the operator command shown for the signer host, and a CI job that runs the release gates across two Compose projects. First because it is the security gain.
+Scope: mutual TLS from the server and from the `approve` service to the signer, one `init` per trust domain, a Compose file per host with the `approve` service and its edge on the signer's side (D7), the operator command shown for the signer host, and a CI job that runs the release gates across two Compose projects. First because it is the security gain.
 
 Files and interfaces:
 
-- `apps/signer/src/config.ts`: new variables `SIGNER_HOST` (default `0.0.0.0`), `SIGNER_TLS_CERT_FILE`, `SIGNER_TLS_KEY_FILE`, `SIGNER_TLS_PEER_CERT_FILE` (all three or none; otherwise `ConfigError("SIGNER_TLS_*: set all three or none")`), `SIGNER_HEALTH_PORT` (default `8788`, used only with TLS). `SignerConfig` gains `host: string` and `tls: { cert: Buffer; key: Buffer; peerCert: Buffer } | null`.
-- `apps/signer/src/main.ts`: with `tls`, serve with `createServer: https.createServer` and `serverOptions: { cert, key, ca: [peerCert], requestCert: true, rejectUnauthorized: true, minVersion: "TLSv1.3" }` (supported by `@hono/node-server` 2.1.8), plus a second plain listener on `127.0.0.1:SIGNER_HEALTH_PORT` whose Hono app answers only `GET /healthz`. Without `tls`, unchanged. At start, log `signer.tls_expiry` with the days left on both certificates; refuse to start if either has expired.
+- `apps/signer/src/config.ts`: new variables `SIGNER_HOST` (default `0.0.0.0`), `SIGNER_TLS_CERT_FILE`, `SIGNER_TLS_KEY_FILE`, `SIGNER_TLS_CONTROL_CERT_FILE`, `SIGNER_TLS_APPROVE_CERT_FILE` (all four or none; otherwise `ConfigError("SIGNER_TLS_*: set all four or none")`), `SIGNER_HEALTH_PORT` (default `8789`, used only with TLS; not 8788, which the `approve` container uses). `SignerConfig` gains `host: string` and `tls: { cert: Buffer; key: Buffer; control: Buffer; approve: Buffer } | null`.
+- `apps/signer/src/main.ts`: with `tls`, serve with `createServer: https.createServer` and `serverOptions: { cert, key, ca: [control, approve], requestCert: true, rejectUnauthorized: true, minVersion: "TLSv1.3" }` (supported by `@hono/node-server` 2.1.8), plus a second plain listener on `127.0.0.1:SIGNER_HEALTH_PORT` whose Hono app answers only `GET /healthz`. Without `tls`, unchanged. At start, log `signer.tls_expiry` with the days left on every certificate; refuse to start if any has expired.
+- `apps/signer/src/index.ts`: with `tls`, the request-signature check first maps the verified peer certificate (SHA-256 of its DER) to a scope, `control` or `confirm`, and refuses with `unauthenticated` a request whose route scope differs, before the HMAC is checked. The scope table and the HMAC code are unchanged.
 - `apps/server/src/config.ts`: `SIGNER_TLS_CERT_FILE`, `SIGNER_TLS_KEY_FILE`, `SIGNER_TLS_PEER_CERT_FILE`. An `https:` `SIGNER_URL` requires all three; an `http:` one refuses them (a half-configured split fails at boot, not silently in clear text). `SIGNER_ADMIN_COMMAND` (default `docker compose exec signer node src/admin.ts`).
-- `apps/server/src/signer-transport.ts` (new): `createSignerFetch(tls, servername): typeof fetch` built from `undici` 8.12.4 (`Agent({ connect: { cert, key, ca: [peerCert], servername, minVersion: "TLSv1.3" } })` with undici's own `fetch`, so the dispatcher and fetch come from one package). Add `"undici": "8.12.4"` to `apps/server/package.json`.
-- `apps/server/src/main.ts`: pass `fetch: createSignerFetch(...)` to `createSignerClient` (`packages/protocol/src/signer/client.ts:42` already accepts it).
-- `packages/api/src/routes.ts` and the members page (`apps/web/src/routes/members.tsx:234`, `apps/web/src/lib/operator.ts:15-32`): the response that lists pending approvers carries `signerAdminCommand`; `enrollApproverCommand` takes it as its prefix instead of the hard-coded Compose text.
-- `deploy/init/init.mjs`: `--domain=all|control|signer` (default `all`, today's behaviour). `signer` writes `/secrets/signer/*` only. `control` writes server and db secrets and requires `signer-request-secret` to be present already (copied from the signer host), never generating a second one.
-- `deploy/split/make-peer-certs.sh` (new): two `openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 730` invocations (`CN=os-signer` with `subjectAltName=DNS:<signer host>`, and `CN=os-control`), files written `0400`, SHA-256 fingerprints printed.
-- `deploy/split/signer.compose.yaml` (new): `init` (`--domain=signer`) and `signer` with the TLS variables, the hardening anchor from `compose.yaml`, and `ports: ["${SIGNER_BIND_ADDRESS}:8787:8787"]` on the private interface. `deploy/split/nftables-signer.conf` (new): example rules that drop outbound traffic from the signer's bridge.
-- `deploy/split/control.compose.yaml` (new): `postgres`, `server`, `caddy`, `agent-gateway`, `anvil` via `extends` from `../../compose.yaml`, with `SIGNER_URL=https://${SIGNER_HOSTNAME}:8787`, the server's TLS files, and no `signer` service or `depends_on` on it; `init` with `--domain=control`.
+- `apps/approve/src/config.ts` and `apps/approve/src/main.ts`: the same three `APPROVE_TLS_*` variables with the same rule; pass `fetch: createSignerFetch(...)` to `createConfirmClient`.
+- `packages/protocol/src/signer/transport.ts` (new, exported as a new Node-only subpath `@askgina/os-protocol/signer-transport` in `packages/protocol/package.json` `exports`, so nothing importing `./signer` pulls in undici): `createSignerFetch(tls, servername): typeof fetch` built from `undici` 8.12.4 (`Agent({ connect: { cert, key, ca: [peerCert], servername, minVersion: "TLSv1.3" } })` with undici's own `fetch`, so the dispatcher and fetch come from one package). Used by the server and by `approve`. Add `"undici": "8.12.4"` to `packages/protocol/package.json`. (The draft put it in the server; the `approve` service needs it too.)
+- `apps/server/src/main.ts`: pass `fetch: createSignerFetch(...)` to `createSignerClient` (`packages/protocol/src/signer/client.ts:58`).
+- `packages/api/src/dto.ts` (the members response, `pendingPasskeys` at `:160-173`) and `apps/web/src/lib/operator.ts:15-31`, `apps/web/src/routes/members.tsx:234`: the members response carries `signerAdminCommand`; `enrollApproverCommand` takes it as its prefix instead of the hard-coded Compose text, and checks it against a fixed pattern (words of `[A-Za-z0-9_./:-]` separated by single spaces) because it is pasted into a root shell.
+- `deploy/init/init.mjs`: `--domain=all|control|signer` (default `all`, today's behaviour). `signer` writes `/secrets/signer/*` and the `approve` copy of the confirm secret. `control` writes the keyring, `notify-webhook-secret`, `vapid-key.pem`, the server's copy of the Postgres password and the db secret, and requires `signer-request-secret` to be present already (copied from the signer host), never generating a second one. The confirm secret never leaves the signer host.
+- `deploy/split/make-peer-certs.sh` (new): three `openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 730` invocations (`CN=os-signer` with `subjectAltName=DNS:<signer host>,DNS:signer`, `CN=os-control`, `CN=os-approve`), files written `0400`, SHA-256 fingerprints printed.
+- `deploy/split/signer.compose.yaml` (new): `init` (`--domain=signer`), `signer` with the TLS variables and `ports: ["${SIGNER_BIND_ADDRESS}:8787:8787"]` on the private interface, `approve` with its TLS variables and `SIGNER_URL=https://signer:8787` on the internal `approve-signer` network, and an edge (Caddy, the `APPROVE_ORIGIN` site block of `deploy/Caddyfile`, ports 80 and 443) on `approve-edge`. The hardening anchor from `compose.yaml`. `deploy/split/nftables-signer.conf` (new): example rules that drop outbound traffic from the signer's and `approve`'s bridges; only the edge container may reach the ACME server.
+- `deploy/split/control.compose.yaml` (new): `postgres`, `server`, `caddy` (the `PUBLIC_ORIGIN` site only), `agent-gateway`, `anvil` via `extends` from `../../compose.yaml`, with `SIGNER_URL=https://${SIGNER_HOSTNAME}:8787`, the server's TLS files, `APPROVE_ORIGIN` set to the signer host's name, and no `signer` or `approve` service; `init` with `--domain=control`.
 - `e2e/run.sh`, `e2e/src/stack.ts`: `E2E_SPLIT=1` brings up the two projects with an external network `os-e2e-wire` that only `server` and `signer` join, so nothing else connects them.
 - `e2e/test/split.spec.ts` (new): the split-only gates below.
-- `.github/workflows/ci.yml`: matrix entry `{ name: split, runner: ubuntu-latest, tls: "0", split: "1" }` in `stack`.
+- `.github/workflows/ci.yml`: matrix entry `{ name: split, runner: ubuntu-latest, tls: "0", split: "1" }` in `stack` (today's entries are `amd64`, `arm64`, `tls`, `.github/workflows/ci.yml:113-115`).
 
 Work:
 
-The signer checks the peer certificate at the TLS layer, so an unauthenticated client never reaches the HTTP parser. The control plane checks the signer's certificate and host name. Both keep the HMAC signature. The health check moves to a loopback listener because the main port now requires a client certificate. Compose healthchecks in `deploy/split/signer.compose.yaml` call `http://127.0.0.1:8788/healthz`.
+The signer checks the peer certificate at the TLS layer, so an unauthenticated client never reaches the HTTP parser, and then binds the certificate to a scope. The control plane and the `approve` service check the signer's certificate and host name. All keep the HMAC signature. The health check moves to a loopback listener because the main port now requires a client certificate. Compose healthchecks in `deploy/split/signer.compose.yaml` call `http://127.0.0.1:8789/healthz`.
 
 Acceptance:
 
-- In CI job `test`: `apps/signer/test/tls.test.ts` passes: a client with the trusted certificate gets 200 from `GET /healthz` and a signed request through; no client certificate, an untrusted self-signed one, and plain HTTP each fail before any HTTP response; the health listener answers only `/healthz` and only on `127.0.0.1`; an expired certificate stops boot.
-- In CI job `test`: `apps/server/test/support/signer-transport.test.ts` passes: config refuses `https:` without the three files and `http:` with them; a signer client using `createSignerFetch` completes a request to a TLS test signer and fails against one presenting another certificate.
-- CI `stack (split)` is green: every release gate passes, and `e2e/test/split.spec.ts` shows that a container on `os-e2e-wire` without the control plane's key cannot complete a handshake with the signer; that the control project has no volume holding `token-key`, `vault-passphrase` or the vault; and that the signer container cannot reach `https://example.com/` when the example nftables rules are applied.
+- In CI job `test`: `apps/signer/test/tls.test.ts` passes: a client with the control certificate gets 200 from `GET /healthz` and a control-scope signed request through; the `approve` certificate gets a confirm-scope request through and is refused `unauthenticated` on a control-scope route, and the control certificate on a confirm route; no client certificate, an untrusted self-signed one, and plain HTTP each fail before any HTTP response; the health listener answers only `/healthz` and only on `127.0.0.1`; an expired certificate stops boot.
+- In CI job `test`: `packages/protocol/test/signer-transport.test.ts` passes: a signer client using `createSignerFetch` completes a request to a TLS test signer and fails against one presenting another certificate. New `apps/server/test/support/signer-tls-config.test.ts` and `apps/approve/test/config.test.ts`: config refuses `https:` without the three files and `http:` with them.
+- CI `stack (split)` is green: every release gate passes, including "the confirmation service reaches the signer and nothing else" (`e2e/test/release-gates.spec.ts:461`), and `e2e/test/split.spec.ts` shows that a container on `os-e2e-wire` without the control plane's key cannot complete a handshake with the signer; that the control project has no volume holding `token-key`, `vault-passphrase`, `confirm-request-secret` or the vault, and runs no `approve` service; and that the signer container cannot reach `https://example.com/` when the example nftables rules are applied.
 
-### Milestone 2: The restore fence
+### Milestone 2: The restore fence (delivered)
 
-Scope: a signer that is restored or moved cannot repeat a signature from the lost timeline. Depends on D5 for the restore gate's wording.
+Delivered in `018d2f5` as a fix to v0.1, with the revocation of live mandates added by `b60495d`; CI-green in run 43710836888 (see `Outcomes & Retrospective`). What exists, for reference by later milestones:
 
-Files and interfaces:
+- `apps/signer/src/fence.ts`: `readFence`, `raiseFence` (moves the fence forward, one decision-log entry per workspace, revokes every live mandate), `fenceReplacedDatabase` (fences a database file that is not the one recorded in `signer_meta`).
+- `apps/signer/src/db.ts`: `signer_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT`, keys `fence_at` and `database_file`, in schema version 2.
+- `apps/signer/src/admin.ts`: `node src/admin.ts fence` (no `--at`), printing `{"ok":true,"action":"fence-set-by-operator","fenceAt":…}`.
+- `apps/signer/src/signer.ts:381-386`: `envelope_fenced` for every envelope kind when `issuedAt < fence + 30`, checked before the replay check and again in the signing transaction.
+- `packages/protocol/src/signer/api.ts`: `envelope_fenced` (403).
+- `e2e/test/release-gates.spec.ts:753` and `:1741`; `deploy/README.md:118-178`; `docs/approval-protocol.md:385-428`; `docs/threat-model.md:245-262`.
 
-- `apps/signer/src/db.ts`: `CREATE TABLE IF NOT EXISTS signer_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;` with key `fence_at` (seconds since the epoch, decimal text).
-- `apps/signer/src/admin.ts`: command `fence` (optional `--at <epoch>`, default now). Sets `fence_at = max(current, at)` and appends `fence-set-by-operator` to every workspace's decision log in one transaction. Prints one JSON line `{ event: "signer.fenced", fenceAt }`. Idempotent.
-- `apps/signer/src/signer.ts`: for every envelope kind, after the replay check and before assertions are verified: if `fence_at` is set and `envelope.issuedAt < fence_at + CLOCK_SKEW_SECONDS`, throw `SignerFailure("envelope_fenced")`, recorded in the decision log like other refusals. Re-checked inside the signing transaction.
-- `packages/protocol/src/signer/api.ts`: `envelope_fenced` added to `SignerErrorCode` (HTTP 403).
-- `apps/server/src/execution/intents.ts` and `apps/server/src/execution/approvals.ts`: `envelope_fenced` is a permanent refusal; the intent ends `failed` with `failureCode: "approval_fenced"`; an administrative approval ends failed; the nonce reservation is released.
-- `e2e/test/release-gates.spec.ts`: the gate "a restored backup keeps wallets and waiting approvals, and refuses a spent one" becomes, under D5 (a), "a restored and fenced backup keeps wallets, refuses an approval used after the backup and every approval issued before the restore, and signs a new proposal".
-- `deploy/README.md` restore steps: run `node src/admin.ts fence` on the signer before it serves.
-
-Work:
-
-`issuedAt` is covered by the passkey assertion and may not be more than 30 seconds in the future at verification (`verify-authorization.ts:62-64`). Everything used before the restore was verified before it, so its `issuedAt` is below `fence + 30`. Approvals opened in the 30 seconds after the fence are refused too; the control plane's failure path makes the agent propose again.
-
-Acceptance:
-
-- In CI job `test`: `apps/signer/test/fence.test.ts` passes: copy the SQLite file, sign approval A, put the copy back; without a fence the restored signer signs A a second time (the hazard, kept as a characterization test); after `fence` it refuses A with `envelope_fenced` and the decision log records it; an envelope issued 31 seconds after the fence signs; on the original database, A returns its stored transaction even after a fence.
-- CI `stack (amd64)` is green with the updated restore gate.
+What remains for the split: Milestone 1's move procedure relies on it (a moved database file fences itself), and Milestone 7 adds the move to the deploy guide.
 
 ### Milestone 3: Key providers and OpenBao Transit
 
-Scope: a provider interface that allows network providers, an OpenBao Transit provider, a composite for migration, and CI against a real OpenBao. Depends on D2.
+Scope: a provider interface that allows network providers, an OpenBao Transit provider, a composite for migration, and CI against a real OpenBao. Depends on D2. Unchanged by the work since the draft; the keyring still wraps only data keys, not the webhook secret or the VAPID key.
 
 Files and interfaces:
 
@@ -256,7 +282,7 @@ Files and interfaces:
 - `packages/keys/src/data-key-store.ts`: `ensureMigrated()` also awaits `provider.ready()`.
 - `packages/keys/src/cli.ts`, `packages/world/src/target.ts` (keyring variable `WORLD_KEYRING_FILE`), `apps/server/src/main.ts`, `apps/server/src/config.ts` (keyring variable `KEYRING_FILE`, now optional when `KEY_PROVIDER=openbao`): use the factory. `main.ts` closes the provider on stop.
 - `deploy/openbao/policy.hcl` (new): `update` on `<mount>/encrypt/<key>` and `<mount>/decrypt/<key>`, `read` on `<mount>/keys/<key>`.
-- `deploy/compose.test.yaml`: service `openbao`, image `quay.io/openbao/openbao:2.7.2` pinned by digest at implementation time, `server -dev -dev-root-token-id=test-root -dev-listen-address=0.0.0.0:8200`, port `127.0.0.1:55820:8200`, healthcheck. `packages/testkit/src/openbao.ts` (new): enables Transit and creates the key idempotently; `pause()`/`unpause()` helpers using `docker pause`.
+- `deploy/compose.test.yaml`: service `openbao`, image `quay.io/openbao/openbao:2.7.2` pinned by digest at implementation time, `server -dev -dev-root-token-id=test-root -dev-listen-address=0.0.0.0:8200`, port `127.0.0.1:55820:8200` (beside Postgres on 55432 and anvil on 55545, `deploy/compose.test.yaml:12,25`), healthcheck. `packages/testkit/src/openbao.ts` (new): enables Transit and creates the key idempotently; `pause()`/`unpause()` helpers using `docker pause`.
 - `e2e/compose.openbao.yaml` (new) and a `stack` matrix entry `{ name: openbao, ... }`: OpenBao in dev mode on the `control` network, AppRole credentials written by a one-shot service, the server with `KEY_PROVIDER=openbao`.
 
 Work:
@@ -268,31 +294,31 @@ Acceptance:
 - In CI job `test`: `packages/keys/test/transit.test.ts` passes against the OpenBao service: round trip; a wrapped key presented with another row's AAD is refused with `KeyProviderRefusedError`; after rotation and `ready()` the active id ends `@2` and `rewrap()` returns `{ rewrapped: n, failed: [] }`; after `min_decryption_version=2` an old wrapped copy is refused; with OpenBao paused, `getOrCreate` rejects with `KeyProviderUnavailableError` within `timeoutMs + 500` ms and never resolves to a value; after unpause it resolves.
 - In CI job `test`: `packages/keys/test/composite.test.ts` passes: keys created under `LocalKeyring` are readable through the composite, `rewrap` moves every row to `bao:`, and with the file removed every key still reads.
 - In CI job `test`: `packages/world/test/ciphertext-at-rest.test.ts` runs for `file` and `openbao`: zero marker hits on the encrypting World and all ten on the stock World for both; a run with OpenBao paused for 20 seconds in the middle completes after unpause, and the test prints the delay for the record.
-- CI `stack (openbao)` is green.
+- CI `stack (openbao)` is green, including "a mandate's purpose is in no column of the database in the clear" (`e2e/test/release-gates.spec.ts:1122`), whose sealed content then sits under a Transit KEK.
 
 ### Milestone 4: A replica-safe control plane
 
-Scope: the five things that break with several replicas (research finding 7), and a CI stack with two replicas.
+Scope: the four things that still break with several replicas (research finding 7: rate limits, the setup token, the key cache and keyring rotation), the bundle guard, and a CI stack with two replicas. Already safe on main and left alone: nonce reservations, audit appends (now `FOR NO KEY UPDATE`), run starts, confirmation opening, the notification outbox (`SKIP LOCKED` and a lease), mandate counting (in the signer, one writer).
 
 Files and interfaces:
 
 - `packages/keys/src/data-key-store.ts`: `shred()` issues `pg_notify('os_keys_shred', scope || ':' || key_id)` in the same transaction as the tombstone. New option `listen?: boolean`; with it, `start()` holds one dedicated client on `LISTEN os_keys_shred` and evicts the named entry; on that client's error it clears the whole cache and reconnects with backoff; `close()` releases it. The TTL stays the upper bound.
 - `apps/server/src/config.ts`: `DATA_KEY_CACHE_SECONDS` (default 60, 0 to 600), `FORWARDED_HOPS` (default 1, 1 to 5), `SETUP_TOKEN_IN_LOG` (default `true`; empty means unset).
-- `apps/server/src/db/migrations/0002_rate_limits.sql` and `apps/server/src/db/schema.ts`: `CREATE UNLOGGED TABLE IF NOT EXISTS os.rate_limits (bucket text PRIMARY KEY, tokens double precision NOT NULL, at timestamptz NOT NULL)`.
+- A new migration after the last one on main (`0006_push_subscriptions`; stuck-transaction repricing may take the next number, so use the next free one when this is built, generated with the repository's Drizzle workflow) and `apps/server/src/db/schema.ts`: `CREATE UNLOGGED TABLE IF NOT EXISTS os.rate_limits (bucket text PRIMARY KEY, tokens double precision NOT NULL, at timestamptz NOT NULL)`.
 - `apps/server/src/rate-limit.ts` (new): `takeToken(db, bucket, perMinute): Promise<boolean>`, one `INSERT ... ON CONFLICT DO UPDATE ... WHERE <refilled tokens> >= 1 RETURNING tokens` statement; a missing row in the result means limited.
-- `apps/server/src/mcp/gateway.ts`: the `buckets` and `failures` maps are replaced with `takeToken` on `agent:<id>` (120 per minute) and `auth-fail:<client>` (10 per minute, checked before the database lookup as today); `clientOf` takes the entry `FORWARDED_HOPS` from the end of `X-Forwarded-For`.
-- `apps/server/src/identity/setup.ts`: `prepareSetup` mints only when no token row exists, inside `pg_advisory_xact_lock(SETUP_LOCK)`; it logs the token only when `SETUP_TOKEN_IN_LOG`, otherwise logs `setup.token_pending`. New `rotateSetupToken(ctx)`.
+- `apps/server/src/mcp/gateway.ts`: the `buckets` and `failures` maps (`:413,416`) are replaced with `takeToken` on `agent:<id>` (120 per minute) and `auth-fail:<client>` (10 per minute, checked before the database lookup as today); `clientOf` (`:423-424`) takes the entry `FORWARDED_HOPS` from the end of `X-Forwarded-For`.
+- `apps/server/src/identity/setup.ts`: `prepareSetup` mints only when no token row exists, inside `pg_advisory_xact_lock(SETUP_LOCK)` (the lock `apps/server/src/identity/routes.ts:89` already takes); it logs the token only when `SETUP_TOKEN_IN_LOG`, otherwise logs `setup.token_pending`. New `rotateSetupToken(ctx)`.
 - `apps/server/src/cli.ts` (new): `node apps/server/src/cli.ts setup-token` rotates and prints the token on stdout of the command, not the server log.
-- `apps/server/src/execution/bundle-guard.ts` (new): `holdBundleLock(pool, flowFile)`: SHA-256 of `flow.mjs`, low 31 bits as `objid`; takes `pg_advisory_lock_shared(18680, objid)` on a dedicated client; refuses with `BundleMismatchError` if `pg_locks` shows a granted advisory lock with `classid = 18680` and another `objid`. Called by `startBackground` before `world.start()`; on the client's loss it re-acquires and re-checks before the queue keeps running.
+- `apps/server/src/execution/bundle-guard.ts` (new): `holdBundleLock(pool, flowFile)`: SHA-256 of `flow.mjs`, low 31 bits as `objid`; takes `pg_advisory_lock_shared(18680, objid)` on a dedicated client; refuses with `BundleMismatchError` if `pg_locks` shows a granted advisory lock with `classid = 18680` and another `objid`. Called by `startBackground` (`apps/server/src/execution/index.ts:133-160`) before `world.start()`; on the client's loss it re-acquires and re-checks before the queue keeps running.
 - `apps/server/src/http/app.ts`: `GET /readyz`, 200 when `SELECT 1` succeeds and the World has started, else 503. `/healthz` unchanged.
-- `apps/server/src/execution/intents.ts`: log `step.started` with `approvalId`, `step` and `replica` (host name) when the signing step begins. Identifiers only.
-- `deploy/init/rotate-keyring.mjs`: `add` adds an inactive key; new `activate <id>`. `deploy/README.md` rotation becomes: add, restart every replica, activate, restart every replica, rewrap, prune, restart every replica.
-- `deploy/Caddyfile` and `deploy/Caddyfile.agents`: Caddy's `dynamic a` upstream for `server` on port 3000, so every replica receives requests.
+- `apps/server/src/execution/transactions.ts`: log `step.started` with `approvalId`, `step` and `replica` (host name) when the signing step begins (`signOnce`). Identifiers only.
+- `deploy/init/rotate-keyring.mjs`: `add` adds an inactive key (today it also activates it, `:8-9`); new `activate <id>`. `deploy/README.md` rotation becomes: add, restart every replica, activate, restart every replica, rewrap, prune, restart every replica.
+- `deploy/Caddyfile` (the `PUBLIC_ORIGIN` site, `:9-23`) and `deploy/Caddyfile.agents`: Caddy's `dynamic a` upstream for `server` on port 3000, so every replica receives requests.
 - `e2e/compose.replicas.yaml` (new): `server: { deploy: { replicas: 2 } }`. `e2e/test/replicas.spec.ts` (new). A `stack` matrix entry `{ name: replicas, ... }`.
 
 Work:
 
-Nothing else in the server keeps per-process state that decides anything: the MCP handler cache and the chain client cache are performance only (`gateway.ts:389,480-495`; `apps/server/src/execution/chains.ts:57-58`). The sweeper runs in every replica; that is accepted (research finding 7.7).
+Nothing else in the server keeps per-process state that decides anything (see `Context and Orientation`). The sweeper runs in every replica; that is accepted (research finding 7.7): its workflow writes are conditional, starts are serialized per run, and notification rows are claimed with `SKIP LOCKED`, so N sweepers are N times the polling. Every replica must read the same `notify-webhook-secret` and `vapid-key.pem` (plan decision above). The in-flight stuck-transaction work adds a repricing path to the control plane; when it lands, re-check that its state is in Postgres or in the signer and add it to the list above.
 
 Acceptance:
 
@@ -300,37 +326,37 @@ Acceptance:
 - In CI job `test`: `apps/server/test/support/rate-limit.test.ts` (new): two app instances on one database; 120 requests for one agent split across them pass and the 121st within the minute gets 429; the failed-authentication limit is shared the same way; `FORWARDED_HOPS=2` charges the second-to-last address.
 - In CI job `test`: `apps/server/test/identity/identity.test.ts` gains "two boots at once mint one setup token".
 - In CI job `test`: `apps/server/test/execution/workflow.test.ts` gains "a second start with another workflow bundle is refused while the first runs, and the same bundle is accepted".
-- CI `stack (replicas)` is green: every release gate passes against two replicas, and `e2e/test/replicas.spec.ts` passes: after an approval, the replica that logged `step.started` for it is killed with `docker kill`, and the intent is `confirmed` with exactly one transaction within 90 seconds; exactly one `setup.token_issued` line exists across both replicas.
+- CI `stack (replicas)` is green: every release gate passes against two replicas, and `e2e/test/replicas.spec.ts` passes: after an approval, the replica that logged `step.started` for it is killed with `docker kill`, and the intent is `confirmed` with exactly one transaction within 90 seconds; exactly one `setup.token_issued` line exists across both replicas; the webhook receiver gets each delivery id of one approval exactly once while both replicas sweep (the gate at `e2e/test/release-gates.spec.ts:1611`, "an approval is announced once …", already checks the single-replica case).
 
 ### Milestone 5: Kubernetes manifests proven on kind
 
-Scope: Kustomize manifests for the control plane, NetworkPolicies, an e2e driver for Kubernetes, and a CI job on kind. Depends on D3 and D4, and on milestones 1 and 4.
+Scope: Kustomize manifests for the control plane, NetworkPolicies, an e2e driver for Kubernetes, and a CI job on kind. Depends on D3, D4 and D8, and on milestones 1 and 4.
 
 Files and interfaces (all new unless stated):
 
 - `deploy/k8s/base/kustomization.yaml`, `namespaces.yaml`: namespaces `os` and `os-agents`, both labelled `pod-security.kubernetes.io/enforce: restricted`.
-- `deploy/k8s/base/server.yaml`: Deployment `server` (2 replicas, `strategy: Recreate`, `terminationGracePeriodSeconds: 10`, non-root, read-only root file system, all capabilities dropped, `seccompProfile: RuntimeDefault`, labels `sidecar.istio.io/inject: "false"` and annotation `linkerd.io/inject: disabled`, readiness `/readyz`, liveness `/healthz`); environment from ConfigMap `os-server` with `SETUP_TOKEN_IN_LOG=false`; files from Secret `os-server-secrets` (operator-created; names documented); Service `server` on 3000.
-- `deploy/k8s/base/edge.yaml`: Caddy Deployment and Service with `deploy/k8s/base/files/Caddyfile`. `deploy/k8s/base/agents.yaml`: `agent-gateway` Deployment, Service and `files/Caddyfile.agents` in `os-agents`. `deploy/k8s/test/files.test.ts` checks both files equal `deploy/Caddyfile` and `deploy/Caddyfile.agents` byte for byte.
-- `deploy/k8s/base/network-policies.yaml`: default deny (ingress and egress) in both namespaces; agent pods (`os.askgina/role: agent`) egress only to gateway pods on 80, no DNS; gateway egress only to server pods in `os` on 3000; server ingress from edge and gateway pods on 3000; server egress to Postgres pods on 5432, to the signer (component-specific), to DNS, and to RPC and OpenBao endpoints by CIDR (`OS_EGRESS_CIDRS` replacement); edge ingress from anywhere on 8080 and egress to server.
-- `deploy/k8s/components/signer-in-cluster/`: namespace `os-signer`; StatefulSet `signer` with 1 replica and a `volumeClaimTemplate` with `accessModes: [ReadWriteOncePod]`; Secret `os-signer-secrets`; policy: ingress only from `os` server pods on 8787, no egress. A header comment states D4: for CI and evaluation only.
-- `deploy/k8s/components/signer-external/`: server egress to `SIGNER_CIDR` on 8787; `SIGNER_URL` and the TLS files in `os-server-secrets`.
-- `deploy/k8s/components/postgres-single/`: a one-replica Postgres 18 StatefulSet (image digest as in `compose.yaml:29`) for kind; ingress from server pods only.
-- `deploy/k8s/components/dev-chain/`: anvil (image digest as in `compose.yaml:148`); server egress to it.
+- `deploy/k8s/base/server.yaml`: Deployment `server` (2 replicas, `strategy: Recreate`, `terminationGracePeriodSeconds: 10`, non-root, read-only root file system, all capabilities dropped, `seccompProfile: RuntimeDefault`, labels `sidecar.istio.io/inject: "false"` and annotation `linkerd.io/inject: disabled`, readiness `/readyz`, liveness `/healthz`); environment from ConfigMap `os-server` with `SETUP_TOKEN_IN_LOG=false` and `APPROVE_ORIGIN`; files from Secret `os-server-secrets` (operator-created; names documented: keyring, `signer-request-secret`, `postgres-password`, `notify-webhook-secret`, `vapid-key.pem`, the TLS files); Service `server` on 3000.
+- `deploy/k8s/base/edge.yaml`: Caddy Deployment and Service with `deploy/k8s/base/files/Caddyfile`, which is the `PUBLIC_ORIGIN` site block of `deploy/Caddyfile` only. `deploy/k8s/base/agents.yaml`: `agent-gateway` Deployment, Service and `files/Caddyfile.agents` in `os-agents`. `deploy/k8s/test/files.test.ts` checks that `files/Caddyfile` equals the first site block of `deploy/Caddyfile` and `files/Caddyfile.agents` equals `deploy/Caddyfile.agents`, byte for byte.
+- `deploy/k8s/base/network-policies.yaml`: default deny (ingress and egress) in both namespaces; agent pods (`os.askgina/role: agent`) egress only to gateway pods on 80, no DNS; gateway egress only to server pods in `os` on 3000; server ingress from edge and gateway pods on 3000; server egress to Postgres pods on 5432, to the signer (component-specific), to DNS, to RPC and OpenBao endpoints by CIDR (a list the operator fills in), and, under D8 (a), to TCP 443 anywhere when the webhook or Web Push is configured; edge ingress from anywhere on 8080 and egress to server.
+- `deploy/k8s/components/signer-in-cluster/`: namespace `os-signer`; StatefulSet `signer` with 1 replica and a `volumeClaimTemplate` with `accessModes: [ReadWriteOncePod]`; Deployment `approve` and an `approve-edge` Caddy serving the `APPROVE_ORIGIN` site block; Secrets `os-signer-secrets` and `os-approve-secrets` (the confirm secret only); policies: signer ingress only from `os` server pods and `approve` pods on 8787, no egress; `approve` ingress only from `approve-edge`, egress only to the signer. A header comment states D4: for CI and evaluation only.
+- `deploy/k8s/components/signer-external/`: server egress to `SIGNER_CIDR` on 8787; `SIGNER_URL` and the TLS files in `os-server-secrets`; `APPROVE_ORIGIN` names the signer host's confirmation page (Milestone 1).
+- `deploy/k8s/components/postgres-single/`: a one-replica Postgres 18 StatefulSet (image digest as in `compose.yaml:30`) for kind; ingress from server pods only.
+- `deploy/k8s/components/dev-chain/`: anvil (image digest as in `compose.yaml:204`); server egress to it.
 - `deploy/k8s/overlays/kind/` (base, signer-in-cluster, postgres-single, dev-chain) and `deploy/k8s/overlays/production-example/` (base, signer-external, CNPG from milestone 6).
 - `deploy/k8s/isolation-probe.yaml`: a Job operators run after install; it runs the same checks as the e2e gate and exits non-zero on any reachable target.
-- `e2e/src/driver.ts`: `interface StackDriver { origin: string; databaseUrl(): Promise<string>; chainUrl(): Promise<string>; setupToken(): Promise<string>; kill(service: string, which?: string): Promise<void>; logs(service: string): Promise<string>; runAsAgent(script: string, env: Record<string, string>): Promise<{ code: number; output: string }>; capabilities: Set<"backup" | "compose-networks" | "kubernetes"> }` with `compose` (the code now in `e2e/src/stack.ts`) and `k8s` (`kubectl port-forward`, `kubectl delete pod --grace-period=0 --force`, `kubectl logs`, `kubectl run` in `os-agents`, `kubectl exec ... node apps/server/src/cli.ts setup-token`).
-- `e2e/test/release-gates.spec.ts`: gates declare the capabilities they need; gates needing `backup` or `compose-networks` are skipped on Kubernetes with a stated reason.
-- `e2e/test/kubernetes.spec.ts`: an agent pod cannot resolve `server.os.svc.cluster.local`, gets 401 from `http://$AGENT_GATEWAY_SERVICE_HOST/mcp`, 404 for the API, the UI and the delivery routes, and cannot reach the internet; a pod in `os` without the server label cannot reach the signer on 8787; `kubectl exec` into the signer cannot reach anything; the server pod has exactly one container; a NetworkPolicy deleted on purpose makes the probe Job fail (the probe is not blind).
-- `.github/workflows/ci.yml`: job `k8s` on `ubuntu-latest`: install kind v0.33.0 and kubeconform v0.8.0 with checksums; `kubectl kustomize deploy/k8s/overlays/kind | kubeconform -strict -summary -kubernetes-version 1.37.0`; `kind create cluster --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5`; build the server, signer and scripted-agent images; `kind load docker-image`; create the Secrets from a script that reuses `deploy/init/init.mjs` output; `kubectl apply -k deploy/k8s/overlays/kind`; wait for rollout; `E2E_DRIVER=k8s ./e2e/run.sh`.
+- `e2e/src/driver.ts`: `interface StackDriver { origin: string; approveOrigin: string; databaseUrl(): Promise<string>; chainUrl(): Promise<string>; setupToken(): Promise<string>; kill(service: string, which?: string): Promise<void>; logs(service: string): Promise<string>; runAsAgent(script: string, env: Record<string, string>): Promise<{ code: number; output: string }>; signerAdmin(args: string[]): Promise<string>; capabilities: Set<"backup" | "compose-networks" | "kubernetes"> }` with `compose` (the code now in `e2e/src/stack.ts`) and `k8s` (`kubectl port-forward`, `kubectl delete pod --grace-period=0 --force`, `kubectl logs`, `kubectl run` in `os-agents`, `kubectl exec ... node apps/server/src/cli.ts setup-token`, `kubectl exec` into the signer for `fence` and `revoke-mandate`).
+- `e2e/test/release-gates.spec.ts`: gates declare the capabilities they need; gates needing `backup` or `compose-networks` are skipped on Kubernetes with a stated reason. The operator-command gates (`:1474`, `:1741`) use `signerAdmin`.
+- `e2e/test/kubernetes.spec.ts`: an agent pod cannot resolve `server.os.svc.cluster.local`, gets 401 from `http://$AGENT_GATEWAY_SERVICE_HOST/mcp`, 404 for the API, the UI and the delivery routes, and cannot reach the internet; a pod in `os` without the server label cannot reach the signer on 8787; the `approve` pod reaches the signer and nothing else; `kubectl exec` into the signer cannot reach anything; the server pod has exactly one container; a NetworkPolicy deleted on purpose makes the probe Job fail (the probe is not blind).
+- `.github/workflows/ci.yml`: job `k8s` on `ubuntu-latest`: install kind v0.33.0 and kubeconform v0.8.0 with checksums; `kubectl kustomize deploy/k8s/overlays/kind | kubeconform -strict -summary -kubernetes-version 1.37.0`; `kind create cluster --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5`; build the server, signer, `approve` and scripted-agent images; `kind load docker-image`; create the Secrets from a script that reuses `deploy/init/init.mjs` output; `kubectl apply -k deploy/k8s/overlays/kind`; wait for rollout; `E2E_DRIVER=k8s ./e2e/run.sh`.
 
 Work:
 
-Server, signer and gateway images are the Compose ones. The kind overlay runs the signer in the cluster only because CI has one machine. Production uses `signer-external`.
+Server, signer, `approve` and gateway images are the Compose ones. The kind overlay runs the signer and `approve` in the cluster only because CI has one machine. Production uses `signer-external`.
 
 Acceptance:
 
 - In CI job `test`: `deploy/k8s/test/files.test.ts` passes.
-- CI `k8s` is green: kubeconform passes; every applicable release gate passes with `E2E_DRIVER=k8s`; `e2e/test/kubernetes.spec.ts` passes; the replica crash gate of milestone 4 passes with `kubectl delete pod`.
+- CI `k8s` is green: kubeconform passes; every applicable release gate passes with `E2E_DRIVER=k8s`, including the browser gates that approve on the confirmation page; `e2e/test/kubernetes.spec.ts` passes; the replica crash gate of milestone 4 passes with `kubectl delete pod`.
 
 ### Milestone 6: HA Postgres with CloudNativePG
 
@@ -342,8 +368,8 @@ Files and interfaces:
 - `deploy/k8s/components/cnpg/network-policies.yaml` (new): instance ingress on 5432 from server pods and from the other instances (`cnpg.io/cluster: os-db`), on 8000 from the operator namespace `cnpg-system`; instance egress to the other instances and to the Kubernetes API.
 - `deploy/k8s/overlays/kind-ha/` (new): the kind overlay with `cnpg` instead of `postgres-single`.
 - `.github/workflows/ci.yml`: job `k8s` gains a matrix `db: [single, cnpg]`; for `cnpg`, install the CloudNativePG v1.30.1 release manifest pinned by SHA-256 before applying.
-- `e2e/test/postgres-ha.spec.ts` (new, `kubernetes` capability): record the audit head through the API; propose and approve; when `step.started` appears, delete the primary pod with `--grace-period=0 --force`; expect `confirmed` and exactly one transaction within 180 seconds, `verifyAudit` ok, the audit sequence at least the one recorded plus the events the API acknowledged before the failover, and no server pod restarted.
-- `e2e/test/release-gates.spec.ts` (Compose, `backup` capability): new gate "a database rolled back to before the signature, with a current signer, ends in one transaction": snapshot `postgres-data` after the approval opens, approve, wait for `confirmed`, stop, restore only `postgres-data`, start, approve again; the signer returns the stored transaction, the chain shows one transfer, and the audit chain verifies.
+- `e2e/test/postgres-ha.spec.ts` (new, `kubernetes` capability): record the audit head through the API; propose and approve; when `step.started` appears, delete the primary pod with `--grace-period=0 --force`; expect `confirmed` and exactly one transaction within 180 seconds, `verifyAudit` ok, the audit sequence at least the one recorded plus the events the API acknowledged before the failover, the approval's notification row present and sent once, and no server pod restarted.
+- `e2e/test/release-gates.spec.ts` (Compose, `backup` capability): new gate "a database rolled back to before the signature, with a current signer, ends in one transaction": snapshot `postgres-data` after the approval opens, approve, wait for `confirmed`, stop, restore only `postgres-data`, start, approve again; the signer returns the stored transaction, the chain shows one transfer, and the audit chain verifies. A rolled-back database may also hold a mandate the signer has since revoked, or miss one it granted; the gate checks the mandate list after the restart matches what the signer reports for the workspace.
 
 Work:
 
@@ -356,15 +382,15 @@ Acceptance:
 
 ### Milestone 7: Documentation matches the code
 
-Scope: the threat model, architecture, protocol and deployment guide describe what milestones 1 to 6 built, and a test keeps configuration and documentation in step.
+Scope: the threat model, architecture, protocol and deployment guide describe what milestones 1 and 3 to 6 built, and a test keeps configuration and documentation in step. The restore fence is already documented (`docs/approval-protocol.md:385-428`; `docs/threat-model.md:245-262,600-608`; `deploy/README.md:118-178`).
 
 Files and interfaces:
 
-- `docs/threat-model.md`: "One machine running everything" becomes a section on the two-host form; new limits for Kubernetes (Secrets in etcd, policies need an enforcing CNI, no `localhost` blocking), the key provider row, the restore fence, and lost commits under asynchronous replication.
-- `docs/architecture.md`: the state table gains OpenBao as a KEK location; the network section gains the NetworkPolicy table.
-- `docs/approval-protocol.md`: §8 gains the fence step; §10 states that between hosts requests travel inside mutual TLS.
-- `deploy/README.md`: "Signer on its own machine", "OpenBao", "Several server replicas", two-phase keyring rotation, restore with `fence`, and a pointer to `deploy/k8s/`.
-- `apps/server/test/support/config-docs.test.ts` (new): every variable accepted by `apps/server/src/config.ts` and `apps/signer/src/config.ts` appears in `deploy/README.md` or `docs/`, and every `SIGNER_*`, `OPENBAO_*`, `KEY_PROVIDER`, `FORWARDED_HOPS`, `SETUP_TOKEN_IN_LOG` and `DATA_KEY_CACHE_SECONDS` named there exists in a schema.
+- `docs/threat-model.md`: "One machine running everything gives no protection against that machine" (`:564-566`) gains the two-host form and where the confirmation page runs; new limits for Kubernetes (Secrets in etcd, policies need an enforcing CNI, no `localhost` blocking, server egress under D8), the key provider row, and lost commits under asynchronous replication; "Out of scope for v0.1" (`:628`) loses the multi-machine line.
+- `docs/architecture.md`: "Where state lives" gains OpenBao as a KEK location; "Components and what each may reach" gains the NetworkPolicy table and the split layout.
+- `docs/approval-protocol.md`: section 10 states that between hosts requests travel inside mutual TLS and that each client certificate is bound to one scope.
+- `deploy/README.md`: "Signer on its own machine" (including the `approve` service, its edge and DNS for `APPROVE_ORIGIN`), moving an existing install (a move fences and ends every live mandate), "OpenBao", "Several server replicas" (one webhook secret and VAPID key for all), two-phase keyring rotation, and a pointer to `deploy/k8s/`.
+- `apps/server/test/support/config-docs.test.ts` (new): every variable accepted by `apps/server/src/config.ts`, `apps/signer/src/config.ts` and `apps/approve/src/config.ts` appears in `deploy/README.md`, `apps/approve/README.md` or `docs/`, and every `SIGNER_*`, `APPROVE_TLS_*`, `OPENBAO_*`, `KEY_PROVIDER`, `FORWARDED_HOPS`, `SETUP_TOKEN_IN_LOG` and `DATA_KEY_CACHE_SECONDS` named there exists in a schema.
 
 Acceptance:
 
@@ -377,21 +403,21 @@ Local interfaces:
 - `KeyProvider` (`packages/keys/src/keyring.ts`): `ready(): Promise<void>`; `activeKekId(): string`; `wrap(kekId: string, dataKey: Uint8Array, aad: Uint8Array): Promise<Uint8Array>`; `unwrap(kekId: string, wrapped: Uint8Array, aad: Uint8Array): Promise<Uint8Array>`; `close(): Promise<void>`. Every failure throws `KeyProviderUnavailableError` or `KeyProviderRefusedError`; nothing resolves to "no key".
 - KEK id grammar: Transit ids match `^bao:[a-z0-9/_-]+@[1-9][0-9]*$`. `LocalKeyring` ids must match `^[A-Za-z0-9_-]+$`; today `parseKeyringFile` accepts any string (`packages/keys/src/keyring.ts:36-39`), so it gains that check, and the ids `rotate-keyring.mjs` writes (`k1`, `k2`, ...) already pass it.
 - `DataKeyStoreOptions` (`packages/keys/src/data-key-store.ts`): adds `listen?: boolean`. Channel `os_keys_shred`, payload `<scope>:<keyId>`.
-- `SignerErrorCode` (`packages/protocol/src/signer/api.ts`): adds `envelope_fenced` (403).
-- Signer SQLite: `signer_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT`, key `fence_at`.
-- Signer admin CLI: `node src/admin.ts fence [--at <epoch>]`.
+- `createSignerFetch(tls: { cert: Buffer; key: Buffer; peerCert: Buffer }, servername: string): typeof fetch` (`@askgina/os-protocol/signer-transport`, new). Fails as `fetch` fails: a handshake refusal rejects the promise, exactly as an unreachable signer does today (the signer client does not catch it, `packages/protocol/src/signer/client.ts:149-175`).
+- Signer scope binding: a verified client certificate maps to `control` or `confirm`; a mismatch with the route's scope is `unauthenticated` (401), the same code as a bad HMAC.
+- Already built, used as is: `SignerErrorCode` `envelope_fenced` (403); signer table `signer_meta`; `node src/admin.ts fence`, `list-mandates`, `revoke-mandate`.
 - Server CLI: `node apps/server/src/cli.ts setup-token`.
 - Server HTTP: `GET /readyz` (200 or 503, body `{ ok: boolean }`).
 - Postgres: `os.rate_limits` (UNLOGGED); advisory lock class `18680` for the bundle guard.
-- Configuration, server: `SIGNER_TLS_CERT_FILE`, `SIGNER_TLS_KEY_FILE`, `SIGNER_TLS_PEER_CERT_FILE`, `SIGNER_ADMIN_COMMAND`, `KEY_PROVIDER`, `OPENBAO_ADDR`, `OPENBAO_TRANSIT_MOUNT`, `OPENBAO_TRANSIT_KEY`, `OPENBAO_AUTH`, `OPENBAO_TOKEN_FILE`, `OPENBAO_ROLE_ID_FILE`, `OPENBAO_SECRET_ID_FILE`, `OPENBAO_KUBERNETES_ROLE`, `OPENBAO_CA_FILE`, `OPENBAO_TIMEOUT_MS`, `DATA_KEY_CACHE_SECONDS`, `FORWARDED_HOPS`, `SETUP_TOKEN_IN_LOG`. Signer: `SIGNER_HOST`, `SIGNER_TLS_CERT_FILE`, `SIGNER_TLS_KEY_FILE`, `SIGNER_TLS_PEER_CERT_FILE`, `SIGNER_HEALTH_PORT`. Every default keeps today's single-machine Compose behaviour.
+- Configuration, server: `SIGNER_TLS_CERT_FILE`, `SIGNER_TLS_KEY_FILE`, `SIGNER_TLS_PEER_CERT_FILE`, `SIGNER_ADMIN_COMMAND`, `KEY_PROVIDER`, `OPENBAO_ADDR`, `OPENBAO_TRANSIT_MOUNT`, `OPENBAO_TRANSIT_KEY`, `OPENBAO_AUTH`, `OPENBAO_TOKEN_FILE`, `OPENBAO_ROLE_ID_FILE`, `OPENBAO_SECRET_ID_FILE`, `OPENBAO_KUBERNETES_ROLE`, `OPENBAO_CA_FILE`, `OPENBAO_TIMEOUT_MS`, `DATA_KEY_CACHE_SECONDS`, `FORWARDED_HOPS`, `SETUP_TOKEN_IN_LOG`. Signer: `SIGNER_HOST`, `SIGNER_TLS_CERT_FILE`, `SIGNER_TLS_KEY_FILE`, `SIGNER_TLS_CONTROL_CERT_FILE`, `SIGNER_TLS_APPROVE_CERT_FILE`, `SIGNER_HEALTH_PORT`. `approve`: `APPROVE_TLS_CERT_FILE`, `APPROVE_TLS_KEY_FILE`, `APPROVE_TLS_PEER_CERT_FILE`. None of these exists on main today. Every default keeps today's single-machine Compose behaviour.
 
 External dependencies:
 
-- OpenBao 2.7.2 Transit secrets engine ([API](https://openbao.org/api-docs/secret/transit/)): `POST /v1/<mount>/encrypt/<key>` (`plaintext`, `associated_data`, `key_version`), `POST /v1/<mount>/decrypt/<key>` (`ciphertext`, `associated_data`), `GET /v1/<mount>/keys/<key>` (`keys`, `min_decryption_version`), `POST /v1/<mount>/keys/<key>/rotate`; auth `approle` and `kubernetes`. Constraint: `rewrap` has no `associated_data`; a sealed server answers nothing useful until unsealed. Image `quay.io/openbao/openbao:2.7.2`.
+- OpenBao 2.7.2 Transit secrets engine ([API](https://openbao.org/api-docs/secret/transit/)): `POST /v1/<mount>/encrypt/<key>` (`plaintext`, `associated_data`, `key_version`), `POST /v1/<mount>/decrypt/<key>` (`ciphertext`, `associated_data`), `GET /v1/<mount>/keys/<key>` (`keys`, `min_decryption_version`), `POST /v1/<mount>/keys/<key>/rotate`; auth `approle` and `kubernetes`. Constraint: `rewrap` has no `associated_data`; a sealed server answers nothing useful until unsealed. Image `quay.io/openbao/openbao:2.7.2`. Versions as of 2026-11-14, not re-checked.
 - `undici` 8.12.4 (already in `bun.lock` as a transitive dependency): `Agent`, `fetch`.
-- `@hono/node-server` 2.1.8: `serve({ createServer, serverOptions })` for HTTPS.
+- `@hono/node-server` 2.1.8 (pinned in `apps/server/package.json` and `apps/signer/package.json`): `serve({ createServer, serverOptions })` for HTTPS.
 - `graphile-worker` 0.16.6 and `@workflow/world-postgres` 5.2.0: `jobLockStaleSeconds` must be equal on every process; deployment id is constant.
-- kind v0.33.0 with `kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5`; kindnet NetworkPolicy via kube-network-policies (since kind v0.24.0).
+- kind v0.33.0 with `kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5`; kindnet NetworkPolicy via kube-network-policies (since kind v0.24.0). Not re-checked since 2026-11-14.
 - kubeconform v0.8.0; Kustomize as built into `kubectl`.
 - CloudNativePG v1.30.1: `spec.postgresql.synchronous` with `method`, `number`, `dataDurability`.
 - `openssl` on the operator's machine for `deploy/split/make-peer-certs.sh`.
@@ -402,8 +428,11 @@ Locally, only what the standing rule allows, from the repository root:
 
     bun run check
     (cd packages/keys && bunx tsc --noEmit)
+    (cd packages/protocol && bunx tsc --noEmit)
     (cd apps/signer && bunx tsc --noEmit)
+    (cd apps/approve && bunx tsc --noEmit)
     (cd apps/server && bunx tsc --noEmit)
+    bunx vitest run apps/signer/test/tls.test.ts           # one file
     bunx vitest run packages/keys/test/transit.test.ts     # one file; needs `bun run services:up`
 
 Everything else runs in CI on push:
@@ -411,6 +440,13 @@ Everything else runs in CI on push:
     test                 # unit and package suites, OpenBao service included
     stack (amd64|arm64|tls|split|openbao|replicas)
     k8s (single|cnpg)
+
+Evidence so far:
+
+    CI run 43710836888 (98cc6a1), stack (amd64):
+      ✓ test/release-gates.spec.ts:753:1 › a restored and fenced backup keeps wallets, refuses an approval used after the backup …
+      ✓ test/release-gates.spec.ts:1741:1 › the operator's restore fence ends every live mandate
+      32 passed
 
 Expected evidence (to be recorded here when it exists):
 
@@ -421,57 +457,58 @@ Expected evidence (to be recorded here when it exists):
 
 Automated validation:
 
-- `apps/signer/test/tls.test.ts`, `apps/signer/test/fence.test.ts`: in `test`.
-- `apps/server/test/support/signer-transport.test.ts`, `rate-limit.test.ts`, `config-docs.test.ts`; new cases in `identity.test.ts` and `workflow.test.ts`: in `test`.
+- `apps/signer/test/tls.test.ts`: in `test`. `apps/signer/test/fence.test.ts`: in `test`, green.
+- `packages/protocol/test/signer-transport.test.ts`; `apps/server/test/support/rate-limit.test.ts`, `config-docs.test.ts`; `apps/server/test/support/signer-tls-config.test.ts`, `apps/approve/test/config.test.ts`; new cases in `identity.test.ts` and `workflow.test.ts`: in `test`.
 - `packages/keys/test/transit.test.ts`, `composite.test.ts`; new case in `data-key-store.test.ts`; `packages/world/test/ciphertext-at-rest.test.ts` on both providers: in `test`.
 - `deploy/k8s/test/files.test.ts`: in `test`.
 - `e2e/test/split.spec.ts`: in `stack (split)`.
 - `e2e/test/replicas.spec.ts`: in `stack (replicas)` and `k8s`.
 - `e2e/test/kubernetes.spec.ts`: in `k8s`.
 - `e2e/test/postgres-ha.spec.ts`: in `k8s (cnpg)`.
-- The updated restore gate and the rolled-back-database gate: in `stack (amd64)`.
+- The restore gate (green) and the rolled-back-database gate: in `stack (amd64)` and `stack (arm64)`.
 
 Manual or runtime validation (cannot be automated):
 
-- Two real hosts with different administrators run the split deployment: the control host has no account that can log into the signer host. Record who administers each.
+- Two real hosts with different administrators run the split deployment: the control host has no account that can log into the signer host. Record who administers each. A person approves a payment on the signer host's confirmation page from a phone, and the control host's operator cannot change what that page shows.
 - A real OpenBao with auto-unseal survives a restart of OpenBao while the stack runs; record the delay before runs resume.
 
 Regression checks:
 
-- Every v0.1 release gate still passes in `stack (amd64)`, `stack (arm64)` and `stack (tls)` with default settings (single machine, file keyring, one replica).
+- Every release gate still passes in `stack (amd64)`, `stack (arm64)` and `stack (tls)` with default settings (single machine, file keyring, one replica), including the mandate and notification gates.
 - The README quickstart still prints the setup token in the server log.
 
 ## Threat Model After the Change
 
-| If this is compromised                                                            | The attacker can                                                                                                                                                                                                                                                                                                  | The attacker cannot                                                                                                                                                                                                                                                              |
-| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A control-plane replica, its host (split deployment) or its Kubernetes namespace  | Everything v0.1 lists for "the control plane process" (`specs/agent-workspaces-v0.1.md:247`): ask the signer anything the HMAC secret and client key allow, show a misleading card, pause, revoke, read sealed content (through the keyring file or by calling OpenBao with the server's token while it holds it) | Produce a passkey assertion; exceed a policy cap; reuse an approval; enroll an approver or set a fence (both are CLI-only on the signer host); read the vault, the token key or the vault passphrase (not on this host); reach the signer without the client key it holds anyway |
-| The network between control host and signer host                                  | Drop or delay traffic                                                                                                                                                                                                                                                                                             | Read intents or assertions, or replay a captured request (mutual TLS)                                                                                                                                                                                                            |
-| OpenBao, or the server's OpenBao token                                            | Decrypt every data key it is asked for; with a database copy, read all sealed content                                                                                                                                                                                                                             | Sign, approve or change policy; the signer does not use the keyring                                                                                                                                                                                                              |
-| A Postgres replica, a CNPG backup or a WAL archive                                | Read what database read access gives (`docs/threat-model.md:69-80`); recover keys shredded after the backup                                                                                                                                                                                                       | Read sealed content without the KEKs; make the signer sign                                                                                                                                                                                                                       |
-| Kubernetes cluster administration, signer outside the cluster                     | Everything the control plane can                                                                                                                                                                                                                                                                                  | Everything in the "cannot" column of the first row                                                                                                                                                                                                                               |
-| Kubernetes cluster administration, signer in the cluster (CI and evaluation only) | Everything for every wallet (Secrets and the signer volume are in the cluster)                                                                                                                                                                                                                                    | Nothing is protected                                                                                                                                                                                                                                                             |
-| The signer host                                                                   | Everything for the wallets on it, including enrolling approvers and setting the fence                                                                                                                                                                                                                             | Nothing is protected (unchanged from v0.1)                                                                                                                                                                                                                                       |
+| If this is compromised                                                                                                  | The attacker can                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | The attacker cannot                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A control-plane replica, its host (split deployment) or its Kubernetes namespace                                        | Everything `docs/threat-model.md` lists under "Code execution in the control plane": ask the signer anything the control secret allows; read sealed content (through the keyring file, or by calling OpenBao with the server's token while it holds it); propose any operation, sweep, policy or approver change; link a person to the confirmation page of another waiting request; withhold approvals; have the signer sign, with no person, transfers it invents under a live mandate up to that mandate's worst case; revoke mandates or ignore a person's revocation; send notifications signed with the webhook secret and push messages under the VAPID key; pause | Produce an assertion at `APPROVE_ORIGIN`; change what the confirmation page shows (D7 (a): not on this host); exceed a policy cap or a mandate's limits; reuse an approval; grant a mandate; enroll an approver, move the fence or run `revoke-mandate` (CLI-only on the signer host); read the vault, the token key, the vault passphrase or the confirm secret (not on this host); reach the signer without the client key it holds anyway, or reach its confirm routes with that key |
+| The network between control host and signer host                                                                        | Drop or delay traffic                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Read intents or assertions, or replay a captured request (mutual TLS)                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| The confirmation page on the signer host (the `approve` service, its edge, DNS or the certificate for `APPROVE_ORIGIN`) | What `docs/threat-model.md` lists for a compromised `approve` service: show a false view and relay assertions over other digests, for the people who use the page meanwhile                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Sign, read a key, open a confirmation or reach a control-scope route (its certificate is bound to the confirm scope); an escape from its container to the host is the signer host row                                                                                                                                                                                                                                                                                                   |
+| OpenBao, or the server's OpenBao token                                                                                  | Decrypt every data key it is asked for; with a database copy, read all sealed content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Sign, approve or change policy; the signer does not use the keyring                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| A Postgres replica, a CNPG backup or a WAL archive                                                                      | Read what database read access gives (`docs/threat-model.md`, "Read access to the control plane's database"); recover keys shredded after the backup                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Read sealed content without the KEKs; make the signer sign                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Kubernetes cluster administration, signer and confirmation page outside the cluster                                     | Everything the control plane can                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Everything in the "cannot" column of the first row                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Kubernetes cluster administration, signer in the cluster (CI and evaluation only)                                       | Everything for every wallet (Secrets and the signer volume are in the cluster)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Nothing is protected                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| The signer host                                                                                                         | Everything for the wallets on it, including enrolling approvers, setting the fence, revoking mandates and serving the confirmation page                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Nothing is protected (unchanged)                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
-The invariant holds in every row: whether a human approved is decided by the signer from passkey assertions it verifies itself (`docs/architecture.md:161-164`), and the signer builds every transaction from the approved intent. The fence adds one more refusal and removes none.
+The invariant holds in every row: whether a human approved is decided by the signer from passkey assertions it verifies itself, made top-level at `APPROVE_ORIGIN` (`docs/architecture.md`, "Why each boundary exists"), and the signer builds every transaction from the approved intent or from a transfer a live mandate it holds covers. The split adds refusals (certificate and scope) and removes none.
 
 ## Idempotence and Recovery
 
-- `init --domain=...` never overwrites an existing secret (as today); `--domain=control` refuses to generate a request secret it should have received.
-- `fence` sets `max(current, at)`; running it twice changes nothing.
+- `init --domain=...` never overwrites an existing secret (as today); `--domain=control` refuses to generate a request secret it should have received; `--domain=signer` rewrites the `approve` copy of the confirm secret whenever it differs, as `init` does today.
+- `fence` sets the fence only forward; running it twice changes nothing (built).
 - `rewrap` can be repeated; rows already under the active KEK are skipped; failures are reported and not fatal (`packages/keys/src/data-key-store.ts:202-256`).
-- Migration `0002_rate_limits.sql` uses `IF NOT EXISTS`; the table can be truncated at any time.
+- The rate-limit migration uses `IF NOT EXISTS`; the table can be truncated at any time.
 - `kubectl apply -k` is idempotent. CNPG manages its own instances.
-- Backout per milestone: TLS is off when the TLS variables are unset; `KEY_PROVIDER=file` with the keyring file restores the file provider while the composite still has both (do not remove the file until `rewrap` reported zero failures); one replica is the v0.1 configuration; Kubernetes and CNPG are separate deploy targets and leave Compose untouched.
-- Restoring the signer: stop it; restore `signer-data` and `signer-secrets`; run `fence`; start it. Agents re-propose what was waiting.
+- Backout per milestone: TLS is off when the TLS variables are unset; `KEY_PROVIDER=file` with the keyring file restores the file provider while the composite still has both (do not remove the file until `rewrap` reported zero failures); one replica is the single-machine configuration; Kubernetes and CNPG are separate deploy targets and leave Compose untouched. Going back from a split to one machine is a move of the signer's volumes, so it fences too.
+- Restoring the signer: stop it; restore `signer-data` and `signer-secrets` into empty volumes; run `fence`; start it; grant again the mandates people still want (`deploy/README.md:136-148`). Agents re-propose what was waiting.
 
 ## Rollout and Operations
 
 - Feature flags/config/env vars: listed under `Interfaces and Dependencies`. Defaults keep today's behaviour.
-- Split deployment steps: on the signer host, `init --domain=signer`, generate peer certificates, start `deploy/split/signer.compose.yaml`, apply the nftables example; copy `signer-request-secret`, the control certificate and key, and the signer certificate to the control host; there, `init --domain=control` and start `deploy/split/control.compose.yaml`. Moving an existing single-machine install: stop the stack, move `signer-data` and `signer-secrets` to the new host, run `fence`, start both sides.
-- Monitoring: log events `keys.provider_unavailable` (count and duration), `signer.tls_expiry` (days left, at start), `workflow.bundle_mismatch`, `setup.token_pending`; `/readyz` for load balancers and Kubernetes; Graphile job attempts above 5 for any run means it is backing off.
-- Clock: NTP on both hosts; a skew above 60 seconds shows as `unauthenticated` signer refusals, which the server retries (`apps/server/src/execution/intents.ts:639`).
-- Certificates: valid 730 days; rotation is "generate a new pair, copy, restart both sides".
+- Split deployment steps: on the signer host, `init --domain=signer`, generate the three peer certificates, point DNS for `APPROVE_ORIGIN` at the host, start `deploy/split/signer.compose.yaml` (signer, `approve`, approve edge), apply the nftables example; copy `signer-request-secret`, the control certificate and key, and the signer certificate to the control host; there, `init --domain=control` and start `deploy/split/control.compose.yaml` with the same `APPROVE_ORIGIN`, `OS_HOSTNAME` (the RP ID, under which `APPROVE_ORIGIN` must sit) and `PUBLIC_ORIGIN` as before. Moving an existing single-machine install: wait until no request waits for approval, stop the stack, move `signer-data` and `signer-secrets` to the new host, run `fence`, start both sides; every live mandate has ended (D9), so people grant again the ones they want; the confirmation origin changes host but not name, so no passkey is enrolled again.
+- Monitoring: log events `keys.provider_unavailable` (count and duration), `signer.tls_expiry` (days left, at start), `workflow.bundle_mismatch`, `setup.token_pending`; the signer's `restore fence set` with `reason: new_database_file` after a move; `/readyz` for load balancers and Kubernetes; Graphile job attempts above 5 for any run means it is backing off; `notification failed` lines per replica.
+- Clock: NTP on both hosts; a skew above 60 seconds shows as `unauthenticated` signer refusals, which the server retries (`apps/server/src/execution/transactions.ts:96-100`); an `issuedAt` more than 30 seconds ahead of the signer is refused; mandates and the fence follow the signer host's clock only.
+- Certificates: valid 730 days; rotation is "generate a new pair, copy, restart both sides". The `APPROVE_ORIGIN` web certificate is the approve edge's ACME certificate, renewed by it.
 
 ## Risks and Open Questions
 
@@ -479,10 +516,16 @@ The invariant holds in every row: whether a human approved is decided by the sig
   Mitigation: the 20-second outage test in milestone 3 measures the delay; if long, add a bounded in-provider retry before throwing, or an operator command that resets the backoff of active runs. Alert on `keys.provider_unavailable`.
 - Risk: OpenBao with a Shamir seal stays sealed after its restart.
   Mitigation: document auto-unseal; treat sealed as an outage.
-- Risk: certificate expiry stops all signing.
+- Risk: certificate expiry stops all signing, or all approving when the `approve` certificate expires.
   Mitigation: the expiry log at start and a refusal to start with an expired certificate, so it is seen at the next restart at the latest; a two-year validity.
-- Risk: the signer is a single point of failure; approvals expire while it is down.
+- Risk: the signer is a single point of failure; approvals expire and mandates stop signing while it is down.
   Mitigation: accepted (D1, signer not replicated); restore with a fence; document the recovery time.
+- Risk (new 2026-11-15): under D7 (a) the signer host takes HTTPS from the internet through the approve edge, and the edge needs outbound access for ACME.
+  Mitigation: the signer and `approve` containers keep no outbound route (nftables example); only the edge reaches the ACME server; the edge holds no secret but its certificate. A container escape from the edge is the signer host case, which the threat model already treats as everything.
+- Risk (new 2026-11-15): a move to a new host ends every live mandate and refuses every waiting approval (D9 (a)), which people may read as a failure.
+  Mitigation: the move procedure says so first and asks to move while nothing waits; the control plane already shows ended mandates with reason `operator`.
+- Risk (new 2026-11-15): the two hosts are upgraded at different times, so a newer control plane asks an older signer for something it does not know (a new envelope kind is refused as invalid, `docs/approval-protocol.md`, section 12), or an older signer image meets a newer database (`schema_too_new`).
+  Mitigation: the deploy guide's split section upgrades the signer host first, then the control host, in one window; refused requests fail closed and are proposed again.
 - Risk: a wallet created after the last signer backup is lost on restore, with its funds.
   Mitigation: document "back up the signer after creating a wallet and before funding it"; a later ticket can make the control plane show wallets created since the signer's last backup.
 - Risk: NetworkPolicies are silently ignored by a CNI that does not implement them.
@@ -491,21 +534,30 @@ The invariant holds in every row: whether a human approved is decided by the sig
   Mitigation: injection disabled by label and annotation; the Kubernetes gate checks the server pod has one container.
 - Risk: synchronous replication pauses writes when no standby is available.
   Mitigation: accepted under D6 (a); three instances tolerate one loss.
-- Risk: connection count grows with replicas (22 per replica by default).
-  Mitigation: `max_connections: 200` in the CNPG cluster; document the formula.
+- Risk: connection count grows with replicas (22 per replica by default, research finding; not re-counted after notifications).
+  Mitigation: `max_connections: 200` in the CNPG cluster; document the formula; re-count when Milestone 4 is built.
 - Risk: `Recreate` gives a short outage on every server upgrade.
-  Mitigation: accepted; in-flight steps rerun after the restart as in v0.1.
+  Mitigation: accepted; in-flight steps rerun after the restart; notification rows wait in the outbox.
 - Risk: the `k8s` CI job is slow.
   Mitigation: measure on the first run; if needed run it on pushes to `main`, nightly, and on pull requests that touch `deploy/k8s/**`.
 - Open question: whether the World's run-status and stream listeners reconnect after a Postgres failover. Owner/next step: milestone 6 gate.
-- Open questions D1 to D6: see `Decision Log`. Owner/next step: the owner.
+- Open question: whether stuck-transaction repricing, being built now, keeps any per-process state. Owner/next step: re-check when it lands, before Milestone 4.
+- Open questions D1 to D4 and D6 to D9: see `Decision Log`. Owner/next step: the owner.
 
 ## Artifacts and Notes
 
-    docs/threat-model.md:216-218
+    docs/threat-model.md:564-566
       One machine running everything gives no protection against that machine. The network
       separation between server and signer protects only when they run on different hosts with
-      separate administration.
+      separate administration. On one host, root on that host is the signer host case.
+
+    specs/trusted-display.md, Risks and Open Questions
+      Risk: the `approve` service is a new public surface, and its compromise reopens the display
+      gap. Mitigation: ... on split hosts it runs with the signer (askgina/os#25).
+
+    apps/server/src/notify/outbox.ts:162-164
+      Due rows are claimed under `FOR UPDATE SKIP LOCKED` and leased for LEASE_SECONDS in one
+      short transaction, then sent outside it, so passes that overlap never send a row twice
 
     @workflow/world-postgres 5.2.0 dist/config.d.ts:31-34
       Seconds a running delivery's Graphile job lock may go unrenewed before another process
@@ -527,3 +579,20 @@ The invariant holds in every row: whether a human approved is decided by the sig
   signer fences by itself when its database file was replaced, and its SQLite got `user_version`
   migrations. `fence` has no `--at`, and a fenced intent fails with `envelope_fenced`, not a new
   `approval_fenced`.
+- 2026-11-15: Re-checked against main at `2911c20` after the trusted display, the v0.1 defect
+  fixes, mandates and notifications landed. Milestone 2 is marked delivered and CI-green (run
+  43710836888), and its old file list is replaced by what exists. D5's contradiction with the
+  deploy guide is gone (the guide now fences every restore). Milestone 1 now places the keyless
+  `approve` service, its edge and the confirm secret on the signer's side, gives the signer two
+  client certificates bound to the two request scopes, moves `createSignerFetch` into
+  `@askgina/os-protocol/signer-transport` so `approve` can use it, moves the signer's health port to 8789,
+  and splits `init` with the webhook secret and VAPID key on the control side. Milestone 4 drops
+  what is already replica-safe (notification outbox, audit appends, nonces, mandate counting) and
+  stops naming a fixed migration number. Milestones 5 to 7 add the `approve` service, the new
+  Secrets, notification egress and the operator-command gates. Context, threat table, risks and
+  line references are updated to main; stale references fixed (`main.ts:50`, `gateway.ts:413-471`,
+  `transactions.ts:109-165`, `execution/index.ts:139,144-151`, `approvals.ts:294`,
+  `compose.yaml:30,204,237-244`, `init.mjs:45-92`, `verify-authorization.ts:53-54,128`,
+  `threat-model.md:564-566`). New owner decisions D7 (where the confirmation page runs), D8
+  (server egress on Kubernetes) and D9 (whether a planned move keeps mandates). Stuck-transaction
+  repricing is in flight and not cited. Still Draft.
