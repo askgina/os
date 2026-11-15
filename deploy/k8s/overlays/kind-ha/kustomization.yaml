@@ -1,0 +1,40 @@
+# The kind stack of overlays/kind with Postgres as a three-instance CloudNativePG cluster
+# (components/postgres-cnpg, decision D6) instead of one Postgres: the gate of
+# e2e/test/kubernetes-ha.spec.ts, run by `e2e/run-k8s.sh --ha`, which installs the operator
+# first and fills in the Kubernetes API's addresses of components/postgres-cnpg at apply time.
+# Everything else is overlays/kind's: keep the two in step.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+components:
+  - ../../components/signer-in-cluster
+  - ../../components/postgres-cnpg
+  - ../../components/dev-chain
+
+# Built from apps/*/Dockerfile and loaded with `kind load docker-image`, never pulled.
+images:
+  - name: askgina-os-server
+    newTag: local
+  - name: askgina-os-signer
+    newTag: local
+  - name: askgina-os-approve
+    newTag: local
+
+# As overlays/kind: the origins `kubectl port-forward` publishes. Only ConfigMaps of ../../base
+# can be merged into here: Kustomize runs these generators before the components.
+configMapGenerator:
+  - name: os-server
+    namespace: os
+    behavior: merge
+    literals:
+      - PUBLIC_ORIGIN=http://localhost:55902
+      - WEBAUTHN_RP_ID=localhost
+      - APPROVE_ORIGIN=http://localhost:55903
+  - name: os-agent-gateway
+    namespace: os-agents
+    behavior: merge
+    literals:
+      - PUBLIC_HOST=localhost:55902

@@ -1,5 +1,6 @@
-# What the server reaches outside the cluster, by address: the operator's Postgres, the chains'
-# RPC endpoints (deploy/chains.json) and, with KEY_PROVIDER=openbao, OpenBao. The 192.0.2.0/24
+# What the server reaches outside the cluster, by address: the chains' RPC endpoints
+# (deploy/chains.json) and, with KEY_PROVIDER=openbao, OpenBao. Postgres is in the cluster
+# (components/postgres-cnpg). The 192.0.2.0/24
 # addresses are documentation addresses that route nowhere: replace them. A NetworkPolicy
 # cannot name a host, so an RPC provider behind changing addresses needs its published ranges.
 apiVersion: networking.k8s.io/v1
@@ -13,13 +14,6 @@ spec:
       os.askgina/role: server
   policyTypes: [Egress]
   egress:
-    # Postgres.
-    - to:
-        - ipBlock:
-            cidr: 192.0.2.20/32
-      ports:
-        - protocol: TCP
-          port: 5432
     # RPC endpoints.
     - to:
         - ipBlock:

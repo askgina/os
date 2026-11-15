@@ -1,0 +1,35 @@
+# Postgres as a three-instance CloudNativePG cluster with synchronous replication that is
+# required, not preferred (decision D6 (a), specs/beyond-one-machine.md, milestone 6): a commit
+# returns only once a second instance has it, so losing the primary loses no commit, and while
+# no standby is there to confirm, writes wait instead of going on alone.
+#
+# Needs the CloudNativePG operator v1.30.1 in the namespace `cnpg-system`, installed from its
+# release manifest before this is applied (e2e/run-k8s.sh --ha shows how, pinned by SHA-256):
+#   https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v1.30.1/cnpg-1.30.1.yaml
+#   kubectl apply --server-side -f cnpg-1.30.1.yaml
+#
+# The operator creates the database `os`, its owner `os`, and the Secret `os-db-app` with that
+# role's password; the server reads the password from there (server-database.yaml), so
+# `postgres-password` in `os-server-secrets` is not used with this component.
+#
+# Before applying, replace the two documentation addresses in network-policies.yaml
+# (192.0.2.50 and 192.0.2.51) with your cluster's Kubernetes API: the instances talk to it.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - cluster.yaml
+  - network-policies.yaml
+
+# `os-server` comes from ../../base, so merging into it here is safe in any overlay.
+configMapGenerator:
+  - name: os-server
+    namespace: os
+    behavior: merge
+    literals:
+      # The read-write Service follows the primary through a failover.
+      - DATABASE_URL=postgres://os@os-db-rw.os.svc:5432/os
+      - DATABASE_PASSWORD_FILE=/run/secrets/db/password
+
+patches:
+  - path: server-database.yaml

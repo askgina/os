@@ -1,0 +1,47 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: os-db
+  namespace: os
+spec:
+  # A primary and two standbys: one instance may be lost and writes go on.
+  instances: 3
+  # PostgreSQL 18.7 on Debian trixie, the image without extensions or backup tools (the server
+  # needs no extension), pinned by digest.
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.7-202611122305-minimal-trixie@sha256:b98ae0b74a12f20ccff32219be0e33fdd35c7e2e8e73c8bff9173f1128e167d1
+  primaryUpdateStrategy: unsupervised
+  # The label the server's NetworkPolicy lets it reach on 5432 (base/network-policies.yaml).
+  inheritedMetadata:
+    labels:
+      os.askgina/role: postgres
+  bootstrap:
+    initdb:
+      database: os
+      owner: os
+  enableSuperuserAccess: false
+  postgresql:
+    # Quorum commit: each commit waits for any one standby (decision D6 (a)). `required` keeps
+    # waiting while no standby can answer, rather than committing on the primary alone, so a
+    # failover never loses an acknowledged commit, and writes pause while two instances are down.
+    synchronous:
+      method: any
+      number: 1
+      dataDurability: required
+    parameters:
+      # Connections: every server replica's pool holds up to WORKFLOW_WORKER_CONCURRENCY + 14
+      # (24 by default: a connection per workflow worker, the shred listener, the bundle lock and
+      # the requests; apps/server/src/main.ts), and the World opens up to three LISTEN
+      # connections of its own beside the pool (run status, run events, streams): 27 a replica.
+      # Each operator command takes one or two. Two replicas need 54; 200 leaves room for six
+      # replicas at the default concurrency (162) plus the operator commands, CloudNativePG's own
+      # sessions and its superuser_reserved_connections (3). Raise it with the replica count or
+      # the concurrency. Replication uses max_wal_senders, not these.
+      max_connections: "200"
+  storage:
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi

@@ -948,8 +948,21 @@ The server's Deployment runs two replicas with `strategy: Recreate` (the bundle 
 does nothing on a network plugin that does not enforce it, and kind's plugin fails open when its
 controller cannot start, so run [`k8s/isolation-probe.yaml`](k8s/isolation-probe.yaml) after
 every install, upgrade or change of network plugin; its header has the commands. With
-`notifications-egress` the server may open TCP 443 to any address. Postgres is the operator's
-database in the production example; HA Postgres with CloudNativePG is not built.
+`notifications-egress` the server may open TCP 443 to any address.
+
+Postgres in the production example is the component `postgres-cnpg`: a CloudNativePG cluster
+`os-db` of three instances with quorum commit to one standby and `dataDurability: required`, so
+a commit returns only once a second instance holds it and a lost primary loses no acknowledged
+commit. Install the CloudNativePG v1.30.1 operator first (`kubectl apply --server-side -f` its
+release manifest; `e2e/run-k8s.sh` pins the manifest by SHA-256 and the operator image by
+digest), and replace the component's two documentation addresses with your Kubernetes API's
+(its `network-policies.yaml` gives the commands), since the instances talk to the API. The
+server connects to the Service `os-db-rw`, which follows the primary, with the password from the
+Secret `os-db-app` the operator creates. While two of the three instances are down, writes wait
+until one comes back instead of committing on the primary alone. Size
+`max_connections` (200) as `cluster.yaml` explains: about 27 connections per server replica.
+`overlays/kind-ha` is the kind stack with this component, for its CI gate
+(`e2e/run-k8s.sh --ha`, CI job `k8s-ha`), which has not run yet.
 
 **Status: written, not run.** The `k8s` CI job (`kubeconform` on every manifest, then a kind
 cluster with the isolation probe, its control with a policy deleted, and the gate

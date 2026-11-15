@@ -1,8 +1,10 @@
 # An example production overlay: the control plane in the cluster, the signer and its
-# confirmation page on their own host (components/signer-external, decision D4), Postgres
-# outside this overlay (an operator's database now; CloudNativePG with milestone 6). Copy it,
-# then replace every example value: the origins, the signer host's name and address
-# (components/signer-external), the egress addresses in egress.yaml, and the image digests.
+# confirmation page on their own host (components/signer-external, decision D4), Postgres as a
+# three-instance CloudNativePG cluster with synchronous replication required
+# (components/postgres-cnpg, decision D6; install the operator first, as that component says).
+# Copy it, then replace every example value: the origins, the signer host's name and address
+# (components/signer-external), the Kubernetes API's addresses (components/postgres-cnpg), the
+# egress addresses in egress.yaml, and the image digests.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -12,6 +14,7 @@ resources:
 
 components:
   - ../../components/signer-external
+  - ../../components/postgres-cnpg
   # While NOTIFY_WEBHOOK_URL or WEB_PUSH_ENABLED is set (decision D8):
   # - ../../components/notifications-egress
 # Your own builds of apps/server/Dockerfile, pinned by digest. The zeros are placeholders.
@@ -29,7 +32,6 @@ configMapGenerator:
       - WEBAUTHN_RP_ID=os.example.com
       # On the signer host, under WEBAUTHN_RP_ID (decision D7).
       - APPROVE_ORIGIN=https://approve.os.example.com
-      - DATABASE_URL=postgres://os@db.example.internal:5432/os
       # A load balancer in front of the edge adds a second X-Forwarded-For entry.
       - FORWARDED_HOPS=2
   - name: os-agent-gateway

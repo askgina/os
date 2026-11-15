@@ -1,0 +1,98 @@
+# The database's instances, and the Jobs the operator runs to create and join them, all carry
+# `cnpg.io/cluster: os-db`. They take Postgres connections from the server and from each other
+# (replication, and a rejoining instance copying from the primary), and the instance manager's
+# status port from each other and from the operator. They reach each other, DNS (standbys find
+# the primary through the Service `os-db-rw`) and the Kubernetes API, where the instance manager
+# reads its configuration and the primary holds its lease. Nothing else, in either direction.
+# The server's way out to them is base/network-policies.yaml (`os.askgina/role: postgres`,
+# which cluster.yaml gives every instance).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: os-db
+  namespace: os
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: os-db
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              os.askgina/role: server
+      ports:
+        - protocol: TCP
+          port: 5432
+    - from:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: os-db
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 8000
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cnpg-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cloudnative-pg
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: os-db
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 8000
+---
+# The Kubernetes API, by address: a NetworkPolicy cannot name it. Whether a network plugin
+# checks a Service's cluster address or the address behind it differs between plugins, so both
+# are listed. Replace the two documentation addresses (they route nowhere) with
+#   kubectl get service --namespace default kubernetes -o jsonpath='{.spec.clusterIP}'      (443)
+#   kubectl get endpointslices --namespace default -l kubernetes.io/service-name=kubernetes \
+#     -o jsonpath='{.items[0].endpoints[0].addresses[0]}'                                  (6443)
+# and the ports, should your API server listen elsewhere. e2e/run-k8s.sh --ha fills them in.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: os-db-kubernetes-api
+  namespace: os
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: os-db
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.50/32
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.51/32
+      ports:
+        - protocol: TCP
+          port: 6443

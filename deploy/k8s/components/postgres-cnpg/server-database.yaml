@@ -1,0 +1,25 @@
+# The server reads the database password from the Secret the operator made for the role `os`.
+# Only its `password` key is mounted; the Secret also holds a full connection URI.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+  namespace: os
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          volumeMounts:
+            - name: database
+              mountPath: /run/secrets/db
+              readOnly: true
+      volumes:
+        - name: database
+          secret:
+            secretName: os-db-app
+            items:
+              - key: password
+                path: password
+            # 0440: readable by the pod's group (fsGroup 1000), the `node` user's.
+            defaultMode: 288

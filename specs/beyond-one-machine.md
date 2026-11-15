@@ -42,6 +42,18 @@ Success means:
 
 - [x] (2026-11-14 21:38Z) Research current behavior and relevant code paths: [`specs/research/beyond-one-machine.md`](./research/beyond-one-machine.md).
 - [x] (2026-11-15) Owner decisions D1 to D9 (see `Decision Log`). D5 was taken (2026-11-14): (a). D1 to D4 and D6 to D9 were taken 2026-11-15 by the lead under Eric's delegation, each as the recommended option (a).
+- [x] (2026-11-15) CI evidence for Milestones 3, 4 and 5, which supersedes every "CI pending" on
+      the lines below: run 43739857058 at `1752478` (the first on Blacksmith runners):
+      `stack (replicas)` green (one setup token across two replicas, `/readyz` on both, the
+      replica that started signing killed and the other finishing with exactly one transaction,
+      each webhook delivery once, the shared agent rate limit, then every release gate on two
+      replicas) and `stack (openbao)` green (the AppRole can do nothing but wrap and unwrap, a
+      payment, no plaintext, a 20-second outage failing closed and recovering, rotation and
+      rewrap, then every release gate with OpenBao as the only key provider). Run 43741473023
+      at `89ea505`: job `k8s` green (both overlays render and validate, two server replicas
+      Ready on kind, the isolation probe passing and failing under its control, a payment
+      approved on the signer's page ending confirmed) and job `test` green with the World's
+      ciphertext-at-rest test on both key providers, including the OpenBao outage.
 - [x] (2026-11-15) Milestone 1 in CI: `stack (split)` passed on its first run (run 43733608692
       at `8510295`): every release gate through two Compose projects joined only by the wire
       network, and `split.spec.ts` (3 tests: no signer secret or service on the control side,
@@ -143,7 +155,27 @@ Success means:
       `Surprises & Discoveries`); run 43739857058 rendered both overlays, passed kubeconform,
       started kind and applied the overlay, then `make-secrets.sh` failed (it chowned the
       container's read-only `/secrets`); both fixed, written, not re-run.
-- [ ] Milestone 6: HA Postgres with CloudNativePG.
+- [ ] Milestone 6: HA Postgres with CloudNativePG. Written (2026-11-15), not run, CI pending:
+      `deploy/k8s/components/postgres-cnpg/` (Cluster `os-db`: 3 instances, `synchronous:
+      { method: any, number: 1, dataDurability: required }`, `max_connections: "200"` with the
+      formula, image `ghcr.io/cloudnative-pg/postgresql:18.7-202611122305-minimal-trixie` by
+      digest; the server on `os-db-rw.os.svc:5432` with the password from the operator's
+      `os-db-app`; NetworkPolicies for the instances and the operator, the Kubernetes API by
+      address), used by `overlays/production-example` and the new `overlays/kind-ha`;
+      `e2e/run-k8s.sh --ha` (the operator v1.30.1 manifest by SHA-256, its image by digest) and
+      `e2e/test/kubernetes-ha.spec.ts` in the new CI job `k8s-ha`; `k8s` validates CRDs against
+      a commit-pinned schema catalog. The gate: the isolation probe; a payment; the primary
+      deleted (`--grace-period=0 --force`) while a payment is being signed, then confirmed
+      within 180 s with one transaction, the audit chain verified, no server restart; `/readyz`
+      200 on both replicas and a new payment; every `LISTEN` a replica had before back on the new
+      primary (the open question below), both replicas holding the bundle lock and another
+      bundle refused; a shred on one replica heard by the other within 5 s; with both standbys
+      deleted (node cordoned) a write that waits in `SyncRep`, invisible, and lands once they
+      return. It prints the failover and recovery times. Deviations: the files are named
+      `components/postgres-cnpg` and `kubernetes-ha.spec.ts`, and the gate is a job of its own
+      rather than a matrix entry of `k8s`, which only gains the CRD schema location; the
+      notification-row check and the rolled-back-database gate (Compose) are not written.
+      Left: CI green.
 - [ ] Milestone 7: documentation matches the code.
 - [ ] Run validation in CI and record evidence.
 - [x] (2026-11-15) Re-checked against main at `2911c20`: Milestone 2 and its restore gate are CI-green (run 43710836888); the rest is rewritten for the trusted display, mandates and notifications. See `Revision Notes`.
@@ -293,6 +325,28 @@ Success means:
   unpause and completes afterwards, and accepts either answer to the resume itself.
   Evidence: `@workflow/core` 5.5.0 `dist/runtime/resume-hook.js` (`decodeRunPublicKey`,
   `sealTo`), `dist/runtime/start.js` (publishes the public key).
+- Observation (2026-11-15, Milestone 6): `@workflow/world-postgres` 5.2.0 reconnects its own
+  `LISTEN` connections (run status, run events, streams) once a second after a drop, logging
+  `LISTEN <channel> connection lost; reconnecting` and `connection restored`; they are plain
+  clients made from the pool's options, outside the pool's `max`. So the open question is
+  answered by the code in favour of reconnecting, and the `k8s-ha` gate checks it on a real
+  failover: every channel each replica listened on before is listened on again afterwards.
+  The extra clients also mean up to 27 connections per replica, not 24.
+  Evidence: `dist/streamer.js` (`listenChannel`, `LISTEN_RECONNECT_DELAY_MS`), `dist/run-status.js`,
+  `dist/run-events.js`; `deploy/k8s/components/postgres-cnpg/cluster.yaml`.
+- Observation (2026-11-15, Milestone 6): a replica's shred listener cannot be shown to work by a
+  shred alone, because a data-key store caches only while it listens: a replica that does not
+  listen also refuses a shredded key at once. The gate therefore first tombstones a key it just
+  read without an announcement (the replica must still answer from its cache, which proves it
+  listens) and then shreds it from the other replica (it must stop answering within 5 s).
+  Evidence: `packages/keys/src/data-key-store.ts` (`getOrCreate`, `#lost`);
+  `e2e/test/kubernetes-ha.spec.ts`.
+- Observation (2026-11-15, Milestone 6): CloudNativePG's release manifest names its operator
+  image by tag (`ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1`, twice, `imagePullPolicy:
+  Always`), so the checksum alone does not pin what runs; `run-k8s.sh` rewrites both to the tag
+  with its digest and checks it did. Its CRDs exceed the client-side apply annotation, so it is
+  applied with `--server-side`.
+  Evidence: `cnpg-1.30.1.yaml` (SHA-256 `37237f14…`), Deployment `cnpg-controller-manager`.
 
 ## Decision Log
 
