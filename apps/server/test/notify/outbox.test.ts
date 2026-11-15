@@ -221,11 +221,15 @@ describe("the notification outbox", () => {
     expect(waiting.lastCode).toBe("http_429");
     expect(seconds(waiting.nextAttemptAt)).toBe(t.clock.now() + 30);
 
+    // `soon` is delivered on its own pass first: two rows due in one pass are sent side by side,
+    // and the receiver's one queued answer would go to whichever request arrived first.
+    t.clock.advance(30);
+    expect(await deliverDueNotifications(t.ctx)).toEqual({ ...NOTHING, sent: 1 });
+
     const late = await openApproval();
     t.clock.advance(3_000);
     receiver.answer({ status: 503, headers: { "retry-after": "900" } });
-    // `soon` is due again too: it is delivered on this pass.
-    expect(await deliverDueNotifications(t.ctx)).toEqual({ ...NOTHING, sent: 1, retried: 1 });
+    expect(await deliverDueNotifications(t.ctx)).toEqual({ ...NOTHING, retried: 1 });
     // 900 seconds would pass the expiry, 600 seconds from now: the backoff applies.
     expect(seconds((await deliveryOf(late)).nextAttemptAt)).toBe(t.clock.now() + 10);
   });
