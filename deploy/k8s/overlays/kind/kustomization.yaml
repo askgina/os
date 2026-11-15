@@ -24,7 +24,9 @@ images:
     newTag: local
 
 # The origins `kubectl port-forward` publishes: the edge on 55902, the confirmation page's edge
-# on 55903, as the Compose release gates use them (e2e/run.sh).
+# on 55903, as the Compose release gates use them (e2e/run.sh). Set here once, in `os-server`;
+# components/signer-in-cluster copies them to the signer and `approve`. Only ConfigMaps of
+# ../../base can be merged into here: Kustomize runs these generators before the components.
 configMapGenerator:
   - name: os-server
     namespace: os
@@ -38,15 +40,3 @@ configMapGenerator:
     behavior: merge
     literals:
       - PUBLIC_HOST=localhost:55902
-  - name: os-signer
-    namespace: os-signer
-    behavior: merge
-    literals:
-      - WEBAUTHN_RP_ID=localhost
-      - SIGNER_APPROVAL_ORIGIN=http://localhost:55903
-      - SIGNER_RETURN_ORIGIN=http://localhost:55902
-  - name: os-approve
-    namespace: os-signer
-    behavior: merge
-    literals:
-      - APPROVE_ORIGIN=http://localhost:55903

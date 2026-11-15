@@ -133,7 +133,8 @@ Success means:
       clean, `bash -n` on both scripts; `kubectl kustomize` was not run (no kubectl here). Needs
       Milestone 4 committed first (`/readyz`, `cli.ts setup-token`, `SETUP_TOKEN_IN_LOG`). Not
       done: the `StackDriver` and running every release gate with `E2E_DRIVER=k8s`, and the
-      replica crash gate on Kubernetes.
+      replica crash gate on Kubernetes. First CI run (43737561979 at `ad0454f`) failed at
+      rendering the kind overlay (see `Surprises & Discoveries`); fixed, written, not re-run.
 - [ ] Milestone 6: HA Postgres with CloudNativePG.
 - [ ] Milestone 7: documentation matches the code.
 - [ ] Run validation in CI and record evidence.
@@ -261,6 +262,15 @@ Success means:
   standard allows, so `deploy/Caddyfile.agents` is used unchanged.
   Evidence: [Persistent Volumes, access modes](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes);
   [Pod Security Standards](https://kubernetes.io/docs/concepts/security/pod-security-standards/).
+- Observation (2026-11-15, Milestone 5): Kustomize runs a kustomization's own generators before
+  its components (resources, generators, components, then transformers), so an overlay's
+  `configMapGenerator` with `behavior: merge` cannot reach a ConfigMap a component generates:
+  "id … os-signer … does not exist; cannot merge or replace". The overlay now sets the origins
+  once, in the base's `os-server`, and `signer-in-cluster` copies them to the signer and
+  `approve` with `replacements`, which run inside the component after the overlay's merge. The
+  three values therefore cannot differ between server and signer, as in `compose.yaml`.
+  Evidence: CI run 43737561979, job `k8s` (kubectl v1.37.0, Kustomize v5.8.1);
+  `api/internal/target/kusttarget.go` at `kustomize/v5.8.1`, `accumulateTarget`.
 
 ## Decision Log
 
