@@ -1,7 +1,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { newId, policyHash, type WalletId } from "@askgina/os-protocol";
+import { newId, policyHash, type VenueIntent, type WalletId } from "@askgina/os-protocol";
+import { signRequest } from "@askgina/os-protocol/signer";
 import { parseTransaction, recoverTransactionAddress, serializeTransaction } from "viem";
 import { afterAll, describe, expect, it } from "vitest";
 import { createTestVault, OwsVault, type Vault } from "../src/index.ts";
@@ -10,12 +11,15 @@ import type { HyperliquidPayload } from "../src/venues/hyperliquid.ts";
 import {
   approveIntent,
   authorize,
+  grantMandate,
   header,
   intentFor,
   refused,
+  replacePolicy,
   setUpWorld,
   startSigner,
   txParams,
+  type World,
 } from "./harness.ts";
 
 /** A vault that creates honest wallets and then signs however the test says. */
@@ -115,6 +119,167 @@ describe("requests the router cannot place", () => {
     const response = await signer.app.request("http://signer.test/v1/wallets/%zz");
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: { code: "not_found", message: "not found" } });
+  });
+
+  it("has no route that takes typed data, an action, a message or a hash", async () => {
+    const t = startSigner();
+    for (const path of [
+      "/v1/sign-typed-data",
+      "/v1/venue/sign-action",
+      "/v1/sign-hash",
+      "/v1/sign-message",
+      "/v1/venue/orders",
+    ]) {
+      const body = new TextEncoder().encode("{}");
+      const timestamp = t.clock.value;
+      const response = await t.signer.app.request(`http://signer.test${path}`, {
+        method: "POST",
+        body,
+        headers: {
+          "x-signer-timestamp": String(timestamp),
+          "x-signer-signature": signRequest(t.secret, {
+            method: "POST",
+            pathWithQuery: path,
+            timestamp,
+            body,
+          }),
+        },
+      });
+      expect(response.status, path).toBe(404);
+    }
+  });
+});
+
+/** An order intent on Hyperliquid testnet for the world's agent: 0.01 BTC at 65,000 USD. */
+function venueOrder(world: World): VenueIntent {
+  return {
+    v: 1,
+    id: newId("int"),
+    workspaceId: world.workspaceId,
+    agentId: world.agentId,
+    walletId: world.walletId,
+    chainId: "hyperliquid:testnet",
+    operation: {
+      type: "hyperliquid.order",
+      asset: 3,
+      isBuy: true,
+      size: "0.01",
+      limitPx: "65000",
+      tif: "Ioc",
+      reduceOnly: false,
+    },
+    memo: "hedge",
+    createdAt: world.t.clock.value,
+  };
+}
+
+async function venueWorld(vault?: Vault) {
+  const t = startSigner(vault === undefined ? {} : { vault });
+  const world = await setUpWorld(t);
+  const policy = await replacePolicy(world, {
+    venues: {
+      hyperliquid: {
+        network: "hyperliquid:testnet",
+        markets: [{ asset: 3, coin: "BTC", maxNotionalPerOrderUsd6: "1000000000" }],
+        maxNotionalPerDayUsd6: "1000000000",
+        timeInForce: ["Ioc"],
+        submitWindowSeconds: 60,
+        withdrawals: true,
+      },
+    },
+  });
+  return { t, world: { ...world, policy } };
+}
+
+describe("venue intents", () => {
+  it("are invalid_request on the EVM signing routes", async () => {
+    const { world } = await venueWorld();
+    const intent = venueOrder(world);
+    const authorization = approveIntent(world, intent);
+    await refused(
+      world.t.client.sign({ intent, authorization, transaction: txParams() } as never),
+      "invalid_request",
+    );
+    const { mandate } = await grantMandate(world);
+    await refused(
+      world.t.client.signUnderMandate(mandate.id, {
+        approvalId: newId("apr"),
+        intent,
+        transaction: txParams(),
+      } as never),
+      "invalid_request",
+    );
+  });
+
+  it("are refused on the venue routes when signed with the confirm secret", async () => {
+    const { t, world } = await venueWorld();
+    for (const [path, value] of [
+      [
+        "/v1/venue/sign",
+        { intent: venueOrder(world), authorization: approveIntent(world, venueOrder(world)) },
+      ],
+      [`/v1/venue/orders/${newId("apr")}/cancel`, { workspaceId: world.workspaceId }],
+    ] as const) {
+      const body = new TextEncoder().encode(JSON.stringify(value));
+      const timestamp = t.clock.value;
+      const response = await t.signer.app.request(`http://signer.test${path}`, {
+        method: "POST",
+        body,
+        headers: {
+          "x-signer-timestamp": String(timestamp),
+          "x-signer-signature": signRequest(t.confirmSecret, {
+            method: "POST",
+            pathWithQuery: path,
+            timestamp,
+            body,
+          }),
+        },
+      });
+      expect(response.status, path).toBe(401);
+      expect(await response.json()).toMatchObject({ error: { code: "unauthenticated" } });
+    }
+  });
+
+  it("record nothing when the vault signs with another key, another connection id or a high s", async () => {
+    const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+    const other = createTestVault();
+    const otherId = newId("wal");
+    const otherWallet = other.createWallet(otherId);
+    const honest = createTestVault();
+    const liars: Vault["signHyperliquid"][] = [
+      (_walletId, _credential, payload) =>
+        other.signHyperliquid(otherId, otherWallet.credential, payload),
+      (walletId, credential, payload) =>
+        honest.signHyperliquid(walletId, credential, {
+          kind: "l1",
+          network: payload.network,
+          connectionId: `0x${"ab".repeat(32)}`,
+        }),
+      (walletId, credential, payload) => {
+        const signature = honest.signHyperliquid(walletId, credential, payload);
+        return {
+          r: signature.r,
+          s: `0x${(N - BigInt(signature.s)).toString(16).padStart(64, "0")}`,
+          v: signature.v === 27 ? 28 : 27,
+        };
+      },
+    ];
+    for (const lie of liars) {
+      const { world } = await venueWorld({
+        createWallet: (walletId) => honest.createWallet(walletId),
+        signEvmTransaction: (...args) => honest.signEvmTransaction(...args),
+        signHyperliquid: lie,
+        destroyWallet: (walletId) => honest.destroyWallet(walletId),
+      });
+      const intent = venueOrder(world);
+      const authorization = approveIntent(world, intent);
+      await refused(world.t.client.signVenue({ intent, authorization }), "vault_error");
+      expect(await world.t.client.getApproval(authorization.envelope.approvalId)).toMatchObject({
+        state: "unknown",
+        cloid: null,
+      });
+      expect((await world.t.client.getWallet(world.walletId)).venueSpent).toEqual([]);
+    }
   });
 });
 

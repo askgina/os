@@ -8,9 +8,9 @@ import {
   Authorization,
   Envelope,
 } from "../envelopes.ts";
-import { EvmIntent } from "../intent.ts";
+import { EvmIntent, VenueIntent } from "../intent.ts";
 import { Mandate, mandateHash } from "../mandate.ts";
-import { WalletPolicy } from "../policy.ts";
+import { HyperliquidTimeInForce, WalletPolicy } from "../policy.ts";
 import {
   Address,
   Amount,
@@ -29,6 +29,7 @@ import {
   WorkspaceId,
 } from "../primitives.ts";
 import { Sweep } from "../sweep.ts";
+import { Cloid, HYPERLIQUID_MAX_PERP_ASSET, PositiveDecimal, VenueNetwork } from "../venues.ts";
 
 /**
  * Which secret signs a route's requests (see `request-signature.ts`).
@@ -114,6 +115,12 @@ export const signerRoutes = {
   listMandates: { method: "GET", path: "/v1/wallets/:walletId/mandates", scope: "control" },
   revokeMandate: { method: "POST", path: "/v1/mandates/:mandateId/revoke", scope: "control" },
   signUnderMandate: { method: "POST", path: "/v1/mandates/:mandateId/sign", scope: "control" },
+  signVenue: { method: "POST", path: "/v1/venue/sign", scope: "control" },
+  cancelVenueOrder: {
+    method: "POST",
+    path: "/v1/venue/orders/:approvalId/cancel",
+    scope: "control",
+  },
   openConfirmation: {
     method: "POST",
     path: "/v1/approvals/:approvalId/confirmation",
@@ -268,8 +275,15 @@ export const WalletState = z
     address: Address,
     policy: WalletPolicy.nullable(),
     policyHash: Digest.nullable(),
-    /** What the signer has signed for in the last 24 hours, per asset. */
+    /** What the signer has signed for in the last 24 hours, per asset, on EVM chains. */
     spent: z.array(z.strictObject({ chainId: ChainId, asset: AssetRef, amount: Amount })),
+    /**
+     * The notional of the orders the signer has signed in the last 24 hours that count against a
+     * daily cap (not reduce-only), per venue network, in micro-USD. Withdrawals count nothing.
+     */
+    venueSpent: z.array(
+      z.strictObject({ chainId: VenueNetwork, asset: z.literal("usd6"), amount: Amount }),
+    ),
     state: WalletLifecycle,
     /** When its key is, or was, destroyed; null exactly while `active` or `held`. */
     destroyAfter: EpochSeconds.nullable(),
@@ -432,7 +446,9 @@ export type AttemptResponse = z.infer<typeof AttemptResponse>;
  * - `unknown`: never seen.
  * - `revoked`: refused for good; no signature exists or will exist.
  * - `signed`: an intent, a sweep or a mandate use was signed; `transactionHash` is the first
- *   signature's, and `attempts` lists every attempt, the first included, by number.
+ *   signature's, and `attempts` lists every attempt, the first included, by number. For a venue
+ *   intent (`POST /v1/venue/sign`) both are empty, and `cloid` is the order's client order id
+ *   (null for a withdrawal).
  * - `applied`: a non-signing envelope (policy, approver, threshold, resume, grant, retire,
  *   delete) took effect.
  *   For a `cancel-transaction` envelope, `attempts` holds the one attempt it produced and
@@ -444,8 +460,151 @@ export const ApprovalState = z.strictObject({
   state: z.enum(["unknown", "revoked", "signed", "applied"]),
   transactionHash: Hex32.nullable(),
   attempts: z.array(TransactionAttempt).max(64),
+  /** The client order id of a signed venue order; null for anything else. */
+  cloid: Cloid.nullable(),
 });
 export type ApprovalState = z.infer<typeof ApprovalState>;
+
+// --- venues -----------------------------------------------------------------------------------
+
+/**
+ * The actions the signer signs at Hyperliquid, as the request body carries them. Keys are
+ * declared in the order the venue hashes them (msgpack, `docs/approval-protocol.md` section 8,
+ * "Venue orders"), and parsing returns them in that order, so the body that is posted encodes to
+ * exactly the bytes that were signed. There is no other action: no modify, no trigger order, no
+ * transfer, no leverage change, no agent approval.
+ */
+const PerpAsset = z.number().int().min(0).max(HYPERLIQUID_MAX_PERP_ASSET);
+
+/** One limit order: `a` asset, `b` is buy, `p` limit price, `s` size, `r` reduce-only, `c` cloid. */
+export const HyperliquidOrderAction = z.strictObject({
+  type: z.literal("order"),
+  orders: z
+    .array(
+      z.strictObject({
+        a: PerpAsset,
+        b: z.boolean(),
+        p: PositiveDecimal,
+        s: PositiveDecimal,
+        r: z.boolean(),
+        t: z.strictObject({ limit: z.strictObject({ tif: HyperliquidTimeInForce }) }),
+        c: Cloid,
+      }),
+    )
+    .length(1),
+  grouping: z.literal("na"),
+});
+export type HyperliquidOrderAction = z.infer<typeof HyperliquidOrderAction>;
+
+/** The cancel of one order by its client order id. */
+export const HyperliquidCancelByCloidAction = z.strictObject({
+  type: z.literal("cancelByCloid"),
+  cancels: z.array(z.strictObject({ asset: PerpAsset, cloid: Cloid })).length(1),
+});
+export type HyperliquidCancelByCloidAction = z.infer<typeof HyperliquidCancelByCloidAction>;
+
+/** A withdrawal of USDC from the venue to `destination`, always the wallet's own address. */
+export const HyperliquidWithdrawAction = z.strictObject({
+  type: z.literal("withdraw3"),
+  hyperliquidChain: z.enum(["Testnet", "Mainnet"]),
+  signatureChainId: z.enum(["0x66eee", "0xa4b1"]),
+  amount: PositiveDecimal,
+  time: z.number().int().min(0),
+  destination: Address,
+});
+export type HyperliquidWithdrawAction = z.infer<typeof HyperliquidWithdrawAction>;
+
+export const HyperliquidAction = z.discriminatedUnion("type", [
+  HyperliquidOrderAction,
+  HyperliquidCancelByCloidAction,
+  HyperliquidWithdrawAction,
+]);
+export type HyperliquidAction = z.infer<typeof HyperliquidAction>;
+
+/**
+ * The exact body the control plane posts to the venue's `/exchange`, unchanged. `nonce` and
+ * `expiresAfter` are in milliseconds and chosen by the signer; an order or a cancel is unusable
+ * after `expiresAfter`, and a withdrawal has none (its `time` is its nonce). `vaultAddress` is
+ * always null: the signer never trades for a vault.
+ */
+export const HyperliquidRequest = z
+  .strictObject({
+    action: HyperliquidAction,
+    nonce: z.number().int().min(0),
+    signature: z.strictObject({
+      r: Hex32,
+      s: Hex32,
+      v: z.union([z.literal(27), z.literal(28)]),
+    }),
+    vaultAddress: z.null(),
+    expiresAfter: z.number().int().min(0).nullable(),
+  })
+  .refine(
+    (request) =>
+      request.action.type === "withdraw3"
+        ? request.expiresAfter === null && request.action.time === request.nonce
+        : request.expiresAfter !== null && request.expiresAfter > request.nonce,
+    {
+      path: ["expiresAfter"],
+      message:
+        "an order or a cancel expires after its nonce; a withdrawal has no expiry and its time is its nonce",
+    },
+  );
+export type HyperliquidRequest = z.infer<typeof HyperliquidRequest>;
+
+/**
+ * Sign the one action of an approved venue intent (`POST /v1/venue/sign`). Carries an
+ * `approve-intent` envelope. There is no caller-chosen parameter: the signer builds the action
+ * from the intent, picks its nonce and expiry, and for a withdrawal names the wallet's own
+ * address. Repeating the request returns the same answer; it never produces a second signature.
+ */
+export const SignVenueRequest = z.strictObject({
+  intent: VenueIntent,
+  authorization: Authorization,
+});
+export type SignVenueRequest = z.infer<typeof SignVenueRequest>;
+
+export const SignVenueResponse = z
+  .strictObject({
+    approvalId: ApprovalId,
+    walletId: WalletId,
+    network: VenueNetwork,
+    /** The venue account: the wallet's own address. */
+    account: Address,
+    /** The order's client order id, derived from the approval id; null for a withdrawal. */
+    cloid: Cloid.nullable(),
+    request: HyperliquidRequest,
+  })
+  .refine(
+    ({ cloid, request: { action } }) =>
+      action.type === "order"
+        ? action.orders[0]?.c === cloid
+        : action.type === "withdraw3" && cloid === null,
+    { path: ["cloid"], message: "an order carries its cloid; a withdrawal has none" },
+  );
+export type SignVenueResponse = z.infer<typeof SignVenueResponse>;
+
+/**
+ * Sign the cancel of an order the signer signed (`POST /v1/venue/orders/:approvalId/cancel`,
+ * the order's approval id). No passkey, also while the workspace is paused: approving an order
+ * includes the right to cancel it. Names the workspace, so the cancel is recorded in its
+ * decision log. Within a cancel's own expiry the same cancel is returned.
+ */
+export const CancelVenueOrderRequest = z.strictObject({ workspaceId: WorkspaceId });
+export type CancelVenueOrderRequest = z.infer<typeof CancelVenueOrderRequest>;
+
+export const CancelVenueOrderResponse = z
+  .strictObject({
+    approvalId: ApprovalId,
+    cloid: Cloid,
+    request: HyperliquidRequest,
+  })
+  .refine(
+    ({ cloid, request: { action } }) =>
+      action.type === "cancelByCloid" && action.cancels[0]?.cloid === cloid,
+    { path: ["request"], message: "expected the cancel of this cloid" },
+  );
+export type CancelVenueOrderResponse = z.infer<typeof CancelVenueOrderResponse>;
 
 // --- mandates ---------------------------------------------------------------------------------
 

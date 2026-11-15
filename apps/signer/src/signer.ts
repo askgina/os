@@ -18,6 +18,7 @@ import {
   type Hex,
   intentHash,
   intentSpend,
+  isVenueNetwork,
   type Network,
   policyHash,
   type SpendAsset,
@@ -67,6 +68,7 @@ import { createLifecycleOperations, type LifecycleRefusal } from "./lifecycle.ts
 import type { Logger } from "./log.ts";
 import { createMandateOperations } from "./mandates.ts";
 import { type EvmTransaction, type Vault, VaultError } from "./vault.ts";
+import { createVenueOperations } from "./venue-signing.ts";
 import {
   type HyperliquidPayload,
   type HyperliquidSignature,
@@ -358,12 +360,22 @@ export function createSignerCore(options: SignerCoreOptions) {
     if (!row) throw new SignerFailure("not_found");
     assertNotDeleted(row.workspace_id);
     const policy = currentPolicy(walletId);
-    const spent = [...spentSince(walletId, options.now() - DAY_SECONDS)]
-      .filter(([, amount]) => amount > 0n)
-      .map(([key, amount]) => {
-        const [chainId, asset] = key.split("|") as [ChainId, AssetRef];
-        return { chainId, asset, amount: amount.toString() };
-      });
+    const spent: WalletState["spent"] = [];
+    const venueSpent: WalletState["venueSpent"] = [];
+    for (const [key, amount] of spentSince(walletId, options.now() - DAY_SECONDS)) {
+      if (amount === 0n) continue;
+      const [chainId = "", asset = ""] = key.split("|");
+      // A venue network's spends are its orders' notional in micro-USD (`venue-signing.ts`).
+      if (isVenueNetwork(chainId)) {
+        venueSpent.push({ chainId, asset: "usd6", amount: amount.toString() });
+      } else {
+        spent.push({
+          chainId: chainId as ChainId,
+          asset: asset as AssetRef,
+          amount: amount.toString(),
+        });
+      }
+    }
     return {
       walletId: row.wallet_id as WalletId,
       workspaceId: row.workspace_id as WorkspaceId,
@@ -373,6 +385,7 @@ export function createSignerCore(options: SignerCoreOptions) {
       policy: policy?.policy ?? null,
       policyHash: policy?.hash ?? null,
       spent,
+      venueSpent,
       state: row.state,
       destroyAfter: row.destroy_after,
     };
@@ -388,7 +401,8 @@ export function createSignerCore(options: SignerCoreOptions) {
     const row = db.prepare("SELECT * FROM signatures WHERE approval_id = ?").get(approvalId) as
       | SignatureRow
       | undefined;
-    if (!row) throw new SignerFailure("internal");
+    // An approval signed as a venue request has no transaction to hand back.
+    if (!row) throw new SignerFailure(venues.isVenueSigned(approvalId) ? "conflict" : "internal");
     const wallet = findWallet(row.wallet_id);
     if (!wallet) throw new SignerFailure("internal");
     // Emptied when the wallet's key was destroyed: there is nothing left to hand back.
@@ -976,6 +990,39 @@ export function createSignerCore(options: SignerCoreOptions) {
   }
 
   /**
+   * Sign a Hyperliquid payload the signer built with the wallet's key and check that the
+   * signature is that wallet's, over exactly that payload, with a low `s`. Records nothing; a
+   * refusal is `vault_error`.
+   */
+  function signHyperliquidWith(
+    wallet: WalletRow,
+    payload: HyperliquidPayload,
+  ): HyperliquidSignature {
+    const credential = open(
+      options.tokenKey,
+      wallet.sealed_credential,
+      credentialContext(wallet.wallet_id),
+    ).toString("utf8");
+    let signature: HyperliquidSignature;
+    try {
+      signature = vault.signHyperliquid(wallet.wallet_id as WalletId, credential, payload);
+    } catch (error) {
+      log.error("vault sign failed", {
+        walletId: wallet.wallet_id,
+        reason: error instanceof VaultError ? error.reason : "unknown",
+      });
+      throw new SignerFailure("vault_error");
+    }
+    if (!isTypedSignedBy(signature, payload, wallet.address)) {
+      log.error("vault returned a signature that does not match", {
+        walletId: wallet.wallet_id,
+      });
+      throw new SignerFailure("vault_error");
+    }
+    return signature;
+  }
+
+  /**
    * Sign `unsigned` with the wallet's key and record it as this approval's one signature, with
    * what it moves. Runs inside the signing transaction, after every check.
    */
@@ -1238,12 +1285,14 @@ export function createSignerCore(options: SignerCoreOptions) {
         state: "unknown",
         transactionHash: null,
         attempts: [],
+        cloid: null,
       };
     }
     return {
       approvalId: approvalId as ApprovalId,
       state: row.state,
       ...attempts.approvalAttempts(row),
+      cloid: venues.cloidOf(approvalId),
     };
   }
 
@@ -1295,6 +1344,29 @@ export function createSignerCore(options: SignerCoreOptions) {
     envelopeDigest,
     buildTransaction,
     signWith,
+  });
+
+  const venues = createVenueOperations({
+    db,
+    now: options.now,
+    log,
+    maxIntentTtlSeconds: options.maxIntentTtlSeconds,
+    decide,
+    verify,
+    requireWorkspace,
+    assertNotDeleted,
+    assertCanSign,
+    findWallet,
+    currentPolicy,
+    spentSince,
+    findApproval,
+    priorOutcome,
+    assertNotFenced,
+    assertApproversStillPresent,
+    consumeNonce,
+    recordApproval,
+    envelopeDigest,
+    signHyperliquidWith,
   });
 
   const lifecycle = createLifecycleOperations({
@@ -1355,6 +1427,8 @@ export function createSignerCore(options: SignerCoreOptions) {
     listMandates: mandates.listMandates,
     revokeMandate: mandates.revokeMandate,
     signUnderMandate: mandates.signUnderMandate,
+    signVenue: venues.signVenue,
+    cancelVenueOrder: venues.cancelVenueOrder,
     retireWallet: lifecycle.retireWallet,
     cancelRetireWallet: lifecycle.cancelRetireWallet,
     finalizeRetireWallet: lifecycle.finalizeRetireWallet,

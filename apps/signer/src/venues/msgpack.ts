@@ -131,6 +131,57 @@ function describe(value: unknown): string {
   return value?.constructor?.name ?? "object";
 }
 
+/** A JSON value as a request body carries it: objects keep their keys in insertion order. */
+export type JsonValue =
+  | string
+  | boolean
+  | null
+  | number
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+/**
+ * A JavaScript object puts keys that look like array indices first, whatever order they were
+ * added in, so such a key cannot keep its map position in JSON. No Hyperliquid action has one.
+ */
+const INDEX_LIKE_KEY = /^(?:0|[1-9][0-9]*)$/;
+
+/** `value` as JSON, each map an object with its keys in the map's order. */
+export function msgpackToJson(value: MsgpackValue): JsonValue {
+  if (value instanceof MsgpackMap) {
+    const object: { [key: string]: JsonValue } = {};
+    for (const [key, entry] of value.entries) {
+      if (INDEX_LIKE_KEY.test(key)) throw new TypeError(`map key ${key} cannot keep its order`);
+      object[key] = msgpackToJson(entry);
+    }
+    return object;
+  }
+  if (Array.isArray(value)) return value.map(msgpackToJson);
+  return value as string | boolean | null | number;
+}
+
+/**
+ * The map form of a parsed JSON value, each object a `MsgpackMap` with its keys in the object's
+ * order: what the venue hashes when it reads a body. Throws for anything `encodeMsgpack` would.
+ */
+export function jsonToMsgpack(value: unknown): MsgpackValue {
+  if (Array.isArray(value)) return value.map(jsonToMsgpack);
+  if (value !== null && typeof value === "object") {
+    return new MsgpackMap(
+      Object.entries(value).map(([key, entry]) => [key, jsonToMsgpack(entry)] as const),
+    );
+  }
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    typeof value === "number"
+  ) {
+    return value;
+  }
+  throw new TypeError(`cannot encode ${describe(value)}`);
+}
+
 /** The msgpack bytes of `value`. Throws a `TypeError` or `RangeError` for anything unsupported. */
 export function encodeMsgpack(value: MsgpackValue): Uint8Array {
   const writer = new Writer();

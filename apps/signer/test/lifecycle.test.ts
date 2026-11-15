@@ -574,7 +574,7 @@ describe("the database's schema version 7", () => {
     const db = new DatabaseSync(sqlitePath);
     const { user_version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
     db.close();
-    expect([SCHEMA_VERSION, user_version]).toEqual([7, 7]);
+    expect([SCHEMA_VERSION, user_version]).toEqual([8, 8]);
   });
 
   it("a retirement needs at least the configured minimum delay", async () => {

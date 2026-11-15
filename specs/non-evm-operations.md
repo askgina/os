@@ -107,7 +107,20 @@ Success means:
       vault's other users, `lifecycle`, `repricing`, `signing`, `sweep` and `mandates`, pass,
       each file alone. Not yet shown: "records nothing and answers `vault_error`" for a bad
       venue signature, because no route calls `signHyperliquid` before Milestone 4.
-- [ ] Milestone 4: the signer's venue routes and records.
+- [x] (2026-11-15) Milestone 4: the signer's venue routes and records. `POST /v1/venue/sign`
+      (`signVenue`, orders and withdrawals) and `POST /v1/venue/orders/:approvalId/cancel`
+      (`cancelVenueOrder(approvalId, workspaceId)`), both scope `control`;
+      `apps/signer/src/venue-signing.ts` (decision-log actions `sign-venue`,
+      `cancel-venue-order`); signer schema version 8 (`venue_nonces`, `venue_signatures`,
+      `venue_cancels`); `HyperliquidRequest`, `SignVenueRequest`/`Response`,
+      `CancelVenueOrderRequest`/`Response`, `WalletState.venueSpent`, `ApprovalState.cloid`;
+      `docs/approval-protocol.md` §8 "Venue orders". Local checks only, CI pending: `tsc --noEmit`
+      clean in `apps/signer`, `packages/protocol`, `apps/server`, `apps/approve` and `e2e`;
+      `venue-signing.test.ts` (15 tests) and `hardening.test.ts` (14) pass alone, as do the
+      signer's `signing`, `lifecycle`, `repricing`, `mandates`, `fence`, `confirmations`,
+      `sweep`, `governance`, `possession`, `tls`, `admin` and `hyperliquid-encoding` tests and
+      the protocol `signer-client` and `lifecycle-envelopes` tests, each file alone; Biome clean
+      on the changed files.
 - [ ] Milestone 5: control plane: venue client, MCP tool, approval card, follow-up.
 - [ ] Milestone 6: fake venue, release gates, documentation.
 - [ ] Manual testnet proof (D6; not CI; needs a funded testnet account; required before any
@@ -207,6 +220,26 @@ Success means:
   lists what its own source imports under `dependencies` (`cbor-x`, `pg`). It is still in no
   production install: only test code depends on `packages/testkit`, and the signer image installs
   with `--production`. Milestone 6's fake venue, also in `packages/testkit`, can import it directly.
+- Observation (Milestone 4): widening `WalletState.spent` to venue networks, as the plan said,
+  would not compile in the control plane: it hands `spent` to the web's `WalletSummary`
+  (`apps/server/src/directory/routes.ts`, typed with `ChainId` in `packages/api`). The change was
+  made additively instead: `spent` stays EVM only and venue spends are in a new
+  `WalletState.venueSpent` (`{ chainId: VenueNetwork, asset: "usd6", amount }`). Milestone 5 may
+  show it on the wallet page.
+- Observation (Milestone 4): D2 is open, so the signer itself refuses a `hyperliquid:mainnet`
+  intent as `policy_denied` with `venue_not_allowed`, whatever the wallet's policy names
+  (`SIGNABLE_VENUE_NETWORKS` in `venue-signing.ts`). The plan had only the server refuse mainnet
+  at boot; without this a policy naming mainnet would make the signer sign mainnet orders that a
+  compromised control plane could post.
+- Observation (Milestone 4): a cancel's `expiresAfter` uses the order's own submit window
+  (`expires_after − signed_at` of its `venue_signatures` row), not the current policy's, so a
+  later policy without venue rules still lets the order be cancelled (D4). Nonces and expiries
+  are the signer's clock in seconds times 1000. The plan's client signature
+  `cancelVenueOrder(approvalId, request)` became `cancelVenueOrder(approvalId, workspaceId)`,
+  like `revokeApproval` and `revokeMandate`. Destroying a wallet's key empties its venue
+  requests and cancels as it empties signed transactions. A reprice of a venue approval, or a
+  `/v1/sign` repeat of its envelope, is `conflict`. The request body is checked before signing:
+  the action, read back from its JSON as the venue would, must encode to the hashed bytes.
 - Observation (Milestone 2): the SDK writes `r` and `s` with `to_hex`, which drops leading zero
   digits (three of the vector values have 63 digits); the tests compare them as numbers. The SDK
   signs `withdraw3` with `signatureChainId` `0x66eee` on both networks; this plan uses `0xa4b1`

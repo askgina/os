@@ -300,6 +300,7 @@ describe("signing under a mandate", () => {
           transactionHash: signed.transactionHash,
         }),
       ],
+      cloid: null,
     });
     // Mandated spending is the wallet's spending.
     expect((await t.client.getWallet(world.walletId)).spent).toEqual([

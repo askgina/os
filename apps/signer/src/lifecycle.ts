@@ -179,8 +179,8 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
 
   /**
    * Delete the wallet's key from the key store, then empty its sealed credential and every
-   * signed transaction of it the signer kept, attempts included, and mark it destroyed. Call
-   * inside the finalizing transaction, after its checks.
+   * signed transaction and venue request of it the signer kept, attempts and venue cancels
+   * included, and mark it destroyed. Call inside the finalizing transaction, after its checks.
    */
   function destroyKey(wallet: WalletRow, destroyAfter: number): void {
     try {
@@ -196,6 +196,12 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
       "UPDATE signature_attempts SET signed_transaction = '' WHERE approval_id IN (SELECT approval_id FROM signatures WHERE wallet_id = ?)",
     ).run(wallet.wallet_id);
     db.prepare("UPDATE signatures SET signed_transaction = '' WHERE wallet_id = ?").run(
+      wallet.wallet_id,
+    );
+    db.prepare(
+      "UPDATE venue_cancels SET request = '' WHERE approval_id IN (SELECT approval_id FROM venue_signatures WHERE wallet_id = ?)",
+    ).run(wallet.wallet_id);
+    db.prepare("UPDATE venue_signatures SET request = '' WHERE wallet_id = ?").run(
       wallet.wallet_id,
     );
     db.prepare(

@@ -13,6 +13,7 @@ import {
   type ChainLabel,
   type Envelope,
   type EvmIntent,
+  type Intent,
   intentHash,
   type Mandate,
   mandateHash,
@@ -372,7 +373,7 @@ export function intentFor(
 
 export function approveIntent(
   world: World,
-  intent: EvmIntent,
+  intent: Intent,
   options: { people?: Person[]; ttlSeconds?: number; policyHash?: string } = {},
 ): Authorization {
   const envelope: Envelope = {

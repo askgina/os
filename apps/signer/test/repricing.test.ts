@@ -414,6 +414,7 @@ describe("a cancel", () => {
       state: "applied",
       transactionHash: cancelled.attempt.transactionHash,
       attempts: [cancelled.attempt],
+      cloid: null,
     });
     expect((await world.t.client.getApproval(payment.approvalId)).attempts).toEqual([
       expect.objectContaining({ attempt: 0, kind: "original" }),

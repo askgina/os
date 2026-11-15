@@ -122,6 +122,7 @@ describe("sweeping a wallet", () => {
           transactionHash: first.transactionHash,
         }),
       ],
+      cloid: null,
     });
     expect((await world.t.client.getWallet(world.walletId)).spent).toEqual([
       { chainId: CHAIN, asset: "native", amount: String(3n * ETH) },

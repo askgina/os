@@ -254,6 +254,51 @@ ALTER TABLE wallets ADD COLUMN state_before_delete TEXT
   CHECK (state_before_delete IN ('active', 'held'));
 `;
 
+/**
+ * Version 8: venue actions (`venue-signing.ts`, `docs/approval-protocol.md`, section 8, "Venue
+ * orders"). `venue_nonces` is the last action nonce each wallet used on each venue network, in
+ * milliseconds; the next one is above it and above the clock (`nextNonce`). `venue_signatures`
+ * is the one signed request of an approval, an order or a withdrawal, with the exact body to post
+ * (`request`, emptied when the wallet's key is destroyed); `asset` and `cloid` are an order's,
+ * `expires_after` and `connection_hash` an order's (a withdrawal has neither). `venue_cancels`
+ * holds every cancel signed for an order, by sequence. An order's spend is a `spends` row with
+ * the venue network as `chain_id` and `usd6` as `asset`, written only when it counts against the
+ * daily cap. `approvals` is reused: a signed venue intent is `signed`.
+ */
+const VERSION_8 = `
+CREATE TABLE IF NOT EXISTS venue_nonces (
+  wallet_id TEXT NOT NULL REFERENCES wallets(wallet_id),
+  network TEXT NOT NULL,
+  last_nonce INTEGER NOT NULL,
+  PRIMARY KEY (wallet_id, network)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS venue_signatures (
+  approval_id TEXT PRIMARY KEY REFERENCES approvals(approval_id),
+  wallet_id TEXT NOT NULL REFERENCES wallets(wallet_id),
+  network TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('order', 'withdraw')),
+  asset INTEGER,
+  cloid TEXT,
+  action_nonce INTEGER NOT NULL,
+  expires_after INTEGER,
+  connection_hash TEXT,
+  request TEXT NOT NULL,
+  signed_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS venue_signatures_by_wallet ON venue_signatures (wallet_id);
+
+CREATE TABLE IF NOT EXISTS venue_cancels (
+  approval_id TEXT NOT NULL REFERENCES venue_signatures(approval_id),
+  seq INTEGER NOT NULL,
+  action_nonce INTEGER NOT NULL,
+  expires_after INTEGER NOT NULL,
+  request TEXT NOT NULL,
+  signed_at INTEGER NOT NULL,
+  PRIMARY KEY (approval_id, seq)
+) STRICT;
+`;
+
 /** Migration `n` (from 1) takes a database from version `n - 1` to version `n`. */
 const MIGRATIONS: readonly string[] = [
   VERSION_1,
@@ -263,6 +308,7 @@ const MIGRATIONS: readonly string[] = [
   VERSION_5,
   VERSION_6,
   VERSION_7,
+  VERSION_8,
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 

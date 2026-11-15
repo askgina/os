@@ -412,7 +412,13 @@ export function createAttemptOperations(internals: AttemptInternals) {
     if (approval.state === "revoked") throw new SignerFailure("approval_revoked");
     if (approval.state !== "signed") throw new SignerFailure("conflict");
     const signature = signatureOf(approvalId);
-    if (!signature) throw new SignerFailure("internal");
+    if (!signature) {
+      // A venue request was signed for it: there is no transaction to reprice.
+      const venue = db
+        .prepare("SELECT 1 FROM venue_signatures WHERE approval_id = ?")
+        .get(approvalId);
+      throw new SignerFailure(venue ? "conflict" : "internal");
+    }
     const hash = intentHash(request.intent);
     if ("envelope" in request) {
       // An envelope that is not one (it expires before it is issued) is not the stored one.

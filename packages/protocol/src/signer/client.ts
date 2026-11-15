@@ -7,6 +7,7 @@ import {
   ApprovalState,
   AttemptResponse,
   type CancelTransactionRequest,
+  CancelVenueOrderResponse,
   CONFIRM_TOKEN_HEADER,
   type CreateWalletRequest,
   type CreateWorkspaceRequest,
@@ -26,6 +27,8 @@ import {
   type SignRequest,
   SignResponse,
   type SignUnderMandateRequest,
+  type SignVenueRequest,
+  SignVenueResponse,
   SubmitConfirmationResponse,
   SubmitPossessionResponse,
   type SweepRequest,
@@ -126,6 +129,14 @@ export interface SignerClient {
   listMandates(walletId: WalletId): Promise<ListMandatesResponse>;
   revokeMandate(mandateId: MandateId, workspaceId: WorkspaceId): Promise<MandateState>;
   signUnderMandate(mandateId: MandateId, request: SignUnderMandateRequest): Promise<SignResponse>;
+
+  /** The one venue request of an approved venue intent, built and signed by the signer. */
+  signVenue(request: SignVenueRequest): Promise<SignVenueResponse>;
+  /** The cancel of an order the signer signed, by its approval id. No passkey, also while paused. */
+  cancelVenueOrder(
+    approvalId: ApprovalId,
+    workspaceId: WorkspaceId,
+  ): Promise<CancelVenueOrderResponse>;
 
   /** Open, or reopen with a fresh token, the confirmation page for a pending approval. */
   openConfirmation(
@@ -328,6 +339,14 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
       }),
     signUnderMandate: (mandateId: MandateId, request: SignUnderMandateRequest) =>
       call(signerRoutes.signUnderMandate, SignResponse, { params: { mandateId }, body: request }),
+
+    signVenue: (request: SignVenueRequest) =>
+      call(signerRoutes.signVenue, SignVenueResponse, { body: request }),
+    cancelVenueOrder: (approvalId: ApprovalId, workspaceId: WorkspaceId) =>
+      call(signerRoutes.cancelVenueOrder, CancelVenueOrderResponse, {
+        params: { approvalId },
+        body: { workspaceId },
+      }),
 
     openConfirmation: (approvalId: ApprovalId, request: OpenConfirmationRequest) =>
       call(signerRoutes.openConfirmation, OpenConfirmationResponse, {

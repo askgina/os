@@ -28,6 +28,7 @@ import {
   sweepWallet,
   T0,
   TARGET_APPROVAL,
+  venueIntent,
   WALLET,
   WALLET_ADDRESS,
   WS,
@@ -116,6 +117,7 @@ const approvalState = {
   state: "unknown",
   transactionHash: null,
   attempts: [],
+  cloid: null,
 };
 
 function client(respond: Parameters<typeof fakeFetch>[0]) {
@@ -364,6 +366,114 @@ describe("signer client", () => {
     );
   });
 
+  it("sends venue signing and cancels to their routes, signed, and keeps the body's key order", async () => {
+    const cloid = `0x${"12".repeat(16)}` as const;
+    const signature = { r: `0x${"ab".repeat(32)}`, s: `0x${"cd".repeat(32)}`, v: 27 };
+    // The answer's keys out of the venue's order: the parsed body puts them back.
+    const order = {
+      approvalId: APPROVAL,
+      walletId: WALLET,
+      network: "hyperliquid:testnet",
+      account: WALLET_ADDRESS,
+      cloid,
+      request: {
+        expiresAfter: T0 * 1000 + 60_000,
+        vaultAddress: null,
+        signature,
+        nonce: T0 * 1000,
+        action: {
+          grouping: "na",
+          orders: [
+            {
+              c: cloid,
+              t: { limit: { tif: "Ioc" } },
+              r: false,
+              s: "0.01",
+              p: "65000",
+              b: true,
+              a: 3,
+            },
+          ],
+          type: "order",
+        },
+      },
+    };
+    const cancelled = {
+      approvalId: APPROVAL,
+      cloid,
+      request: {
+        action: { type: "cancelByCloid", cancels: [{ asset: 3, cloid }] },
+        nonce: T0 * 1000 + 1,
+        signature,
+        vaultAddress: null,
+        expiresAfter: T0 * 1000 + 60_001,
+      },
+    };
+    const { signer, calls } = client((url) => ({
+      status: 200,
+      body: url.endsWith("/cancel") ? cancelled : order,
+    }));
+    const request = {
+      intent: venueIntent(),
+      authorization: { envelope: approveIntent(), assertions: [] },
+    };
+    const signed = await signer.signVenue(request as never);
+    expect(JSON.stringify(signed.request)).toBe(
+      JSON.stringify({
+        action: {
+          type: "order",
+          orders: [
+            {
+              a: 3,
+              b: true,
+              p: "65000",
+              s: "0.01",
+              r: false,
+              t: { limit: { tif: "Ioc" } },
+              c: cloid,
+            },
+          ],
+          grouping: "na",
+        },
+        nonce: T0 * 1000,
+        signature,
+        vaultAddress: null,
+        expiresAfter: T0 * 1000 + 60_000,
+      }),
+    );
+    expect(await signer.cancelVenueOrder(APPROVAL, WS)).toEqual(cancelled);
+    expect(calls.map((c) => `${c.init.method} ${new URL(c.url).pathname}`)).toEqual([
+      "POST /v1/venue/sign",
+      `POST /v1/venue/orders/${APPROVAL}/cancel`,
+    ]);
+    expect([signerRoutes.signVenue.scope, signerRoutes.cancelVenueOrder.scope]).toEqual([
+      "control",
+      "control",
+    ]);
+    for (const call of calls) expect(verifyRecorded(call)).toBe(true);
+    expect(
+      calls.map((call) => JSON.parse(new TextDecoder().decode(call.init.body as Uint8Array))),
+    ).toEqual([request, { workspaceId: WS }]);
+
+    // An answer the contract does not allow is not passed on: an order with another cloid, an
+    // extra key in the action, or a cancel of another order.
+    for (const body of [
+      { ...order, cloid: `0x${"34".repeat(16)}` },
+      { ...order, request: { ...order.request, action: { ...order.request.action, builder: {} } } },
+      { ...order, request: { ...order.request, expiresAfter: null } },
+    ]) {
+      const odd = client(() => ({ status: 200, body }));
+      await expect(odd.signer.signVenue(request as never)).rejects.not.toBeInstanceOf(SignerError);
+    }
+    const otherCancel = client(() => ({
+      status: 200,
+      body: { ...cancelled, cloid: `0x${"34".repeat(16)}` },
+    }));
+    await expect(otherCancel.signer.cancelVenueOrder(APPROVAL, WS)).rejects.not.toBeInstanceOf(
+      SignerError,
+    );
+  });
+
   it("sends each retire and delete call to its route, signed, with its body, and parses the answer", async () => {
     const destroyAfter = T0 + DESTROY_DELAY;
     const retiring = {
@@ -375,6 +485,7 @@ describe("signer client", () => {
       policy: null,
       policyHash: null,
       spent: [],
+      venueSpent: [],
       state: "retiring",
       destroyAfter,
     };

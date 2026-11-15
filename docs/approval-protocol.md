@@ -717,6 +717,59 @@ so a landed cancel ages out of the 24-hour window like any spend. Every refusal 
 workspace is in the decision log, with action `reprice` under the signed approval's id or
 `cancel-transaction` under the cancel's approval id.
 
+### Venue orders
+
+A venue intent (section 3) is never a transaction. Two routes, both in the control scope, serve
+it ([`signer/api.ts`](../packages/protocol/src/signer/api.ts),
+[`apps/signer/src/venue-signing.ts`](../apps/signer/src/venue-signing.ts)):
+
+| Route                                      | Body                        | Answer                                                       |
+| ------------------------------------------ | --------------------------- | ------------------------------------------------------------ |
+| `POST /v1/venue/sign`                      | `{ intent, authorization }` | `{ approvalId, walletId, network, account, cloid, request }` |
+| `POST /v1/venue/orders/:approvalId/cancel` | `{ workspaceId }`           | `{ approvalId, cloid, request }`                             |
+
+`request` is the exact body the control plane posts to the venue's `/exchange`, unchanged:
+`{ action, nonce, signature: { r, s, v }, vaultAddress: null, expiresAfter }`, with `action` one
+of `order`, `cancelByCloid` or `withdraw3` and its keys in the order the venue hashes them.
+There is no caller-chosen parameter, and no route takes an action, typed data, a message or a
+hash. `/v1/sign`, signing under a mandate and repricing refuse a venue intent as
+`invalid_request`.
+
+**Signing** follows steps 1 to 7 of the signing rule above, with `envelope.chainId` a venue
+network, and then refuses a network this signer does not sign for: only `hyperliquid:testnet`
+until owner decision D2 of [`specs/non-evm-operations.md`](../specs/non-evm-operations.md) is
+answered (`policy_denied` with `venue_not_allowed`, whatever the policy says). Step 8 does not
+apply. In one database transaction with nothing awaited inside it: the fence, the lifecycle,
+the pause, the policy hash and the approvers are checked again; the envelope nonce is unused
+(`nonce_reused`); `evaluateIntent` against the 24-hour ledger passes (`policy_denied`); the
+action nonce is the signer's clock in milliseconds, or one more than the last nonce the wallet
+used on that network if that is larger, and is recorded as the wallet's last. For an order, the
+signer builds the `order` action from the intent with client order id
+`cloidFor(approvalId)` and `grouping: "na"`, sets `expiresAfter` to its clock in milliseconds
+plus the policy's `submitWindowSeconds`, and signs the action's hash as an L1 action. For a
+withdrawal, the destination is the wallet's own address (the intent has no field for it), its
+`time` is the nonce, and `expiresAfter` is null. The signature must recover to the wallet's
+address over the payload the signer built, with a low `s` (`vault_error` otherwise, and nothing
+is recorded). The signer records the approval as `signed`, the request, and for an order that
+is not reduce-only its notional (`ceil(size × limitPx × 10^6)` micro-USD) as a `usd6` spend on
+the venue network. A repeat returns the stored answer, also while the workspace is paused.
+`GET /v1/approvals/:id` reports a signed venue intent as `signed` with no transaction hash, no
+attempts, and the order's `cloid` (null for a withdrawal). `GET /v1/wallets/:id` reports venue
+spends in `venueSpent`; `spent` stays EVM only.
+
+**Cancelling an order** needs only the request signature (owner decision D4): approving an order
+includes the right to cancel that one order. It is allowed while the workspace is paused or
+being deleted and while the wallet is retiring. The path's approval id must be an order this
+signer signed in the named workspace (`not_found`; a withdrawal is `conflict`; after a restore,
+an order signed after the backup is unknown, owner decision D9). If the newest cancel of that
+order has not expired by the signer's clock, it is returned again. Otherwise the signer signs a
+new `cancelByCloid` of the order's asset and cloid with a new nonce and an `expiresAfter` of its
+clock plus the order's own submit window. A destroyed wallet's key cancels nothing
+(`wallet_retired`).
+
+Every signature and every refusal for a known workspace is in the decision log, with action
+`sign-venue` or `cancel-venue-order`; returning a stored answer records nothing.
+
 ### Retiring a wallet and deleting a workspace
 
 Destroying a key is treated like signing: people approve it with passkeys at the workspace's
@@ -799,8 +852,9 @@ mandate revoked by the retirement or deletion stays revoked. Anything not `retir
 
 **Finalizing** needs only the request signature, because people approved it already. Before
 `destroyAfter` by the signer's clock it is `destroy_not_due` (409). Then the signer deletes each
-wallet's key from its key store, empties its sealed credential and every signed transaction of
-the wallet it kept (attempts included), and marks it `destroyed`. For a deletion it also removes
+wallet's key from its key store, empties its sealed credential and every signed transaction and
+venue request of the wallet it kept (attempts and venue cancels included), and marks it
+`destroyed`. For a deletion it also removes
 the workspace's approvers, confirmations, confirmation assertions and possession challenges,
 blanks the text of its mandates while keeping their ids, hashes, times, grantors, revocations and
 uses, and marks the workspace `deleted`. Used nonces, approvals, spends, policies and the decision
@@ -1405,4 +1459,6 @@ invalid intent); `WalletPolicy` gained the optional `venues` member (absent mean
 an empty `venues` is invalid, and an older verifier refuses a policy that has it as an unknown
 member); `ApproveIntentEnvelope.chainId` widened to `Network`. No existing digest or test vector
 changed. The signer's `/v1/sign`, mandate-use and reprice requests still take only EVM intents
-and refuse a venue intent as `invalid_request`.
+and refuse a venue intent as `invalid_request`; venue intents are signed by the new route
+`POST /v1/venue/sign` (section 8, "Venue orders"), and `WalletState` and `ApprovalState` gained
+the members `venueSpent` and `cloid`.

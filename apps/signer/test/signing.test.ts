@@ -153,6 +153,7 @@ describe("signing an approved intent", () => {
           signedAt: world.t.clock.value,
         },
       ],
+      cloid: null,
     });
     const wallet = await world.t.client.getWallet(world.walletId);
     expect(wallet.spent).toEqual([

@@ -258,6 +258,7 @@ describe("the signer contract", () => {
     policy: null,
     policyHash: null,
     spent: [],
+    venueSpent: [],
     state: "active",
     destroyAfter: null,
   };

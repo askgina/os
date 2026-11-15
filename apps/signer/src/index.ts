@@ -17,6 +17,7 @@ import {
   AddApproverRequest,
   AuthorizedRequest,
   CancelTransactionRequest,
+  CancelVenueOrderRequest,
   CONFIRM_TOKEN_HEADER,
   CreateWalletRequest,
   CreateWorkspaceRequest,
@@ -33,6 +34,7 @@ import {
   SIGNATURE_HEADER,
   SignRequest,
   SignUnderMandateRequest,
+  SignVenueRequest,
   SubmitConfirmationRequest,
   SubmitPossessionRequest,
   SweepRequest,
@@ -441,6 +443,13 @@ export function createSigner(options: SignerOptions): Signer {
         );
       case "signUnderMandate":
         return core.signUnderMandate(mandateId(), parse(SignUnderMandateRequest, parseBody(body)));
+      case "signVenue":
+        return core.signVenue(parse(SignVenueRequest, parseBody(body)));
+      case "cancelVenueOrder":
+        return core.cancelVenueOrder(
+          approvalId(),
+          parse(CancelVenueOrderRequest, parseBody(body)).workspaceId,
+        );
       case "retireWallet":
         return core.retireWallet(
           parse(WalletId, params.walletId),
