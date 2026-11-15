@@ -112,6 +112,27 @@ are in [`approval-protocol.md`](./approval-protocol.md).
   real agent; transfers inside that agent's live mandates, which no person sees before they are
   signed. Disabling the agent stops its token at once and revokes its mandates (see "Mandates").
 
+### A compromised host of bots (the private Busy fork)
+
+The private fork `askgina/busy` (based on Busy; the name is not final) runs agents as bots. Each
+bot holds its own agent token: the fork's Hub stores it sealed and hands it to the runner as a
+secret file, and the bot reaches the gateway over the `os_agents` network.
+
+- **Can:** whoever controls the Hub or the runner holds every bot's agent token, so it is a
+  stolen agent token for each of them: propose, cancel those agents' own requests, and spend any
+  live mandate of theirs up to its worst case with no person asked.
+- **Cannot:** approve anything. The gateway tools carry no Busy approval card; the only
+  authorization is a passkey approval on the signer's confirmation page, or a mandate granted
+  there. The bot sends the approval link as plain text, and the page refuses to load in a frame.
+  The fork does not receive this stack's webhook.
+- **Bound it:** small mandates or none for bot agents; one agent per bot; disable the agent here
+  on any doubt about the Hub, which stops its token and revokes its mandates at once. The runner
+  holds a Docker socket: never run it on the signer's host. The Hub's own tables are plaintext;
+  bots' workflow state is encrypted by `@askgina/os-world` with a keyring per bot.
+- **Proven:** the fork's unit CI and a real-stack gate with a bot on the encrypting World. The
+  wallet connection is unit-tested and gated against a stub gateway only; no payment by a Busy
+  bot has been proven end to end.
+
 ### Read access to the control plane's database
 
 - **Can:** read identifiers, names of workspaces, agents and wallets, roles, statuses,

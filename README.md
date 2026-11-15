@@ -131,7 +131,8 @@ always approves it, and `cancel_intent` also cancels the agent's own order at th
 [`examples/scripted-agent`](examples/scripted-agent)
 is the smallest complete agent. [`examples/eve-agent`](examples/eve-agent) is a real agent
 runtime (vercel/eve, no Vercel service) that keeps its conversations encrypted in its own
-database.
+database. Bots of the private Busy fork `askgina/busy` connect the same way, one agent token per
+bot; their payments are not yet proven end to end (see the threat model).
 
 ## Approve in advance with a mandate
 

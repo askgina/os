@@ -123,6 +123,14 @@ domains on two hosts" below. The rules it encodes:
   derives addresses on other chain families; the signer builds nothing for them and cannot spend
   from them.
 
+A bot of the private Busy fork (`askgina/busy`, name not final) is an agent like any other: it
+holds its own agent token, which the fork's Hub stores sealed and its runner hands to the bot as a
+secret file, and it reaches the gateway over the `os_agents` network. The fork adds no approval
+path; approvals stay on the signer's confirmation page, and the fork does not receive the
+webhook. Its runner holds a Docker socket and must not share the signer's host. Only a stub
+gateway has been used in its gates so far; no Busy bot payment is proven end to end. See "A
+compromised host of bots" in the [threat model](threat-model.md).
+
 ## Two trust domains on two hosts
 
 The stack has two trust domains. The signer's holds the wallet keys and decides; the control
