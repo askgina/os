@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,7 +49,7 @@ jobs:
   # published manifests, installed from the tarballs and imported with Node. The `packages`
   # workflow does the same on a `world-v*` tag and then publishes; this job never publishes.
   packages:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,7 +78,7 @@ jobs:
           retention-days: 30
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -105,7 +105,7 @@ jobs:
         run: bun run services:down
 
   ui:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -142,18 +142,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: amd64, runner: ubuntu-latest, tls: "0" }
-          - { name: arm64, runner: ubuntu-24.04-arm, tls: "0" }
-          - { name: tls, runner: ubuntu-latest, tls: "1" }
+          - { name: amd64, runner: blacksmith-4vcpu-ubuntu-2404, tls: "0" }
+          - { name: arm64, runner: blacksmith-4vcpu-ubuntu-2404-arm, tls: "0" }
+          - { name: tls, runner: blacksmith-4vcpu-ubuntu-2404, tls: "1" }
           # The signer and its confirmation page in a second Compose project, as on their own
           # host (deploy/split), joined to the control plane only by mutual TLS.
-          - { name: split, runner: ubuntu-latest, tls: "0", split: "1" }
+          - { name: split, runner: blacksmith-4vcpu-ubuntu-2404, tls: "0", split: "1" }
           # Two server replicas on one database behind both edges: the replica gates
           # (e2e/test/replicas.spec.ts), then every release gate on a fresh two-replica stack.
-          - { name: replicas, runner: ubuntu-latest, tls: "0", replicas: "1" }
+          - { name: replicas, runner: blacksmith-4vcpu-ubuntu-2404, tls: "0", replicas: "1" }
           # The key-encryption key in OpenBao Transit, with no keyring file: the OpenBao gates
           # (e2e/test/openbao.spec.ts), then every release gate on a fresh stack of that kind.
-          - { name: openbao, runner: ubuntu-latest, tls: "0", openbao: "1" }
+          - { name: openbao, runner: blacksmith-4vcpu-ubuntu-2404, tls: "0", openbao: "1" }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     env:
@@ -191,7 +191,7 @@ jobs:
   # plugin, kindnet, enforces NetworkPolicies since kind v0.24.0 (kube-network-policies) and
   # fails open when its queue is not served, which the probe's control would show.
   k8s:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 45
     env:
       KIND_VERSION: v0.33.0
