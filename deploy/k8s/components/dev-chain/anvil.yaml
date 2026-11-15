@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anvil
+  namespace: os
+  labels:
+    app.kubernetes.io/name: anvil
+    os.askgina/role: chain
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: anvil
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: anvil
+        os.askgina/role: chain
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: anvil
+          image: ghcr.io/foundry-rs/foundry:stable@sha256:043752653d5be351c71709091b3db97c4421c907eb40ea294195e7f532aadf46
+          command: [anvil, --host, 0.0.0.0, --chain-id, "31337"]
+          env:
+            # Foundry keeps its cache under the home directory; the root file system is read-only.
+            - name: HOME
+              value: /tmp
+          ports:
+            - name: rpc
+              containerPort: 8545
+          readinessProbe:
+            tcpSocket:
+              port: rpc
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anvil
+  namespace: os
+  labels:
+    app.kubernetes.io/name: anvil
+spec:
+  selector:
+    app.kubernetes.io/name: anvil
+  ports:
+    - name: rpc
+      port: 8545
+      targetPort: rpc
+---
+# The chain takes requests from the server and reaches nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chain
+  namespace: os
+spec:
+  podSelector:
+    matchLabels:
+      os.askgina/role: chain
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              os.askgina/role: server
+      ports:
+        - protocol: TCP
+          port: 8545
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: server-to-chain
+  namespace: os
+spec:
+  podSelector:
+    matchLabels:
+      os.askgina/role: server
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              os.askgina/role: chain
+      ports:
+        - protocol: TCP
+          port: 8545

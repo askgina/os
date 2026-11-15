@@ -1,0 +1,79 @@
+# Overlay for `stack (openbao)` (`E2E_OPENBAO=1 e2e/run.sh`), on top of compose.yaml and
+# e2e/compose.e2e.yaml: the server keeps its key-encryption key in OpenBao Transit instead of the
+# keyring file (specs/beyond-one-machine.md, milestone 3). Never use it for a real deployment:
+# its unseal key and root token sit in a volume next to OpenBao.
+#
+# OpenBao runs as a real server, not in development mode, so its keys survive a restart and the
+# backup gate's restored copy: Raft storage on a volume, one unseal key. `openbao-bootstrap`
+# initializes and unseals it on every `up` and gives the server an AppRole limited to
+# deploy/openbao/policy.hcl, as files in the server's secrets volume (e2e/src/openbao-bootstrap.mts).
+# Paths are relative to the project directory, the repository root.
+services:
+  openbao:
+    image: quay.io/openbao/openbao:2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f
+    # The image's entrypoint writes BAO_LOCAL_CONFIG to its configuration directory, takes
+    # ownership of /openbao/file and runs `bao server` as its own user.
+    command: ["server"]
+    environment:
+      BAO_ADDR: http://127.0.0.1:8200
+      BAO_LOCAL_CONFIG: >-
+        {"storage": {"raft": {"path": "/openbao/file", "node_id": "openbao"}},
+        "listener": [{"tcp": {"address": "0.0.0.0:8200", "tls_disable": true}}],
+        "api_addr": "http://openbao:8200", "cluster_addr": "http://openbao:8201",
+        "disable_mlock": true, "ui": false}
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - openbao-data:/openbao/file
+    networks: [control]
+    # The gates rotate the Transit key and read its versions as the operator, with the root
+    # token from the `openbao-init` volume.
+    ports:
+      - "127.0.0.1:${E2E_OPENBAO_PORT:-55905}:8200"
+    # `bao status` exits 0 only once unsealed: healthy means it serves keys.
+    healthcheck:
+      test: ["CMD", "bao", "status"]
+      interval: 2s
+      timeout: 3s
+      retries: 90
+    restart: unless-stopped
+
+  openbao-bootstrap:
+    image: node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
+    command: ["node", "/bootstrap/openbao-bootstrap.mts"]
+    read_only: true
+    cap_drop: [ALL]
+    # As `init`: it writes files the server's user owns into the server's secrets volume.
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      OPENBAO_ADDR: http://openbao:8200
+    volumes:
+      - ./e2e/src/openbao-bootstrap.mts:/bootstrap/openbao-bootstrap.mts:ro
+      - ./deploy/openbao/policy.hcl:/policy/policy.hcl:ro
+      - openbao-init:/state
+      - server-secrets:/secrets/server
+    networks: [control]
+    depends_on:
+      init: { condition: service_completed_successfully }
+      openbao: { condition: service_started }
+    restart: "no"
+
+  server:
+    environment:
+      KEY_PROVIDER: openbao
+      # No keyring file: every data key is wrapped by Transit from the first one.
+      KEYRING_FILE: ""
+      OPENBAO_ADDR: http://openbao:8200
+      OPENBAO_AUTH: approle
+      OPENBAO_ROLE_ID_FILE: /run/secrets/server/openbao-role-id
+      OPENBAO_SECRET_ID_FILE: /run/secrets/server/openbao-secret-id
+      # No cached data keys: every seal and unseal asks OpenBao, so the outage gate sees new work
+      # stop at once rather than run on a key unwrapped a minute earlier.
+      DATA_KEY_CACHE_SECONDS: "0"
+    depends_on:
+      openbao-bootstrap: { condition: service_completed_successfully }
+
+volumes:
+  openbao-data: {}
+  openbao-init: {}

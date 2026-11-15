@@ -19,7 +19,19 @@
 		-Server
 	}
 
-	reverse_proxy server:3000
+	# Every server replica: the addresses `server` resolves to, looked up again every second, so
+	# a replica that starts or stops is seen at once; one replica is one address. A request that
+	# cannot reach the replica it picked tries another for up to 10 seconds. Caddy runs no active
+	# health checks for dynamic upstreams; Compose and Kubernetes ask `/readyz` instead.
+	reverse_proxy {
+		dynamic a server 3000 {
+			refresh 1s
+		}
+		lb_try_duration 10s
+		transport http {
+			dial_timeout 2s
+		}
+	}
 }
 
 # The signer's confirmation page, on its own origin: another port by default, `APPROVE_ORIGIN`

@@ -1,0 +1,8 @@
+# One Postgres 18 for kind and evaluation: one replica, one volume, no standby (milestone 6
+# replaces it with CloudNativePG). Its password is the Secret `os-db-secrets`, file
+# postgres-password, the same value as `postgres-password` in `os-server-secrets`.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - postgres.yaml

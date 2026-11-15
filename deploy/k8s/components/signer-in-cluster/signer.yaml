@@ -1,0 +1,126 @@
+# FOR CI AND EVALUATION ONLY (decision D4, specs/beyond-one-machine.md). Production runs the
+# signer and its confirmation page on their own host (components/signer-external): in a cluster,
+# Secrets sit unencrypted in etcd by default and cluster administrators reach every node, the
+# signer's keys and the confirmation page included.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: os-signer
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+# The signer: one replica, one volume, never two writers. Its files are the Secret
+# `os-signer-secrets` (signer-request-secret, confirm-request-secret, token-key,
+# vault-passphrase), created before the first start (deploy/k8s/make-secrets.sh).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: signer
+  namespace: os-signer
+  labels:
+    app.kubernetes.io/name: signer
+    os.askgina/role: signer
+spec:
+  replicas: 1
+  serviceName: signer
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: signer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: signer
+        os.askgina/role: signer
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: signer
+          image: askgina-os-signer
+          ports:
+            - name: http
+              containerPort: 8787
+          envFrom:
+            - configMapRef:
+                name: os-signer
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: secrets
+              mountPath: /run/secrets/signer
+              readOnly: true
+            - name: files
+              mountPath: /etc/os
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: secrets
+          secret:
+            secretName: os-signer-secrets
+            # 0440: readable by the pod's group (fsGroup 1000), the `node` user's.
+            defaultMode: 288
+        - name: files
+          configMap:
+            name: os-signer-files
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+  # The signer's SQLite file and wallet vault. ReadWriteOncePod would also rule out a second
+  # pod on the same node, but only CSI volumes support it, and kind's local-path volumes are not
+  # CSI; one replica of a StatefulSet is the single writer here.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: signer
+  namespace: os-signer
+  labels:
+    app.kubernetes.io/name: signer
+spec:
+  selector:
+    app.kubernetes.io/name: signer
+  ports:
+    - name: http
+      port: 8787
+      targetPort: http

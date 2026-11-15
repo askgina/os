@@ -1,0 +1,182 @@
+# FOR CI AND EVALUATION ONLY (decision D4). The confirmation page (`approve`) and its edge.
+# `approve` holds only its copy of the confirm secret (Secret `os-approve-secrets`, file
+# confirm-request-secret) and reaches the signer and nothing else, not even DNS: it finds the
+# signer through the SIGNER_SERVICE_* variables Kubernetes gives every pod in this namespace.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: approve
+  namespace: os-signer
+  labels:
+    app.kubernetes.io/name: approve
+    os.askgina/role: approve
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: approve
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: approve
+        os.askgina/role: approve
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: approve
+          image: askgina-os-approve
+          ports:
+            - name: http
+              containerPort: 8788
+          envFrom:
+            - configMapRef:
+                name: os-approve
+          env:
+            # Expanded by the kubelet from the signer Service's variables, which exist because
+            # Kustomize writes Services before workloads.
+            - name: SIGNER_URL
+              value: http://$(SIGNER_SERVICE_HOST):$(SIGNER_SERVICE_PORT)
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: secrets
+              mountPath: /run/secrets/approve
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: secrets
+          secret:
+            secretName: os-approve-secrets
+            defaultMode: 288
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: approve
+  namespace: os-signer
+  labels:
+    app.kubernetes.io/name: approve
+spec:
+  selector:
+    app.kubernetes.io/name: approve
+  ports:
+    - name: http
+      port: 8788
+      targetPort: http
+---
+# The confirmation page's edge: the APPROVE_ORIGIN site of deploy/Caddyfile
+# (files/Caddyfile.approve), on plain HTTP 8081. It drops the Cookie header and refuses
+# /.well-known; nothing here reaches the server.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: approve-edge
+  namespace: os-signer
+  labels:
+    app.kubernetes.io/name: approve-edge
+    os.askgina/role: approve-edge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: approve-edge
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: approve-edge
+        os.askgina/role: approve-edge
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: caddy
+          image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
+          ports:
+            - name: http
+              containerPort: 8081
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [NET_BIND_SERVICE]
+          volumeMounts:
+            - name: caddyfile
+              mountPath: /etc/caddy
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /config
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: caddyfile
+          configMap:
+            name: approve-edge-caddyfile
+        - name: data
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: config
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: approve-edge
+  namespace: os-signer
+  labels:
+    app.kubernetes.io/name: approve-edge
+spec:
+  selector:
+    app.kubernetes.io/name: approve-edge
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http

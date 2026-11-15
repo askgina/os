@@ -1,0 +1,27 @@
+# Production (decision D4): the signer, its confirmation page and that page's edge run on their
+# own host (deploy/split/signer.compose.yaml), joined to the cluster only by mutual TLS.
+#
+# Before applying, replace:
+#   - signer.example.internal: the name in the signer's certificate (make-peer-certs.sh);
+#   - 192.0.2.10/32 (a documentation address) in network-policy.yaml: the signer host's address;
+#   - APPROVE_ORIGIN in the overlay: the signer host's confirmation page.
+# Add to the Secret `os-server-secrets` the control plane's certificate and key and the signer's
+# certificate (control.crt, control.key, signer.crt) and the signer host's
+# signer-request-secret, as deploy/README.md describes for the control host.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - network-policy.yaml
+
+configMapGenerator:
+  - name: os-server
+    namespace: os
+    behavior: merge
+    literals:
+      - SIGNER_URL=https://signer.example.internal:8787
+      - SIGNER_TLS_CERT_FILE=/run/secrets/server/control.crt
+      - SIGNER_TLS_KEY_FILE=/run/secrets/server/control.key
+      - SIGNER_TLS_PEER_CERT_FILE=/run/secrets/server/signer.crt
+      # How owners reach the signer host to enroll a passkey, shown on the members page.
+      - SIGNER_ADMIN_COMMAND=ssh signer.example.internal docker compose -f deploy/split/signer.compose.yaml exec signer node src/admin.ts

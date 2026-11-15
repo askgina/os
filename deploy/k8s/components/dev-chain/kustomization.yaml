@@ -1,0 +1,7 @@
+# A local development chain (anvil, chain id 31337) for kind and evaluation, named `anvil` as in
+# deploy/chains.json. Never part of a real deployment: its accounts' keys are public.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - anvil.yaml

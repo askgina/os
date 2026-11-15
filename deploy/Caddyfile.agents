@@ -9,7 +9,15 @@
 :80 {
 	@mcp path /mcp
 	handle @mcp {
-		reverse_proxy server:3000 {
+		# Every server replica, as on the public edge (deploy/Caddyfile).
+		reverse_proxy {
+			dynamic a server 3000 {
+				refresh 1s
+			}
+			lb_try_duration 10s
+			transport http {
+				dial_timeout 2s
+			}
 			header_up Host {$PUBLIC_HOST}
 		}
 	}

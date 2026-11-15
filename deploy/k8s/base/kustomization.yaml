@@ -1,0 +1,64 @@
+# The control plane on Kubernetes: the server, its public edge, the agent gateway and the
+# policies between them (specs/beyond-one-machine.md, milestone 5). Not deployable alone: an
+# overlay adds where the signer runs and where Postgres runs.
+#
+#   overlays/kind                 the CI and evaluation stack: everything in one cluster
+#   overlays/production-example   the signer and its confirmation page on their own host
+#
+# Images are the Compose ones (apps/*/Dockerfile), not published: build them, push them where
+# the cluster pulls from, and pin them by digest in the overlay (`images:`).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: askgina-os
+
+resources:
+  - namespaces.yaml
+  - server.yaml
+  - edge.yaml
+  - agents.yaml
+  - network-policies.yaml
+
+configMapGenerator:
+  # The server's environment. Overlays merge the origins in; components merge where the signer
+  # is. Variables are documented in deploy/README.md; unset ones keep their defaults.
+  - name: os-server
+    namespace: os
+    literals:
+      - PUBLIC_ORIGIN=https://os.example.com
+      - WEBAUTHN_RP_ID=os.example.com
+      - APPROVE_ORIGIN=https://approve.os.example.com
+      - PORT=3000
+      - DATABASE_URL=postgres://postgres@postgres:5432/postgres
+      - DATABASE_PASSWORD_FILE=/run/secrets/server/postgres-password
+      - KEYRING_FILE=/run/secrets/server/keyring.json
+      - SIGNER_HMAC_SECRET_FILE=/run/secrets/server/signer-request-secret
+      - CHAINS_FILE=/etc/os/chains.json
+      - WEB_DIST_DIR=/app/apps/web/dist
+      - NOTIFY_WEBHOOK_SECRET_FILE=/run/secrets/server/notify-webhook-secret
+      - WEB_PUSH_VAPID_KEY_FILE=/run/secrets/server/vapid-key.pem
+      # The edge appends one X-Forwarded-For entry; 2 when a load balancer is in front of it.
+      - FORWARDED_HOPS=1
+      # Logs are shipped and kept; the operator gets the setup token from
+      # `kubectl exec -n os deploy/server -- node apps/server/src/cli.ts setup-token`.
+      - SETUP_TOKEN_IN_LOG=false
+  # The host the gateway presents to the server, which checks it against PUBLIC_ORIGIN.
+  - name: os-agent-gateway
+    namespace: os-agents
+    literals:
+      - PUBLIC_HOST=os.example.com
+  # The chains the server may use, with their RPC endpoints (a copy of deploy/chains.json).
+  - name: os-chains
+    namespace: os
+    files:
+      - files/chains.json
+  - name: edge-caddyfile
+    namespace: os
+    files:
+      - files/Caddyfile
+  - name: agent-gateway-caddyfile
+    namespace: os-agents
+    files:
+      - Caddyfile=files/Caddyfile.agents

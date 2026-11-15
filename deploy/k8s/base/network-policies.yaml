@@ -1,0 +1,175 @@
+# Who may talk to whom. Every namespace denies everything by default, and each role gets exactly
+# the traffic it needs. Policies select pods by `os.askgina/role`; Services select them by
+# `app.kubernetes.io/name`, so a pod can be held to a role's policy without receiving its traffic
+# (the isolation probe relies on that).
+#
+# A NetworkPolicy does nothing without a network plugin that enforces it, and some fail open.
+# Run deploy/k8s/isolation-probe.yaml after every install and every change of plugin: it fails
+# when anything here is not enforced.
+#
+# Components add: the signer (in the cluster or on its own host), Postgres, the development
+# chain and, while notifications are configured, TCP 443 from the server to anywhere.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: os
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: os-agents
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# The server: requests from the edge and the agent gateway; out to DNS and Postgres. The
+# components open the way to the signer and the chain, and nothing opens the Workflow delivery
+# listener, which is on 127.0.0.1.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: server
+  namespace: os
+spec:
+  podSelector:
+    matchLabels:
+      os.askgina/role: server
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              os.askgina/role: edge
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: os-agents
+          podSelector:
+            matchLabels:
+              os.askgina/role: agent-gateway
+      ports:
+        - protocol: TCP
+          port: 3000
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              os.askgina/role: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# The public edge: requests from anywhere on 8080; out to DNS and the server.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: edge
+  namespace: os
+spec:
+  podSelector:
+    matchLabels:
+      os.askgina/role: edge
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              os.askgina/role: server
+      ports:
+        - protocol: TCP
+          port: 3000
+---
+# Agents: out to the gateway on 80 and nowhere else, not even DNS; nothing reaches them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent
+  namespace: os-agents
+spec:
+  podSelector:
+    matchLabels:
+      os.askgina/role: agent
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              os.askgina/role: agent-gateway
+      ports:
+        - protocol: TCP
+          port: 80
+---
+# The gateway: requests from agents on 80; out to DNS and the server's pods on 3000.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-gateway
+  namespace: os-agents
+spec:
+  podSelector:
+    matchLabels:
+      os.askgina/role: agent-gateway
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              os.askgina/role: agent
+      ports:
+        - protocol: TCP
+          port: 80
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: os
+          podSelector:
+            matchLabels:
+              os.askgina/role: server
+      ports:
+        - protocol: TCP
+          port: 3000

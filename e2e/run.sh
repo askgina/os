@@ -7,6 +7,10 @@
 #   E2E_SPLIT=1 ./e2e/run.sh the split gates and the release gates, with the signer and its
 #                            confirmation page in a second project (deploy/split), as on their
 #                            own host; needs `openssl`, and `sudo nft` for the nftables gate
+#   E2E_REPLICAS=1 ./e2e/run.sh  the replica gates, then the release gates, each on a fresh
+#                            stack with two server replicas (e2e/compose.replicas.yaml)
+#   E2E_OPENBAO=1 ./e2e/run.sh   the OpenBao gates, then the release gates, each on a fresh
+#                            stack whose keys live in OpenBao Transit (e2e/compose.openbao.yaml)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -26,11 +30,29 @@ export E2E_ANVIL_URL="http://127.0.0.1:${E2E_ANVIL_PORT}"
 tls="${E2E_TLS:-0}"
 split="${E2E_SPLIT:-0}"
 export E2E_SPLIT="$split"
-if [ "$tls" = "1" ] && [ "$split" = "1" ]; then
-  echo "E2E_TLS and E2E_SPLIT are separate runs" >&2
+export E2E_REPLICAS="${E2E_REPLICAS:-0}"
+export E2E_OPENBAO="${E2E_OPENBAO:-0}"
+export E2E_OPENBAO_PORT="${E2E_OPENBAO_PORT:-55905}"
+# A variant whose own gates run on a stack of their own before the release gates: `replicas` or
+# `openbao`, or none.
+variant=""
+if [ "$E2E_REPLICAS" = "1" ]; then variant="replicas"; fi
+if [ "$E2E_OPENBAO" = "1" ]; then variant="openbao"; fi
+selected=0
+for flag in "$tls" "$split" "$E2E_REPLICAS" "$E2E_OPENBAO"; do
+  if [ "$flag" = "1" ]; then selected=$((selected + 1)); fi
+done
+if [ "$selected" -gt 1 ]; then
+  echo "E2E_TLS, E2E_SPLIT, E2E_REPLICAS and E2E_OPENBAO are separate runs" >&2
   exit 2
 fi
 overlay=(-f compose.yaml -f e2e/compose.e2e.yaml --profile dev --profile agent)
+if [ "$E2E_REPLICAS" = "1" ]; then
+  overlay=(-f compose.yaml -f e2e/compose.e2e.yaml -f e2e/compose.replicas.yaml --profile dev --profile agent)
+fi
+if [ "$E2E_OPENBAO" = "1" ]; then
+  overlay=(-f compose.yaml -f e2e/compose.e2e.yaml -f e2e/compose.openbao.yaml --profile dev --profile agent)
+fi
 if [ "$tls" = "1" ]; then
   # The host name is `localhost`, so Caddy issues the certificate from its own local authority
   # instead of asking a public one. Everything else is the overlay an operator would use.
@@ -62,11 +84,21 @@ fi
 compose=(docker compose -p "$E2E_PROJECT" "${overlay[@]}")
 ui=(docker compose -p "${E2E_PROJECT}-ui" "${overlay[@]}")
 lifecycle=(docker compose -p "${E2E_PROJECT}-lifecycle" "${overlay[@]}")
-# `init` is not listed: it runs once and exits, and the others depend on it.
+# `init` is not listed: it runs once and exits, and the others depend on it; so do
+# `openbao-bootstrap` and the server.
 services=(postgres signer approve server caddy agent-gateway anvil)
+logged=(server signer approve caddy agent-gateway)
+if [ "$E2E_OPENBAO" = "1" ]; then
+  services+=(openbao)
+  logged+=(openbao openbao-bootstrap)
+fi
+projects=("$E2E_PROJECT" "${E2E_PROJECT}-restore" "${E2E_PROJECT}-lifecycle" "${E2E_PROJECT}-ui")
+if [ -n "$variant" ]; then
+  projects+=("${E2E_PROJECT}-${variant}")
+fi
 
 remove() {
-  for project in "$E2E_PROJECT" "${E2E_PROJECT}-restore" "${E2E_PROJECT}-lifecycle" "${E2E_PROJECT}-ui"; do
+  for project in "${projects[@]}"; do
     docker compose -p "$project" "${overlay[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
     if [ "$split" = "1" ]; then
       docker compose -p "${project}-signer" "${signer_overlay[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -78,15 +110,16 @@ remove() {
 }
 
 logs() {
-  for project in "$E2E_PROJECT" "${E2E_PROJECT}-restore" "${E2E_PROJECT}-lifecycle" "${E2E_PROJECT}-ui"; do
+  for project in "${projects[@]}"; do
     if [ "$split" = "1" ]; then
       docker compose -p "$project" "${overlay[@]}" \
         logs --no-color --tail 300 init server caddy agent-gateway 2>/dev/null || true
       docker compose -p "${project}-signer" "${signer_overlay[@]}" \
         logs --no-color --tail 300 init signer approve caddy 2>/dev/null || true
     else
+      # Every container of each service: with two replicas, both servers.
       docker compose -p "$project" "${overlay[@]}" \
-        logs --no-color --tail 300 server signer approve caddy agent-gateway 2>/dev/null || true
+        logs --no-color --tail 300 "${logged[@]}" 2>/dev/null || true
     fi
   done
 }
@@ -134,6 +167,21 @@ if [ "$split" = "1" ]; then
     (cd e2e && bunx playwright test split.spec.ts) || status=$?
     (cd e2e && bunx playwright test release-gates.spec.ts) || status=$?
   fi
+elif [ -n "$variant" ]; then
+  # The variant's own gates on a fresh stack: they claim the installation themselves. Then,
+  # only if they pass, every release gate on another fresh stack of the same kind.
+  own=(docker compose -p "${E2E_PROJECT}-${variant}" "${overlay[@]}")
+  "${own[@]}" up -d --wait --wait-timeout 300 "${services[@]}" || status=$?
+  if [ "$status" -eq 0 ]; then
+    (cd e2e && E2E_PROJECT="${E2E_PROJECT}-${variant}" bunx playwright test "${variant}.spec.ts") || status=$?
+  fi
+  if [ "$status" -eq 0 ]; then
+    remove
+    "${compose[@]}" up -d --wait --wait-timeout 300 "${services[@]}" || status=$?
+  fi
+  if [ "$status" -eq 0 ]; then
+    (cd e2e && bunx playwright test release-gates.spec.ts) || status=$?
+  fi
 elif [ "$tls" != "1" ]; then
   "${compose[@]}" up -d --wait --wait-timeout 300 "${services[@]}" || status=$?
   if [ "$status" -eq 0 ]; then
@@ -145,8 +193,9 @@ fi
 # wallets for good, and rotate the keyring. They cannot follow the gates above on the first
 # stack: that ends as a restored copy behind an operator's fence, and its people's passkeys live
 # only in the memory of the run above. Skipped over HTTPS, like the first stack, and split: the
-# split changes where the signer runs, not what the lifecycle gates prove.
-if [ "$tls" != "1" ] && [ "$split" != "1" ] && [ "$status" -eq 0 ]; then
+# split changes where the signer runs, not what the lifecycle gates prove. Skipped for a variant
+# too: its own gates and the release gates are what it changes.
+if [ "$tls" != "1" ] && [ "$split" != "1" ] && [ -z "$variant" ] && [ "$status" -eq 0 ]; then
   remove
   "${lifecycle[@]}" up -d --wait --wait-timeout 300 "${services[@]}" || status=$?
   if [ "$status" -eq 0 ]; then
@@ -156,7 +205,8 @@ fi
 
 # Third stack, empty: the browser gate, which claims a fresh installation through the UI.
 # Skipped split: the release gates already approve on the signer project's confirmation page.
-if [ "$split" != "1" ] && [ "$status" -eq 0 ]; then
+# Skipped for a variant: the browser drives the same API through the same edge.
+if [ "$split" != "1" ] && [ -z "$variant" ] && [ "$status" -eq 0 ]; then
   remove
   "${ui[@]}" up -d --wait --wait-timeout 300 "${services[@]}" || status=$?
   if [ "$status" -eq 0 ] && [ "$tls" = "1" ]; then

@@ -1,0 +1,19 @@
+# The server's way to the signer host. 192.0.2.10/32 is a documentation address that routes
+# nowhere: replace it with the signer host's private address.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: server-to-signer
+  namespace: os
+spec:
+  podSelector:
+    matchLabels:
+      os.askgina/role: server
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.10/32
+      ports:
+        - protocol: TCP
+          port: 8787

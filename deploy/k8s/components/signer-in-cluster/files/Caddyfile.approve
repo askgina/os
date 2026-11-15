@@ -1,0 +1,21 @@
+# Public edge. The server's public listener never mounts the Workflow delivery routes; this
+# proxy refuses them as well, so a mistake in one place is not enough to expose them.
+{
+	admin off
+}
+
+# The signer's confirmation page, on its own origin: another port by default, `APPROVE_ORIGIN`
+# with compose.tls.yaml. The `approve` service sets every security header itself; nothing here
+# reaches the server.
+{$APPROVE_SITE_ADDRESS:http://:8081} {
+	@wellknown path /.well-known/*
+	respond @wellknown 404
+
+	header -Server
+
+	reverse_proxy approve:8788 {
+		# Cookies do not separate ports, so on the same host the browser also sends the control
+		# plane's session cookie here. The `approve` service has no use for it and never sees it.
+		header_up -Cookie
+	}
+}

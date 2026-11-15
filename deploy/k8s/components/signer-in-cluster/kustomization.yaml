@@ -1,0 +1,50 @@
+# FOR CI AND EVALUATION ONLY (decision D4, specs/beyond-one-machine.md): the signer, the
+# confirmation page (`approve`) and its edge in the namespace `os-signer` of the same cluster.
+# Whoever administers the cluster then holds every wallet. Production uses signer-external.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - signer.yaml
+  - approve.yaml
+  - network-policies.yaml
+
+configMapGenerator:
+  - name: os-server
+    namespace: os
+    behavior: merge
+    literals:
+      - SIGNER_URL=http://signer.os-signer.svc.cluster.local:8787
+      # Shown to owners on the members page to enroll a passkey with the signer.
+      - SIGNER_ADMIN_COMMAND=kubectl exec -n os-signer signer-0 -- node src/admin.ts
+  # The signer's environment; overlays merge the origins in (they must match the server's).
+  - name: os-signer
+    namespace: os-signer
+    literals:
+      - SIGNER_PORT=8787
+      - SIGNER_DATA_DIR=/data
+      - SIGNER_HMAC_SECRET_FILE=/run/secrets/signer/signer-request-secret
+      - SIGNER_CONFIRM_SECRET_FILE=/run/secrets/signer/confirm-request-secret
+      - SIGNER_KEY_FILE=/run/secrets/signer/token-key
+      - SIGNER_VAULT_PASSPHRASE_FILE=/run/secrets/signer/vault-passphrase
+      - WEBAUTHN_RP_ID=os.example.com
+      - SIGNER_APPROVAL_ORIGIN=https://approve.os.example.com
+      - SIGNER_RETURN_ORIGIN=https://os.example.com
+      - SIGNER_CHAINS_FILE=/etc/os/chains.json
+      - SIGNER_ASSETS_FILE=/etc/os/assets.json
+  - name: os-approve
+    namespace: os-signer
+    literals:
+      - PORT=8788
+      - APPROVE_ORIGIN=https://approve.os.example.com
+      - APPROVE_SIGNER_SECRET_FILE=/run/secrets/approve/confirm-request-secret
+  # Copies of deploy/chains.json and deploy/assets.json.
+  - name: os-signer-files
+    namespace: os-signer
+    files:
+      - files/chains.json
+      - files/assets.json
+  - name: approve-edge-caddyfile
+    namespace: os-signer
+    files:
+      - Caddyfile=files/Caddyfile.approve

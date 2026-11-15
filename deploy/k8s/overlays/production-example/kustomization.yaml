@@ -1,0 +1,39 @@
+# An example production overlay: the control plane in the cluster, the signer and its
+# confirmation page on their own host (components/signer-external, decision D4), Postgres
+# outside this overlay (an operator's database now; CloudNativePG with milestone 6). Copy it,
+# then replace every example value: the origins, the signer host's name and address
+# (components/signer-external), the egress addresses in egress.yaml, and the image digests.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - egress.yaml
+
+components:
+  - ../../components/signer-external
+  # While NOTIFY_WEBHOOK_URL or WEB_PUSH_ENABLED is set (decision D8):
+  # - ../../components/notifications-egress
+# Your own builds of apps/server/Dockerfile, pinned by digest. The zeros are placeholders.
+images:
+  - name: askgina-os-server
+    newName: registry.example.com/askgina/os-server
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+configMapGenerator:
+  - name: os-server
+    namespace: os
+    behavior: merge
+    literals:
+      - PUBLIC_ORIGIN=https://os.example.com
+      - WEBAUTHN_RP_ID=os.example.com
+      # On the signer host, under WEBAUTHN_RP_ID (decision D7).
+      - APPROVE_ORIGIN=https://approve.os.example.com
+      - DATABASE_URL=postgres://os@db.example.internal:5432/os
+      # A load balancer in front of the edge adds a second X-Forwarded-For entry.
+      - FORWARDED_HOPS=2
+  - name: os-agent-gateway
+    namespace: os-agents
+    behavior: merge
+    literals:
+      - PUBLIC_HOST=os.example.com

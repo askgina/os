@@ -17,7 +17,14 @@ export const stack = {
   anvilUrl: process.env.E2E_ANVIL_URL ?? "http://127.0.0.1:55901",
   /** The webhook receiver `e2e/compose.e2e.yaml` runs next to the stack, through its port. */
   webhookReceiverUrl: `http://127.0.0.1:${Number(process.env.E2E_WEBHOOK_PORT ?? 55904)}`,
+  /** OpenBao, with `E2E_OPENBAO=1`, through the port `e2e/compose.openbao.yaml` publishes. */
+  openBaoUrl: `http://127.0.0.1:${Number(process.env.E2E_OPENBAO_PORT ?? 55905)}`,
 };
+
+/** `E2E_REPLICAS=1` (`e2e/run.sh`): two server replicas, from `e2e/compose.replicas.yaml`. */
+const REPLICAS = process.env.E2E_REPLICAS === "1";
+/** `E2E_OPENBAO=1` (`e2e/run.sh`): keys in OpenBao Transit, from `e2e/compose.openbao.yaml`. */
+const OPENBAO = process.env.E2E_OPENBAO === "1";
 
 /**
  * `E2E_SPLIT=1` (`e2e/run.sh`): the signer, its confirmation page and that page's edge run as a
@@ -41,6 +48,7 @@ export const SERVICES = [
   "caddy",
   "agent-gateway",
   "anvil",
+  ...(OPENBAO ? ["openbao"] : []),
 ];
 
 type Side = "control" | "signer";
@@ -62,6 +70,8 @@ const SERVICE_NAMES = new Set([
   "init",
   "webhook-receiver",
   "scripted-agent",
+  "openbao",
+  "openbao-bootstrap",
 ]);
 /** The state volumes of {@link VOLUMES} that live in the signer project of a split stack. */
 const SIGNER_VOLUMES = ["signer-data", "signer-secrets"];
@@ -76,6 +86,8 @@ export const VOLUMES = [
   "server-secrets",
   "signer-secrets",
   "db-secrets",
+  // OpenBao's storage and the unseal key that opens it: a restored copy must find both.
+  ...(OPENBAO ? ["openbao-data", "openbao-init"] : []),
 ];
 
 /**
@@ -95,8 +107,13 @@ export async function docker(...args: string[]): Promise<string> {
 function projectArgs(side: Side): string[] {
   const profiles = ["--profile", "dev", "--profile", "agent"];
   if (!SPLIT) {
-    const files = ["-f", join(ROOT, "compose.yaml"), "-f", join(ROOT, "e2e", "compose.e2e.yaml")];
-    return ["-p", stack.project, ...files, ...profiles];
+    const files = [
+      ["-f", join(ROOT, "compose.yaml")],
+      ["-f", join(ROOT, "e2e", "compose.e2e.yaml")],
+      REPLICAS ? ["-f", join(ROOT, "e2e", "compose.replicas.yaml")] : [],
+      OPENBAO ? ["-f", join(ROOT, "e2e", "compose.openbao.yaml")] : [],
+    ];
+    return ["-p", stack.project, ...files.flat(), ...profiles];
   }
   if (side === "signer") {
     const files = [
@@ -183,10 +200,53 @@ export function exec(service: string, ...command: string[]): Promise<string> {
 /** The setup token the server printed on its first start. */
 export async function setupToken(): Promise<string> {
   const logs = await compose("logs", "--no-color", "server");
-  // Every start before setup prints a fresh token and retires the previous one: the last wins.
+  // One boot of one replica mints it; a later boot logs only that it waits. Should the operator
+  // ever mint another, the last one printed is the one that works.
   const token = [...logs.matchAll(/setup token: ([A-Za-z0-9_-]{20,})/g)].at(-1)?.[1];
   if (!token) throw new Error("the server log has no setup token line");
   return token;
+}
+
+/**
+ * The containers of one service of the stack's project, running or stopped, by name, in order:
+ * `<project>-server-1`, `<project>-server-2` with two replicas. Not for a split stack.
+ */
+export async function containersOf(service: string): Promise<string[]> {
+  const output = await docker(
+    "ps",
+    "--all",
+    "--filter",
+    `label=com.docker.compose.project=${stack.project}`,
+    "--filter",
+    `label=com.docker.compose.service=${service}`,
+    "--format",
+    "{{.Names}}",
+  );
+  return output
+    .split("\n")
+    .map((name) => name.trim())
+    .filter((name) => name !== "")
+    .sort();
+}
+
+/** Everything one container wrote to stdout, every start of it included: the server's log. */
+export function containerLogs(container: string): Promise<string> {
+  return docker("logs", container);
+}
+
+/**
+ * Kill one container as a crash would and return once it has stopped, as the release gates kill
+ * the server: `kill` returns before that, and `stop` also keeps its restart policy from
+ * starting it again.
+ */
+export async function killContainer(container: string): Promise<void> {
+  await docker("kill", container);
+  await docker("stop", "--timeout", "0", container);
+}
+
+/** Run a command in one container, chosen by name: one replica rather than its service. */
+export function execIn(container: string, ...command: string[]): Promise<string> {
+  return docker("exec", container, ...command);
 }
 
 /** A connection string for the stack's Postgres, through the port the e2e overlay publishes. */

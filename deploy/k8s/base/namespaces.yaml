@@ -1,0 +1,25 @@
+# The control plane's namespace and the agents' namespace. Both admit only pods that meet the
+# `restricted` Pod Security Standard: non-root, no privilege escalation, every capability dropped
+# but NET_BIND_SERVICE, a seccomp profile, and no host namespaces or host paths.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: os
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+# Where agents run. They reach the agent gateway and nothing else, not even DNS
+# (network-policies.yaml): an agent finds the gateway through the AGENT_GATEWAY_SERVICE_HOST
+# variable Kubernetes gives every pod in this namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: os-agents
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

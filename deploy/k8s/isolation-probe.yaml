@@ -1,0 +1,265 @@
+# The isolation probe. Run it after every install, upgrade or change of network plugin: a
+# NetworkPolicy that is missing, or a plugin that does not enforce policies (or fails open), lets
+# something through, and then a Job here fails.
+#
+#   kubectl delete jobs -A -l app.kubernetes.io/name=isolation-probe --ignore-not-found
+#   kubectl apply -f deploy/k8s/isolation-probe.yaml
+#   kubectl get jobs -A -l app.kubernetes.io/name=isolation-probe   # every one Complete
+#   kubectl logs -n <namespace> job/<name>                           # one line per check
+#   kubectl delete -f deploy/k8s/isolation-probe.yaml                # afterwards
+#
+# Three vantage points, each a Job whose pod tries every target once and prints what it got:
+#   isolation-probe-agent      as an agent in os-agents: no DNS, no Kubernetes API, no internet,
+#                              only the gateway's MCP endpoint (401 without a token) and its 404s.
+#   isolation-probe-bystander  as any other pod in os: reaches nothing, by address.
+#   isolation-probe-outsider   from a namespace without policies: the edge answers (so this
+#                              probe's own network works); the server, the gateway, Postgres,
+#                              the chain, the signer and its confirmation service do not.
+# A check passes only on the expected answer; anything unclear (a refusal instead of silence,
+# a variable that is not set) fails it. Targets marked optional are skipped when not installed.
+# The signer's own isolation (it reaches nothing; `approve` reaches only the signer) is checked
+# by `kubectl exec` with this same script in e2e/test/kubernetes.spec.ts, since a pod with the
+# signer's labels would also receive its traffic.
+#
+# One List so the script is written once (&probe) and used by every Job (*probe).
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: os-probe
+      labels:
+        app.kubernetes.io/name: isolation-probe
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/enforce-version: latest
+
+  - apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: isolation-probe-agent
+      namespace: os-agents
+      labels:
+        app.kubernetes.io/name: isolation-probe
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: isolation-probe
+            # Held to the agents' policy.
+            os.askgina/role: agent
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: probe
+              image: node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              command: [node, -e]
+              args:
+                - &probe |
+                  // Tries every check in PROBE_CHECKS (or the first argument) and exits 1 unless
+                  // each got exactly what it expects: "open", "blocked" or "status <code>".
+                  const dns = require("node:dns");
+                  const net = require("node:net");
+                  const env = process.env;
+                  const TIMEOUT_MS = 3000;
+                  class Missing extends Error {}
+                  const fill = (text) =>
+                    String(text).replace(/\$\{(\w+)\}/g, (_, name) => {
+                      if (env[name] === undefined) throw new Missing(name);
+                      return env[name];
+                    });
+                  // Silence is "blocked"; a refusal means something answered, so it is unclear.
+                  const tcp = (host, port) =>
+                    new Promise((resolve) => {
+                      const socket = net.connect({ host, port, timeout: TIMEOUT_MS });
+                      const done = (got) => {
+                        socket.destroy();
+                        resolve(got);
+                      };
+                      socket.once("connect", () => done("open"));
+                      socket.once("timeout", () => done("blocked"));
+                      socket.once("error", (error) =>
+                        done(error.code === "ENOTFOUND" ? "absent" : `unclear (${error.code})`),
+                      );
+                    });
+                  // Any DNS answer, a "no such name" too, means the resolver was reached.
+                  const lookup = async (name) => {
+                    const resolver = new dns.promises.Resolver({ timeout: 2000, tries: 1 });
+                    try {
+                      await resolver.resolve4(name);
+                      return "open";
+                    } catch (error) {
+                      if (error.code === "ETIMEOUT") return "blocked";
+                      return error.code === "ECONNREFUSED" ? `unclear (${error.code})` : "open";
+                    }
+                  };
+                  const request = async (http) => {
+                    try {
+                      const response = await fetch(fill(http.url), {
+                        method: http.method ?? "GET",
+                        headers: http.headers,
+                        body: http.body,
+                        redirect: "manual",
+                        signal: AbortSignal.timeout(5000),
+                      });
+                      return `status ${response.status}`;
+                    } catch (error) {
+                      return `unclear (${error.cause?.code ?? error.name})`;
+                    }
+                  };
+                  const main = async () => {
+                    const checks = JSON.parse(env.PROBE_CHECKS ?? process.argv[1]);
+                    // Let the network plugin learn this new pod before its first packet.
+                    const settle = Number(env.PROBE_SETTLE_SECONDS ?? process.argv[2] ?? "5");
+                    await new Promise((resolve) => setTimeout(resolve, settle * 1000));
+                    const results = await Promise.all(
+                      checks.map(async (check) => {
+                        let got;
+                        try {
+                          if (check.tcp) got = await tcp(fill(check.tcp.host), Number(fill(check.tcp.port)));
+                          else if (check.dns) got = await lookup(fill(check.dns));
+                          else got = await request(check.http);
+                        } catch (error) {
+                          if (!(error instanceof Missing)) throw error;
+                          got = "absent";
+                        }
+                        const ok = got === check.expect || (check.optional === true && got === "absent");
+                        return { check: check.name, expect: check.expect, got, ok };
+                      }),
+                    );
+                    for (const result of results) console.log(JSON.stringify(result));
+                    const failed = results.filter((result) => !result.ok).length;
+                    console.log(JSON.stringify({ probe: env.PROBE_NAME ?? "exec", checks: results.length, failed }));
+                    process.exitCode = failed === 0 ? 0 : 1;
+                  };
+                  main().catch((error) => {
+                    console.error(error);
+                    process.exitCode = 2;
+                  });
+              env:
+                - name: PROBE_NAME
+                  value: agent
+                - name: PROBE_CHECKS
+                  value: |
+                    [
+                      {"name": "no DNS", "dns": "kubernetes.default.svc.cluster.local", "expect": "blocked"},
+                      {"name": "no Kubernetes API", "tcp": {"host": "${KUBERNETES_SERVICE_HOST}", "port": "${KUBERNETES_SERVICE_PORT}"}, "expect": "blocked"},
+                      {"name": "no internet", "tcp": {"host": "1.1.1.1", "port": 443}, "expect": "blocked"},
+                      {"name": "the gateway's MCP endpoint wants a token", "http": {"url": "http://${AGENT_GATEWAY_SERVICE_HOST}/mcp", "method": "POST", "headers": {"content-type": "application/json", "accept": "application/json, text/event-stream"}, "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"}, "expect": "status 401"},
+                      {"name": "the gateway serves no UI", "http": {"url": "http://${AGENT_GATEWAY_SERVICE_HOST}/"}, "expect": "status 404"},
+                      {"name": "the gateway serves no API", "http": {"url": "http://${AGENT_GATEWAY_SERVICE_HOST}/api/session"}, "expect": "status 404"},
+                      {"name": "the gateway serves no delivery route", "http": {"url": "http://${AGENT_GATEWAY_SERVICE_HOST}/.well-known/workflow/v1/flow", "method": "POST"}, "expect": "status 404"}
+                    ]
+
+  - apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: isolation-probe-bystander
+      namespace: os
+      labels:
+        app.kubernetes.io/name: isolation-probe
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          # No role: held only to the namespace's default policy.
+          labels:
+            app.kubernetes.io/name: isolation-probe
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: probe
+              image: node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              command: [node, -e]
+              args: [*probe]
+              env:
+                - name: PROBE_NAME
+                  value: bystander
+                - name: PROBE_CHECKS
+                  value: |
+                    [
+                      {"name": "no DNS", "dns": "kubernetes.default.svc.cluster.local", "expect": "blocked"},
+                      {"name": "no Kubernetes API", "tcp": {"host": "${KUBERNETES_SERVICE_HOST}", "port": "${KUBERNETES_SERVICE_PORT}"}, "expect": "blocked"},
+                      {"name": "no internet", "tcp": {"host": "1.1.1.1", "port": 443}, "expect": "blocked"},
+                      {"name": "not the server", "tcp": {"host": "${SERVER_SERVICE_HOST}", "port": 3000}, "expect": "blocked"},
+                      {"name": "not the edge", "tcp": {"host": "${EDGE_SERVICE_HOST}", "port": 8080}, "expect": "blocked"},
+                      {"name": "not Postgres", "tcp": {"host": "${POSTGRES_SERVICE_HOST}", "port": 5432}, "expect": "blocked", "optional": true},
+                      {"name": "not the chain", "tcp": {"host": "${ANVIL_SERVICE_HOST}", "port": 8545}, "expect": "blocked", "optional": true}
+                    ]
+
+  - apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: isolation-probe-outsider
+      namespace: os-probe
+      labels:
+        app.kubernetes.io/name: isolation-probe
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: isolation-probe
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: probe
+              image: node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              command: [node, -e]
+              args: [*probe]
+              env:
+                - name: PROBE_NAME
+                  value: outsider
+                - name: PROBE_CHECKS
+                  value: |
+                    [
+                      {"name": "this probe resolves names", "dns": "kubernetes.default.svc.cluster.local", "expect": "open"},
+                      {"name": "the edge reaches the server", "http": {"url": "http://edge.os.svc.cluster.local:8080/healthz"}, "expect": "status 200"},
+                      {"name": "the edge serves no delivery route", "http": {"url": "http://edge.os.svc.cluster.local:8080/.well-known/workflow/v1/flow", "method": "POST"}, "expect": "status 404"},
+                      {"name": "not the server", "tcp": {"host": "server.os.svc.cluster.local", "port": 3000}, "expect": "blocked"},
+                      {"name": "not the agent gateway", "tcp": {"host": "agent-gateway.os-agents.svc.cluster.local", "port": 80}, "expect": "blocked"},
+                      {"name": "not Postgres", "tcp": {"host": "postgres.os.svc.cluster.local", "port": 5432}, "expect": "blocked", "optional": true},
+                      {"name": "not the chain", "tcp": {"host": "anvil.os.svc.cluster.local", "port": 8545}, "expect": "blocked", "optional": true},
+                      {"name": "not the signer", "tcp": {"host": "signer.os-signer.svc.cluster.local", "port": 8787}, "expect": "blocked", "optional": true},
+                      {"name": "not the confirmation service behind its edge", "tcp": {"host": "approve.os-signer.svc.cluster.local", "port": 8788}, "expect": "blocked", "optional": true}
+                    ]

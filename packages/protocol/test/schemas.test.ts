@@ -708,6 +708,7 @@ describe("reprices and cancels in the envelope and the signer contract", () => {
       state: "signed",
       transactionHash: attempt.transactionHash,
       attempts: [{ ...attempt, attempt: 0, kind: "original" }, attempt],
+      cloid: null,
     };
     expect(ok(ApprovalState, state)).toBe(true);
     const { attempts: _attempts, ...withoutAttempts } = state;

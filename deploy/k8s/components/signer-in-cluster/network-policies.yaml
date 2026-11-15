@@ -1,0 +1,121 @@
+# FOR CI AND EVALUATION ONLY (decision D4). The signer takes requests from the server and from
+# `approve`, and reaches nothing. `approve` takes requests from its edge and reaches only the
+# signer. The edge takes requests from anywhere on 8081 and reaches DNS and `approve`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: os-signer
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: signer
+  namespace: os-signer
+spec:
+  podSelector:
+    matchLabels:
+      os.askgina/role: signer
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: os
+          podSelector:
+            matchLabels:
+              os.askgina/role: server
+        - podSelector:
+            matchLabels:
+              os.askgina/role: approve
+      ports:
+        - protocol: TCP
+          port: 8787
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: approve
+  namespace: os-signer
+spec:
+  podSelector:
+    matchLabels:
+      os.askgina/role: approve
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              os.askgina/role: approve-edge
+      ports:
+        - protocol: TCP
+          port: 8788
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              os.askgina/role: signer
+      ports:
+        - protocol: TCP
+          port: 8787
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: approve-edge
+  namespace: os-signer
+spec:
+  podSelector:
+    matchLabels:
+      os.askgina/role: approve-edge
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8081
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              os.askgina/role: approve
+      ports:
+        - protocol: TCP
+          port: 8788
+---
+# The server's way to the signer in the cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: server-to-signer
+  namespace: os
+spec:
+  podSelector:
+    matchLabels:
+      os.askgina/role: server
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: os-signer
+          podSelector:
+            matchLabels:
+              os.askgina/role: signer
+      ports:
+        - protocol: TCP
+          port: 8787

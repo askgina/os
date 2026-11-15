@@ -1,0 +1,8 @@
+# Overlay for `stack (replicas)` (`E2E_REPLICAS=1 e2e/run.sh`), on top of compose.yaml and
+# e2e/compose.e2e.yaml: two server replicas behind both edges, on one database, as
+# specs/beyond-one-machine.md (milestone 4) asks. The server publishes no port and has no
+# container name, so Compose can run two; Caddy finds both through `dynamic a` upstreams.
+services:
+  server:
+    deploy:
+      replicas: 2

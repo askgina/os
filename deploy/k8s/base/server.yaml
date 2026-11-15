@@ -1,0 +1,123 @@
+# The control plane: the UI, the API and the MCP endpoint, the Workflow queue and the sweeper.
+# Its settings are the ConfigMap `os-server` (kustomization.yaml, merged by the components and
+# overlays); its files are the Secret `os-server-secrets`, which the operator creates before the
+# first start and Kustomize never renders (see make-secrets.sh for the file names):
+#   keyring.json, signer-request-secret, postgres-password, notify-webhook-secret,
+#   vapid-key.pem, and with the signer on its own host control.crt, control.key, signer.crt.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+  namespace: os
+  labels:
+    app.kubernetes.io/name: server
+    os.askgina/role: server
+spec:
+  # One replica until the replica-safe control plane (specs/beyond-one-machine.md, milestone 4:
+  # shared rate limits, one setup token, shred notices across replicas, the bundle guard) is
+  # green in CI; then 2, here and nowhere else.
+  replicas: 1
+  # Runs are not pinned to a workflow bundle, so two versions never run side by side: an
+  # upgrade stops every old pod before the first new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: server
+        os.askgina/role: server
+        # The Workflow delivery routes listen on 127.0.0.1 only. A sidecar shares that loopback,
+        # so no service mesh may add one; the Kubernetes gate checks the pod has one container.
+        sidecar.istio.io/inject: "false"
+      annotations:
+        linkerd.io/inject: disabled
+    spec:
+      automountServiceAccountToken: false
+      # The queue gives in-flight deliveries 5 seconds after SIGTERM; a little more lets the
+      # process exit on its own. An interrupted step runs again after the restart.
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: server
+          image: askgina-os-server
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: os-server
+          # Ready once the database answers and the Workflow queue runs; alive while it serves.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 90
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: secrets
+              mountPath: /run/secrets/server
+              readOnly: true
+            - name: chains
+              mountPath: /etc/os
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: secrets
+          secret:
+            secretName: os-server-secrets
+            # 0440: readable by the pod's group (fsGroup 1000), the `node` user's.
+            defaultMode: 288
+        - name: chains
+          configMap:
+            name: os-chains
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  namespace: os
+  labels:
+    app.kubernetes.io/name: server
+spec:
+  selector:
+    app.kubernetes.io/name: server
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

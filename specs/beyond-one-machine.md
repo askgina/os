@@ -70,8 +70,23 @@ Success means:
       `CompositeKeyProvider`, `keyProviderFromEnv` (`KEY_PROVIDER`, `OPENBAO_*`); typed
       `KeyProviderUnavailableError` and `KeyProviderRefusedError`; shredding works during a
       provider outage; `@askgina/os-keys` 0.2.0; the test services gain a development OpenBao;
-      `deploy/openbao/policy.hcl`. Left: the World ciphertext test on both providers with the
-      20-second outage, and the `stack (openbao)` CI entry.
+      `deploy/openbao/policy.hcl`. The `stack (openbao)` CI entry is written (2026-11-15), not
+      run: `e2e/compose.openbao.yaml` (OpenBao 2.7.2 as a real server on Raft storage, not
+      development mode, so its keys survive restarts and the backup gate's restored copy;
+      `openbao-bootstrap`, `e2e/src/openbao-bootstrap.mts`, initializes and unseals it on every
+      `up`, enables Transit with `os-kek` and an AppRole limited to `deploy/openbao/policy.hcl`,
+      and writes `openbao-role-id` and `openbao-secret-id` into the server's secrets volume; the
+      server runs with `KEY_PROVIDER=openbao`, no keyring file and `DATA_KEY_CACHE_SECONDS=0`),
+      `e2e/test/openbao.spec.ts` (the AppRole wraps and unwraps under `os-kek` and is refused
+      rotate, config, export, delete, a new key and `sys/mounts`; a payment end to end; every
+      live data key under `bao:transit/os-kek@1` and no plaintext marker in the database; with
+      OpenBao paused 20 seconds a new proposal is refused and not stored, `/readyz` stays 200,
+      and a payment approved during the outage is confirmed after it, the delays printed as
+      `{"gate":"openbao-outage",...}`; rotation, a server restart, `cli.ts rewrap` and
+      `min_decryption_version=2` leave every key under `@2` and the first payment's memo
+      readable), then every release gate on a second fresh stack of that kind. Left: CI green,
+      the measured outage delays recorded here, and the World ciphertext test on both
+      providers with the 20-second outage.
 - [ ] Milestone 4: a replica-safe control plane. Server and key-store half written (2026-11-15),
       local checks only, CI pending: `os.rate_limits` (UNLOGGED, migration
       `0010_rate_limits`) with `takeToken`/`hasToken` (`apps/server/src/rate-limit.ts`) behind
@@ -92,9 +107,33 @@ Success means:
       (9), `engine` (17), `sweep` (4), `lifecycle/delete` (3), `lifecycle/retire` (3),
       `notify/outbox` (11); type checks of `apps/server` and `packages/keys` clean. Left:
       `deploy/README.md` (two-phase rotation, setup token, the three
-      variables, `/readyz`); Caddy's `dynamic a` upstreams; `e2e/compose.replicas.yaml`,
-      `e2e/test/replicas.spec.ts` and the `stack (replicas)` CI entry.
-- [ ] Milestone 5: Kubernetes manifests proven on kind.
+      variables, `/readyz`). Written (2026-11-15), not run: both Caddyfiles proxy to
+      `dynamic a server 3000` (refreshed every second, 10 seconds of retries for a request that
+      cannot reach its replica); `compose.yaml` checks the server's health on `/readyz` and
+      passes `DATA_KEY_CACHE_SECONDS`, `FORWARDED_HOPS`, `SETUP_TOKEN_IN_LOG`, `KEY_PROVIDER`
+      and `OPENBAO_*` with defaults that keep the file keyring and one replica's behaviour;
+      `e2e/compose.replicas.yaml` (two replicas) and `e2e/test/replicas.spec.ts` (one
+      `setup.token_issued` across both replicas and the setup-token command refused after
+      setup; `/readyz` 200 on each replica and the edge; the replica that logged `step.started`
+      for an approval is killed while the chain is paused and the other confirms it with one
+      transaction within 90 seconds, having logged `step.started` itself; each webhook
+      delivery of one approval received once while both replicas sweep; 120 requests of one
+      agent split across both replicas' own ports pass and the 121st through Caddy gets 429),
+      then every release gate on a second fresh two-replica stack, in the `stack (replicas)` CI
+      entry. Left: CI green.
+- [ ] Milestone 5: Kubernetes manifests proven on kind. Written (2026-11-15), not run, CI
+      pending: `deploy/k8s/` (base, components `signer-in-cluster`, `signer-external`,
+      `postgres-single`, `dev-chain`, `notifications-egress`, overlays `kind` and
+      `production-example`), `deploy/k8s/isolation-probe.yaml` (agent, bystander and outsider
+      Jobs), `deploy/k8s/make-secrets.sh` (the kind overlay's Secrets from `init.mjs`),
+      `deploy/k8s/test/files.test.ts` (copies of `deploy/` files stay byte-equal), `e2e/run-k8s.sh`,
+      `e2e/test/kubernetes.spec.ts` and the `k8s` CI job (kind v0.33.0, kubectl v1.37.0,
+      kubeconform v0.8.0, each by SHA-256). The server Deployment has `replicas: 1` until
+      Milestone 4 is green in CI. Local: every manifest parses, the files test passes, Biome
+      clean, `bash -n` on both scripts; `kubectl kustomize` was not run (no kubectl here). Needs
+      Milestone 4 committed first (`/readyz`, `cli.ts setup-token`, `SETUP_TOKEN_IN_LOG`). Not
+      done: the `StackDriver` and running every release gate with `E2E_DRIVER=k8s`, and the
+      replica crash gate on Kubernetes.
 - [ ] Milestone 6: HA Postgres with CloudNativePG.
 - [ ] Milestone 7: documentation matches the code.
 - [ ] Run validation in CI and record evidence.
@@ -170,6 +209,21 @@ Success means:
   least `replicas × (WORKFLOW_WORKER_CONCURRENCY + 14)` plus headroom.
   Evidence: `apps/server/src/main.ts`; `@workflow/world-postgres` 5.2.0 `dist/index.js:39-60`,
   `dist/invocation-notifications.js:55`.
+- Observation (2026-11-15, Milestone 4): Caddy runs no active health checks for dynamic
+  upstreams, so a `health_uri /readyz` next to `dynamic a` would do nothing. The edges refresh
+  the replica list every second (a stopped container leaves Docker's DNS at once) and retry a
+  request that could not reach its replica for up to 10 seconds; `/readyz` is the Compose
+  health check, and the readiness probe on Kubernetes.
+  Evidence: [reverse_proxy, "Dynamic upstreams"](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#dynamic-upstreams):
+  "active health checks do not run for dynamic upstreams".
+- Observation (2026-11-15, Milestone 3): OpenBao 2.7 removed the `file` storage backend, and a
+  development-mode server keeps everything in memory, so the backup gate's restored copy of a
+  stack would meet a Transit key it never had. `stack (openbao)` runs OpenBao as a real server
+  on Raft storage in a volume that the backup copies, unsealed with one key from a test-only
+  volume by `openbao-bootstrap` on every `up`.
+  Evidence: [a report of the 2.7 upgrade](https://jacar.es/en/fix-unknown-storage-type-file-openbao-2-7/)
+  ("OpenBao 2.7 removed the file backend"; `bao operator migrate` reads it as a source until
+  2.8.0), not yet checked against OpenBao's own release notes; `e2e/compose.openbao.yaml`.
 - Observation (2026-11-15): Compose `extends` resolves the base file's relative paths (build
   context, bind mounts) against the base file's directory and keeps its `depends_on`, so each split
   file extends the services of `compose.yaml` and changes only what a second host needs, with
@@ -183,6 +237,30 @@ Success means:
   read-only `/import` directory into the host's secret volumes, owned by `node`, and rewrites a copy
   whenever `/import` differs, which is also how a renewed certificate takes effect.
   Evidence: `deploy/init/init.mjs`; `deploy/split/make-peer-certs.sh` (`chmod 0400`).
+- Observation (2026-11-15, Milestone 5): kindnet in kind v0.33.0 enforces NetworkPolicies with
+  kube-network-policies configured `FailOpen: true`, and logs "skipping network policies" and
+  carries on when its controller cannot start. A broken dataplane therefore allows everything
+  silently; only a probe that expects silence notices. Node traffic from root (the kubelet's
+  probes) is exempt, and traffic from a pod to its node is checked in the `input` hook, so a
+  default-deny egress policy also blocks the Kubernetes API.
+  Evidence: `images/kindnetd/cmd/kindnetd/main.go` at `v0.33.0` (`dataplane.Config{FailOpen:
+  true}`); kube-network-policies `pkg/dataplane/controller.go` at `f67f0fb` ("meta skuid 0
+  accept", the `input` chain).
+- Observation (2026-11-15, Milestone 5): every role already has its own policy of each type, so
+  deleting a namespace's `default-deny` opens nothing for them; the probe's control therefore
+  uses a pod with no role in `os`, held only by `default-deny`, and the probe fails as soon as
+  that policy is gone. A probe pod that carried the signer's labels would also receive the
+  signer's traffic, so the signer's and `approve`'s isolation is checked by `kubectl exec` of the
+  same probe script inside them instead.
+  Evidence: `deploy/k8s/isolation-probe.yaml`; `e2e/test/kubernetes.spec.ts`.
+- Observation (2026-11-15, Milestone 5): `ReadWriteOncePod` is for CSI volumes only, and kind's
+  local-path volumes are not CSI, so the in-cluster signer uses `ReadWriteOnce` with one
+  StatefulSet replica as its single writer. The Caddy image's file capability needs
+  NET_BIND_SERVICE in the bounding set to start at all, and the non-root gateway binds port 80
+  through the namespaced sysctl `net.ipv4.ip_unprivileged_port_start`, which the `restricted`
+  standard allows, so `deploy/Caddyfile.agents` is used unchanged.
+  Evidence: [Persistent Volumes, access modes](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes);
+  [Pod Security Standards](https://kubernetes.io/docs/concepts/security/pod-security-standards/).
 
 ## Decision Log
 

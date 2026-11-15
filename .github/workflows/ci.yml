@@ -148,11 +148,19 @@ jobs:
           # The signer and its confirmation page in a second Compose project, as on their own
           # host (deploy/split), joined to the control plane only by mutual TLS.
           - { name: split, runner: ubuntu-latest, tls: "0", split: "1" }
+          # Two server replicas on one database behind both edges: the replica gates
+          # (e2e/test/replicas.spec.ts), then every release gate on a fresh two-replica stack.
+          - { name: replicas, runner: ubuntu-latest, tls: "0", replicas: "1" }
+          # The key-encryption key in OpenBao Transit, with no keyring file: the OpenBao gates
+          # (e2e/test/openbao.spec.ts), then every release gate on a fresh stack of that kind.
+          - { name: openbao, runner: ubuntu-latest, tls: "0", openbao: "1" }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     env:
       E2E_TLS: ${{ matrix.tls }}
       E2E_SPLIT: ${{ matrix.split || '0' }}
+      E2E_REPLICAS: ${{ matrix.replicas || '0' }}
+      E2E_OPENBAO: ${{ matrix.openbao || '0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -175,3 +183,67 @@ jobs:
       # release gates against it, prints the server and signer logs on failure, and removes it.
       - name: Release gates against the real stack
         run: ./e2e/run.sh
+
+  # The control plane on Kubernetes (specs/beyond-one-machine.md, milestone 5): the manifests
+  # under deploy/k8s validated against Kubernetes 1.37, then the kind overlay on a throwaway kind
+  # cluster with the images built here, the isolation probe (and its control: it must fail with
+  # a policy deleted), and the Kubernetes gate (e2e/test/kubernetes.spec.ts). kind's network
+  # plugin, kindnet, enforces NetworkPolicies since kind v0.24.0 (kube-network-policies) and
+  # fails open when its queue is not served, which the probe's control would show.
+  k8s:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KIND_VERSION: v0.33.0
+      KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+      KUBECTL_VERSION: v1.37.0
+      KUBECTL_SHA256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
+      KUBECONFORM_VERSION: v0.8.0
+      KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+      # The schemas kubeconform reads, from one commit of yannh/kubernetes-json-schema.
+      KUBECONFORM_SCHEMAS: https://raw.githubusercontent.com/yannh/kubernetes-json-schema/2bfaff3898a7a4fa4e4760da3d2656211c9b4c71/{{ .NormalizedKubernetesVersion }}-standalone{{ .StrictSuffix }}/{{ .ResourceKind }}{{ .KindSuffix }}.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      - run: bun install --frozen-lockfile
+      - name: Install kind, kubectl and kubeconform, each checked against its pinned digest
+        run: |
+          set -euo pipefail
+          bin="${RUNNER_TEMP}/k8s-bin"
+          mkdir -p "$bin"
+          curl -fsSLo "${bin}/kind" "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  ${bin}/kind" | sha256sum --check --strict
+          curl -fsSLo "${bin}/kubectl" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KUBECTL_SHA256}  ${bin}/kubectl" | sha256sum --check --strict
+          curl -fsSLo "${RUNNER_TEMP}/kubeconform.tar.gz" "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  ${RUNNER_TEMP}/kubeconform.tar.gz" | sha256sum --check --strict
+          tar -xzf "${RUNNER_TEMP}/kubeconform.tar.gz" -C "$bin" kubeconform
+          chmod +x "${bin}/kind" "${bin}/kubectl" "${bin}/kubeconform"
+          echo "$bin" >>"$GITHUB_PATH"
+      - name: The manifests' copies of deploy/ files match their sources
+        run: node --test deploy/k8s/test/files.test.ts
+      # Kustomize as built into the pinned kubectl.
+      - name: Every manifest is valid Kubernetes 1.37
+        run: |
+          set -euo pipefail
+          kubectl version --client
+          for overlay in deploy/k8s/overlays/*/; do
+            echo "== ${overlay}"
+            kubectl kustomize "$overlay" \
+              | kubeconform -strict -summary -kubernetes-version 1.37.0 -schema-location "$KUBECONFORM_SCHEMAS"
+          done
+          echo "== deploy/k8s/isolation-probe.yaml"
+          kubeconform -strict -summary -kubernetes-version 1.37.0 -schema-location "$KUBECONFORM_SCHEMAS" \
+            deploy/k8s/isolation-probe.yaml
+      # Builds the three images, starts kind, applies the kind overlay with its Secrets, runs the
+      # Kubernetes gate, prints every object and every container's log on failure, and deletes
+      # the cluster.
+      - name: The Kubernetes gate on kind
+        run: ./e2e/run-k8s.sh
