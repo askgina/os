@@ -377,6 +377,22 @@ marked **Eric's** below.
   nightly job only reports).
   The owner's: the fork's name, any contact with upstream, and making it public.
 
+- Outcome (2026-11-15, by hand, once): a Busy bot paid through a real askgina/os. The fork at
+  `63a9eb0` was built locally (owner's consent) and its stack started beside the phone staging
+  stack of askgina/os (`388386d`, Compose project `os-phone`), with
+  `ASKGINA_OS_AGENTS_NETWORK=os-phone_agents`. A bot created through the Hub took the staging
+  agent's token in its Wallet route, was redeployed onto that network, and called
+  `askgina-os__propose_transfer` through `eve__tool`; no Busy approval card opened. askgina/os
+  created intent `int_01m7gdksdjd542xp0pc05y16aq`, sent the push, the owner approved it with his
+  phone's passkey on the signer's confirmation page, and it confirmed 40 s after the proposal:
+  transaction `0xc7cf6d95ed1b3dde5aaa9ea51bb97e89177f3fc0f8cfd6d1db596bacc514cc64` on the
+  staging Anvil chain, 0.001 ETH received by the recipient.
+  Limits: the model was the stub with scripted tool arguments, so a real model choosing the
+  call is still unproven; a local chain; one machine for both stacks (development only, D6);
+  not a CI gate, so nothing keeps it true. The fork's default egress subnet `172.29.53.0/24`
+  collided with an existing Docker network on that host; `BUSY_EGRESS_SUBNET` and `BUSY_DNS_IP`
+  moved it.
+
 - Outcome: research done; nothing built.
   Evidence: [research/busy-fork.md](./research/busy-fork.md).
   Remaining: every milestone below (owner decisions taken 2026-11-15, except the calls that stay
