@@ -67,6 +67,10 @@ services:
       # hold. `:-` also replaces an empty value: the signer refuses an empty number.
       SIGNER_MAX_MANDATE_SECONDS: ${MANDATE_MAX_SECONDS:-604800}
       SIGNER_MAX_LIVE_MANDATES_PER_WALLET: ${SIGNER_MAX_LIVE_MANDATES_PER_WALLET:-16}
+      # How long after the first signature a stuck transaction may be repriced with no person
+      # asked (0 turns that off), and how many signatures one approval may produce in all.
+      SIGNER_REPRICE_WINDOW_SECONDS: ${SIGNER_REPRICE_WINDOW_SECONDS:-86400}
+      SIGNER_MAX_TX_ATTEMPTS: ${SIGNER_MAX_TX_ATTEMPTS:-16}
     volumes:
       - signer-data:/data
       - signer-secrets:/run/secrets/signer:ro

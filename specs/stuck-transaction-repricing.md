@@ -1,10 +1,10 @@
 # Reprice or cancel a stuck transaction under the approval it already has
 
-- Branch: none yet
-- Status: Draft
+- Branch: main
+- Status: In Progress
 - Owner(s): Eric Juta
 - Created: 2026-11-14
-- Last Updated: 2026-11-14
+- Last Updated: 2026-11-15
 - Links: [Ticket #22](https://github.com/askgina/os/issues/22) | [Map #18](https://github.com/askgina/os/issues/18) | [Research report](./research/stuck-transaction-repricing.md) | [v0.1 ExecPlan](./agent-workspaces-v0.1.md)
 
 This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`,
@@ -38,9 +38,9 @@ Success means:
 
 - [x] (2026-11-14 21:34Z) Research current behavior and relevant code paths: [report](./research/stuck-transaction-repricing.md).
 - [x] (2026-11-14 21:34Z) Define the implementation approach and validation plan (this document, Draft).
-- [ ] Owner decisions listed under `Risks and Open Questions` taken.
-- [ ] Milestone 1: protocol and contract.
-- [ ] Milestone 2: signer attempts, reprice and cancel.
+- [x] (2026-11-15) Owner decisions listed under `Risks and Open Questions` taken: Eric chose the recommended option of each (Decision Log).
+- [x] (2026-11-15) Milestones 1 and 2 are commit `c3003b8`, CI run 43712687999 green (check, test, ui, stack amd64/arm64/tls). Milestone 1: protocol and contract (`cancel-transaction` envelope, its confirmation view, `reprice` and `cancelTransaction` routes, `ApprovalState.attempts`).
+- [x] (2026-11-15) Milestone 2: signer attempts, reprice and cancel (`apps/signer/src/attempts.ts`, schema version 6). Decided while building: a payment made under a mandate can be repriced and counts once (a revoked mandate stops reprices; expiry and an exhausted budget do not); after a restore fence a reprice of an older signature is refused with `envelope_fenced`, a cancel of it is allowed; the window is strict, so 0 turns repricing off; a sweep can be cancelled and not repriced.
 - [ ] Milestone 3: control plane nonce holding, reconciliation and automatic repricing.
 - [ ] Milestone 4: cancel approval kind, speed-up route, API, web and MCP reporting.
 - [ ] Milestone 5: real-stack release gate and documents.
