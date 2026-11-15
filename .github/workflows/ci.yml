@@ -65,6 +65,8 @@ jobs:
       - run: bun run test
       # The eve example's image is not part of the stack; this only proves it still builds.
       - run: docker build -f examples/eve-agent/Dockerfile -t os-eve-agent:ci .
+      # Nor is the ntfy sidecar's; its tests ran in `bun run test` above.
+      - run: docker build -f examples/ntfy-sidecar/Dockerfile -t os-ntfy-sidecar:ci .
       - if: failure()
         run: docker compose -f deploy/compose.test.yaml logs --no-color
       - if: always()

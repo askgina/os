@@ -106,14 +106,14 @@ a key (`docs/threat-model.md`).
 
 ## Volumes
 
-| Volume            | Holds                                                                                                                 | Read by  |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------- | -------- |
-| `postgres-data`   | The database.                                                                                                         | postgres |
-| `signer-data`     | The wallet vault and the signer's SQLite (used approvals, policies, mandates and their counts, audit, restore fence). | signer   |
-| `server-secrets`  | `keyring.json` (key-encryption keys), `signer-request-secret`, a copy of `postgres-password`.                         | server   |
-| `signer-secrets`  | `signer-request-secret`, `confirm-request-secret`, `token-key`, `vault-passphrase`.                                   | signer   |
-| `approve-secrets` | A copy of `confirm-request-secret`, which `init` writes again whenever it differs.                                    | approve  |
-| `db-secrets`      | `postgres-password`.                                                                                                  | postgres |
+| Volume            | Holds                                                                                                                                                                                                                       | Read by  |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| `postgres-data`   | The database.                                                                                                                                                                                                               | postgres |
+| `signer-data`     | The wallet vault and the signer's SQLite (used approvals, policies, mandates and their counts, audit, restore fence).                                                                                                       | signer   |
+| `server-secrets`  | `keyring.json` (key-encryption keys), `signer-request-secret`, a copy of `postgres-password`, `notify-webhook-secret` (signs the notification webhook), `vapid-key.pem` (identifies the server to browsers' push services). | server   |
+| `signer-secrets`  | `signer-request-secret`, `confirm-request-secret`, `token-key`, `vault-passphrase`.                                                                                                                                         | signer   |
+| `approve-secrets` | A copy of `confirm-request-secret`, which `init` writes again whenever it differs.                                                                                                                                          | approve  |
+| `db-secrets`      | `postgres-password`.                                                                                                                                                                                                        | postgres |
 
 ## Backups and restoring
 
@@ -317,16 +317,107 @@ waits without approvals simply gains its link to the confirmation page. Set `APP
 first if your layout needs another value than the default. `WEBAUTHN_ORIGINS` is no longer
 read anywhere.
 
-## The approval webhook
+## Notifications
 
-Set `NOTIFY_WEBHOOK_URL` in `.env` to be told when an approval is waiting. The server sends one
-`POST` with a JSON body of identifiers only: `{"event":"approval.opened","approvalId":…,"workspaceId":…,"kind":…}`.
-It never contains an amount, a recipient or a memo.
+People see waiting requests in the approval inbox. To tell them elsewhere, set
+`NOTIFY_WEBHOOK_URL` in `.env` to an address of yours: the server then sends it a signed `POST`
+whenever a request waits for people and whenever a mandate pays, and tries again until your
+receiver accepts it. The receiver turns it into whatever reaches people: a chat message, a pager,
+a phone notification. [`examples/ntfy-sidecar`](../examples/ntfy-sidecar) is a complete receiver
+that publishes to an [ntfy](https://ntfy.sh) topic; other channels are built the same way, so the
+control plane never holds a chat service's or a push provider's credential. Web Push to people's
+own browsers is a separate setting, off unless `WEB_PUSH_ENABLED=1`
+([`specs/approval-notifications.md`](../specs/approval-notifications.md)).
 
-Know its limits before you build on it. The request is sent once, with a five-second timeout, and
-is not retried. It is not signed, so the receiver cannot tell it came from this server. It is lost
-if the server stops between recording the approval and sending it, and approvals that the
-recovery sweeper starts are not announced. Treat it as a hint and read the inbox for the truth.
+This replaces the webhook of v0.1, which sent `{"event","approvalId","workspaceId","kind"}` once,
+unsigned. A receiver built for that one must verify the signature and dedupe, as below.
+
+### What the server sends
+
+| `event`             | When                                                                                                                               | Body keys                                                                            |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `approval.opened`   | A request people decide on opens: a payment, a policy or approver change, the admin threshold, a resume, a sweep, a mandate grant. | `approvalId`, `deliveryId`, `event`, `expiresAt`, `kind`, `link`, `v`, `workspaceId` |
+| `approval.reminder` | A reminder that the same request still waits, before it expires.                                                                   | The same                                                                             |
+| `mandate.used`      | A payment a mandate covers goes to the signer with no person asked.                                                                | `approvalId`, `deliveryId`, `event`, `link`, `mandateId`, `v`, `workspaceId`         |
+
+One request, as it arrives:
+
+    POST /your/path HTTP/1.1
+    content-type: application/json
+    x-os-delivery: ndl_01kb2…
+    x-os-timestamp: 1794000000
+    x-os-signature: v1=5c0f…(64 hex digits)
+
+    {"approvalId":"apr_01kb2…","deliveryId":"ndl_01kb2…","event":"approval.opened","expiresAt":1794003600,"kind":"approve-intent","link":"https://os.example.com/w/wsp_01ka9…/approvals/apr_01kb2…","v":1,"workspaceId":"wsp_01ka9…"}
+
+- The body is canonical JSON: keys sorted, no white space. `v` is the format's version, 1.
+  `expiresAt` is Unix seconds. `kind` is the request's kind, for example `approve-intent` or
+  `grant-mandate`.
+- `link` is the request's page on `PUBLIC_ORIGIN`, or for `mandate.used` the mandate's page, which
+  lists its payments. It carries no token: opening it needs a passkey sign-in, and approving still
+  happens only on the signer's confirmation page. The `approvalId` of `mandate.used` names the
+  payment's own record, which no list of approvals shows.
+- The body never holds an amount, a recipient, calldata, a memo, a policy, a mandate's caps or
+  purpose, a name, or anything else a person or an agent typed: identifiers, a kind, a time and a
+  link only. Treat it as metadata of the workspace's activity all the same.
+- `x-os-delivery` is the delivery's id, the same on every attempt. `x-os-timestamp` is the Unix
+  second the attempt was sent. `x-os-signature` is `v1=` and the hex HMAC-SHA-256, under the
+  secret below, of the timestamp, a dot and the body.
+
+### Verifying a request
+
+A receiver accepts a request only when all of these hold, in this order:
+
+1. `x-os-timestamp` is within 300 seconds of its own clock. Keep the clock synchronized.
+2. The HMAC-SHA-256 of `<x-os-timestamp>.<body>`, over the exact bytes received and before any
+   JSON parsing, equals the hex after `v1=` in `x-os-signature`, compared in constant time.
+3. The body parses, `v` is 1, and `deliveryId` equals `x-os-delivery`: the header is not signed,
+   the body is.
+4. A `deliveryId` it has acted on before is answered 2xx again and not acted on twice. Deliveries
+   arrive at least once, and may arrive more than once.
+
+In Node, step 2 is:
+
+    const expected = createHmac("sha256", secret).update(`${timestamp}.`).update(rawBody).digest();
+    const given = Buffer.from(signature.slice("v1=".length), "hex");
+    const valid = given.length === expected.length && timingSafeEqual(given, expected);
+
+Answer 2xx once it has the delivery, and quickly: an attempt that takes over five seconds counts
+as failed.
+
+### The secret
+
+`init` creates `notify-webhook-secret` in the `server-secrets` volume on first start: 32 random
+bytes, base64url. The key is the file's text, trimmed; the server refuses to start with
+`NOTIFY_WEBHOOK_URL` set and a secret shorter than 32 characters. Copy it to the receiver, and
+keep it as you keep the receiver's own credentials:
+
+    docker compose exec server cat /run/secrets/server/notify-webhook-secret
+
+The secret is a file, not a database row, so a copy of the database cannot sign a delivery. To
+replace it, remove the file, run `init` again, restart the server, then give the receiver the new
+one. A delivery the old receiver refuses in between is not retried.
+
+    docker run --rm -v os_server-secrets:/s alpine rm /s/notify-webhook-secret
+    docker compose up -d init && docker compose restart server
+
+### Retries
+
+- Each delivery is a row written in the same database transaction as the request or the payment,
+  so a request never exists without its notification, and a crash loses none. The server sends
+  due rows every three seconds.
+- 2xx: delivered. 408, 429, any 5xx, no answer, or no answer within five seconds: tried again
+  after 10, 20, 40, 80, 160, 320, then 600 seconds, or after the receiver's `Retry-After` (seconds
+  or a date) when that is at most an hour away and, for a request, before it expires. After the
+  eighth failed attempt the delivery is given up.
+- Any other status, a redirect included, gives it up at once. Redirects are not followed.
+- An `approval.*` delivery whose request was decided or has expired by the time it is due is not
+  sent; `mandate.used` always is. With `NOTIFY_WEBHOOK_URL` removed, waiting deliveries are dropped.
+- A sender that stops in the middle leaves its delivery to be sent again a minute later: one more
+  reason to dedupe.
+- The receiver's answer body is never read. The server logs `notification delivered`,
+  `notification retry`, `notification dropped` and `notification failed` with the delivery's and
+  the request's ids and a short code such as `http_503`.
 
 ## The setup token
 

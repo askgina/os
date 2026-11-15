@@ -1,0 +1,83 @@
+# The ntfy sidecar next to the stack: an overlay on the root compose.yaml, run from the
+# repository root. It points the server's webhook at the sidecar; see this directory's README.
+#
+#   NTFY_URL=https://ntfy.example.com NTFY_TOPIC=approvals-… \
+#     docker compose -f compose.yaml -f examples/ntfy-sidecar/compose.yaml up -d --build
+#
+# Paths are relative to the project directory, the repository root.
+services:
+  # One-shot, on every start: copies the webhook's signing secret, and the ntfy token from the
+  # host file NTFY_TOKEN_FILE names (none when unset), into the sidecar's own volume. It reads
+  # the server's secrets volume with no network; the sidecar never mounts that volume.
+  ntfy-sidecar-init:
+    image: node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
+    entrypoint: ["node", "-e"]
+    command:
+      - |
+        const { chmodSync, chownSync, readFileSync, renameSync, writeFileSync } = require("node:fs");
+        const copy = (from, name) => {
+          const path = "/to/" + name;
+          writeFileSync(path + ".tmp", readFileSync(from), { mode: 0o400 });
+          renameSync(path + ".tmp", path);
+          chownSync(path, 1000, 1000);
+          chmodSync(path, 0o400);
+        };
+        copy("/from/server/notify-webhook-secret", "notify-webhook-secret");
+        copy("/from/ntfy-token", "ntfy-token");
+        chownSync("/to", 1000, 1000);
+        chmodSync("/to", 0o700);
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - server-secrets:/from/server:ro
+      - ${NTFY_TOKEN_FILE:-/dev/null}:/from/ntfy-token:ro
+      - ntfy-secrets:/to
+    depends_on:
+      init: { condition: service_completed_successfully }
+    restart: "no"
+
+  ntfy-sidecar:
+    image: askgina-os-ntfy-sidecar:local
+    build:
+      context: .
+      dockerfile: examples/ntfy-sidecar/Dockerfile
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      NOTIFY_WEBHOOK_SECRET_FILE: /run/secrets/ntfy/notify-webhook-secret
+      # Empty when NTFY_TOKEN_FILE is unset: no token.
+      NTFY_TOKEN_FILE: /run/secrets/ntfy/ntfy-token
+      NTFY_URL: ${NTFY_URL:?set NTFY_URL to your ntfy server}
+      NTFY_TOPIC: ${NTFY_TOPIC:?set NTFY_TOPIC}
+      NTFY_INCLUDE_LINK: ${NTFY_INCLUDE_LINK:-0}
+      # The only origin a forwarded link may point to; others are left out. With compose.tls.yaml
+      # set PUBLIC_ORIGIN=https://<OS_HOSTNAME> in .env, or links are left out.
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
+    volumes:
+      - ntfy-secrets:/run/secrets/ntfy:ro
+    # The server reaches it on the `control` network, which also routes out to the ntfy server.
+    networks: [control]
+    depends_on:
+      ntfy-sidecar-init: { condition: service_completed_successfully }
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  server:
+    environment:
+      NOTIFY_WEBHOOK_URL: http://ntfy-sidecar:8080/
+
+volumes:
+  ntfy-secrets: {}

@@ -52,6 +52,10 @@ introduced in [`architecture.md`](./architecture.md); the exact checks are in
 6. **`approve` service → signer.** Requests carry an HMAC request signature under a second
    secret, which the signer accepts on its four confirmation routes and nowhere else
    ([`signer/api.ts`](../packages/protocol/src/signer/api.ts), `scope`).
+7. **Control plane → the operator's webhook receiver.** When `NOTIFY_WEBHOOK_URL` is set, the
+   server POSTs identifiers, a kind, a time and a link, signed with HMAC-SHA-256 under a third
+   secret, `notify-webhook-secret` ([`apps/server/src/notify/webhook.ts`](../apps/server/src/notify/webhook.ts)).
+   Nothing the receiver answers is read. See "Notifications".
 
 ## Attacker positions
 
@@ -354,25 +358,92 @@ and end times, the policy as the outer limit, a paused workspace, concurrent use
 admin threshold above the grantors, the fence, and a repeated use. Nothing tests a wrong clock or
 a compromised control plane spending a mandate.
 
+## Notifications
+
+People learn that a request waits from the approval inbox, from the operator's webhook when
+`NOTIFY_WEBHOOK_URL` is set, and from Web Push when the operator turns it on
+(`WEB_PUSH_ENABLED=1`, off by default;
+[`specs/approval-notifications.md`](../specs/approval-notifications.md)). Other channels, such as
+ntfy or a chat service, are sidecars of the webhook that hold their own credential
+([`examples/ntfy-sidecar`](../examples/ntfy-sidecar)); the control plane holds none. The signer is
+not involved: no notification is an input to an approval, whatever was or was not sent.
+
+The webhook's body is canonical JSON with the request's or the payment's identifiers, its kind,
+its expiry and a link; never an amount, a recipient, calldata, a memo, a policy, a mandate's caps
+or purpose, or a name. It is signed with HMAC-SHA-256 over the timestamp and the exact body, with
+the delivery id inside the signed body, under `notify-webhook-secret`, a file in the server's
+secrets volume ([`webhook.ts`](../apps/server/src/notify/webhook.ts); format and checks in
+`deploy/README.md`, "Notifications"). Each delivery is a row of `notification_deliveries`
+written in the transaction that opens the request or records the payment, and sent at least once
+([`outbox.ts`](../apps/server/src/notify/outbox.ts)). A link is the request's or the mandate's
+page on `PUBLIC_ORIGIN`, built from checked identifiers; it carries no token, never creates a
+session, and opening it needs a passkey sign-in. No notification offers a button that acts.
+
+| If this is compromised                                                            | It can                                                                                                                                                                                                                                                                     | It cannot                                                                                                                                        |
+| --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The control plane                                                                 | Stay silent on every channel, so requests expire unseen; send false notifications the webhook receiver accepts as signed, and with Web Push on, with any text to every subscribed device; link to a misleading page it serves; learn which people subscribed which devices | Approve anything; turn a notification into a capability; move more than the signer's caps or a mandate allow                                     |
+| The control plane's database                                                      | Read the outbox: which request was announced when, to which target, and each attempt's outcome code                                                                                                                                                                        | Sign a webhook delivery or send a push message: the webhook secret and the push key are files, not rows                                          |
+| The webhook secret (at the server or a receiver)                                  | Send that receiver deliveries it accepts as genuine                                                                                                                                                                                                                        | Anything at the control plane or the signer                                                                                                      |
+| The webhook receiver, or the service it forwards to (ntfy, a chat service)        | Read identifiers, kinds, times and links, which is the workspace's activity; drop, delay or repeat notifications                                                                                                                                                           | Read what a request is about; approve                                                                                                            |
+| A browser's push service (Apple, Google, Mozilla, Microsoft), when Web Push is on | See when and how often a device is notified                                                                                                                                                                                                                                | Read the message, which is encrypted for the device (RFC 8291) and padded to one length ([`send.ts`](../apps/server/src/notify/webpush/send.ts)) |
+
+**A false notification** can only claim that something waits, or that a mandate paid: there is no
+field that would say what. A person still approves only on the confirmation page, after checking
+its address bar. The ntfy sidecar passes on a link only when it is on `PUBLIC_ORIGIN`, so through it
+a compromised control plane can point people at its own pages and no other site.
+
+**Replay.** A receiver refuses a timestamp more than 300 seconds from its clock and dedupes on the
+delivery id. The signature covers the timestamp and the body, which holds the delivery id; the
+`x-os-delivery` header is not covered, so a receiver checks that it equals the body's.
+
+**A lost notification.** A receiver that keeps failing gets eight attempts over about twenty
+minutes (10 seconds, doubling, at most 600), then the delivery is `failed` and logged. A request
+decided or expired before its delivery is due is not announced. The inbox stays the truth.
+
+**What a channel's operator learns.** A self-hosted ntfy that serves the iOS app forwards a poll
+request with each message's id to its upstream (normally `ntfy.sh`), which reaches the phone
+through Firebase and Apple's push service: they learn when, not what. A chat app that opens a
+link in its own browser has no session there and often no passkey: open links in the system
+browser, or turn links off (the sidecar's default).
+
+What the release gates in [`e2e/test/release-gates.spec.ts`](../e2e/test/release-gates.spec.ts)
+check on the real stack, with a webhook receiver on its `control` network:
+
+- "an approval is announced once, signed, with no sealed content, even after a failed delivery":
+  the receiver fails the first attempt with 503; the same delivery id comes again and is accepted,
+  both attempts verify with the secret read from the server's volume, the body has exactly its
+  eight keys and none of the proposal's memo, recipient or amount, and the outbox holds one
+  delivery, sent, after one failed attempt.
+- "a payment under a mandate is announced to the webhook as mandate.used, signed, with no sealed
+  content": one delivery with exactly its seven keys, naming the payment's own record and the
+  mandate's page.
+
+The sidecar's own tests ([`examples/ntfy-sidecar/test/bridge.test.ts`](../examples/ntfy-sidecar/test/bridge.test.ts))
+cover a changed body, another secret, an old or future timestamp, a repeated and a racing
+delivery id, ntfy failing, and links on other origins. The server's tests
+([`apps/server/test/notify/`](../apps/server/test/notify/)) cover the outbox's transaction, retry
+and drop rules. Nothing tests a receiver whose clock is wrong.
+
 ## What is encrypted at rest
 
-| Data                                                                                            | Where                                                        | Encrypted?                                                                                 | Why                                                                                                                  |
-| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| The canonical intent (operation, recipient, amount, calldata, memo)                             | `intents.payload`                                            | Sealed, workspace key                                                                      | What people and agents typed about an operation                                                                      |
-| What the approval card shows, and the simulation result                                         | `intents.presentation`                                       | Sealed, workspace key                                                                      | Same                                                                                                                 |
-| What an approval kind needs to apply its effect: a proposed policy, a sweep's amount and target | `approvals.detail`                                           | Sealed, workspace key                                                                      | Same                                                                                                                 |
-| The confirmation page's link for a waiting request, with its token                              | `approvals.confirmation`                                     | Sealed, workspace key                                                                      | The token shows the request to whoever holds it; the signer stores only its SHA-256                                  |
-| A mandate: its caps, recipients and purpose                                                     | `mandates.mandate`, and the grant's `approvals.detail`       | Sealed, workspace key                                                                      | What a person typed about a standing grant; its id, wallet, agent, times, hash and status stay readable              |
-| The signed raw transaction                                                                      | `transactions.raw`                                           | Sealed, workspace key                                                                      | Kept only to rebroadcast; it contains the operation                                                                  |
-| Audit details                                                                                   | `audit_events.detail`                                        | Sealed, workspace key                                                                      | Free-form content; its digest stays readable so the chain verifies without the key                                   |
-| Workflow inputs, outputs, hook payloads, stream chunks, step errors                             | `workflow` schema                                            | AES-256-GCM, per-run key ([`packages/world/src/index.ts`](../packages/world/src/index.ts)) | The upstream Postgres World stores these in plaintext                                                                |
-| Data keys                                                                                       | `os_keys` schema                                             | Wrapped by a KEK from the keyring file                                                     | The database alone must not be enough                                                                                |
-| Identifiers, names given to workspaces, agents and wallets, roles, statuses, timestamps, hashes | `os` schema                                                  | No                                                                                         | Needed to list, join and display without keys                                                                        |
-| Wallet addresses and policies                                                                   | `wallets`                                                    | No                                                                                         | Public on chain, and needed to show limits                                                                           |
-| WebAuthn public keys and assertions                                                             | `credentials`, `approver_credentials`, `approval_assertions` | No                                                                                         | Public keys and signatures over digests; not secret                                                                  |
-| Session, invite, agent and setup tokens                                                         | various                                                      | Stored as SHA-256 hashes                                                                   | Only needed for comparison                                                                                           |
-| Workflow names, ids, hook tokens, run attribute keys                                            | `workflow` schema                                            | No                                                                                         | The Workflow SDK does not encrypt them (finding 2 of the World research). Attribute values are replaced, not stored  |
-| Server log lines                                                                                | stdout                                                       | No                                                                                         | They carry identifiers, codes and counts only, never content ([`apps/server/src/log.ts`](../apps/server/src/log.ts)) |
+| Data                                                                                                            | Where                                                        | Encrypted?                                                                                 | Why                                                                                                                  |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| The canonical intent (operation, recipient, amount, calldata, memo)                                             | `intents.payload`                                            | Sealed, workspace key                                                                      | What people and agents typed about an operation                                                                      |
+| What the approval card shows, and the simulation result                                                         | `intents.presentation`                                       | Sealed, workspace key                                                                      | Same                                                                                                                 |
+| What an approval kind needs to apply its effect: a proposed policy, a sweep's amount and target                 | `approvals.detail`                                           | Sealed, workspace key                                                                      | Same                                                                                                                 |
+| The confirmation page's link for a waiting request, with its token                                              | `approvals.confirmation`                                     | Sealed, workspace key                                                                      | The token shows the request to whoever holds it; the signer stores only its SHA-256                                  |
+| A mandate: its caps, recipients and purpose                                                                     | `mandates.mandate`, and the grant's `approvals.detail`       | Sealed, workspace key                                                                      | What a person typed about a standing grant; its id, wallet, agent, times, hash and status stay readable              |
+| The signed raw transaction                                                                                      | `transactions.raw`                                           | Sealed, workspace key                                                                      | Kept only to rebroadcast; it contains the operation                                                                  |
+| Audit details                                                                                                   | `audit_events.detail`                                        | Sealed, workspace key                                                                      | Free-form content; its digest stays readable so the chain verifies without the key                                   |
+| Workflow inputs, outputs, hook payloads, stream chunks, step errors                                             | `workflow` schema                                            | AES-256-GCM, per-run key ([`packages/world/src/index.ts`](../packages/world/src/index.ts)) | The upstream Postgres World stores these in plaintext                                                                |
+| Data keys                                                                                                       | `os_keys` schema                                             | Wrapped by a KEK from the keyring file                                                     | The database alone must not be enough                                                                                |
+| Identifiers, names given to workspaces, agents and wallets, roles, statuses, timestamps, hashes                 | `os` schema                                                  | No                                                                                         | Needed to list, join and display without keys                                                                        |
+| Wallet addresses and policies                                                                                   | `wallets`                                                    | No                                                                                         | Public on chain, and needed to show limits                                                                           |
+| WebAuthn public keys and assertions                                                                             | `credentials`, `approver_credentials`, `approval_assertions` | No                                                                                         | Public keys and signatures over digests; not secret                                                                  |
+| Session, invite, agent and setup tokens                                                                         | various                                                      | Stored as SHA-256 hashes                                                                   | Only needed for comparison                                                                                           |
+| Workflow names, ids, hook tokens, run attribute keys                                                            | `workflow` schema                                            | No                                                                                         | The Workflow SDK does not encrypt them (finding 2 of the World research). Attribute values are replaced, not stored  |
+| The notification outbox: which request or payment was announced, to which target, when, and each attempt's code | `notification_deliveries`                                    | No                                                                                         | Identifiers, times and short codes only; what a notification says is built from them when it is sent                 |
+| Server log lines                                                                                                | stdout                                                       | No                                                                                         | They carry identifiers, codes and counts only, never content ([`apps/server/src/log.ts`](../apps/server/src/log.ts)) |
 
 The plaintext scanner used to check this decompresses and decodes workflow payloads before
 searching ([`packages/testkit/src/scan.ts`](../packages/testkit/src/scan.ts)). A naive scan reports
@@ -510,8 +581,9 @@ From the map's "Not yet specified" list ([askgina/os#1](https://github.com/askgi
 - Operations that are not EVM transactions: other chains, and off-chain venues.
 - Shipping agent runtimes or sandboxes.
 - Operating beyond one machine: KMS or OpenBao key providers, HA Postgres, Kubernetes.
-- Notifications outside the inbox: web push and chat. The optional webhook (`NOTIFY_WEBHOOK_URL`)
-  exists: it sends identifiers only, unsigned, once, to an address the operator chose.
+- Notifications outside the inbox beyond the signed webhook and its sidecars (see
+  "Notifications"): email, and chat adapters built into the control plane. Web Push to people's
+  devices is planned in [`specs/approval-notifications.md`](../specs/approval-notifications.md).
 - Workspace lifecycle beyond emptying a wallet: clone, export, retiring a wallet, and delete with
   assets still in the wallets. A person can sweep a wallet whose agent is gone.
 - Repricing stuck transactions.

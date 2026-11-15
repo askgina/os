@@ -213,6 +213,38 @@ restore fence moves, and on the operator's command on the signer host. The exact
 lets a compromised control plane or a stolen agent token do is in
 [the threat model](./threat-model.md#mandates).
 
+## Notifications
+
+People see waiting requests in the approval inbox. The server can also tell them elsewhere, and
+does so through an outbox ([`apps/server/src/notify/`](../apps/server/src/notify/)). The
+transaction that opens a request, or records a payment under a mandate, also writes one row per
+notification to `notification_deliveries`, so a request never exists without its notification and
+a crash loses none. Every three seconds the sweeper claims the rows that are due, leases them for
+a minute so two passes never send one twice, and sends each: at least once, retried with backoff
+until it is delivered, its request is no longer waiting, or eight attempts failed.
+
+```mermaid
+flowchart LR
+  E[Engine.open or a mandate payment] -->|same transaction| O[(notification_deliveries)]
+  O -->|sweeper, every 3 s| S[server]
+  S -->|signed POST, identifiers only| W[operator's webhook receiver]
+  W -->|its own credential| N[ntfy, chat, pager]
+  S -.->|Web Push, when WEB_PUSH_ENABLED=1| B[browser push services]
+```
+
+The one channel built in besides Web Push is a webhook (`NOTIFY_WEBHOOK_URL`): a `POST` of
+canonical JSON with identifiers, the request's kind, its expiry and a link to its page, signed
+with HMAC-SHA-256 under `notify-webhook-secret`, a file in the server's secrets volume. Every other
+channel is a sidecar of that webhook, a small service next to the stack that verifies the
+signature and forwards with its own credential: [`examples/ntfy-sidecar`](../examples/ntfy-sidecar)
+publishes fixed text to an ntfy topic. The format, the checks a receiver makes and the retry rules
+are in [`deploy/README.md`](../deploy/README.md#notifications). Web Push to people's own browsers
+is off unless the operator sets `WEB_PUSH_ENABLED=1`; its design is in
+[`specs/approval-notifications.md`](../specs/approval-notifications.md).
+
+No notification carries what a request is about, and none is an input to an approval: the
+signer is not involved at any step.
+
 ## Where state lives
 
 | State                                                                                                                                                                | Where                                                                                                        | Who can change it                                                                                              |
@@ -228,6 +260,8 @@ lets a compromised control plane or a stolen agent token do is in
 | Shared request-signing secret                                                                                                                                        | A file read by both server and signer                                                                        | The operator                                                                                                   |
 | Confirmation records, the hash of each link's token, assertions made on the confirmation page, possession challenges and proofs of new approver keys                 | Signer's SQLite                                                                                              | Only the signer                                                                                                |
 | Confirmation request secret                                                                                                                                          | A file read by the signer and, as a copy, by the `approve` service                                           | The operator                                                                                                   |
+| Notifications waiting to be sent, and each one's outcome                                                                                                             | Postgres, `os.notification_deliveries`                                                                       | The server                                                                                                     |
+| Webhook signing secret                                                                                                                                               | A file read by the server; the operator gives the receiver a copy                                            | The operator                                                                                                   |
 
 Some rows in Postgres mirror the signer's state for display (the policy on `wallets`, the paused
 flag on `workspaces`, the `approver_credentials` table, the `mandates` table). The schema's
@@ -280,6 +314,10 @@ table is in [the threat model](./threat-model.md#what-is-encrypted-at-rest).
   could call them could forge workflow events.
 - **Agents have their own network.** An agent may run untrusted code or follow injected
   instructions. It should be able to reach the MCP gateway and nothing else.
+- **Notification channels are sidecars of one signed webhook.** A chat service's or a pager's
+  token inside the control plane would be one more credential its compromise yields.
+  A sidecar holds it instead, and the control plane sends only identifiers, signed, so a channel
+  learns that something waits, not what.
 
 The decisions behind these boundaries, with the reasons, are recorded on the
 [Wayfinder map](https://github.com/askgina/os/issues/1) (tickets #7 to #15) and in the plan's

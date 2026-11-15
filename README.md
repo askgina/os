@@ -142,6 +142,18 @@ passkey that granted it is removed, when its agent is disabled, at its end time,
 of the signer, and when the operator revokes it on the signer host
 (`node src/admin.ts revoke-mandate`, see [`deploy/README.md`](deploy/README.md#mandates)).
 
+## Be told when a request waits
+
+Set `NOTIFY_WEBHOOK_URL` in `.env` and the server posts to it whenever a request waits for people
+and whenever a mandate pays: identifiers, the kind of request, its expiry and a link to its page,
+signed with a secret `init` creates, and retried until your receiver accepts it. Never an amount,
+a recipient or a memo, and the link is no capability: opening it needs a passkey sign-in, and
+approving still happens on the confirmation page.
+[`examples/ntfy-sidecar`](examples/ntfy-sidecar) turns it into a phone notification through
+[ntfy](https://ntfy.sh); other channels are built the same way, so the control plane holds no chat
+or push provider's credential. The format and how to verify it are in
+[`deploy/README.md`](deploy/README.md#notifications).
+
 ## What this protects, and what it does not
 
 | If this is compromised       | The attacker can                                                                                        | The attacker cannot                                                                                             |

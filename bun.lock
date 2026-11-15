@@ -135,6 +135,10 @@
         "pg": "8.23.1",
       },
     },
+    "examples/ntfy-sidecar": {
+      "name": "@askgina/os-example-ntfy-sidecar",
+      "version": "0.1.0",
+    },
     "examples/scripted-agent": {
       "name": "@askgina/os-example-scripted-agent",
       "version": "0.1.0",
@@ -221,6 +225,8 @@
     "@askgina/os-e2e": ["@askgina/os-e2e@workspace:e2e"],
 
     "@askgina/os-example-eve-agent": ["@askgina/os-example-eve-agent@workspace:examples/eve-agent"],
+
+    "@askgina/os-example-ntfy-sidecar": ["@askgina/os-example-ntfy-sidecar@workspace:examples/ntfy-sidecar"],
 
     "@askgina/os-example-scripted-agent": ["@askgina/os-example-scripted-agent@workspace:examples/scripted-agent"],
 

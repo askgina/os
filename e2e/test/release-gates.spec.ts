@@ -38,6 +38,14 @@ import {
   stack,
   waitUntilHealthy,
 } from "../src/stack.ts";
+import {
+  bodyOf,
+  failFirstAttempts,
+  type ReceivedRequest,
+  receivedRequests,
+  signatureVerifies,
+  webhookSecret,
+} from "../src/webhook.ts";
 
 test.describe.configure({ mode: "serial" });
 
@@ -1490,6 +1498,232 @@ test("the operator's revoke-mandate --all on the signer host ends every live man
     ok: true,
     revoked: [],
   });
+});
+
+// --- notifications ---------------------------------------------------------------------------
+// The e2e overlay points NOTIFY_WEBHOOK_URL at a receiver next to the stack
+// (`e2e/src/webhook-receiver.mts`). It has answered 200 to every notification of the gates
+// above; these two look at what it received. They run before the fence gate, which stays last,
+// and leave no mandate live for it.
+
+/** What the payer types into the proposal below. None of it may reach the webhook. */
+const NOTICE_MEMO = `NOTICEMARK${run} pay the notified invoice`;
+/** An address no other gate pays, and an amount no other gate sends. */
+const NOTICE_RECIPIENT = "0x0000000000000000000000000000000000dec0de";
+const NOTICE_AMOUNT = "0.004321";
+
+/** The keys of each event's body, sorted as canonical JSON sorts them (deploy/README.md). */
+const APPROVAL_EVENT_KEYS = [
+  "approvalId",
+  "deliveryId",
+  "event",
+  "expiresAt",
+  "kind",
+  "link",
+  "v",
+  "workspaceId",
+];
+const MANDATE_EVENT_KEYS = [
+  "approvalId",
+  "deliveryId",
+  "event",
+  "link",
+  "mandateId",
+  "v",
+  "workspaceId",
+];
+
+/** The recorded requests whose body `match` selects, once the receiver accepted one of them. */
+async function acknowledged(
+  match: (body: Record<string, unknown>) => boolean,
+): Promise<ReceivedRequest[]> {
+  let matching: ReceivedRequest[] = [];
+  await expect
+    .poll(
+      async () => {
+        matching = (await receivedRequests()).filter((request) => match(bodyOf(request)));
+        return matching.some((request) => request.status === 200);
+      },
+      { timeout: 120_000 },
+    )
+    .toBe(true);
+  return matching;
+}
+
+/** The webhook's outbox rows for one request or use and one event, as the server keeps them. */
+async function webhookDeliveries(
+  approvalId: string,
+  event: string,
+): Promise<{ id: string; state: string; attempts: number }[]> {
+  const db = new pg.Client({ connectionString: await databaseUrl() });
+  await db.connect();
+  try {
+    const { rows } = await db.query<{ id: string; state: string; attempts: number }>(
+      "SELECT id, state, attempts FROM os.notification_deliveries WHERE approval_id = $1 AND event = $2 AND target = 'webhook' ORDER BY id",
+      [approvalId, event],
+    );
+    return rows;
+  } finally {
+    await db.end();
+  }
+}
+
+/**
+ * Check one recorded attempt the way the deploy guide tells a receiver to: a JSON POST, signed
+ * with the secret from the server's volume over its exact bytes, with a timestamp within 300
+ * seconds, and a body that is canonical JSON with exactly `keys` and none of `secrets`.
+ */
+function expectSignedDelivery(
+  secret: string,
+  request: ReceivedRequest,
+  keys: string[],
+  secrets: string[],
+): Record<string, unknown> {
+  expect(request.method).toBe("POST");
+  expect(request.headers["content-type"]).toBe("application/json");
+  expect(signatureVerifies(secret, request)).toBe(true);
+  // One more byte and it no longer verifies: the check above is a real one.
+  expect(signatureVerifies(secret, { ...request, body: `${request.body} ` })).toBe(false);
+  const timestamp = Number(request.headers["x-os-timestamp"]);
+  expect(Number.isInteger(timestamp)).toBe(true);
+  expect(Math.abs(request.receivedAt / 1000 - timestamp)).toBeLessThanOrEqual(300);
+
+  const body = bodyOf(request);
+  expect(Object.keys(body)).toEqual(keys);
+  // Sorted keys and no white space: the exact bytes JSON.stringify gives for what it parsed.
+  expect(request.body).toBe(JSON.stringify(body));
+  expect(body).toMatchObject({ v: 1, deliveryId: request.headers["x-os-delivery"] });
+  const seen = `${JSON.stringify(request.headers)}\n${request.body}`.toLowerCase();
+  for (const value of secrets) expect(seen).not.toContain(value.toLowerCase());
+  return body;
+}
+
+test("an approval is announced once, signed, with no sealed content, even after a failed delivery", async () => {
+  const secret = await webhookSecret();
+  expect(secret.length).toBeGreaterThanOrEqual(32);
+  // Whatever reached the receiver so far was a notification of a gate above, signed and accepted.
+  for (const request of await receivedRequests()) {
+    expect(request.status).toBe(200);
+    expect(signatureVerifies(secret, request)).toBe(true);
+  }
+
+  await failFirstAttempts(true);
+  try {
+    const proposal = await payer.proposeTransfer({
+      chainId: CHAIN,
+      to: NOTICE_RECIPIENT,
+      amount: NOTICE_AMOUNT,
+      memo: NOTICE_MEMO,
+    });
+    expect(proposal).toMatchObject({ authorizedBy: "person", status: "pending_approval" });
+    const approvalId = approvalIdOf(proposal);
+    const requests = await acknowledged(
+      (body) => body.approvalId === approvalId && body.event === "approval.opened",
+    );
+
+    // One delivery, tried twice: the receiver failed the first attempt and accepted the second,
+    // which carried the same delivery id and the same body, signed again.
+    expect(requests.map((request) => request.status)).toEqual([503, 200]);
+    const [first, second] = requests;
+    if (!first || !second) throw new Error("expected two attempts");
+    const deliveryId = first.headers["x-os-delivery"];
+    expect(deliveryId).toMatch(/^ndl_[0-9a-z]+$/);
+    expect(second.headers["x-os-delivery"]).toBe(deliveryId);
+    expect(second.body).toBe(first.body);
+    expect(Number(second.headers["x-os-timestamp"])).toBeGreaterThanOrEqual(
+      Number(first.headers["x-os-timestamp"]),
+    );
+    const hidden = [
+      NOTICE_MEMO,
+      `NOTICEMARK${run}`,
+      NOTICE_RECIPIENT,
+      NOTICE_RECIPIENT.slice(2),
+      NOTICE_AMOUNT,
+      wei(NOTICE_AMOUNT),
+    ];
+    for (const request of requests) {
+      expect(expectSignedDelivery(secret, request, APPROVAL_EVENT_KEYS, hidden)).toEqual({
+        v: 1,
+        deliveryId,
+        event: "approval.opened",
+        approvalId,
+        workspaceId: workspace.id,
+        kind: "approve-intent",
+        expiresAt: proposal.expiresAt,
+        // The approval page on the control plane's own origin, with no token in it.
+        link: `${stack.origin}/w/${workspace.id}/approvals/${approvalId}`,
+      });
+    }
+
+    // The server's outbox holds that one delivery, sent after one failed attempt. A sent row is
+    // never sent again, so the receiver keeps exactly these two requests about the proposal.
+    await expect
+      .poll(() => webhookDeliveries(approvalId, "approval.opened"), { timeout: 60_000 })
+      .toEqual([{ id: deliveryId, state: "sent", attempts: 1 }]);
+    expect(
+      (await receivedRequests()).filter((request) => bodyOf(request).approvalId === approvalId),
+    ).toHaveLength(2);
+
+    await rejectWaiting(proposal);
+  } finally {
+    await failFirstAttempts(false);
+  }
+});
+
+test("a payment under a mandate is announced to the webhook as mandate.used, signed, with no sealed content", async () => {
+  const secret = await webhookSecret();
+  const { mandateId: granted } = await grantMandate(payerWallet.id, mandateDraft(payerId));
+  const memo = `${NOTICE_MEMO}, under a mandate`;
+  const paid = await payer.proposeTransfer({ chainId: CHAIN, to: PAYEE, amount: "0.002", memo });
+  expect(paid).toMatchObject({ authorizedBy: "mandate", mandateId: granted, approvalUrl: null });
+
+  const requests = await acknowledged(
+    (body) => body.event === "mandate.used" && body.mandateId === granted,
+  );
+  expect(requests).toHaveLength(1);
+  const [request] = requests;
+  if (!request) throw new Error("expected one delivery");
+  const deliveryId = request.headers["x-os-delivery"];
+  const body = expectSignedDelivery(secret, request, MANDATE_EVENT_KEYS, [
+    memo,
+    `NOTICEMARK${run}`,
+    PAYEE,
+    PAYEE.slice(2),
+    "0.002",
+    wei("0.002"),
+  ]);
+  expect(body).toMatchObject({
+    event: "mandate.used",
+    workspaceId: workspace.id,
+    mandateId: granted,
+    // The mandate's page, where its uses are listed.
+    link: `${stack.origin}/w/${workspace.id}/mandates/${granted}`,
+  });
+
+  // `approvalId` names the use's own row: the payment's use of this mandate, which no person
+  // decides on and no list of approvals shows.
+  const db = new pg.Client({ connectionString: await databaseUrl() });
+  await db.connect();
+  try {
+    const { rows } = await db.query(
+      "SELECT kind, mandate_id, subject_id FROM os.approvals WHERE id = $1",
+      [body.approvalId],
+    );
+    expect(rows).toEqual([{ kind: "mandate-use", mandate_id: granted, subject_id: paid.intentId }]);
+  } finally {
+    await db.end();
+  }
+  await expect
+    .poll(() => webhookDeliveries(String(body.approvalId), "mandate.used"), { timeout: 60_000 })
+    .toEqual([{ id: deliveryId, state: "sent", attempts: 0 }]);
+  expect(
+    (await receivedRequests()).filter((recorded) => bodyOf(recorded).mandateId === granted),
+  ).toHaveLength(1);
+
+  expect(await intentSettles(paid.intentId)).toBe("confirmed");
+  // Nothing stays live for the fence gate.
+  await ada.revokeMandate(workspace.id, granted);
+  expect(await payerMandates()).toEqual([]);
 });
 
 // Last: the fence refuses every envelope issued before it, plus the clock skew, so nothing is

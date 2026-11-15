@@ -1,5 +1,6 @@
 # Overlay for the release gates only: lets the tests reach the database (to scan it for
-# plaintext) and the local chain (to check balances). Never use it for a real deployment.
+# plaintext), the local chain (to check balances) and a webhook receiver (to check what the
+# server notifies). Never use it for a real deployment.
 services:
   postgres:
     ports:
@@ -7,3 +8,36 @@ services:
   anvil:
     ports:
       - "127.0.0.1:${E2E_ANVIL_PORT:-55901}:8545"
+
+  # The operator's webhook, as an operator would run one next to the stack: on the `control`
+  # network, where the server reaches it. It records every request and answers 200, so every
+  # approval of every gate is announced to it and accepted (see e2e/src/webhook-receiver.mts).
+  # Paths are relative to the project directory, the repository root.
+  webhook-receiver:
+    image: node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
+    command: ["node", "/receiver/webhook-receiver.mts"]
+    user: node
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    volumes:
+      - ./e2e/src/webhook-receiver.mts:/receiver/webhook-receiver.mts:ro
+    ports:
+      - "127.0.0.1:${E2E_WEBHOOK_PORT:-55904}:8080"
+    networks: [control]
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  server:
+    environment:
+      NOTIFY_WEBHOOK_URL: http://webhook-receiver:8080/hook
+    depends_on:
+      webhook-receiver: { condition: service_healthy }

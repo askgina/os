@@ -15,6 +15,8 @@ export const stack = {
   approveOrigin: process.env.APPROVE_ORIGIN ?? "http://localhost:55903",
   postgresPort: Number(process.env.E2E_POSTGRES_PORT ?? 55900),
   anvilUrl: process.env.E2E_ANVIL_URL ?? "http://127.0.0.1:55901",
+  /** The webhook receiver `e2e/compose.e2e.yaml` runs next to the stack, through its port. */
+  webhookReceiverUrl: `http://127.0.0.1:${Number(process.env.E2E_WEBHOOK_PORT ?? 55904)}`,
 };
 
 /** The services `up` starts. `init` runs once and exits; the others depend on it. */

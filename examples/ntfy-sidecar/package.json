@@ -1,0 +1,13 @@
+{
+  "name": "@askgina/os-example-ntfy-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Forwards the control plane's signed notification webhook to an ntfy topic, with fixed text and none of the control plane's credentials.",
+  "scripts": {
+    "start": "node src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  }
+}
