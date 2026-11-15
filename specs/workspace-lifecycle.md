@@ -1,8 +1,8 @@
 # Clone, export and delete a workspace whose wallets hold assets
 
 - Branch: main (private), one milestone at a time
-- Status: In progress (owner decisions taken 2026-11-15; Milestones 1 to 7 green in CI run
-  43729783071; Milestone 8 and the export, clone and erase screens built, CI pending)
+- Status: Ready for Review (built 2026-11-15; Milestones 1 to 7 green in CI run 43729783071,
+  Milestone 8 and the export, clone, import and erase screens green in CI run 43732195805)
 - Owner(s): Eric Juta
 - Created: 2026-11-14
 - Last Updated: 2026-11-15
@@ -572,6 +572,18 @@ Every owner decision is taken. Each names its question (D1-D12) in Risks and Ope
   Date/Author: 2026-11-15 / LifecycleM1
 
 ## Outcomes & Retrospective
+
+- Outcome (2026-11-15, final): every milestone is built on private `main` and green in CI.
+  Evidence: run 43729783071 at `a4299f3` (check, test, ui, packages, stack amd64, arm64 and
+  tls; 35 release gates and 10 lifecycle gates on amd64 and arm64) for Milestones 1 to 7; run
+  43732195805 at `9a7d594` (all seven jobs, 1,397 unit tests) for Milestone 8 and the export,
+  clone, import and erase screens. That supersedes every "CI pending" in `Progress`.
+  Unproven: export, clone, import and erasure have unit tests and a fixture journey, no
+  release gate; the D10 push path end to end; two erasures at once; a clone that fails
+  part-way leaves a partly created workspace (documented, untested); the operator export
+  steps on a real host beyond the gate; a wrong signer clock.
+  Owed by the owner: counsel's view on whether keeping the user id satisfies GDPR Article 17
+  (D6); the code and documents make no legal claim.
 
 - Outcome (2026-11-14): the sweep is built and passes its unit and Anvil tests locally (see
   `Progress`). Its release gate and the UI job need CI.
