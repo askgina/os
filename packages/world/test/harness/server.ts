@@ -28,8 +28,13 @@ if (!markersWorkflow || !bodyAttributeWorkflow) {
   throw new Error("harness: the build lacks a workflow of workflows/markers.ts");
 }
 
+/** The error's message, and the name and message of it and each of its causes. */
 function failure(error: unknown) {
-  return { error: error instanceof Error ? error.message : String(error) };
+  const chain: { name: string; message: string }[] = [];
+  for (let at = error; at instanceof Error && chain.length < 8; at = at.cause) {
+    chain.push({ name: at.name, message: at.message });
+  }
+  return { error: error instanceof Error ? error.message : String(error), chain };
 }
 
 const app = new Hono()

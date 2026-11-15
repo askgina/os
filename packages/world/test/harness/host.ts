@@ -27,19 +27,20 @@ export async function bootstrapWorkflowSchema(url: string): Promise<void> {
   await execFileAsync(bootstrap, [], { env: { ...process.env, WORKFLOW_POSTGRES_URL: url } });
 }
 
-/** Start server.ts as a separate process and wait until its World has started. */
+/**
+ * Start server.ts as a separate process and wait until its World has started. `env` selects the
+ * key provider (see world.ts) and any other harness switch.
+ */
 export async function startHost(options: {
   port: number;
   databaseUrl: string;
-  keyringFile: string;
-  env?: Record<string, string>;
+  env: Record<string, string>;
 }): Promise<Host> {
   const child = spawn(process.execPath, [serverScript], {
     env: {
       ...process.env,
       WORKFLOW_TARGET_WORLD: worldModule,
       WORKFLOW_POSTGRES_URL: options.databaseUrl,
-      HARNESS_KEYRING_FILE: options.keyringFile,
       PORT: String(options.port),
       ...options.env,
     },

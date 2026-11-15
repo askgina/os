@@ -1,11 +1,22 @@
 // The OpenBao Transit provider under DataKeyStore, against the in-process stub always and
 // against the real OpenBao dev server from `deploy/compose.test.yaml` when it runs. In CI
 // (`CI=true`) the real server is required; elsewhere its cases are skipped when it is not up.
+// The real half holds the OpenBao test server (`holdOpenBao`) from setup to teardown, since it
+// pauses the container and other packages' tests use it too.
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTestDatabase, type TestDatabase } from "@askgina/os-testkit";
+import {
+  holdOpenBao,
+  OPENBAO_TEST_ADDR,
+  openBaoReachable,
+  type PreparedTransit,
+  pauseOpenBao,
+  prepareTransit,
+  unpauseOpenBao,
+} from "@askgina/os-testkit/openbao";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
@@ -14,13 +25,6 @@ import {
   KeyProviderUnavailableError,
   TransitKeyProvider,
 } from "../src/index.ts";
-import {
-  OPENBAO_TEST_ADDR,
-  openBaoReachable,
-  pauseOpenBao,
-  prepareTransit,
-  unpauseOpenBao,
-} from "./support/openbao.ts";
 import { startTransitStub } from "./support/transit-stub.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "os-keys-transit-"));
@@ -60,7 +64,14 @@ async function stubBackend(): Promise<Backend> {
 }
 
 async function openBaoBackend(): Promise<Backend> {
-  const transit = await prepareTransit();
+  const release = await holdOpenBao("packages/keys/test/transit.test.ts");
+  let transit: PreparedTransit;
+  try {
+    transit = await prepareTransit();
+  } catch (error) {
+    await release();
+    throw error;
+  }
   const auth = appRoleFiles(transit.mount, transit.roleId, transit.secretId);
   return {
     mount: transit.mount,
@@ -77,7 +88,7 @@ async function openBaoBackend(): Promise<Backend> {
     setMinDecryptionVersion: (version) => transit.setMinDecryptionVersion(version),
     pause: pauseOpenBao,
     unpause: unpauseOpenBao,
-    close: async () => {},
+    close: release,
   };
 }
 
@@ -103,17 +114,22 @@ function acceptance(name: string, makeBackend: () => Promise<Backend>) {
     ).rows[0];
   const keys = new Map<string, string>();
 
+  // Longer than `holdOpenBao`'s 600-second wait for another file's hold on the OpenBao test
+  // server (the World's ciphertext test holds it for its scenarios and a 20-second outage).
   beforeAll(async () => {
     backend = await makeBackend();
     db = await createTestDatabase(`keys_transit_${name}`);
     pool = new pg.Pool({ connectionString: db.url, max: 4 });
-  });
+  }, 630_000);
 
   afterAll(async () => {
-    await Promise.all(providers.map((made) => made.close()));
-    await pool?.end();
-    await db?.drop();
-    await backend?.close();
+    try {
+      await Promise.all(providers.map((made) => made.close()));
+      await pool?.end();
+      await db?.drop();
+    } finally {
+      await backend?.close();
+    }
   });
 
   test("a data key round-trips under bao:<mount>/os-kek@1 and reads from a fresh provider", async () => {

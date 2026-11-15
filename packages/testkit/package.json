@@ -8,7 +8,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./msgpack": "./src/msgpack.ts",
-    "./fake-hyperliquid": "./src/fake-hyperliquid.ts"
+    "./fake-hyperliquid": "./src/fake-hyperliquid.ts",
+    "./openbao": "./src/openbao.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
