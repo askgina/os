@@ -754,10 +754,16 @@ export class Engine implements ApprovalEngine {
           .update(approvals)
           .set({ runId })
           .where(and(eq(approvals.id, id), isNull(approvals.runId)));
-        const row = await this.row(id);
+        let row = await this.row(id);
         if (row.runId !== runId) return "superseded";
+        const open = () => row.status === "pending" && seconds(row.expiresAt) > ctx.now();
+        if (open() && isRequest(row)) {
+          // Nobody may be on a page of ours that would ask the signer, so the run asks.
+          await this.collect(row);
+          row = await this.row(id);
+        }
         if (row.status === "pending") {
-          if (seconds(row.expiresAt) > ctx.now()) return "pending";
+          if (open()) return "pending";
           const expired = await ctx.db.transaction(async (tx) => {
             const [updated] = await tx
               .update(approvals)

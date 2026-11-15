@@ -667,7 +667,9 @@ and the research agent's rationale.
 - Outcome (milestone 2): a person can follow the approval page's link to the confirmation page
   on `APPROVE_ORIGIN`, read the request as the signer holds it, and approve it there with the
   passkey they already have. The control plane collects that approval when anyone reads the
-  request or the inbox, checks it again against `APPROVE_ORIGIN`, and signs or applies as
+  request or the inbox, and (since 2026-11-15) when the request's own run looks, 5 seconds
+  after it starts and then at doubling intervals of at most two minutes, so an approver who
+  never returns to the control plane still counts. It checks it again against `APPROVE_ORIGIN`, and signs or applies as
   before. The `approve` service holds no key, is reachable only through Caddy and reaches only
   the signer. The control plane's own approval prompt still works.
   Evidence: the single-file runs listed under Progress (2026-11-14 23:45Z).

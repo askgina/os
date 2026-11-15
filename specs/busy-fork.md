@@ -393,6 +393,18 @@ marked **Eric's** below.
   collided with an existing Docker network on that host; `BUSY_EGRESS_SUBNET` and `BUSY_DNS_IP`
   moved it.
 
+- Outcome (2026-11-15, by hand, twice): a real model chose the call. The same rig with the Hub's
+  OpenAI-compatible connection pointed at a real model endpoint (`gpt-6-luna`) and a bot told in
+  plain words to pay "Acme invoice 2217", 0.001 ETH: the model called
+  `askgina-os__propose_transfer` with the right recipient, amount and memo both times (intents
+  `int_01m7gphs9jkfq3jb0q515n5v9v`, `int_01m7gqeh7v4gteqh87znp00ns9`, both `pending_approval`).
+  Not proven: settlement. Both requests expired with no transaction although the owner reports
+  approving them, and the stack was torn down before its signer log and approval rows were
+  read, so what happened to those approvals is unknown. One way an approval made on the
+  confirmation page could be lost was found in the code and closed in askgina/os: the server
+  counted it only when a signed-in person read the request or the inbox afterwards; the
+  approval's own run now asks the signer too (`apps/server/workflows/approval.ts`).
+
 - Outcome: research done; nothing built.
   Evidence: [research/busy-fork.md](./research/busy-fork.md).
   Remaining: every milestone below (owner decisions taken 2026-11-15, except the calls that stay

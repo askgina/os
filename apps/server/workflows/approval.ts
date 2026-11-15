@@ -21,6 +21,10 @@ function steps(): StepImplementations {
   return registered;
 }
 
+/** How long a waiting run sleeps before it looks at the request again: doubling, up to the cap. */
+const FIRST_LOOK_SECONDS = 5;
+const MAX_LOOK_SECONDS = 120;
+
 export interface ApprovalRunInput {
   approvalId: string;
   /** Seconds since the Unix epoch. */
@@ -39,12 +43,23 @@ export async function approval(input: ApprovalRunInput): Promise<SettledStatus> 
     token: `apr:${approvalId}:${getWorkflowMetadata().workflowRunId}`,
   });
   const wakeUps = hook[Symbol.asyncIterator]();
-  const deadline = new Date(input.expiresAt * 1000);
+  const expiry = sleep(new Date(input.expiresAt * 1000));
 
   // A wake-up only means "look again": the database row is the authority, never the payload.
+  // The run also looks on its own, soon at first and then every two minutes: an approval made
+  // on the signer's page counts when the server asks the signer for it, and the person who made
+  // it may never come back to a page of ours that would ask.
   let status = await settleStep(approvalId);
+  let wakeUp = wakeUps.next().then(() => true);
+  let lookSeconds = FIRST_LOOK_SECONDS;
   while (status === "pending") {
-    await Promise.race([wakeUps.next(), sleep(deadline)]);
+    const woken = await Promise.race([
+      wakeUp,
+      expiry.then(() => false),
+      sleep(lookSeconds * 1000).then(() => false),
+    ]);
+    if (woken) wakeUp = wakeUps.next().then(() => true);
+    lookSeconds = Math.min(lookSeconds * 2, MAX_LOOK_SECONDS);
     status = await settleStep(approvalId);
   }
   // Another run was recorded for this request first (a start was retried); that run owns it.

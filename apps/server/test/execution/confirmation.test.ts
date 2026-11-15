@@ -452,6 +452,22 @@ describe("collecting approvals made on the confirmation page", () => {
     ).toHaveLength(1);
   });
 
+  it("the run collects an approval whose approver never came back to the control plane", async () => {
+    const { approvalId } = await proposePayment();
+    const { token, detail } = await linkOf(approvalId);
+    await f.t.confirm.submitConfirmation(
+      approvalId,
+      token,
+      assertAt(f.t.owner, detail.envelope, TEST_APPROVAL_ORIGIN),
+    );
+    const engine = engineOf(f.t.ctx);
+    const row = await engine.row(approvalId);
+    expect(await engine.steps().settle(approvalId, row.runId ?? "wrun_test_collect")).toBe(
+      "approved",
+    );
+    expect(await storedAssertions(approvalId)).toHaveLength(1);
+  });
+
   it("reading the request or the inbox collects too", async () => {
     const byDetail = await proposePayment();
     const byInbox = await proposePayment();
