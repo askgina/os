@@ -1,10 +1,10 @@
 # Approve in advance: signer-enforced mandates for one agent's transfers
 
-- Branch: none yet
-- Status: Draft
+- Branch: main
+- Status: Ready for Review
 - Owner(s): Eric Juta
 - Created: 2026-11-14
-- Last Updated: 2026-11-14
+- Last Updated: 2026-11-15
 - Links: [Ticket #19](https://github.com/askgina/os/issues/19) | [Research report](./research/approval-mandates.md) | [Map #18](https://github.com/askgina/os/issues/18) | [v0.1 ExecPlan](./agent-workspaces-v0.1.md)
 
 This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`,
@@ -72,12 +72,26 @@ Success means:
 - [x] (2026-11-15) Milestone 1: protocol structures, evaluator, signer contract, normative document, and the grant's confirmation view. Commit `b7effa5`; CI run 43697354475 green (check, test, ui, stack amd64/arm64/tls). Added beyond the plan: setting the restore fence revokes every live mandate (protocol document section 8).
 - [x] (2026-11-15) Milestone 2, commit `b60495d`, CI run 43699193896 green (six jobs): the signer grants, counts, signs under and revokes mandates (schema version 5, five routes, fence and approver-removal revocation, admin `list-mandates` and `revoke-mandate`). A pending grant shows as superseded while the wallet's current policy would refuse it. `mandate_wallet_mismatch` cannot occur at the signer: the policy check runs first and answers `policy_denied wallet_mismatch`.
 - [x] (2026-11-15) Milestone 3, commits `b55508e` and `9a03b20`, CI run 43701634327 green (six jobs; run 43701069934 was red on one unhandled rejection in the new test file): the control plane routes proposals through mandates; API and MCP report it (migration `0004_mandates`, four API routes, `mandate-use` rows never visible through the API, exactly seven MCP tools). Selection also skips a mandate whose grantors are fewer than the admin threshold. Disabling an agent also cancels its waiting grants.
-- [x] (2026-11-15) Milestone 4, commit `9d0acd3`: the web UI grants, shows and revokes mandates (editor on the wallet and agent pages, grant card on the approval page, mandate page with its payments and Revoke), with a browser gate on the real stack. Not in the API yet: a block-explorer link for mandated payments, the server's maximum lifetime, and whether the viewer's passkey is an active approver.
-- [ ] Milestone 5: stack release gates, threat model and documentation.
-- [ ] Final outcome and residual risks recorded here and on ticket 19.
+- [x] (2026-11-15) Milestone 4, commit `9d0acd3`, CI run 43703445281 green (UI journey on all five projects; browser gate on the stack): the web UI grants, shows and revokes mandates (editor on the wallet and agent pages, grant card on the approval page, mandate page with its payments and Revoke), with a browser gate on the real stack. Not in the API yet: a block-explorer link for mandated payments, the server's maximum lifetime, and whether the viewer's passkey is an active approver.
+- [x] (2026-11-15) Milestone 5, commits `abb2433` and `307c404`: ten stack release gates, threat model and documentation. CI run 43703445281 green at `307c404` on check, test, ui and stack amd64/arm64/tls: 30 release gates and the browser gates pass. Run 43702667045 was red on the audit deadlock (Surprises) and unformatted Markdown tables.
+- [x] (2026-11-15) Final outcome and residual risks recorded here and on ticket 19.
 
 ## Surprises & Discoveries
 
+- Observation (2026-11-15, building): two proposals of one workspace arriving at the same moment
+  could deadlock in Postgres, and one was answered `internal`. `appendAudit` locked the workspace
+  row `FOR UPDATE` after the same transaction had inserted rows whose foreign key holds
+  `FOR KEY SHARE` on it. Present since v0.1 for every kind of proposal; the first test that sends
+  two at once is the mandate window-cap release gate. Fixed with `FOR NO KEY UPDATE`.
+  Evidence: CI run 43702667045 (gate at `e2e/test/release-gates.spec.ts:1217`);
+  `apps/server/src/audit.ts`; test "proposals sent at the same moment are all answered" in
+  `apps/server/test/execution/mandates.test.ts`, which fails without the fix.
+- Observation (2026-11-15, building): the scripted example agent and the eve example's offline
+  model assumed every proposal returns an approval link, so a covered payment crashed one and was
+  reported as refused by the other. Both fixed with the release gates.
+- Observation (2026-11-15, building): numeric settings parse an empty value as 0 and refuse to
+  start, so Compose passes real defaults for the mandate settings; one `.env` value,
+  `MANDATE_MAX_SECONDS`, feeds both the server and the signer.
 - Observation: v0.1 has no auto-approve limits. A policy's approval threshold is at least 1, and
   the signer signs only under an `approve-intent` authorization. The caps are ceilings on approved
   transactions, not an allowance.
@@ -210,6 +224,26 @@ that depend on one say so with **[depends on Dn]**.
 
 ## Outcomes & Retrospective
 
+- Outcome (2026-11-15): built on main and green in CI run 43703445281 at `307c404`. People grant a
+  mandate on the signer's confirmation page at the admin threshold; a payment it covers is signed
+  with no person asked and counted by the signer; anything else waits in the inbox as before.
+  A mandate ends by revocation (owner or approver, no passkey), by its end time or budget, when a
+  grantor's credential is removed, when its agent is disabled, by the operator's `revoke-mandate`
+  on the signer host, and whenever the restore fence moves.
+  Evidence: the ten mandate gates in `e2e/test/release-gates.spec.ts`, the browser gate in
+  `e2e/test/browser.spec.ts`, `apps/signer/test/mandates.test.ts`,
+  `apps/server/test/execution/mandates.test.ts`, `packages/protocol/test/mandate.test.ts`.
+  Residual risks and what is unproven:
+  a compromised control plane or a stolen agent token can spend a live mandate's remaining budget
+  to its listed recipients, and a compromised control plane can ignore a person's revoke or an
+  agent's disabling (the operator's command on the signer host does not depend on it);
+  no gate restores a backup that holds a live mandate (the fence gate runs on a running signer);
+  a wrong signer clock is untested;
+  budget is spent by payments the network never accepts, by design;
+  a real phone with a real passkey has not been tried on the confirmation page for any approval,
+  grants included (CI uses virtual authenticators).
+  Not in the API yet, so not in the UI: a block-explorer link for mandated payments, the server's
+  maximum lifetime, and whether the viewer's passkey is an active approver.
 - Outcome: research only. One passkey approval can cover a bounded series of transfers while the
   signer alone decides; the price is that a compromised control plane or a stolen agent token can
   spend a live mandate's remaining budget to its allowlisted recipients without a person.
