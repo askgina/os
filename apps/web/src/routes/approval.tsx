@@ -566,7 +566,11 @@ function ConfirmationLink({ url }: { url: string }) {
       <a
         href={url}
         rel="noopener noreferrer"
-        className={cn(buttonVariants({ variant: "outline", size: "lg" }), "w-full")}
+        // The label is long: it wraps on a narrow phone instead of widening the page.
+        className={cn(
+          buttonVariants({ variant: "outline", size: "lg" }),
+          "h-auto min-h-12 w-full py-2 text-center whitespace-normal",
+        )}
       >
         <ShieldCheck aria-hidden />
         Review and approve on the signer's page

@@ -187,6 +187,12 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(confirm).toHaveAttribute("rel", "noopener noreferrer");
     await expect(page.getByText(confirmUrl.host, { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Copy link" })).toBeVisible();
+    // Nothing on the page may be wider than the screen: on a phone that shifts every tap.
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      ),
+    ).toBeLessThanOrEqual(0);
     const viewport = page.viewportSize();
     const button = await page.getByRole("button", { name: "Approve with passkey" }).boundingBox();
     if (testInfo.project.name.startsWith("phone") && viewport && button) {
