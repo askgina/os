@@ -14,7 +14,8 @@
  *    `openbao-secret-id` in its secrets volume, owned by the server's user, mode 0400. A secret
  *    id already there is kept.
  *
- * Prints one JSON line with what it did; never a key, a token or a secret id.
+ * Prints a JSON line as each step starts and one with what it did, or one naming the step that
+ * failed; never a key, a token or a secret id.
  */
 import { chmodSync, chownSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -30,6 +31,25 @@ const KEY = "os-kek";
 const ROLE = "os-server";
 /** The server's user in its image (`node`), as `deploy/init/init.mjs` uses. */
 const NODE_UID = 1000;
+/** Everything together; `e2e/run.sh` waits 300 seconds for the whole stack. */
+const OVERALL_MS = 240_000;
+const deadline = Date.now() + OVERALL_MS;
+/**
+ * The first initialization bootstraps Raft, and this single node waits out an election timeout
+ * (5 seconds) before it leads and can answer; the server itself gives up on a request after 90.
+ */
+const INIT_TIMEOUT_MS = 100_000;
+/** An unseal, a health check, a configuration call. */
+const REQUEST_TIMEOUT_MS = 30_000;
+const HEALTH_TIMEOUT_MS = 10_000;
+
+let step = "start";
+
+/** Name the step that runs now, on stdout, so a failure names it too. */
+function begin(name: string): void {
+  step = name;
+  process.stdout.write(`${JSON.stringify({ event: "openbao.bootstrap_step", step })}\n`);
+}
 
 interface Answer {
   status: number;
@@ -41,22 +61,63 @@ function field(value: unknown, name: string): unknown {
   return typeof value === "object" && value !== null ? Reflect.get(value, name) : undefined;
 }
 
-async function call(method: string, path: string, token?: string, body?: unknown): Promise<Answer> {
-  const response = await fetch(new URL(`/v1/${path}`, ADDRESS), {
-    method,
-    headers: {
-      "content-type": "application/json",
-      ...(token === undefined ? {} : { "x-vault-token": token }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    signal: AbortSignal.timeout(5000),
-  });
-  const text = await response.text();
-  let parsed: unknown = {};
-  try {
-    parsed = text === "" ? {} : JSON.parse(text);
-  } catch {}
-  return { status: response.status, body: parsed };
+/**
+ * Whether a failed fetch never reached OpenBao: nothing listens yet, or its name does not resolve
+ * yet. Only then is any request, even one that changes something, safe to send again.
+ */
+function neverArrived(error: unknown): boolean {
+  const cause = error instanceof Error ? error.cause : undefined;
+  const codes = [field(cause, "code")];
+  const inner = field(cause, "errors");
+  if (Array.isArray(inner)) codes.push(...inner.map((each) => field(each, "code")));
+  return codes.some(
+    (code) => code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EAI_AGAIN",
+  );
+}
+
+/**
+ * One call to OpenBao, sent again while it cannot reach OpenBao at all, until the overall
+ * deadline. A call that reached it and got no answer within `timeoutMs` fails: it may have
+ * taken effect.
+ */
+async function call(
+  method: string,
+  path: string,
+  options: { token?: string; body?: unknown; timeoutMs?: number } = {},
+): Promise<Answer> {
+  const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  for (;;) {
+    const left = deadline - Date.now();
+    if (left <= 0) throw new Error(`${method} ${path}: OpenBao unreachable until the deadline`);
+    const allowed = Math.min(timeoutMs, left);
+    let response: Response;
+    try {
+      response = await fetch(new URL(`/v1/${path}`, ADDRESS), {
+        method,
+        headers: {
+          "content-type": "application/json",
+          ...(options.token === undefined ? {} : { "x-vault-token": options.token }),
+        },
+        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+        signal: AbortSignal.timeout(allowed),
+      });
+    } catch (error) {
+      if (neverArrived(error)) {
+        await delay(500);
+        continue;
+      }
+      if (error instanceof Error && error.name === "TimeoutError") {
+        throw new Error(`${method} ${path}: no answer within ${allowed} ms`);
+      }
+      throw new Error(`${method} ${path}: ${error instanceof Error ? error.message : error}`);
+    }
+    const text = await response.text();
+    let parsed: unknown = {};
+    try {
+      parsed = text === "" ? {} : JSON.parse(text);
+    } catch {}
+    return { status: response.status, body: parsed };
+  }
 }
 
 /** OpenBao's own error texts; they name paths and reasons, never a secret. */
@@ -68,10 +129,9 @@ function errorsOf(answer: Answer): string {
 async function must(
   method: string,
   path: string,
-  token: string | undefined,
-  body?: unknown,
+  options: { token?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<Answer> {
-  const answer = await call(method, path, token, body);
+  const answer = await call(method, path, options);
   if (answer.status >= 300) {
     throw new Error(`${method} ${path}: ${answer.status} ${errorsOf(answer)}`);
   }
@@ -80,18 +140,27 @@ async function must(
 
 /** Enable a secrets engine or auth method; one already at that path is left as it is. */
 async function enable(path: string, type: string, token: string): Promise<boolean> {
-  const answer = await call("POST", path, token, { type });
+  const answer = await call("POST", path, { token, body: { type } });
   if (answer.status < 300) return true;
   if (answer.status === 400 && /already in use/.test(errorsOf(answer))) return false;
   throw new Error(`POST ${path}: ${answer.status} ${errorsOf(answer)}`);
 }
 
-/** Retry `check` every half second until it is true, or fail after `seconds`. */
-async function until(what: string, seconds: number, check: () => Promise<boolean>): Promise<void> {
-  const deadline = Date.now() + seconds * 1000;
+/**
+ * Ask `check` every half second until it is true, or fail at the overall deadline with what it
+ * last answered or threw.
+ */
+async function until(what: string, check: () => Promise<boolean | string>): Promise<void> {
+  let last = "nothing yet";
   for (;;) {
-    if (await check().catch(() => false)) return;
-    if (Date.now() > deadline) throw new Error(`${what} within ${seconds} seconds`);
+    try {
+      const outcome = await check();
+      if (outcome === true) return;
+      last = outcome === false ? "not yet" : outcome;
+    } catch (error) {
+      last = error instanceof Error ? error.message : String(error);
+    }
+    if (Date.now() > deadline) throw new Error(`${what} before the deadline; last: ${last}`);
     await delay(500);
   }
 }
@@ -109,18 +178,23 @@ function writeSecret(name: string, value: string): boolean {
 }
 
 async function main(): Promise<void> {
+  begin("wait-for-answer");
   // Any answer will do: uninitialized and sealed answer too.
-  await until("OpenBao did not answer", 120, async () => {
-    const answer = await call("GET", "sys/health?uninitcode=200&sealedcode=200&standbycode=200");
-    return answer.status === 200;
+  await until("OpenBao did not answer", async () => {
+    const answer = await call("GET", "sys/health?uninitcode=200&sealedcode=200&standbycode=200", {
+      timeoutMs: HEALTH_TIMEOUT_MS,
+    });
+    return answer.status === 200 || `status ${answer.status}`;
   });
 
+  begin("init");
   let initializedNow = false;
-  const { body: init } = await call("GET", "sys/init");
+  const { body: init } = await must("GET", "sys/init");
   if (field(init, "initialized") !== true) {
-    const { body } = await must("PUT", "sys/init", undefined, {
-      secret_shares: 1,
-      secret_threshold: 1,
+    // Sent once: should its answer be lost, so is the unseal key, and only `down -v` helps.
+    const { body } = await must("PUT", "sys/init", {
+      body: { secret_shares: 1, secret_threshold: 1 },
+      timeoutMs: INIT_TIMEOUT_MS,
     });
     const keys = field(body, "keys_base64");
     const rootToken = field(body, "root_token");
@@ -143,42 +217,53 @@ async function main(): Promise<void> {
     throw new Error(`${STATE_FILE} holds no unseal key and root token`);
   }
 
+  begin("unseal");
   let unsealedNow = false;
-  const { body: seal } = await call("GET", "sys/seal-status");
-  if (field(seal, "sealed") !== false) {
-    const { body } = await must("PUT", "sys/unseal", undefined, { key: unsealKey });
-    if (field(body, "sealed") !== false) {
-      throw new Error("OpenBao is still sealed after its unseal key");
-    }
+  // Giving the key again is harmless, so a lost answer is simply asked again.
+  await until("OpenBao did not unseal", async () => {
+    const { body: seal } = await must("GET", "sys/seal-status");
+    if (field(seal, "sealed") === false) return true;
+    const { body } = await must("PUT", "sys/unseal", { body: { key: unsealKey } });
     unsealedNow = true;
-  }
-  // Raft elects this single node its leader a moment after the unseal.
-  await until("OpenBao did not become active", 120, async () => {
-    return (await call("GET", "sys/health")).status === 200;
+    return field(body, "sealed") === false || "still sealed";
   });
 
+  begin("wait-active");
+  // Raft elects this single node its leader again after each unseal.
+  await until("OpenBao did not become active", async () => {
+    const { status } = await call("GET", "sys/health", { timeoutMs: HEALTH_TIMEOUT_MS });
+    return status === 200 || `status ${status}`;
+  });
+
+  begin("transit");
   const transitEnabled = await enable(`sys/mounts/${MOUNT}`, "transit", token);
   let keyCreated = false;
-  if ((await call("GET", `${MOUNT}/keys/${KEY}`, token)).status === 404) {
-    await must("POST", `${MOUNT}/keys/${KEY}`, token, { type: "aes256-gcm96" });
+  if ((await call("GET", `${MOUNT}/keys/${KEY}`, { token })).status === 404) {
+    await must("POST", `${MOUNT}/keys/${KEY}`, { token, body: { type: "aes256-gcm96" } });
     keyCreated = true;
   }
-  await must("PUT", `sys/policies/acl/${ROLE}`, token, {
-    policy: readFileSync(POLICY_FILE, "utf8"),
+
+  begin("policy");
+  await must("PUT", `sys/policies/acl/${ROLE}`, {
+    token,
+    body: { policy: readFileSync(POLICY_FILE, "utf8") },
   });
+
+  begin("approle");
   const approleEnabled = await enable("sys/auth/approle", "approle", token);
-  await must("POST", `auth/approle/role/${ROLE}`, token, {
-    token_policies: [ROLE],
-    token_ttl: "1h",
-    token_max_ttl: "24h",
+  await must("POST", `auth/approle/role/${ROLE}`, {
+    token,
+    body: { token_policies: [ROLE], token_ttl: "1h", token_max_ttl: "24h" },
   });
-  const { body: roleIdAnswer } = await must("GET", `auth/approle/role/${ROLE}/role-id`, token);
+
+  begin("credentials");
+  const { body: roleIdAnswer } = await must("GET", `auth/approle/role/${ROLE}/role-id`, { token });
   const roleId = field(field(roleIdAnswer, "data"), "role_id");
   if (typeof roleId !== "string") throw new Error("the role has no role id");
   const roleIdWritten = writeSecret("openbao-role-id", roleId);
   let secretIdWritten = false;
   if (!existsSync(join(SERVER_SECRETS, "openbao-secret-id"))) {
-    const { body } = await must("POST", `auth/approle/role/${ROLE}/secret-id`, token);
+    const { body } = await must("POST", `auth/approle/role/${ROLE}/secret-id`, { token });
     const secretId = field(field(body, "data"), "secret_id");
     if (typeof secretId !== "string") throw new Error("the role gave no secret id");
     secretIdWritten = writeSecret("openbao-secret-id", secretId);
@@ -202,6 +287,7 @@ main().catch((error: unknown) => {
   process.stdout.write(
     `${JSON.stringify({
       event: "openbao.bootstrap_failed",
+      step,
       message: error instanceof Error ? error.message : String(error),
     })}\n`,
   );

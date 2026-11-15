@@ -28,7 +28,7 @@ import {
   stack,
   waitUntilHealthy,
 } from "../src/stack.ts";
-import { bodyOf, receivedRequests } from "../src/webhook.ts";
+import { acknowledged, bodyOf, receivedRequests } from "../src/webhook.ts";
 
 test.describe.configure({ mode: "serial" });
 
@@ -261,46 +261,52 @@ test("the replica that started signing a payment is killed, and the other finish
 });
 
 test("each notification about one payment reaches the webhook once while both replicas sweep", async () => {
+  test.setTimeout(360_000);
   // Both replicas deliver Workflow steps and run the 3-second sweep that sends notifications.
   for (const container of replicas) expect(await readyzIn(container), container).toBe("200");
   const { intentId, approvalId } = await propose(payer.agent, RECIPIENT, "0.001", "announced once");
-  await ada.confirm(approvalId);
-  expect(await intentSettles(ada, intentId, 120_000)).toBe("confirmed");
+  // The webhook hears of a request only while it waits for people: a row the sweep finds after
+  // the decision is dropped (`approval_ended`), never sent. So the request waits until the
+  // receiver has accepted its announcement, and then through several more sweeps of both
+  // replicas, each of which could send it again if the outbox let two senders have it.
+  const announced = await acknowledged(
+    (body) => body.approvalId === approvalId && body.event === "approval.opened",
+  );
+  await delay(10_000);
 
   const db = new pg.Client({ connectionString: await databaseUrl() });
   await db.connect();
   try {
     const outbox = async () =>
       (
-        await db.query<{ id: string; event: string; state: string }>(
-          "SELECT id, event, state FROM os.notification_deliveries WHERE approval_id = $1 AND target = 'webhook' ORDER BY id",
+        await db.query<{ id: string; event: string; state: string; attempts: number }>(
+          "SELECT id, event, state, attempts FROM os.notification_deliveries WHERE approval_id = $1 AND target = 'webhook' ORDER BY id",
           [approvalId],
         )
       ).rows;
-    await expect
-      .poll(
-        async () => {
-          const rows = await outbox();
-          return rows.length > 0 && rows.every((row) => row.state === "sent");
-        },
-        { timeout: 60_000 },
-      )
-      .toBe(true);
-    // Several sweeps of both replicas later, nothing about it was sent again.
-    await delay(10_000);
     const rows = await outbox();
-    expect(rows.every((row) => row.state === "sent")).toBe(true);
-
+    // The webhook's only notification of a request: its announcement, sent once, first time.
+    expect(rows.map(({ event, state, attempts }) => ({ event, state, attempts }))).toEqual([
+      { event: "approval.opened", state: "sent", attempts: 0 },
+    ]);
     const received = (await receivedRequests()).filter(
       (request) => bodyOf(request).approvalId === approvalId,
     );
     const deliveryIds = received.map((request) => request.headers["x-os-delivery"] ?? "");
     process.stdout.write(
-      `${JSON.stringify({ gate: "webhook-once", deliveries: received.length, events: rows.map((row) => row.event) })}\n`,
+      `${JSON.stringify({ gate: "webhook-once", deliveries: received.length, firstAcknowledged: announced.length })}\n`,
     );
-    expect(received.every((request) => request.status === 200)).toBe(true);
-    expect(new Set(deliveryIds).size).toBe(deliveryIds.length);
-    expect([...deliveryIds].sort()).toEqual(rows.map((row) => row.id).sort());
+    expect(received.map((request) => request.status)).toEqual([200]);
+    expect(deliveryIds).toEqual(rows.map((row) => row.id));
+
+    // Deciding the request adds nothing for the webhook, and nothing is sent about it again.
+    await ada.confirm(approvalId);
+    expect(await intentSettles(ada, intentId, 120_000)).toBe("confirmed");
+    await delay(10_000);
+    expect(await outbox()).toEqual(rows);
+    expect(
+      (await receivedRequests()).filter((request) => bodyOf(request).approvalId === approvalId),
+    ).toHaveLength(1);
   } finally {
     await db.end();
   }
