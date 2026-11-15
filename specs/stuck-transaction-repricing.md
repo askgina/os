@@ -41,7 +41,7 @@ Success means:
 - [x] (2026-11-15) Owner decisions listed under `Risks and Open Questions` taken: Eric chose the recommended option of each (Decision Log).
 - [x] (2026-11-15) Milestones 1 and 2 are commit `c3003b8`, CI run 43712687999 green (check, test, ui, stack amd64/arm64/tls). Milestone 1: protocol and contract (`cancel-transaction` envelope, its confirmation view, `reprice` and `cancelTransaction` routes, `ApprovalState.attempts`).
 - [x] (2026-11-15) Milestone 2: signer attempts, reprice and cancel (`apps/signer/src/attempts.ts`, schema version 6). Decided while building: a payment made under a mandate can be repriced and counts once (a revoked mandate stops reprices; expiry and an exhausted budget do not); after a restore fence a reprice of an older signature is refused with `envelope_fenced`, a cancel of it is allowed; the window is strict, so 0 turns repricing off; a sweep can be cancelled and not repriced.
-- [ ] Milestone 3: control plane nonce holding, reconciliation and automatic repricing.
+- [x] (2026-11-15) Milestone 3, commit `50e2d30`, CI run 43714842690 green (six jobs): control plane nonce holding, reconciliation and automatic repricing (`apps/server/src/execution/repricing.ts`, migration `0007_transaction_attempts`, settings `REPRICE_AUTO`, `REPRICE_AFTER_SECONDS` default 180, `REPRICE_BUMP_PERCENT` default 12).
 - [ ] Milestone 4: cancel approval kind, speed-up route, API, web and MCP reporting.
 - [ ] Milestone 5: real-stack release gate and documents.
 - [ ] Run validation in CI and record run ids here.
@@ -64,6 +64,10 @@ Success means:
 - Decision: owner decisions 1 to 5 are taken as recommended: (1) automatic repricing plus an approver's "Speed up" without a passkey, no agent tool; (2) a cancel is a `cancel-transaction` envelope at the wallet policy's threshold; (3) a 24-hour reprice window; (4) a landed cancel does not release daily-cap spend; (5) new envelope kinds are additive in protocol v1. The cancel is approved on the signer's confirmation page (ticket 20, built after this plan was drafted).
   Rationale: owner's answers in one form.
   Date/Author: 2026-11-15 / Eric Juta
+
+- Decision: taken while building the control plane (Milestone 3). The hash shown for an intent is the mined attempt's, else the newest's. A cancel that is mined ends the intent `voided` with `transaction_cancelled`; a payment mined after a cancel was signed ends `confirmed` or `reverted` with `cancel_too_late`; a foreign transaction at the nonce ends it `failed` with `nonce_used_elsewhere`. A person's speed-up waits 15 seconds after the newest attempt, so two clicks make one attempt. A crash between the signer's signature and the local row is recovered by replaying the signer's attempt list. Raising the fee of a cancel goes through the reprice route, so it is blocked while paused or after the window; then only another approved cancel raises it.
+  Rationale: one outcome per nonce, decided by what the chain shows; the signer's attempt list is the record.
+  Date/Author: 2026-11-15 / building agent, recorded by the lead
 
 - Decision: only `maxFeePerGas` and `maxPriorityFeePerGas` change under an existing approval. The nonce, gas limit, `to`, `value`, `data` and chain are those of the first signature, taken from the signer's own record.
   Rationale: the person approved an operation and a fee ceiling (`intent.maxFeeWei`). Raising the fee inside that ceiling is what v0.1 already lets the control plane choose at first signing. Keeping the nonce is what makes every attempt mutually exclusive on chain.
