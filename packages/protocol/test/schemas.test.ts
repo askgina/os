@@ -3,6 +3,7 @@ import {
   Address,
   Amount,
   ApproveIntentEnvelope,
+  CancelTransactionEnvelope,
   ChainId,
   Envelope,
   evmChainNumber,
@@ -25,11 +26,16 @@ import {
   WorkspaceId,
 } from "../src/index.ts";
 import {
+  ApprovalState,
+  AttemptResponse,
+  CancelTransactionRequest,
   GrantMandateRequest,
   MandateState,
   OpenConfirmationResponse,
+  RepriceRequest,
   SignUnderMandateRequest,
   SubmitConfirmationResponse,
+  TransactionAttempt,
 } from "../src/signer/index.ts";
 import {
   AGENT,
@@ -38,10 +44,12 @@ import {
   approveIntent,
   BASE,
   BOB,
+  cancelTransaction,
   DIGEST_A,
   grantMandate,
   intent,
   MAINNET,
+  MANDATE,
   mandate,
   OTHER_AGENT,
   policy,
@@ -50,6 +58,7 @@ import {
   sweepWallet,
   T0,
   TOKEN,
+  WALLET,
   WS,
 } from "./fixtures.ts";
 
@@ -469,6 +478,101 @@ describe("mandates in the envelope and the signer contract", () => {
     expect(ok(MandateState, { ...revoked, revokedAt: null })).toBe(false);
     expect(ok(MandateState, { ...revoked, revokedReason: "expired" })).toBe(false);
     expect(ok(MandateState, { ...state, status: "paused" })).toBe(false);
+  });
+});
+
+describe("reprices and cancels in the envelope and the signer contract", () => {
+  const fees = { attempt: 1, maxFeePerGas: "3000000000", maxPriorityFeePerGas: "2000000000" };
+  const assertion = {
+    userId: "usr_01jd0000000000000000000006",
+    credentialId: "Y3JlZC1h",
+    response: {
+      id: "Y3JlZC1h",
+      rawId: "Y3JlZC1h",
+      type: "public-key",
+      response: { clientDataJSON: "e30", authenticatorData: "AA", signature: "AA" },
+      clientExtensionResults: {},
+    },
+  };
+  const attempt = {
+    attempt: 1,
+    kind: "reprice",
+    transactionHash: `0x${"ab".repeat(32)}`,
+    gas: "21000",
+    maxFeePerGas: "3000000000",
+    maxPriorityFeePerGas: "2000000000",
+    signedAt: T0,
+  };
+
+  it("a cancel-transaction envelope is an envelope, with its own fields only", () => {
+    expect(ok(Envelope, cancelTransaction())).toBe(true);
+    expect(ok(Envelope, cancelTransaction({ txNonce: 0 }))).toBe(true);
+    expect(ok(Envelope, cancelTransaction({ txNonce: -1 }))).toBe(false);
+    expect(ok(Envelope, cancelTransaction({ txNonce: 1.5 }))).toBe(false);
+    expect(ok(Envelope, cancelTransaction({ maxFeeWei: "0" }))).toBe(false);
+    expect(ok(Envelope, cancelTransaction({ expiresAt: T0 }))).toBe(false);
+    expect(ok(Envelope, { ...cancelTransaction(), intentHash: DIGEST_A })).toBe(false);
+    expect(ok(Envelope, { ...cancelTransaction(), type: "approve-intent" })).toBe(false);
+  });
+
+  it("a cancel-transaction envelope with targetApprovalId equal to approvalId is invalid", () => {
+    expect(ok(CancelTransactionEnvelope, cancelTransaction({ targetApprovalId: APPROVAL }))).toBe(
+      false,
+    );
+    expect(ok(Envelope, cancelTransaction({ targetApprovalId: APPROVAL }))).toBe(false);
+  });
+
+  it("RepriceRequest refuses unknown members", () => {
+    const byEnvelope = { intent: intent(), envelope: approveIntent(), ...fees };
+    const byMandate = { intent: intent(), mandateId: MANDATE, ...fees };
+    expect(ok(RepriceRequest, byEnvelope)).toBe(true);
+    expect(ok(RepriceRequest, byMandate)).toBe(true);
+    expect(ok(RepriceRequest, { ...byEnvelope, gas: "30000" })).toBe(false);
+    expect(ok(RepriceRequest, { ...byEnvelope, nonce: 3 })).toBe(false);
+    expect(ok(RepriceRequest, { ...byEnvelope, mandateId: MANDATE })).toBe(false);
+    expect(ok(RepriceRequest, { ...byEnvelope, envelope: grantMandate() })).toBe(false);
+    expect(ok(RepriceRequest, { ...byEnvelope, attempt: 0 })).toBe(false);
+    expect(ok(RepriceRequest, { ...byEnvelope, maxFeePerGas: "0" })).toBe(false);
+    expect(ok(RepriceRequest, { intent: intent(), ...fees })).toBe(false);
+  });
+
+  it("a cancel request carries an authorization and the next attempt's fees, nothing else", () => {
+    const request = {
+      authorization: { envelope: cancelTransaction(), assertions: [assertion] },
+      ...fees,
+    };
+    expect(ok(CancelTransactionRequest, request)).toBe(true);
+    expect(ok(CancelTransactionRequest, { ...request, to: ALICE })).toBe(false);
+    expect(ok(CancelTransactionRequest, { ...request, attempt: 0 })).toBe(false);
+  });
+
+  it("an attempt is the original exactly when it is attempt 0, and approvals list them", () => {
+    expect(ok(TransactionAttempt, attempt)).toBe(true);
+    expect(ok(TransactionAttempt, { ...attempt, kind: "cancel" })).toBe(true);
+    expect(ok(TransactionAttempt, { ...attempt, attempt: 0, kind: "original" })).toBe(true);
+    expect(ok(TransactionAttempt, { ...attempt, kind: "original" })).toBe(false);
+    expect(ok(TransactionAttempt, { ...attempt, attempt: 0 })).toBe(false);
+    expect(ok(TransactionAttempt, { ...attempt, kind: "replace" })).toBe(false);
+    const response = {
+      approvalId: APPROVAL,
+      walletId: WALLET,
+      from: ALICE,
+      attempt,
+      signedTransaction: "0x02",
+    };
+    expect(ok(AttemptResponse, response)).toBe(true);
+    expect(ok(AttemptResponse, { ...response, transactionHash: attempt.transactionHash })).toBe(
+      false,
+    );
+    const state = {
+      approvalId: APPROVAL,
+      state: "signed",
+      transactionHash: attempt.transactionHash,
+      attempts: [{ ...attempt, attempt: 0, kind: "original" }, attempt],
+    };
+    expect(ok(ApprovalState, state)).toBe(true);
+    const { attempts: _attempts, ...withoutAttempts } = state;
+    expect(ok(ApprovalState, withoutAttempts)).toBe(false);
   });
 });
 

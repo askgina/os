@@ -6,6 +6,8 @@ import {
   type ApproverCredential,
   type AssetRef,
   type Authorization,
+  type CancelTarget,
+  type CancelTransactionEnvelope,
   type ChainId,
   canonicalJson,
   type Envelope,
@@ -52,6 +54,7 @@ import {
   parseTransaction,
   serializeTransaction,
 } from "viem";
+import { createAttemptOperations } from "./attempts.ts";
 import { transaction } from "./db.ts";
 import { appendDecision, listDecisions, verifyDecisions } from "./decisions.ts";
 import { SignerFailure } from "./errors.ts";
@@ -73,6 +76,10 @@ export interface SignerCoreOptions {
   maxMandateSeconds: number;
   /** How many live mandates one wallet may hold. */
   maxLiveMandatesPerWallet: number;
+  /** Attempts per approval, the first signature included (`attempts.ts`). */
+  maxTxAttempts: number;
+  /** How long after the first signature a reprice is signed without a person. */
+  repriceWindowSeconds: number;
   now: () => number;
   log: Logger;
 }
@@ -824,11 +831,13 @@ export function createSignerCore(options: SignerCoreOptions) {
   }
 
   /**
-   * Sign `unsigned` with the wallet's key and record it as this approval's one signature, with
-   * what it moves. Runs inside the signing transaction, after every check.
+   * Sign `unsigned` with the wallet's key and check that the signature is exactly that, by that
+   * key. Records nothing; a refusal is `vault_error`.
    */
-  function signAndRecord(input: SignAndRecordInput): SignResponse {
-    const { approvalId, wallet, unsigned } = input;
+  function signWith(
+    wallet: WalletRow,
+    unsigned: EvmTransaction,
+  ): { signed: Hex; transactionHash: Hex } {
     const credential = open(
       options.tokenKey,
       wallet.sealed_credential,
@@ -850,7 +859,16 @@ export function createSignerCore(options: SignerCoreOptions) {
       });
       throw new SignerFailure("vault_error");
     }
-    const transactionHash = keccak256(signed);
+    return { signed, transactionHash: keccak256(signed) };
+  }
+
+  /**
+   * Sign `unsigned` with the wallet's key and record it as this approval's one signature, with
+   * what it moves. Runs inside the signing transaction, after every check.
+   */
+  function signAndRecord(input: SignAndRecordInput): SignResponse {
+    const { approvalId, wallet, unsigned } = input;
+    const { signed, transactionHash } = signWith(wallet, unsigned);
     const at = options.now();
     recordApproval(approvalId, input.workspaceId, "signed", input.digest);
     db.prepare(
@@ -1091,18 +1109,18 @@ export function createSignerCore(options: SignerCoreOptions) {
 
   function getApproval(approvalId: string): ApprovalState {
     const row = findApproval(approvalId);
-    if (!row)
-      return { approvalId: approvalId as ApprovalId, state: "unknown", transactionHash: null };
-    const signature =
-      row.state === "signed"
-        ? (db
-            .prepare("SELECT transaction_hash FROM signatures WHERE approval_id = ?")
-            .get(approvalId) as { transaction_hash: string } | undefined)
-        : undefined;
+    if (!row) {
+      return {
+        approvalId: approvalId as ApprovalId,
+        state: "unknown",
+        transactionHash: null,
+        attempts: [],
+      };
+    }
     return {
       approvalId: approvalId as ApprovalId,
       state: row.state,
-      transactionHash: (signature?.transaction_hash as Hex | undefined) ?? null,
+      ...attempts.approvalAttempts(row),
     };
   }
 
@@ -1130,6 +1148,29 @@ export function createSignerCore(options: SignerCoreOptions) {
     assertFeeWithin,
   });
 
+  const attempts = createAttemptOperations({
+    db,
+    now: options.now,
+    log,
+    maxTxAttempts: options.maxTxAttempts,
+    repriceWindowSeconds: options.repriceWindowSeconds,
+    maxIntentTtlSeconds: options.maxIntentTtlSeconds,
+    decide,
+    verify,
+    requireWorkspace,
+    findWallet,
+    currentPolicy,
+    findApproval,
+    priorOutcome,
+    assertNotFenced,
+    assertApproversStillPresent,
+    consumeNonce,
+    recordApproval,
+    envelopeDigest,
+    buildTransaction,
+    signWith,
+  });
+
   const records: SignerRecords = {
     findWorkspace,
     approvers,
@@ -1139,6 +1180,7 @@ export function createSignerCore(options: SignerCoreOptions) {
     treasuryAddresses,
     findApproval,
     isFenced,
+    cancelTarget: attempts.cancelTarget,
     spentInLastDay: (walletId, chainId, asset) =>
       spentSince(walletId, options.now() - DAY_SECONDS).get(`${chainId}|${asset}`) ?? 0n,
   };
@@ -1159,6 +1201,8 @@ export function createSignerCore(options: SignerCoreOptions) {
     sweep,
     revokeApproval,
     getApproval,
+    reprice: attempts.reprice,
+    cancelTransaction: attempts.cancelTransaction,
     grantMandate: mandates.grantMandate,
     getMandate: mandates.getMandate,
     listMandates: mandates.listMandates,
@@ -1193,6 +1237,11 @@ export interface SignerRecords {
   findApproval(approvalId: string): ApprovalRow | undefined;
   /** Issued before the restore fence: the signer refuses it, whatever approvals it has. */
   isFenced(envelope: Envelope): boolean;
+  /**
+   * The transaction a cancel would stop, from the signer's own signature: null when the target
+   * is not a signed approval of the envelope's workspace, wallet, chain and account nonce.
+   */
+  cancelTarget(envelope: CancelTransactionEnvelope): CancelTarget | null;
   /** What the wallet signed for in the last 24 hours in one asset, as the caps count it. */
   spentInLastDay(walletId: string, chainId: ChainId, asset: AssetRef): bigint;
 }

@@ -115,6 +115,13 @@ describe("sweeping a wallet", () => {
       approvalId: first.approvalId,
       state: "signed",
       transactionHash: first.transactionHash,
+      attempts: [
+        expect.objectContaining({
+          attempt: 0,
+          kind: "original",
+          transactionHash: first.transactionHash,
+        }),
+      ],
     });
     expect((await world.t.client.getWallet(world.walletId)).spent).toEqual([
       { chainId: CHAIN, asset: "native", amount: String(3n * ETH) },

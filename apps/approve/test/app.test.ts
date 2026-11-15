@@ -90,6 +90,7 @@ function viewOf(
     adminThreshold: 1,
     possessionProven: change?.possessionProven ?? false,
     treasuries: [],
+    cancelTarget: null,
   });
   return ConfirmationView.parse({
     v: 1,

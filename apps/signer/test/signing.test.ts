@@ -142,6 +142,17 @@ describe("signing an approved intent", () => {
       approvalId: first.approvalId,
       state: "signed",
       transactionHash: first.transactionHash,
+      attempts: [
+        {
+          attempt: 0,
+          kind: "original",
+          transactionHash: first.transactionHash,
+          gas: request.transaction.gas,
+          maxFeePerGas: request.transaction.maxFeePerGas,
+          maxPriorityFeePerGas: request.transaction.maxPriorityFeePerGas,
+          signedAt: world.t.clock.value,
+        },
+      ],
     });
     const wallet = await world.t.client.getWallet(world.walletId);
     expect(wallet.spent).toEqual([

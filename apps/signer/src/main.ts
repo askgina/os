@@ -37,6 +37,8 @@ try {
     maxAdminTtlSeconds: config.maxAdminTtlSeconds,
     maxMandateSeconds: config.maxMandateSeconds,
     maxLiveMandatesPerWallet: config.maxLiveMandatesPerWallet,
+    maxTxAttempts: config.maxTxAttempts,
+    repriceWindowSeconds: config.repriceWindowSeconds,
     log,
   });
 } catch (error) {

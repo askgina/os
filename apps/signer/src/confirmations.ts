@@ -81,6 +81,8 @@ export interface ConfirmationOptions {
   maxAdminTtlSeconds: number;
   /** The signer's lifetime ceiling for mandates, as it applies to a grant. */
   maxMandateSeconds: number;
+  /** Attempts per approval, the first included: a cancel needs room for one more. */
+  maxTxAttempts: number;
   now: () => number;
   log: Logger;
 }
@@ -135,7 +137,12 @@ type Rules = { required: number; maxTtlSeconds: number };
 type Superseded = {
   code: Extract<
     SignerErrorCode,
-    "envelope_fenced" | "policy_missing" | "policy_changed" | "mandate_invalid"
+    | "envelope_fenced"
+    | "policy_missing"
+    | "policy_changed"
+    | "mandate_invalid"
+    | "fee_cap_exceeded"
+    | "attempts_exhausted"
   >;
   /** The grant-time reason, for `mandate_invalid`. */
   detail?: string;
@@ -149,6 +156,7 @@ function walletIdOf(envelope: Envelope): WalletId | null {
     case "set-policy":
     case "sweep-wallet":
     case "grant-mandate":
+    case "cancel-transaction":
       return envelope.walletId;
     default:
       return null;
@@ -191,15 +199,22 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
 
   /**
    * As the signer checks when it acts: a payment needs its policy's threshold within its
-   * policy's lifetime, everything else the workspace's admin threshold. A payment's policy is the
-   * one its envelope names, which opening checked was current, so it is in the signer's history.
+   * policy's lifetime, a cancel its wallet's current policy's, everything else the workspace's
+   * admin threshold. A payment's policy is the one its envelope names, which opening checked was
+   * current, so it is in the signer's history; a cancel's wallet had a policy when it was opened,
+   * and a wallet's policy is only ever replaced.
    */
   function rulesFor(envelope: Envelope, adminThreshold: number): Rules {
-    if (envelope.type !== "approve-intent") {
+    const policy =
+      envelope.type === "approve-intent"
+        ? records.policyByHash(envelope.walletId, envelope.policyHash)
+        : envelope.type === "cancel-transaction"
+          ? (records.currentPolicy(envelope.walletId)?.policy ?? null)
+          : undefined;
+    if (policy === undefined) {
       return { required: adminThreshold, maxTtlSeconds: options.maxAdminTtlSeconds };
     }
-    const policy = records.policyByHash(envelope.walletId, envelope.policyHash);
-    if (!policy) throw new SignerFailure("internal");
+    if (policy === null) throw new SignerFailure("internal");
     return {
       required: policy.approvals.threshold,
       maxTtlSeconds: Math.min(policy.approvals.ttlSeconds, options.maxIntentTtlSeconds),
@@ -234,6 +249,17 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
         maxSeconds: options.maxMandateSeconds,
       });
       return refusal === null ? null : { code: "mandate_invalid", detail: refusal };
+    }
+    if (envelope.type === "cancel-transaction") {
+      const current = records.currentPolicy(envelope.walletId);
+      if (!current) return { code: "policy_missing" };
+      if (BigInt(envelope.maxFeeWei) > BigInt(current.policy.fees.maxPerTxWei)) {
+        return { code: "fee_cap_exceeded" };
+      }
+      const target = records.cancelTarget(envelope);
+      if (target !== null && target.attempts >= options.maxTxAttempts) {
+        return { code: "attempts_exhausted" };
+      }
     }
     return null;
   }
@@ -292,6 +318,10 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
       if (wallet.workspace_id !== envelope.workspaceId) {
         throw new SignerFailure("envelope_mismatch");
       }
+    }
+    // A cancel names a signature of this signer: its wallet, chain and account nonce.
+    if (envelope.type === "cancel-transaction" && records.cancelTarget(envelope) === null) {
+      throw new SignerFailure("envelope_mismatch");
     }
     if (options.now() >= envelope.expiresAt) throw new SignerFailure("envelope_expired");
 
@@ -365,6 +395,7 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
       adminThreshold: workspace.admin_threshold,
       possessionProven: row.possession_proven_at !== null,
       treasuries: walletId === null ? [] : records.treasuryAddresses(row.workspace_id, walletId),
+      cancelTarget: envelope.type === "cancel-transaction" ? records.cancelTarget(envelope) : null,
     });
     const approved = new Set(assertions.map((assertion) => assertion.userId));
     return {

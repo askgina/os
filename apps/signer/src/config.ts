@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { AssetLabels, ChainLabels, MANDATE_MAX_SECONDS } from "@askgina/os-protocol";
 import { MIN_SECRET_BYTES } from "@askgina/os-protocol/signer";
 import { z } from "zod";
+import { DEFAULT_MAX_TX_ATTEMPTS, DEFAULT_REPRICE_WINDOW_SECONDS } from "./attempts.ts";
 import { DEFAULT_MAX_LIVE_MANDATES_PER_WALLET, DEFAULT_MAX_MANDATE_SECONDS } from "./mandates.ts";
 
 const Environment = z.object({
@@ -35,6 +36,17 @@ const Environment = z.object({
     .min(1)
     .max(64)
     .default(DEFAULT_MAX_LIVE_MANDATES_PER_WALLET),
+  // Attempts per approval, the first signature included: every reprice and cancel is one more
+  // signature of the approval at its one account nonce.
+  SIGNER_MAX_TX_ATTEMPTS: z.coerce.number().int().min(2).max(64).default(DEFAULT_MAX_TX_ATTEMPTS),
+  // How long after the first signature the control plane may get a reprice with no person; after
+  // that only a cancel, with passkeys, is signed. 0 refuses every reprice.
+  SIGNER_REPRICE_WINDOW_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(604_800)
+    .default(DEFAULT_REPRICE_WINDOW_SECONDS),
 });
 
 export interface SignerConfig {
@@ -57,6 +69,8 @@ export interface SignerConfig {
   maxAdminTtlSeconds: number;
   maxMandateSeconds: number;
   maxLiveMandatesPerWallet: number;
+  maxTxAttempts: number;
+  repriceWindowSeconds: number;
 }
 
 /** A configuration problem. The message names the variable, never its value. */
@@ -181,5 +195,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv): SignerConfig {
     maxAdminTtlSeconds: env.SIGNER_MAX_ADMIN_TTL_SECONDS,
     maxMandateSeconds: env.SIGNER_MAX_MANDATE_SECONDS,
     maxLiveMandatesPerWallet: env.SIGNER_MAX_LIVE_MANDATES_PER_WALLET,
+    maxTxAttempts: env.SIGNER_MAX_TX_ATTEMPTS,
+    repriceWindowSeconds: env.SIGNER_REPRICE_WINDOW_SECONDS,
   };
 }

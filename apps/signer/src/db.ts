@@ -201,8 +201,45 @@ CREATE TABLE IF NOT EXISTS mandate_uses (
 CREATE INDEX IF NOT EXISTS mandate_uses_by_mandate ON mandate_uses (mandate_id, at);
 `;
 
+/**
+ * Version 6: attempts after the first signature (`attempts.ts`). Attempt 0 stays the `signatures`
+ * row, read back from its signed bytes; every later attempt of the same approval is one row here,
+ * at the same account nonce: a `reprice` of the same transaction with higher fees, or a `cancel`,
+ * a transfer of nothing from the wallet to itself. `fee_ceiling_wei` is the ceiling the attempt
+ * was checked against: `min(intent.maxFeeWei, policy fees.maxPerTxWei)` for a reprice of the
+ * payment, the cancel envelope's `maxFeeWei` for a cancel and its reprices.
+ * `cancel_approval_id` is the `cancel-transaction` approval that first made the approval a
+ * cancel. No attempt adds or removes a spend.
+ */
+const VERSION_6 = `
+CREATE TABLE IF NOT EXISTS signature_attempts (
+  approval_id TEXT NOT NULL REFERENCES signatures(approval_id),
+  attempt INTEGER NOT NULL CHECK (attempt >= 1),
+  kind TEXT NOT NULL CHECK (kind IN ('reprice', 'cancel')),
+  tx_nonce INTEGER NOT NULL,
+  gas TEXT NOT NULL,
+  max_fee_per_gas TEXT NOT NULL,
+  max_priority_fee_per_gas TEXT NOT NULL,
+  fee_ceiling_wei TEXT NOT NULL,
+  cancel_approval_id TEXT REFERENCES approvals(approval_id),
+  signed_transaction TEXT NOT NULL,
+  transaction_hash TEXT NOT NULL,
+  signed_at INTEGER NOT NULL,
+  PRIMARY KEY (approval_id, attempt),
+  CHECK ((kind = 'cancel') = (cancel_approval_id IS NOT NULL))
+) STRICT;
+CREATE INDEX IF NOT EXISTS signature_attempts_by_cancel ON signature_attempts (cancel_approval_id);
+`;
+
 /** Migration `n` (from 1) takes a database from version `n - 1` to version `n`. */
-const MIGRATIONS: readonly string[] = [VERSION_1, VERSION_2, VERSION_3, VERSION_4, VERSION_5];
+const MIGRATIONS: readonly string[] = [
+  VERSION_1,
+  VERSION_2,
+  VERSION_3,
+  VERSION_4,
+  VERSION_5,
+  VERSION_6,
+];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
 /** A database written by a newer signer. Opening it with older code could lose what it records. */

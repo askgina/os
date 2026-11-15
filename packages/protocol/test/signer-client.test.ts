@@ -16,6 +16,7 @@ import {
 import {
   APPROVAL,
   approveIntent,
+  cancelTransaction,
   grantMandate,
   intent,
   MANDATE,
@@ -23,6 +24,7 @@ import {
   sweep,
   sweepWallet,
   T0,
+  TARGET_APPROVAL,
   WALLET,
   WS,
 } from "./fixtures.ts";
@@ -97,7 +99,12 @@ function fakeFetch(respond: (url: string) => { status: number; body: unknown; ra
 }
 
 const workspaceState = { workspaceId: WS, adminThreshold: 1, paused: false, approvers: [] };
-const approvalState = { approvalId: APPROVAL, state: "unknown", transactionHash: null };
+const approvalState = {
+  approvalId: APPROVAL,
+  state: "unknown",
+  transactionHash: null,
+  attempts: [],
+};
 
 function client(respond: Parameters<typeof fakeFetch>[0]) {
   const fake = fakeFetch(respond);
@@ -282,6 +289,67 @@ describe("signer client", () => {
         ? undefined
         : JSON.parse(new TextDecoder().decode(call.init.body as Uint8Array));
     expect(calls.map(body)).toEqual([grant, undefined, undefined, { workspaceId: WS }, use]);
+  });
+
+  it("the client signs reprice and cancel requests like every other route", async () => {
+    const attempted = {
+      approvalId: TARGET_APPROVAL,
+      walletId: WALLET,
+      from: "0x1111111111111111111111111111111111111111",
+      attempt: {
+        attempt: 1,
+        kind: "reprice",
+        transactionHash: `0x${"ab".repeat(32)}`,
+        gas: "21000",
+        maxFeePerGas: "3",
+        maxPriorityFeePerGas: "2",
+        signedAt: T0,
+      },
+      signedTransaction: "0x02",
+    };
+    const { signer, calls } = client(() => ({ status: 200, body: attempted }));
+    const fees = { attempt: 1, maxFeePerGas: "3", maxPriorityFeePerGas: "2" };
+    const reprice = { intent: intent(), envelope: approveIntent(), ...fees };
+    const byMandate = { intent: intent(), mandateId: MANDATE, ...fees };
+    const cancel = {
+      authorization: { envelope: cancelTransaction(), assertions: [] },
+      ...fees,
+    };
+
+    expect(await signer.reprice(TARGET_APPROVAL, reprice)).toEqual(attempted);
+    expect(await signer.reprice(TARGET_APPROVAL, byMandate)).toEqual(attempted);
+    expect(await signer.cancelTransaction(TARGET_APPROVAL, cancel)).toEqual(attempted);
+    expect(calls.map((c) => `${c.init.method} ${new URL(c.url).pathname}`)).toEqual([
+      `POST /v1/approvals/${TARGET_APPROVAL}/reprice`,
+      `POST /v1/approvals/${TARGET_APPROVAL}/reprice`,
+      `POST /v1/approvals/${TARGET_APPROVAL}/cancel`,
+    ]);
+    expect([signerRoutes.reprice.scope, signerRoutes.cancelTransaction.scope]).toEqual([
+      "control",
+      "control",
+    ]);
+    for (const call of calls) expect(verifyRecorded(call)).toBe(true);
+    expect(
+      calls.map((call) => JSON.parse(new TextDecoder().decode(call.init.body as Uint8Array))),
+    ).toEqual([reprice, byMandate, cancel]);
+
+    // A refusal keeps its code; an answer that is not an attempt is not passed on.
+    const refusing = client(() => ({
+      status: 403,
+      body: { error: { code: "fee_not_raised", message: "raise both fees" } },
+    }));
+    await expect(refusing.signer.reprice(TARGET_APPROVAL, reprice)).rejects.toMatchObject({
+      name: "SignerError",
+      code: "fee_not_raised",
+      status: 403,
+    });
+    const odd = client(() => ({
+      status: 200,
+      body: { ...attempted, attempt: { ...attempted.attempt, kind: "original" } },
+    }));
+    await expect(odd.signer.reprice(TARGET_APPROVAL, reprice)).rejects.not.toBeInstanceOf(
+      SignerError,
+    );
   });
 
   it("passes a mandate refusal on with its code and detail, and refuses a state with another hash", async () => {

@@ -1,5 +1,6 @@
 import {
   AssertionResponse,
+  type CancelTransactionEnvelope,
   type ConfirmationSubject,
   type Envelope,
   envelopeChallenge,
@@ -411,6 +412,124 @@ describe("the view", () => {
         expect(view.warnings).toEqual([]);
       }
     }
+  });
+});
+
+describe("a cancel's confirmation", () => {
+  /** A token payment approved and signed once, and a cancel envelope for it with no assertions. */
+  async function signedPayment(world: World, t: TestSigner) {
+    const intent = intentFor(world, {
+      type: "evm.erc20.transfer",
+      token: TOKEN,
+      to: RECIPIENT,
+      amount: "250000",
+    });
+    const params = txParams();
+    const { approvalId } = await t.client.sign({
+      intent,
+      authorization: approveIntent(world, intent),
+      transaction: params,
+    });
+    const cancel = (
+      changes: Partial<CancelTransactionEnvelope> = {},
+    ): CancelTransactionEnvelope => ({
+      ...header(t.clock, newId("apr"), world.workspaceId),
+      type: "cancel-transaction",
+      targetApprovalId: approvalId,
+      walletId: world.walletId,
+      chainId: CHAIN,
+      txNonce: params.nonce,
+      maxFeeWei: String(10n ** 15n),
+      ...changes,
+    });
+    return { approvalId, params, cancel };
+  }
+
+  it("opens only for a signature of its wallet, chain and nonce, shows what it would stop from the signer's record, and needs the wallet's threshold", async () => {
+    const t = startSigner();
+    // Workspace changes need two approvals, this wallet's payments one: a cancel needs one.
+    const world = await setUpWorld(t, { people: 2, adminThreshold: 2, policyThreshold: 1 });
+    const [alice] = world.people as [Person];
+    const { approvalId, params, cancel } = await signedPayment(world, t);
+    const envelopeOnly: ConfirmationSubject = { kind: "envelope-only" };
+
+    for (const envelope of [
+      cancel({ txNonce: params.nonce + 1 }),
+      cancel({ chainId: "eip155:1" }),
+      cancel({ targetApprovalId: newId("apr") }),
+    ]) {
+      await refused(
+        t.client.openConfirmation(envelope.approvalId, { envelope, subject: envelopeOnly }),
+        "envelope_mismatch",
+      );
+    }
+
+    const envelope = cancel();
+    const token = await open(t, envelope, envelopeOnly);
+    const view = await t.confirm.getConfirmation(envelope.approvalId, token);
+    expect([view.kind, view.state, view.title, view.approvals]).toEqual([
+      "cancel-transaction",
+      "open",
+      "Try to cancel sending 0.25 TKN",
+      { collected: 0, required: 1 },
+    ]);
+    const line = (label: string) => view.lines.find((candidate) => candidate.label === label);
+    expect(line("Amount it would send")?.value).toBe("0.25 TKN");
+    expect(line("To")?.value).toBe(RECIPIENT);
+    expect(line("Request it was approved under")?.value).toBe(approvalId);
+    expect(line("Transaction number (nonce)")?.value).toBe(String(params.nonce));
+    expect(line("Network fee ceiling for the cancel")?.value).toBe("0.001 ETH");
+    expect(line("Cancelling is an attempt")).toBeDefined();
+    expect(line("Attempts signed so far")?.value).toBe("1");
+    expect(line("Wallet address")?.value).toBe(world.address);
+
+    const stored = await t.confirm.submitConfirmation(
+      envelope.approvalId,
+      token,
+      assertAt(alice, envelope, APPROVAL_ORIGIN),
+    );
+    expect(stored).toMatchObject({ collected: 1, required: 1 });
+    const { assertions } = await t.client.listConfirmationAssertions(envelope.approvalId);
+    const cancelled = await t.client.cancelTransaction(approvalId, {
+      authorization: { envelope, assertions },
+      attempt: 1,
+      maxFeePerGas: String(BigInt(params.maxFeePerGas) * 2n),
+      maxPriorityFeePerGas: String(BigInt(params.maxPriorityFeePerGas) * 2n),
+    });
+    expect(cancelled.attempt.kind).toBe("cancel");
+    expect((await t.confirm.getConfirmation(envelope.approvalId, token)).state).toBe("used");
+  });
+
+  it("is superseded, or not opened, when the policy's fee cap or the attempts cap leave it nothing to sign", async () => {
+    const t = startSigner({ maxTxAttempts: 2 });
+    const world = await setUpWorld(t);
+    const { params, cancel } = await signedPayment(world, t);
+    const second = await signedPayment(world, t);
+    const envelopeOnly: ConfirmationSubject = { kind: "envelope-only" };
+
+    const overCap = cancel({ maxFeeWei: String(10n ** 16n + 1n) });
+    await refused(
+      t.client.openConfirmation(overCap.approvalId, { envelope: overCap, subject: envelopeOnly }),
+      "fee_cap_exceeded",
+    );
+    const pending = cancel();
+    const token = await open(t, pending, envelopeOnly);
+    await replacePolicy(world, { fees: { maxPerTxWei: String(10n ** 14n) } });
+    expect((await t.confirm.getConfirmation(pending.approvalId, token)).state).toBe("superseded");
+
+    // The one attempt left is used by another cancel: no further one can be signed.
+    const first = second.cancel({ maxFeeWei: String(10n ** 14n) });
+    await t.client.cancelTransaction(first.targetApprovalId, {
+      authorization: authorize(first, world.people),
+      attempt: 1,
+      maxFeePerGas: String(BigInt(params.maxFeePerGas) * 2n),
+      maxPriorityFeePerGas: String(BigInt(params.maxPriorityFeePerGas) * 2n),
+    });
+    const late = second.cancel({ maxFeeWei: String(10n ** 14n) });
+    await refused(
+      t.client.openConfirmation(late.approvalId, { envelope: late, subject: envelopeOnly }),
+      "attempts_exhausted",
+    );
   });
 });
 

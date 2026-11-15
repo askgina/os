@@ -9,6 +9,7 @@ import {
   EpochSeconds,
   MandateId,
   Nonce,
+  PositiveAmount,
   PROTOCOL_VERSION,
   UserId,
   WalletId,
@@ -116,6 +117,30 @@ export const GrantMandateEnvelope = z.strictObject({
 });
 export type GrantMandateEnvelope = z.infer<typeof GrantMandateEnvelope>;
 
+/**
+ * Try to stop a transaction that was signed and never mined: sign, at its account nonce
+ * `txNonce`, a transfer of nothing from the wallet to itself, with `gas × maxFeePerGas` at most
+ * `maxFeeWei`. `targetApprovalId` is the approval whose transaction it replaces; the signer
+ * checks the wallet, chain and nonce against its own record of that signature. Approved at the
+ * wallet policy's threshold. Whichever of the two the network includes first wins, so a cancel is
+ * an attempt, not a guarantee.
+ */
+export const CancelTransactionEnvelope = z
+  .strictObject({
+    ...envelopeHeader,
+    type: z.literal("cancel-transaction"),
+    targetApprovalId: ApprovalId,
+    walletId: WalletId,
+    chainId: ChainId,
+    txNonce: z.number().int().min(0),
+    maxFeeWei: PositiveAmount,
+  })
+  .refine((envelope) => envelope.targetApprovalId !== envelope.approvalId, {
+    path: ["targetApprovalId"],
+    message: "a cancel cannot target its own approval",
+  });
+export type CancelTransactionEnvelope = z.infer<typeof CancelTransactionEnvelope>;
+
 export const Envelope = z
   .discriminatedUnion("type", [
     ApproveIntentEnvelope,
@@ -126,6 +151,7 @@ export const Envelope = z
     ResumeWorkspaceEnvelope,
     SweepWalletEnvelope,
     GrantMandateEnvelope,
+    CancelTransactionEnvelope,
   ])
   .refine((envelope) => envelope.expiresAt > envelope.issuedAt, {
     path: ["expiresAt"],

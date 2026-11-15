@@ -191,6 +191,8 @@ export function startSigner(
     clock?: Clock;
     tokenKey?: Uint8Array;
     maxLiveMandatesPerWallet?: number;
+    maxTxAttempts?: number;
+    repriceWindowSeconds?: number;
   } = {},
 ) {
   const clock = input.clock ?? new Clock();
@@ -211,6 +213,10 @@ export function startSigner(
     ...(input.maxLiveMandatesPerWallet === undefined
       ? {}
       : { maxLiveMandatesPerWallet: input.maxLiveMandatesPerWallet }),
+    ...(input.maxTxAttempts === undefined ? {} : { maxTxAttempts: input.maxTxAttempts }),
+    ...(input.repriceWindowSeconds === undefined
+      ? {}
+      : { repriceWindowSeconds: input.repriceWindowSeconds }),
     now: clock.now,
   });
   const fetch: typeof globalThis.fetch = (url, init) =>

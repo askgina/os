@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ConfirmationSubject, PasskeyRequest } from "../confirmation.ts";
 import {
+  ApproveIntentEnvelope,
   ApproverCredential,
   Assertion,
   AssertionResponse,
@@ -21,6 +22,7 @@ import {
   EpochSeconds,
   Hex,
   Hex32,
+  MandateId,
   PositiveAmount,
   UserId,
   WalletId,
@@ -73,6 +75,12 @@ export const signerRoutes = {
   sweep: { method: "POST", path: "/v1/wallets/:walletId/sweep", scope: "control" },
   revokeApproval: { method: "POST", path: "/v1/approvals/:approvalId/revoke", scope: "control" },
   getApproval: { method: "GET", path: "/v1/approvals/:approvalId", scope: "control" },
+  reprice: { method: "POST", path: "/v1/approvals/:approvalId/reprice", scope: "control" },
+  cancelTransaction: {
+    method: "POST",
+    path: "/v1/approvals/:approvalId/cancel",
+    scope: "control",
+  },
   grantMandate: { method: "PUT", path: "/v1/mandates/:mandateId", scope: "control" },
   getMandate: { method: "GET", path: "/v1/mandates/:mandateId", scope: "control" },
   listMandates: { method: "GET", path: "/v1/wallets/:walletId/mandates", scope: "control" },
@@ -253,17 +261,99 @@ export const SweepRequest = z.strictObject({
 });
 export type SweepRequest = z.infer<typeof SweepRequest>;
 
+// --- attempts ---------------------------------------------------------------------------------
+
+/**
+ * What an attempt is. Every attempt of one approval has the account nonce of its first
+ * signature, so at most one of them can be mined.
+ * - `original`: attempt 0, the first signature (`POST /v1/sign`, a sweep, or a mandate use).
+ * - `reprice`: the same transaction with both fees higher, signed with no new passkey.
+ * - `cancel`: a transfer of nothing from the wallet to itself, approved by a `cancel-transaction`
+ *   envelope, or a later reprice of one: once a cancel exists, every later attempt is one.
+ */
+export const TransactionAttemptKind = z.enum(["original", "reprice", "cancel"]);
+export type TransactionAttemptKind = z.infer<typeof TransactionAttemptKind>;
+
+/** One signed transaction of an approval, as the signer recorded it. */
+export const TransactionAttempt = z
+  .strictObject({
+    attempt: z.number().int().min(0),
+    kind: TransactionAttemptKind,
+    transactionHash: Hex32,
+    gas: PositiveAmount,
+    maxFeePerGas: PositiveAmount,
+    maxPriorityFeePerGas: Amount,
+    signedAt: EpochSeconds,
+  })
+  .refine((attempt) => (attempt.kind === "original") === (attempt.attempt === 0), {
+    path: ["kind"],
+    message: "attempt 0, and only attempt 0, is the original",
+  });
+export type TransactionAttempt = z.infer<typeof TransactionAttempt>;
+
+/** The fees of one more attempt. `attempt` is the number the caller expects to create. */
+const NextAttempt = {
+  /** The latest attempt's number plus one. Any other number is a `conflict`. */
+  attempt: z.number().int().min(1),
+  maxFeePerGas: PositiveAmount,
+  maxPriorityFeePerGas: Amount,
+};
+
+/**
+ * Sign the transaction of an already signed approval again with both fees higher
+ * (`POST /v1/approvals/:approvalId/reprice`). No passkey: the request names what the first
+ * signature was bound to, and the signer checks it against its own record.
+ * - An approved intent: the `intent` and the `approve-intent` envelope people approved, without
+ *   assertions. The envelope's digest must be the one the signer stored, and the intent's hash
+ *   the envelope's.
+ * - A mandate use: the `intent` and the `mandateId` it was signed under. The use's
+ *   `mandateUseDigest` must be the one the signer stored.
+ * Repeating a request for an attempt that exists with the same fees returns it.
+ */
+export const RepriceRequest = z.union([
+  z.strictObject({ intent: Intent, envelope: ApproveIntentEnvelope, ...NextAttempt }),
+  z.strictObject({ intent: Intent, mandateId: MandateId, ...NextAttempt }),
+]);
+export type RepriceRequest = z.infer<typeof RepriceRequest>;
+
+/**
+ * Sign a cancel of an already signed approval (`POST /v1/approvals/:approvalId/cancel`). Carries
+ * a `cancel-transaction` envelope whose `targetApprovalId` is the path's approval id. Repeating
+ * the request with the same envelope returns the attempt it produced.
+ */
+export const CancelTransactionRequest = z.strictObject({
+  authorization: Authorization,
+  ...NextAttempt,
+});
+export type CancelTransactionRequest = z.infer<typeof CancelTransactionRequest>;
+
+/** One attempt the signer signed, with its bytes, ready to broadcast. */
+export const AttemptResponse = z.strictObject({
+  /** The approval whose transaction the attempt replaces: the path's approval id. */
+  approvalId: ApprovalId,
+  walletId: WalletId,
+  from: Address,
+  attempt: TransactionAttempt,
+  signedTransaction: Hex,
+});
+export type AttemptResponse = z.infer<typeof AttemptResponse>;
+
 /**
  * What the signer knows about an approval id.
  * - `unknown`: never seen.
  * - `revoked`: refused for good; no signature exists or will exist.
- * - `signed`: an intent or a sweep was signed; `transactionHash` is set.
- * - `applied`: a non-signing envelope (policy, approver, threshold, resume) took effect.
+ * - `signed`: an intent, a sweep or a mandate use was signed; `transactionHash` is the first
+ *   signature's, and `attempts` lists every attempt, the first included, by number.
+ * - `applied`: a non-signing envelope (policy, approver, threshold, resume, grant) took effect.
+ *   For a `cancel-transaction` envelope, `attempts` holds the one attempt it produced and
+ *   `transactionHash` is that attempt's.
+ * Otherwise `attempts` is empty.
  */
 export const ApprovalState = z.strictObject({
   approvalId: ApprovalId,
   state: z.enum(["unknown", "revoked", "signed", "applied"]),
   transactionHash: Hex32.nullable(),
+  attempts: z.array(TransactionAttempt).max(64),
 });
 export type ApprovalState = z.infer<typeof ApprovalState>;
 
@@ -495,6 +585,12 @@ export const SignerErrorCode = z.enum([
   "mandate_denied",
   /** The mandate cannot be granted; `detail` is a `MandateGrantRefusal`. */
   "mandate_invalid",
+  /** A reprice or cancel whose fees are not both above the latest attempt's. */
+  "fee_not_raised",
+  /** The approval has `SIGNER_MAX_TX_ATTEMPTS` attempts already. */
+  "attempts_exhausted",
+  /** More than `SIGNER_REPRICE_WINDOW_SECONDS` since the first signature: only a cancel now. */
+  "reprice_window_closed",
   // 500
   "vault_error",
   "internal",
@@ -533,6 +629,9 @@ export const signerErrorStatus: Record<SignerErrorCode, 400 | 401 | 403 | 404 | 
   mandate_not_yet_valid: 403,
   mandate_denied: 403,
   mandate_invalid: 403,
+  fee_not_raised: 403,
+  attempts_exhausted: 403,
+  reprice_window_closed: 403,
   vault_error: 500,
   internal: 500,
 };

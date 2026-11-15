@@ -21,6 +21,7 @@ import {
   APPROVAL,
   approveIntent,
   BOB,
+  cancelTransaction,
   changedEnvelopes,
   envelopeVariants,
   grantMandate,
@@ -35,6 +36,7 @@ import {
   sweep,
   sweepWallet,
   T0,
+  TARGET_APPROVAL,
   TOKEN,
   WALLET,
   WS,
@@ -78,6 +80,10 @@ const GRANT_MANDATE_JSON = `{"agentId":"${AGENT}","approvalId":"${APPROVAL}","ex
 const GRANT_MANDATE_CHALLENGE = "TjkhTXhNOAPy5fq2YK8479_qPLBCg1DFmvX1g0zX55c";
 const MANDATE_USE_JSON = `{"approvalId":"${APPROVAL}","intentHash":"${INTENT_HASH}","mandateId":"${MANDATE}","v":1}`;
 const MANDATE_USE_DIGEST = "96fe14af43d24b9388d45b9f7a478c48a1d37c944056f9b5319ddad6bd990cd7";
+
+// Added with the `cancel-transaction` envelope. The vectors above did not change.
+const CANCEL_ENVELOPE_JSON = `{"approvalId":"${APPROVAL}","chainId":"eip155:8453","expiresAt":1700000600,"issuedAt":1700000000,"maxFeeWei":"2000000000000000","nonce":"AAAAAAAAAAAAAAAAAAAAAA","targetApprovalId":"${TARGET_APPROVAL}","txNonce":7,"type":"cancel-transaction","v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+const CANCEL_ENVELOPE_CHALLENGE = "FYp0khasgxD2rQxW3vUf47xd5PbsXrKOGUXaK1L_2ro";
 
 describe("pinned digest vectors", () => {
   it("intentHash", () => {
@@ -148,6 +154,13 @@ describe("pinned digest vectors", () => {
     expect(() => mandateUseDigest({ ...use, intentHash: "short" })).toThrow();
     // The same three identifiers under the envelope tag are not a use, and the reverse.
     expect(digestHex(DomainTag.authorize, { v: 1, ...use })).not.toBe(MANDATE_USE_DIGEST);
+  });
+
+  it("the cancel-transaction challenge matches its vector", () => {
+    expect(canonicalJson(cancelTransaction())).toBe(CANCEL_ENVELOPE_JSON);
+    expect(Buffer.from(envelopeChallenge(cancelTransaction())).toString("base64url")).toBe(
+      CANCEL_ENVELOPE_CHALLENGE,
+    );
   });
 
   it("domain tags", () => {

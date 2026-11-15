@@ -5,13 +5,14 @@ import { z } from "zod";
 import { DomainTag, digest } from "./canonical.ts";
 import {
   type ApproveIntentEnvelope,
+  type CancelTransactionEnvelope,
   Envelope,
   type EnvelopeType,
   type GrantMandateEnvelope,
   type SetPolicyEnvelope,
   type SweepWalletEnvelope,
 } from "./envelopes.ts";
-import { Intent, intentHash, intentSpend } from "./intent.ts";
+import { Intent, intentHash, intentSpend, type Operation } from "./intent.ts";
 import { Mandate, mandateHash, mandateWorstCase } from "./mandate.ts";
 import { assetLimitKey, policyHash, WalletPolicy } from "./policy.ts";
 import {
@@ -88,7 +89,8 @@ export type AssetLabels = z.infer<typeof AssetLabels>;
 /**
  * The structure an envelope names by hash, kept by the signer next to the envelope so it can
  * show exactly what the approval authorizes. Envelopes that carry everything themselves have an
- * `envelope-only` subject.
+ * `envelope-only` subject: approver and threshold changes, resuming, and a cancel, whose target
+ * the signer reads from its own record of the signature it would replace.
  */
 export const ConfirmationSubject = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("approve-intent"), intent: Intent }),
@@ -186,6 +188,7 @@ function matchSubject(envelope: Envelope, subject: ConfirmationSubject): Matched
     case "remove-approver":
     case "set-admin-threshold":
     case "resume-workspace":
+    case "cancel-transaction":
       return subject.kind === "envelope-only"
         ? { kind: "envelope-only", envelope }
         : "envelope_mismatch";
@@ -241,8 +244,9 @@ export type ConfirmationWarning = z.infer<typeof ConfirmationWarning>;
  * - `revoked`: the approval id was revoked; it will never sign or apply.
  * - `used`: the signer already signed or applied it.
  * - `superseded`: the signer would refuse it whatever approvals it gets, because the wallet's
- *   policy changed since it was proposed or it was issued before the signer's restore fence.
- *   It must be proposed again.
+ *   policy changed since it was proposed, it was issued before the signer's restore fence, or,
+ *   for a cancel, the wallet's fee cap is now below its fee ceiling or its transaction has no
+ *   attempt left. It must be proposed again.
  */
 export const ConfirmationState = z.enum([
   "open",
@@ -321,6 +325,22 @@ export type RenderInput = {
   possessionProven: boolean;
   /** Addresses of the workspace's treasury wallets other than the envelope's, where a sweep may go. */
   treasuries: readonly Address[];
+  /** For `cancel-transaction`: the transaction it would stop, or null when the signer has none. */
+  cancelTarget: CancelTarget | null;
+};
+
+/**
+ * What a `cancel-transaction` envelope would stop, from the signer's own records: the operation
+ * of the first transaction the signer signed for the target approval, read back from its signed
+ * bytes, and the attempts the target has so far.
+ */
+export type CancelTarget = {
+  /** Decoded from the first transaction's `to`, `value` and `data`. */
+  operation: Operation;
+  /** Attempts signed for the target so far, the first included. */
+  attempts: number;
+  /** One of those attempts is a cancel already. */
+  cancelling: boolean;
 };
 
 export type RenderedConfirmation = {
@@ -635,6 +655,89 @@ function renderEnvelopeOnly(out: Output, envelope: EnvelopeOnly): string {
     case "resume-workspace":
       push(out, "Effect", "the workspace's wallets can sign again, within their policies", "text");
       return "Resume the workspace";
+    case "cancel-transaction":
+      return renderCancel(out, envelope);
+  }
+}
+
+// --- cancels ----------------------------------------------------------------------------------
+
+function renderCancel(out: Output, envelope: CancelTransactionEnvelope): string {
+  const target = out.input.cancelTarget;
+  let title = "Try to cancel a transaction that was not mined";
+  if (target === null) {
+    push(out, "Transaction to cancel", "not found at the signer", "text");
+  } else {
+    title = cancelledOperationLines(out, envelope.chainId, target.operation);
+  }
+  push(out, "Request it was approved under", envelope.targetApprovalId, "code");
+  push(out, "Network", chainName(out, envelope.chainId), "text");
+  push(out, "Transaction number (nonce)", String(envelope.txNonce), "code");
+  push(
+    out,
+    "What the cancel is",
+    "a transfer of nothing from the wallet to itself, with the same transaction number and a higher fee",
+    "text",
+  );
+  const native = unitOf(out, envelope.chainId, "native");
+  push(out, "Network fee ceiling for the cancel", amountText(native, envelope.maxFeeWei), "amount");
+  push(
+    out,
+    "Cancelling is an attempt",
+    "if the network includes the payment first, the payment happens and the cancel does nothing",
+    "text",
+  );
+  push(
+    out,
+    "Wallet limits",
+    "the payment still counts toward them, also when the cancel is included",
+    "text",
+  );
+  if (target !== null) {
+    push(out, "Attempts signed so far", String(target.attempts), "text");
+    if (target.cancelling) {
+      push(
+        out,
+        "Cancelled before",
+        "yes: this approval can raise the cancel's fee ceiling",
+        "text",
+      );
+    }
+  }
+  walletLines(out, envelope.walletId);
+  return title;
+}
+
+/** What the transaction being cancelled would do, and the view's title. */
+function cancelledOperationLines(out: Output, chainId: ChainId, operation: Operation): string {
+  const native = unitOf(out, chainId, "native");
+  switch (operation.type) {
+    case "evm.transfer": {
+      const amount = amountText(native, operation.valueWei);
+      push(out, "Amount it would send", amount, "amount");
+      addressLines(out, "To", operation.to);
+      return `Try to cancel sending ${amount}`;
+    }
+    case "evm.erc20.transfer": {
+      const unit = unitOf(out, chainId, operation.token);
+      const amount = amountText(unit, operation.amount);
+      push(out, "Amount it would send", amount, "amount");
+      tokenLines(out, unit, operation.token);
+      addressLines(out, "To", operation.to);
+      return unit.known
+        ? `Try to cancel sending ${amount}`
+        : `Try to cancel sending ${amount} of an unknown token`;
+    }
+    case "evm.call":
+      addressLines(out, "Contract it would call", operation.to);
+      push(
+        out,
+        "Value it would send with the call",
+        amountText(native, operation.valueWei),
+        "amount",
+      );
+      push(out, "Function selector", operation.data.slice(0, 10), "code");
+      return "Try to cancel a contract call";
   }
 }
 

@@ -12,6 +12,7 @@ import {
 import {
   AddApproverRequest,
   AuthorizedRequest,
+  CancelTransactionRequest,
   CONFIRM_TOKEN_HEADER,
   CreateWalletRequest,
   CreateWorkspaceRequest,
@@ -20,6 +21,7 @@ import {
   type MandateState,
   MIN_SECRET_BYTES,
   OpenConfirmationRequest,
+  RepriceRequest,
   RevokeApprovalRequest,
   RevokeMandateRequest,
   SetPolicyRequest,
@@ -35,6 +37,7 @@ import {
 } from "@askgina/os-protocol/signer";
 import { Hono } from "hono";
 import type { z } from "zod";
+import { DEFAULT_MAX_TX_ATTEMPTS, DEFAULT_REPRICE_WINDOW_SECONDS } from "./attempts.ts";
 import { createConfirmations } from "./confirmations.ts";
 import { openDatabase, transaction } from "./db.ts";
 import { SignerFailure } from "./errors.ts";
@@ -97,6 +100,16 @@ export interface SignerOptions {
   maxMandateSeconds?: number;
   /** How many live mandates one wallet may hold (`SIGNER_MAX_LIVE_MANDATES_PER_WALLET`). */
   maxLiveMandatesPerWallet?: number;
+  /**
+   * Attempts per approval, the first signature included (`SIGNER_MAX_TX_ATTEMPTS`). Defaults
+   * to 16.
+   */
+  maxTxAttempts?: number;
+  /**
+   * How long after the first signature a reprice is signed with no person
+   * (`SIGNER_REPRICE_WINDOW_SECONDS`). Defaults to a day; 0 refuses every reprice.
+   */
+  repriceWindowSeconds?: number;
   /** Seconds since the Unix epoch. Tests inject a clock. */
   now?: () => number;
   log?: Logger;
@@ -224,6 +237,7 @@ export function createSigner(options: SignerOptions): Signer {
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const log = options.log ?? silentLogger;
   const maxMandateSeconds = options.maxMandateSeconds ?? DEFAULT_MAX_MANDATE_SECONDS;
+  const maxTxAttempts = options.maxTxAttempts ?? DEFAULT_MAX_TX_ATTEMPTS;
   const { db, created } = openDatabase(options.sqlitePath);
   // Before anything is served: a database file that is not the one last recorded may be a
   // restored copy that forgot what it signed after the copy was made.
@@ -243,6 +257,8 @@ export function createSigner(options: SignerOptions): Signer {
     maxMandateSeconds,
     maxLiveMandatesPerWallet:
       options.maxLiveMandatesPerWallet ?? DEFAULT_MAX_LIVE_MANDATES_PER_WALLET,
+    maxTxAttempts,
+    repriceWindowSeconds: options.repriceWindowSeconds ?? DEFAULT_REPRICE_WINDOW_SECONDS,
     now,
     log,
   });
@@ -257,6 +273,7 @@ export function createSigner(options: SignerOptions): Signer {
     maxIntentTtlSeconds: options.maxIntentTtlSeconds,
     maxAdminTtlSeconds: options.maxAdminTtlSeconds,
     maxMandateSeconds,
+    maxTxAttempts,
     now,
     log,
   });
@@ -325,6 +342,13 @@ export function createSigner(options: SignerOptions): Signer {
         );
       case "getApproval":
         return core.getApproval(approvalId());
+      case "reprice":
+        return core.reprice(approvalId(), parse(RepriceRequest, parseBody(body)));
+      case "cancelTransaction":
+        return core.cancelTransaction(
+          approvalId(),
+          parse(CancelTransactionRequest, parseBody(body)),
+        );
       case "grantMandate":
         return core.grantMandate(mandateId(), parse(GrantMandateRequest, parseBody(body)));
       case "getMandate":

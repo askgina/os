@@ -156,16 +156,17 @@ Every envelope has this header:
 
 The kinds and their extra fields:
 
-| `type`                | Extra fields                                                                      | Authorizes                                                                                                                                                               |
-| --------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `approve-intent`      | `intentHash: Digest`, `walletId`, `agentId`, `chainId`, `policyHash: Digest`      | Sign exactly one transaction for exactly one intent under exactly one policy revision.                                                                                   |
-| `set-policy`          | `walletId`, `policyHash: Digest`, `previousPolicyHash: Digest \| null`            | Replace a wallet's policy. `previousPolicyHash` is `null` only for the wallet's first policy.                                                                            |
-| `add-approver`        | `userId`, `credentialId: Base64Url`, `publicKey: Base64Url` (the COSE public key) | Let one more passkey approve for this workspace.                                                                                                                         |
-| `remove-approver`     | `userId`, `credentialId: Base64Url`                                               | Stop one passkey from approving for this workspace.                                                                                                                      |
-| `set-admin-threshold` | `adminThreshold`: integer 1–16                                                    | Change how many people must approve changes to approvers and policies. Never below any wallet's current `approvals.threshold` (`threshold_unreachable`).                 |
-| `resume-workspace`    | none                                                                              | Let a paused workspace sign again. Pausing needs no envelope, because it only removes authority.                                                                         |
-| `sweep-wallet`        | `walletId`, `chainId`, `sweepHash: Digest`                                        | Sign exactly one transaction that moves the sweep below out of the wallet, with no agent and no cap. Approved at the workspace's `adminThreshold`.                       |
-| `grant-mandate`       | `mandateId: mnd_…`, `walletId`, `agentId`, `mandateHash: Digest`                  | Let one agent transfer from one wallet within the mandate below, with no passkey per payment, until it ends or is revoked. Approved at the workspace's `adminThreshold`. |
+| `type`                | Extra fields                                                                                          | Authorizes                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------- | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `approve-intent`      | `intentHash: Digest`, `walletId`, `agentId`, `chainId`, `policyHash: Digest`                          | Sign exactly one transaction for exactly one intent under exactly one policy revision.                                                                                                                                                                                                                                                                     |
+| `set-policy`          | `walletId`, `policyHash: Digest`, `previousPolicyHash: Digest \| null`                                | Replace a wallet's policy. `previousPolicyHash` is `null` only for the wallet's first policy.                                                                                                                                                                                                                                                              |
+| `add-approver`        | `userId`, `credentialId: Base64Url`, `publicKey: Base64Url` (the COSE public key)                     | Let one more passkey approve for this workspace.                                                                                                                                                                                                                                                                                                           |
+| `remove-approver`     | `userId`, `credentialId: Base64Url`                                                                   | Stop one passkey from approving for this workspace.                                                                                                                                                                                                                                                                                                        |
+| `set-admin-threshold` | `adminThreshold`: integer 1–16                                                                        | Change how many people must approve changes to approvers and policies. Never below any wallet's current `approvals.threshold` (`threshold_unreachable`).                                                                                                                                                                                                   |
+| `resume-workspace`    | none                                                                                                  | Let a paused workspace sign again. Pausing needs no envelope, because it only removes authority.                                                                                                                                                                                                                                                           |
+| `sweep-wallet`        | `walletId`, `chainId`, `sweepHash: Digest`                                                            | Sign exactly one transaction that moves the sweep below out of the wallet, with no agent and no cap. Approved at the workspace's `adminThreshold`.                                                                                                                                                                                                         |
+| `grant-mandate`       | `mandateId: mnd_…`, `walletId`, `agentId`, `mandateHash: Digest`                                      | Let one agent transfer from one wallet within the mandate below, with no passkey per payment, until it ends or is revoked. Approved at the workspace's `adminThreshold`.                                                                                                                                                                                   |
+| `cancel-transaction`  | `targetApprovalId: apr_…`, `walletId`, `chainId`, `txNonce`: integer ≥ 0, `maxFeeWei: PositiveAmount` | Sign, at account nonce `txNonce`, a transfer of nothing from the wallet to itself with `gas × maxFeePerGas ≤ maxFeeWei`, so the signed transaction of the approval `targetApprovalId` can no longer be mined. `targetApprovalId` MUST differ from `approvalId`. Approved at the wallet policy's `approvals.threshold` (section 8, "Reprices and cancels"). |
 
 A **sweep** (source: [`sweep.ts`](../packages/protocol/src/sweep.ts)) is the structure a
 `sweep-wallet` envelope binds by its hash. Like an intent it is immutable.
@@ -454,7 +455,9 @@ proved on the confirmation page that they hold the new key (section 10, "The pos
 Otherwise it refuses with `possession_unproven`, even when every assertion is valid. A
 revocation (`POST /v1/approvals/:id/revoke` with `{ workspaceId }`) is recorded in that
 workspace's decision log. `GET /v1/approvals/:id` reports `unknown`, `revoked`, `signed` (with
-the transaction hash, for an intent or a sweep) or `applied`.
+the first transaction's hash and every attempt, for an intent, a sweep or a mandate use) or
+`applied` (for a `cancel-transaction` envelope, with the one attempt it produced and that
+attempt's hash).
 
 There is no HTTP route that adds an approver without assertions from existing approvers. When
 every passkey of a workspace is lost, the operator enrolls a new one with the signer's admin
@@ -544,6 +547,108 @@ in total and in the current window. Its `status` is computed when the signer ans
 otherwise `not_yet_valid` or `expired` by the clock; otherwise `exhausted` when `maxUses` uses were
 made or every asset reached its `maxTotal`; otherwise `active`.
 
+### Reprices and cancels
+
+A signed transaction may never be mined: the base fee rose above its fee cap, its tip is too low,
+or a node dropped it. The signer then signs further **attempts** of the same approval, all at the
+account nonce of the first signature, so at most one of them can be mined. Attempt 0 is the first
+signature. Attempts 1 and up are a **reprice** (the same transaction with both fees higher) or a
+**cancel** (a transfer of nothing from the wallet to itself). Two routes, both in the control
+scope, serve them ([`signer/api.ts`](../packages/protocol/src/signer/api.ts)); in both,
+`:approvalId` is the approval that was signed:
+
+| Route                                    | Body                                                                 | Answer            |
+| ---------------------------------------- | -------------------------------------------------------------------- | ----------------- |
+| `POST /v1/approvals/:approvalId/reprice` | `{ intent, envelope, attempt, maxFeePerGas, maxPriorityFeePerGas }`  | `AttemptResponse` |
+| `POST /v1/approvals/:approvalId/reprice` | `{ intent, mandateId, attempt, maxFeePerGas, maxPriorityFeePerGas }` | `AttemptResponse` |
+| `POST /v1/approvals/:approvalId/cancel`  | `{ authorization, attempt, maxFeePerGas, maxPriorityFeePerGas }`     | `AttemptResponse` |
+
+`attempt` is the number the caller expects to create: the latest attempt's plus one.
+`AttemptResponse` is `{ approvalId, walletId, from, attempt: TransactionAttempt, signedTransaction }`
+with `TransactionAttempt = { attempt, kind: "original" | "reprice" | "cancel", transactionHash,
+gas, maxFeePerGas, maxPriorityFeePerGas, signedAt }`; `kind` is `original` exactly for attempt 0.
+`GET /v1/approvals/:id` lists every attempt of a signed approval in `attempts`.
+
+**Repricing** needs no passkey. The request names what the first signature was bound to: the
+`approve-intent` envelope people approved (without its assertions) and its intent, or, for a use
+of a mandate, the mandate and the intent. These run in one database transaction with nothing
+awaited inside it, in this order, and the first failure decides:
+
+1. The request signature (section 10) and the body's schema.
+2. The approval id is known (`not_found`), not revoked (`approval_revoked`) and signed
+   (`conflict` for an applied one).
+3. The binding. With an envelope: it is a valid envelope of this approval id whose digest is the
+   one the signer stored when it signed (`conflict`), and `intentHash(intent)` equals its
+   `intentHash` (`intent_mismatch`). With a mandate: the signer recorded this approval id as a use
+   of `mandateId` (`conflict`), and `mandateUseDigest({ approvalId, mandateId, intentHash:
+   intentHash(intent) })` is the digest it stored (`intent_mismatch`). A sweep has neither, so its
+   transaction can be cancelled but not repriced.
+4. Idempotency. If attempt `attempt` exists with the same two fees, return it; with other fees →
+   `conflict`. A repeat is answered also after the window closed and while the workspace is
+   paused: those stop new signatures, they do not recall one that exists.
+5. The restore fence. If the first signature was made before the fence → `envelope_fenced`. A
+   restored database may have forgotten attempts signed after its backup, a cancel among them,
+   and a reprice built from what it remembers could turn that cancel back into the payment. A
+   reprice adds no authority, but it is a signature, and this one could undo a person's cancel;
+   such a transaction can still be cancelled.
+6. The workspace is not paused (`workspace_paused`).
+7. With a mandate: the mandate is not revoked (`mandate_revoked`). Revoking is a person's (or the
+   operator's) word that the agent's standing authority ends; it also ends pushing the agent's
+   payments through. Expiry and exhaustion do not stop a reprice: the use was counted while the
+   mandate was live, and a reprice is that same use.
+8. The window. The signer's clock is before the first signature's time plus
+   `SIGNER_REPRICE_WINDOW_SECONDS` (by default 86400; 0 refuses every reprice). Otherwise
+   `reprice_window_closed`: from then on a person decides, by cancelling.
+9. `attempt` is the latest attempt's number plus one (`conflict`), and less than
+   `SIGNER_MAX_TX_ATTEMPTS` (by default 16, the first signature included;
+   `attempts_exhausted`).
+10. Both `maxFeePerGas` and `maxPriorityFeePerGas` are strictly higher than the latest attempt's
+    (`fee_not_raised`), and `maxPriorityFeePerGas ≤ maxFeePerGas` (`fee_cap_exceeded`). The size of
+    the raise is the control plane's choice: nodes differ in the bump they require.
+11. The wallet has a policy (`policy_missing`); its current `fees.maxPerTxWei` caps every later
+    fee, also when it was lowered after the first signature. Build the transaction. If the
+    latest attempt is a cancel: a transfer of nothing from the wallet to itself at the same
+    nonce, gas 21000, with `21000 × maxFeePerGas ≤ min(that cancel's maxFeeWei, fees.maxPerTxWei)`
+    (`fee_cap_exceeded`); its kind is `cancel`. Otherwise: the transaction built from the intent
+    with the first signature's nonce and gas, which must equal the first signature in every
+    field but the two fees (`internal`; only an altered store can fail it), with
+    `gas × maxFeePerGas ≤ min(intent.maxFeeWei, fees.maxPerTxWei)` (`fee_cap_exceeded`). Nothing
+    else of the current policy is evaluated: refusing would not stop the signed first attempt
+    from being mined.
+12. Sign it, check the signature as for the first one (`vault_error`), and store the attempt.
+
+**Cancelling** carries a `cancel-transaction` envelope, approved on the confirmation page with
+passkeys at the wallet policy's threshold. It follows the shape of `POST /v1/sign`:
+
+1. The request signature and the body's schema; the envelope's workspace is known (`not_found`).
+2. The envelope is `cancel-transaction` and its `targetApprovalId` is the path's
+   (`envelope_mismatch`).
+3. Idempotency on the cancel's own approval id: applied with an identical envelope → return the
+   attempt it produced; revoked → `approval_revoked`; anything else → `conflict`.
+4. The restore fence, on the envelope's `issuedAt` (`envelope_fenced`).
+5. The target is a signed approval of the envelope's workspace whose first signature has the
+   envelope's wallet, chain and `txNonce` (`envelope_mismatch`).
+6. The wallet has a policy (`policy_missing`) and `maxFeeWei ≤ fees.maxPerTxWei`
+   (`fee_cap_exceeded`).
+7. Section 6 passes at the policy's `approvals.threshold`, with a lifetime no longer than its
+   `approvals.ttlSeconds` and the signer's longest intent lifetime. A paused workspace may cancel:
+   a cancel moves nothing and carries its own passkeys.
+8. In one database transaction with nothing awaited inside it: steps 3 to 6 again; the
+   assertions are at least the current threshold (`insufficient_approvals`) from current
+   approvers (`approver_unknown`); the envelope's nonce is unused (`nonce_reused`); the attempt
+   number and fee rules of reprice steps 9 and 10; `21000 × maxFeePerGas ≤ maxFeeWei`
+   (`fee_cap_exceeded`); build the self-transfer at `txNonce`; sign and check it; record the
+   cancel's approval as `applied` and the attempt as a `cancel`.
+
+A cancel is allowed when the latest attempt is a cancel already: a second approval may raise its
+ceiling. After a cancel every later attempt is a cancel, whichever route asked for it.
+
+Neither a reprice nor a cancel adds or removes a spend, or a use of a mandate: the first
+signature's spend stands whichever attempt is mined, and only the control plane could say which,
+so a landed cancel ages out of the 24-hour window like any spend. Every refusal for a known
+workspace is in the decision log, with action `reprice` under the signed approval's id or
+`cancel-transaction` under the cancel's approval id.
+
 ## 9. What may vary after approval
 
 Only these four fields of the signed transaction are chosen after approval
@@ -559,6 +664,12 @@ Only these four fields of the signed transaction are chosen after approval
 Everything else is fixed by the intent, and the intent is fixed by its hash inside the approved
 envelope. The fee ceiling `maxFeeWei` is part of the intent, so the approver saw it. For a sweep,
 read `sweep` for `intent`: the bound is `gas × maxFeePerGas ≤ sweep.maxFeeWei`.
+
+After the first signature, only the two fee fields may vary, and only upward: a reprice
+(section 8, "Reprices and cancels") keeps the nonce, the gas and everything the intent fixes, and
+its bound is `gas × maxFeePerGas ≤ min(intent.maxFeeWei, policy fees.maxPerTxWei)`. A cancel is
+not a variation of the approved transaction but its own approval, `cancel-transaction`, bound by
+its own `maxFeeWei`.
 
 A use of a mandate has no envelope of its own: the agent chooses the intent, and the intent is
 bound by the mandate the people approved (section 7, "Mandates") and by the wallet's policy. Its
@@ -631,7 +742,13 @@ Rules:
   [`confirmation.ts`](../packages/protocol/src/confirmation.ts)). The view of a grant shows the
   agent, the wallet, every asset's cap per payment, per window and in total with its worst case
   and the wallet's own limits, every recipient, the number of payments, the fee ceilings, the
-  absolute start and end times, and the purpose as text nobody checked.
+  absolute start and end times, and the purpose as text nobody checked. A `cancel-transaction`
+  envelope's subject is `envelope-only`; opening one is refused unless its target is a signed
+  approval of the workspace whose first signature has the envelope's wallet, chain and nonce
+  (`envelope_mismatch`). Its view shows what the transaction would do, read back from the bytes
+  the signer signed (amount and recipient, or contract and value), the approval it was signed
+  under, the network, the nonce, the cancel's own fee ceiling, the attempts so far, and that a
+  cancel is an attempt, not a guarantee, and does not give back the wallet's limits.
 - The token is 16 random bytes in base64url. The signer stores only its SHA-256 and compares in
   constant time; a wrong token is `not_found`. Opening the same approval again issues a new token
   and ends the old one. The token travels in the link's fragment and in the `x-confirm-token`
@@ -644,7 +761,10 @@ Rules:
   names, and for a policy change another revision applied first (`policy_missing`,
   `policy_changed`); for a mandate grant the wallet has no policy, or the mandate no longer passes
   `checkMandateAgainstPolicy` with the signer's current policy, clock and lifetime ceiling
-  (`policy_missing`, `mandate_invalid` with the reason). The state is computed each time, so a
+  (`policy_missing`, `mandate_invalid` with the reason); for a cancel the wallet has no policy,
+  its fee cap is below the cancel's `maxFeeWei`, or the target has `SIGNER_MAX_TX_ATTEMPTS`
+  attempts already (`policy_missing`, `fee_cap_exceeded`, `attempts_exhausted`). The state is
+  computed each time, so a
   grant reopens if the policy is edited back to admit it; the cap on live mandates does not make
   a grant superseded, because it only waits for a mandate to end. Opening a confirmation in that
   state is refused with the same code.
@@ -896,6 +1016,28 @@ used under this mandate with the approval id `apr_01jd0000000000000000000005`:
 
 `mandateUseDigest` = `96fe14af43d24b9388d45b9f7a478c48a1d37c944056f9b5319ddad6bd990cd7`
 
+`cancel-transaction` envelope JSON (canonical), cancelling the transaction of approval
+`apr_01jd000000000000000000000e` at account nonce 7 with a fee ceiling of 0.002 of the native coin:
+
+```json
+{
+  "approvalId": "apr_01jd0000000000000000000005",
+  "chainId": "eip155:8453",
+  "expiresAt": 1700000600,
+  "issuedAt": 1700000000,
+  "maxFeeWei": "2000000000000000",
+  "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+  "targetApprovalId": "apr_01jd000000000000000000000e",
+  "txNonce": 7,
+  "type": "cancel-transaction",
+  "v": 1,
+  "walletId": "wal_01jd0000000000000000000003",
+  "workspaceId": "ws_01jd0000000000000000000001"
+}
+```
+
+Challenge (base64url) = `FYp0khasgxD2rQxW3vUf47xd5PbsXrKOGUXaK1L_2ro`
+
 ## 12. Versioning
 
 `v` is `1` in every hashed structure, and the domain tags carry `v1`. Any change to the shape or
@@ -912,4 +1054,9 @@ digest, and its tag keeps a possession challenge from ever standing in for an en
 challenge, or an envelope's for it. Mandates were added the same way: the `Mandate` structure
 under `askgina.os/v1/mandate`, the `grant-mandate` envelope kind, and the use digest under
 `askgina.os/v1/mandate-use`. No existing digest or test vector changed, and a signer that does
-not know `grant-mandate` refuses it as an invalid envelope.
+not know `grant-mandate` refuses it as an invalid envelope. The `cancel-transaction` envelope was
+added the same way, within version 1 (owner decision of 2026-11-15): it is a new kind under the
+existing `askgina.os/v1/authorize` tag, no existing structure changed shape or meaning, every
+existing digest and test vector keeps its value, and a signer that does not know the kind refuses
+it as an invalid envelope. Reprices hash nothing new: they are bound to the digest the signer
+stored at the first signature.

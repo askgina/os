@@ -115,6 +115,11 @@ export const REFUSAL_TEXT = {
   mandate_denied: "This mandate does not cover this payment.",
   mandate_invalid:
     "The signer refuses this mandate: it does not fit the wallet's limits, or it lasts too long.",
+  fee_not_raised: "The network fee must be higher than the transaction's last attempt.",
+  attempts_exhausted:
+    "This transaction has as many attempts as the signer allows, so it signs no more for it.",
+  reprice_window_closed:
+    "This transaction can no longer have its fee raised without approval. Cancel it instead.",
   vault_error: "The signer's key store failed. Try again later.",
   internal: "The signer could not be reached or failed. Try again in a moment.",
 };

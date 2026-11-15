@@ -70,6 +70,27 @@ describe("the signer's configuration", () => {
     }
   });
 
+  it("signs at most 16 attempts per approval and reprices for a day unless set, within fixed bounds", () => {
+    const config = loadConfig(base);
+    expect([config.maxTxAttempts, config.repriceWindowSeconds]).toEqual([16, 86_400]);
+    const set = loadConfig({
+      ...base,
+      SIGNER_MAX_TX_ATTEMPTS: "4",
+      SIGNER_REPRICE_WINDOW_SECONDS: "0",
+    });
+    expect([set.maxTxAttempts, set.repriceWindowSeconds]).toEqual([4, 0]);
+    for (const value of ["1", "65", "2.5"]) {
+      expect(refusal({ SIGNER_MAX_TX_ATTEMPTS: value })).toBe(
+        "missing or invalid: SIGNER_MAX_TX_ATTEMPTS",
+      );
+    }
+    for (const value of ["-1", "604801", "a day"]) {
+      expect(refusal({ SIGNER_REPRICE_WINDOW_SECONDS: value })).toBe(
+        "missing or invalid: SIGNER_REPRICE_WINDOW_SECONDS",
+      );
+    }
+  });
+
   it("the signer refuses to start when the approval origin's host is not under the RP ID", () => {
     for (const origin of [
       "https://evil.example",

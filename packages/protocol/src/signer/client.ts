@@ -5,6 +5,8 @@ import type { ApprovalId, MandateId, WalletId, WorkspaceId } from "../primitives
 import {
   type AddApproverRequest,
   ApprovalState,
+  AttemptResponse,
+  type CancelTransactionRequest,
   CONFIRM_TOKEN_HEADER,
   type CreateWalletRequest,
   type CreateWorkspaceRequest,
@@ -17,6 +19,7 @@ import {
   MandateState,
   type OpenConfirmationRequest,
   OpenConfirmationResponse,
+  type RepriceRequest,
   type SetPolicyRequest,
   SignerErrorBody,
   type SignerErrorCode,
@@ -97,6 +100,13 @@ export interface SignerClient {
   sweep(walletId: WalletId, request: SweepRequest): Promise<SignResponse>;
   revokeApproval(approvalId: ApprovalId, workspaceId: WorkspaceId): Promise<ApprovalState>;
   getApproval(approvalId: ApprovalId): Promise<ApprovalState>;
+  /** One more attempt at a signed approval's transaction, both fees higher, with no passkey. */
+  reprice(approvalId: ApprovalId, request: RepriceRequest): Promise<AttemptResponse>;
+  /** A cancel of a signed approval's transaction, approved by a `cancel-transaction` envelope. */
+  cancelTransaction(
+    approvalId: ApprovalId,
+    request: CancelTransactionRequest,
+  ): Promise<AttemptResponse>;
 
   grantMandate(mandateId: MandateId, request: GrantMandateRequest): Promise<MandateState>;
   getMandate(mandateId: MandateId): Promise<MandateState>;
@@ -253,6 +263,13 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
       }),
     getApproval: (approvalId: ApprovalId) =>
       call(signerRoutes.getApproval, ApprovalState, { params: { approvalId } }),
+    reprice: (approvalId: ApprovalId, request: RepriceRequest) =>
+      call(signerRoutes.reprice, AttemptResponse, { params: { approvalId }, body: request }),
+    cancelTransaction: (approvalId: ApprovalId, request: CancelTransactionRequest) =>
+      call(signerRoutes.cancelTransaction, AttemptResponse, {
+        params: { approvalId },
+        body: request,
+      }),
 
     grantMandate: (mandateId: MandateId, request: GrantMandateRequest) =>
       call(signerRoutes.grantMandate, MandateState, { params: { mandateId }, body: request }),

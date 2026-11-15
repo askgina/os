@@ -22,6 +22,7 @@ import {
   type Mandate,
   Memo,
   mandateHash,
+  type Operation,
   policyHash,
   type SweepWalletEnvelope,
   type WalletPolicy,
@@ -35,6 +36,7 @@ import {
   approveIntent,
   BASE,
   BOB,
+  cancelTransaction,
   DIGEST_A,
   grantMandate,
   intent,
@@ -51,6 +53,7 @@ import {
   setAdminThreshold,
   setPolicy,
   T0,
+  TARGET_APPROVAL,
   TOKEN,
   USDC_BASE,
   USER_B,
@@ -88,6 +91,7 @@ function render(
     adminThreshold: 1,
     possessionProven: false,
     treasuries: [],
+    cancelTarget: null,
     ...overrides,
   });
 }
@@ -210,6 +214,7 @@ describe("checkSubject", () => {
       removeApprover(),
       setAdminThreshold(),
       resumeWorkspace(),
+      cancelTransaction(),
     ]) {
       expect(checkSubject(envelope, envelopeOnly)).toBe(null);
     }
@@ -354,6 +359,7 @@ describe("checkSubject", () => {
       removeApprover(),
       setAdminThreshold(),
       resumeWorkspace(),
+      cancelTransaction(),
     ];
     for (const envelope of envelopes) {
       const accepted = subjects.filter((subject) => checkSubject(envelope, subject) === null);
@@ -1021,6 +1027,74 @@ describe("sweeps", () => {
     });
     expect(value(view, "Destination")).toBe("the wallet itself");
     expect(view.warnings).toEqual(["recipient_not_allowlisted"]);
+  });
+});
+
+describe("cancels", () => {
+  const target = (operation: Operation, attempts = 1, cancelling = false) => ({
+    cancelTarget: { operation, attempts, cancelling },
+  });
+  const transfer: Operation = { type: "evm.transfer", to: ALICE, valueWei: "250000000000000000" };
+
+  it("names what it would stop from the signer's record, its nonce and its own fee ceiling, and says it is an attempt", () => {
+    const view = render(cancelTransaction(), envelopeOnly, target(transfer));
+    expect(view.title).toBe("Try to cancel sending 0.25 ETH");
+    expect(value(view, "Amount it would send")).toBe("0.25 ETH");
+    expect(value(view, "To")).toBe(ALICE);
+    expect(value(view, "Request it was approved under")).toBe(TARGET_APPROVAL);
+    expect(value(view, "Network")).toBe("Base (eip155:8453)");
+    expect(value(view, "Transaction number (nonce)")).toBe("7");
+    expect(value(view, "Network fee ceiling for the cancel")).toBe("0.002 ETH");
+    expect(value(view, "Cancelling is an attempt")).toBe(
+      "if the network includes the payment first, the payment happens and the cancel does nothing",
+    );
+    expect(value(view, "Wallet limits")).toMatch(/still counts/);
+    expect(value(view, "Attempts signed so far")).toBe("1");
+    expect(value(view, "Wallet address")).toBe(WALLET_ADDRESS);
+    expect(view.lines.some((line) => line.label === "Cancelled before")).toBe(false);
+    expect(view.warnings).toEqual([]);
+  });
+
+  it("every field of the envelope changes what is shown", () => {
+    const base = render(cancelTransaction(), envelopeOnly, target(transfer)).lines;
+    for (const change of [
+      { targetApprovalId: `apr_01jd000000000000000000000f` as const },
+      { chainId: MAINNET },
+      { txNonce: 8 },
+      { maxFeeWei: "2000000000000001" },
+      { walletId: `wal_01jd000000000000000000000c` as const },
+    ]) {
+      expect(render(cancelTransaction(change), envelopeOnly, target(transfer)).lines).not.toEqual(
+        base,
+      );
+    }
+  });
+
+  it("a token transfer, a contract call, a second cancel and a missing target are each shown as such", () => {
+    const token = render(
+      cancelTransaction(),
+      envelopeOnly,
+      target({ type: "evm.erc20.transfer", token: TOKEN, to: BOB, amount: "1500000" }, 3, true),
+    );
+    expect(token.title).toBe("Try to cancel sending 1.5 USDC");
+    expect(value(token, "To")).toBe(BOB);
+    expect(value(token, "Token contract")).toBe(TOKEN);
+    expect(value(token, "Attempts signed so far")).toBe("3");
+    expect(value(token, "Cancelled before")).toMatch(/^yes/);
+
+    const call = render(
+      cancelTransaction(),
+      envelopeOnly,
+      target({ type: "evm.call", to: ROUTER, valueWei: "0", data: "0xa9059cbb0000" }),
+    );
+    expect(call.title).toBe("Try to cancel a contract call");
+    expect(value(call, "Contract it would call")).toBe(ROUTER);
+    expect(value(call, "Function selector")).toBe("0xa9059cbb");
+    expect(call.warnings).toEqual([]);
+
+    const missing = render(cancelTransaction(), envelopeOnly);
+    expect(missing.title).toBe("Try to cancel a transaction that was not mined");
+    expect(value(missing, "Transaction to cancel")).toBe("not found at the signer");
   });
 });
 

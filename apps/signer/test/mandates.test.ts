@@ -292,6 +292,13 @@ describe("signing under a mandate", () => {
       approvalId: request.approvalId,
       state: "signed",
       transactionHash: signed.transactionHash,
+      attempts: [
+        expect.objectContaining({
+          attempt: 0,
+          kind: "original",
+          transactionHash: signed.transactionHash,
+        }),
+      ],
     });
     // Mandated spending is the wallet's spending.
     expect((await t.client.getWallet(world.walletId)).spent).toEqual([
@@ -750,12 +757,12 @@ describe("the database's schema version 5", () => {
     const { mandate } = await grantMandate(upgraded);
     expect((await use(upgraded, mandate.id, tokenIntent(upgraded, 1n))).from).toBe(world.address);
     t.signer.close();
-    expect(SCHEMA_VERSION).toBe(5);
-    expect(userVersion(sqlitePath)).toBe(5);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(5);
+    expect(userVersion(sqlitePath)).toBe(SCHEMA_VERSION);
 
     // A signer that knows only version 4 refuses this file, as this one refuses a newer file.
     const newer = new DatabaseSync(sqlitePath);
-    newer.exec("PRAGMA user_version = 6");
+    newer.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`);
     newer.close();
     expect(() => startSigner(host)).toThrow(SchemaTooNewError);
   });

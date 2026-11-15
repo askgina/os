@@ -1,6 +1,7 @@
 import type {
   AddApproverEnvelope,
   ApproveIntentEnvelope,
+  CancelTransactionEnvelope,
   Envelope,
   GrantMandateEnvelope,
   Intent,
@@ -27,6 +28,8 @@ export const USER_B = `usr_${ULID}7` as const;
 export const USER_C = `usr_${ULID}8` as const;
 export const OTHER_AGENT = `agt_${ULID}9` as const;
 export const MANDATE = `mnd_${ULID}6` as const;
+/** The approval whose transaction the fixture cancel targets. */
+export const TARGET_APPROVAL = `apr_${ULID}e` as const;
 
 export const ALICE = "0x1111111111111111111111111111111111111111" as const;
 export const BOB = "0x2222222222222222222222222222222222222222" as const;
@@ -207,6 +210,19 @@ export const grantMandate = (o: Partial<GrantMandateEnvelope> = {}): GrantMandat
   ...o,
 });
 
+export const cancelTransaction = (
+  o: Partial<CancelTransactionEnvelope> = {},
+): CancelTransactionEnvelope => ({
+  ...header,
+  type: "cancel-transaction",
+  targetApprovalId: TARGET_APPROVAL,
+  walletId: WALLET,
+  chainId: BASE,
+  txNonce: 7,
+  maxFeeWei: "2000000000000000",
+  ...o,
+});
+
 /**
  * For every field of every envelope type, a replacement value that is still valid. Each entry is
  * one way a compromised control plane could try to reuse an approval for something else.
@@ -287,6 +303,18 @@ export const envelopeVariants: {
       walletId: `wal_${ULID}c`,
       agentId: OTHER_AGENT,
       mandateHash: DIGEST_B,
+    },
+  },
+  {
+    name: "cancel-transaction",
+    base: cancelTransaction(),
+    changes: {
+      ...headerChanges,
+      targetApprovalId: `apr_${ULID}f`,
+      walletId: `wal_${ULID}c`,
+      chainId: MAINNET,
+      txNonce: 8,
+      maxFeeWei: "2000000000000001",
     },
   },
 ];

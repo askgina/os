@@ -34,6 +34,9 @@ const MESSAGES: Record<SignerErrorCode, string> = {
   mandate_not_yet_valid: "the mandate is not valid yet",
   mandate_denied: "the mandate does not cover this",
   mandate_invalid: "the mandate cannot be granted",
+  fee_not_raised: "both fees must be higher than the latest attempt's",
+  attempts_exhausted: "the transaction has as many attempts as the signer allows",
+  reprice_window_closed: "the transaction can no longer be repriced without a person; cancel it",
   vault_error: "the key store failed",
   internal: "internal error",
 };
