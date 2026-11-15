@@ -1,7 +1,7 @@
 # Reprice or cancel a stuck transaction under the approval it already has
 
 - Branch: main
-- Status: In Progress
+- Status: Ready for Review
 - Owner(s): Eric Juta
 - Created: 2026-11-14
 - Last Updated: 2026-11-15
@@ -42,9 +42,9 @@ Success means:
 - [x] (2026-11-15) Milestones 1 and 2 are commit `c3003b8`, CI run 43712687999 green (check, test, ui, stack amd64/arm64/tls). Milestone 1: protocol and contract (`cancel-transaction` envelope, its confirmation view, `reprice` and `cancelTransaction` routes, `ApprovalState.attempts`).
 - [x] (2026-11-15) Milestone 2: signer attempts, reprice and cancel (`apps/signer/src/attempts.ts`, schema version 6). Decided while building: a payment made under a mandate can be repriced and counts once (a revoked mandate stops reprices; expiry and an exhausted budget do not); after a restore fence a reprice of an older signature is refused with `envelope_fenced`, a cancel of it is allowed; the window is strict, so 0 turns repricing off; a sweep can be cancelled and not repriced.
 - [x] (2026-11-15) Milestone 3, commit `50e2d30`, CI run 43714842690 green (six jobs): control plane nonce holding, reconciliation and automatic repricing (`apps/server/src/execution/repricing.ts`, migration `0007_transaction_attempts`, settings `REPRICE_AUTO`, `REPRICE_AFTER_SECONDS` default 180, `REPRICE_BUMP_PERCENT` default 12).
-- [ ] Milestone 4: cancel approval kind, speed-up route, API, web and MCP reporting.
-- [ ] Milestone 5: real-stack release gate and documents.
-- [ ] Run validation in CI and record run ids here.
+- [x] (2026-11-15) Milestone 4: cancel approval kind, speed-up route, API, web and MCP reporting (commits `60b0e16`, `013e423`, `a0a3f1e`). Routes `speedUp`, `requestCancel`, `requestSweepCancel`; a payment page for payments made under a mandate; `get_intent` and `list_intents` report `stuckReason` and `attempts`; still seven MCP tools.
+- [x] (2026-11-15) Milestone 5: three real-stack release gates and documents (commit `4c987d7`). The gates hold mining on the stack's chain for the length of one gate. CI run 43718828869 at `a0a3f1e`: the automatic-reprice gate and the speed-up gate passed on amd64 and arm64; the cancel gate failed on a wrong title expectation in the test, fixed in the next commit.
+- [x] (2026-11-15) Validation in CI: run 43719624065 green at `61d0326` on check, test, ui (five projects) and stack amd64/arm64/tls; 35 release gates pass, three of them for stuck transactions, and 6 browser gates. Earlier runs: 43712687999, 43714842690, 43716587020 (ui flake), 43718828869 (cancel gate's title expectation).
 
 ## Surprises & Discoveries
 
@@ -112,6 +112,22 @@ Success means:
 
 ## Outcomes & Retrospective
 
+- Outcome (2026-11-15): built on main, green in CI run 43719624065 at `61d0326`. A transaction that is
+  signed and not mined keeps its nonce and is signed again by itself with a higher fee inside the
+  approved ceiling; an owner or approver can speed it up with no passkey; a cancel is a request
+  approved with passkeys on the signer's confirmation page and replaces the payment at its nonce.
+  Agents see every attempt and can do neither.
+  Evidence: the three stuck-transaction gates in `e2e/test/release-gates.spec.ts`,
+  `apps/signer/test/repricing.test.ts`, `apps/server/test/execution/{repricing,cancel}.test.ts`,
+  `apps/web/test/transaction.test.ts`, the UI journey step.
+  Unproven: a real public mempool; the replacement rules of clients other than Anvil; a reorg that
+  swaps which attempt is mined; a real phone passkey approving a cancel. No real-stack gate covers
+  a reprice refused after a restore fence, the reprice of a mandated payment, or automatic
+  repricing being blocked while paused (unit tests do). Catching up a sweep's cancel and a replayed
+  cancel above the next attempt number are written and untested.
+  Known limits: a speed-up within 15 seconds of the newest attempt answers unchanged with no
+  reason; raising the fee of a stuck cancel is blocked while paused or after the window; refusal
+  details of the two routes are plain strings, so the web keeps its own list.
 - Outcome: research done and plan drafted; nothing built.
   Evidence: [research report](./research/stuck-transaction-repricing.md).
   Remaining: every milestone; owner decisions 1 to 5.
