@@ -59,12 +59,15 @@ export async function appendAudit(
 ): Promise<void> {
   const write = async (executor: Executor) => {
     // Locking the workspace row gives one writer per workspace at a time, so `seq` has no gaps
-    // and no forks, and the head moves with the entry.
+    // and no forks, and the head moves with the entry. The lock is the one an update of these
+    // columns takes anyway. A stronger `FOR UPDATE` would also wait for every transaction that
+    // inserted a row referring to the workspace (a foreign key holds `FOR KEY SHARE` on it), and
+    // two such transactions appending at once would each wait for the other: a deadlock.
     const [head] = await executor
       .select({ seq: workspaces.auditSeq, hash: workspaces.auditHead })
       .from(workspaces)
       .where(eq(workspaces.id, input.workspaceId))
-      .for("update");
+      .for("no key update");
     if (!head) throw new Error("audit append for a workspace that does not exist");
     const seq = head.seq + 1;
     const at = ctx.now();

@@ -106,14 +106,14 @@ a key (`docs/threat-model.md`).
 
 ## Volumes
 
-| Volume            | Holds                                                                                         | Read by  |
-| ----------------- | --------------------------------------------------------------------------------------------- | -------- |
-| `postgres-data`   | The database.                                                                                 | postgres |
+| Volume            | Holds                                                                                                                 | Read by  |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------- | -------- |
+| `postgres-data`   | The database.                                                                                                         | postgres |
 | `signer-data`     | The wallet vault and the signer's SQLite (used approvals, policies, mandates and their counts, audit, restore fence). | signer   |
-| `server-secrets`  | `keyring.json` (key-encryption keys), `signer-request-secret`, a copy of `postgres-password`. | server   |
-| `signer-secrets`  | `signer-request-secret`, `confirm-request-secret`, `token-key`, `vault-passphrase`.           | signer   |
-| `approve-secrets` | A copy of `confirm-request-secret`, which `init` writes again whenever it differs.            | approve  |
-| `db-secrets`      | `postgres-password`.                                                                          | postgres |
+| `server-secrets`  | `keyring.json` (key-encryption keys), `signer-request-secret`, a copy of `postgres-password`.                         | server   |
+| `signer-secrets`  | `signer-request-secret`, `confirm-request-secret`, `token-key`, `vault-passphrase`.                                   | signer   |
+| `approve-secrets` | A copy of `confirm-request-secret`, which `init` writes again whenever it differs.                                    | approve  |
+| `db-secrets`      | `postgres-password`.                                                                                                  | postgres |
 
 ## Backups and restoring
 
@@ -252,10 +252,10 @@ the control plane may be compromised, because a person's revocation goes through
 
 Two settings in `.env`, both optional:
 
-| Setting                               | Meaning                                                                                                                                                                                         |
-| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Setting                               | Meaning                                                                                                                                                                                                  |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `MANDATE_MAX_SECONDS`                 | The longest life of a mandate: 3600 to 2592000 seconds, default 604800 (seven days). Compose gives it to the signer (`SIGNER_MAX_MANDATE_SECONDS`, which decides) and to the server, so they stay equal. |
-| `SIGNER_MAX_LIVE_MANDATES_PER_WALLET` | How many live mandates one wallet may hold: 1 to 64, default 16.                                                                                                                                 |
+| `SIGNER_MAX_LIVE_MANDATES_PER_WALLET` | How many live mandates one wallet may hold: 1 to 64, default 16.                                                                                                                                         |
 
 **The signer host must keep its clock synchronized** (NTP, `chrony` or `systemd-timesyncd`). The
 signer decides by its own clock when a mandate starts and ends and which payments fall in its

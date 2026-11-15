@@ -144,13 +144,13 @@ of the signer, and when the operator revokes it on the signer host
 
 ## What this protects, and what it does not
 
-| If this is compromised       | The attacker can                                | The attacker cannot                                                                                |
-| ---------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| An agent or its token        | Propose operations; spend inside its live mandates | Approve, sign, change limits, reach the signer; pay outside a mandate's list or caps            |
-| The control plane's database | Read names, ids, statuses, addresses, limits    | Read sealed content; forge an approval                                                             |
+| If this is compromised       | The attacker can                                                                                        | The attacker cannot                                                                                             |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| An agent or its token        | Propose operations; spend inside its live mandates                                                      | Approve, sign, change limits, reach the signer; pay outside a mandate's list or caps                            |
+| The control plane's database | Read names, ids, statuses, addresses, limits                                                            | Read sealed content; forge an approval                                                                          |
 | The control plane itself     | Ask the signer; show a person a misleading card; have the signer sign transfers that fit a live mandate | Get an approval the signer accepts; change the confirmation page; exceed limits or a mandate; reuse an approval |
-| The confirmation service     | Show a person a misleading page                 | Sign or read a key; reach a signer route but its four; approve unaided                             |
-| The signer's machine         | Everything for the wallets on it                |                                                                                                    |
+| The confirmation service     | Show a person a misleading page                                                                         | Sign or read a key; reach a signer route but its four; approve unaided                                          |
+| The signer's machine         | Everything for the wallets on it                                                                        |                                                                                                                 |
 
 Two limits are worth knowing before you rely on this:
 

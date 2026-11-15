@@ -566,6 +566,21 @@ describe("a proposal a mandate covers", () => {
     expect(next.answer).toMatchObject({ authorizedBy: "person", status: "pending_approval" });
   });
 
+  it("proposals sent at the same moment are all answered", async () => {
+    const { agent, client } = await agentWith("Twins");
+    const recipient = randomAddress();
+    const mandateId = await grant(agent, [recipient]);
+    // Each records an approval, an intent and audit entries in one transaction; transactions of
+    // one workspace that wait on each other's row locks must queue, not deadlock.
+    const memos = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    const all = await Promise.all(
+      memos.map((memo) =>
+        propose(client, { chainId: TEST_CHAIN_ID, to: recipient, amount: "0.01", memo }),
+      ),
+    );
+    expect(all.map((one) => one.answer.mandateId)).toEqual(memos.map(() => mandateId));
+  });
+
   it("signs once when the process dies between the signature and our row", async () => {
     const { agent, client } = await agentWith("Crash");
     const recipient = randomAddress();
