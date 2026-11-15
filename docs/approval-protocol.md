@@ -946,6 +946,18 @@ under its own scope's secret:
 A request signed with the other scope's secret is `unauthenticated` (401). The two secrets must
 differ; the signer refuses to start when they do not.
 
+### Mutual TLS, when the signer runs on its own host
+
+When the signer is given its four TLS files (`SIGNER_TLS_*`), it accepts TLS 1.3 only and only
+from the two client certificates it was started with. The certificate chooses the scope before
+the request signature is looked at: the control plane's certificate may use `control` routes,
+the `approve` service's certificate `confirm` routes, and a request on a route of the other
+scope is `unauthenticated` (401). The request signature above still applies unchanged, so a
+certificate without its scope's secret, or a secret without its scope's certificate, opens
+nothing. `GET /healthz` moves to a plain listener on the signer's loopback address. Without the
+TLS files the signer behaves exactly as the rest of this section describes. See
+[`apps/signer/README.md`](../apps/signer/README.md) for the settings.
+
 ### The confirmation routes
 
 The confirmation page ([`apps/approve`](../apps/approve)) shows one approval as the signer holds
