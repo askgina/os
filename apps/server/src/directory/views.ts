@@ -7,7 +7,7 @@ import type {
   WorkspaceDetail,
 } from "@askgina/os-api";
 import type { WorkspaceId } from "@askgina/os-protocol";
-import { and, asc, count, eq } from "drizzle-orm";
+import { and, asc, count, eq, ne } from "drizzle-orm";
 import type { AppContext } from "../context.ts";
 import {
   agents,
@@ -68,7 +68,13 @@ export async function pendingApprovalCount(
   const [row] = await ctx.db
     .select({ n: count() })
     .from(approvals)
-    .where(and(eq(approvals.workspaceId, workspaceId), eq(approvals.status, "pending")));
+    .where(
+      and(
+        eq(approvals.workspaceId, workspaceId),
+        eq(approvals.status, "pending"),
+        ne(approvals.kind, "mandate-use"),
+      ),
+    );
   return row?.n ?? 0;
 }
 

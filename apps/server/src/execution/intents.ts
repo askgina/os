@@ -8,8 +8,6 @@ import type {
 } from "@askgina/os-api";
 import {
   type AgentId,
-  type ApprovalId,
-  type Authorization,
   type ChainId,
   evaluateIntent,
   type Hex,
@@ -17,23 +15,36 @@ import {
   type IntentId,
   intentHash,
   intentSpend,
+  MANDATE_DENY_CODES,
+  type MandateId,
   newId,
   type Operation,
+  POLICY_DENY_CODES,
   PROTOCOL_VERSION,
   type WalletId,
   type WalletPolicy,
   type WorkspaceId,
 } from "@askgina/os-protocol";
-import { SignerError } from "@askgina/os-protocol/signer";
+import {
+  SignerError,
+  type SignResponse,
+  type TransactionParams,
+} from "@askgina/os-protocol/signer";
 import { and, count, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import { encodeFunctionData, erc20Abi, formatUnits, type Hex as ViemHex } from "viem";
-import { ApprovalFailure, type ApprovalKindHandler, type ApprovalRow } from "../approvals/kinds.ts";
+import {
+  ApprovalFailure,
+  type ApprovalKindHandler,
+  type ApprovalRow,
+  type MandateUseHandler,
+} from "../approvals/kinds.ts";
 import { appendAudit } from "../audit.ts";
 import type { AppContext, Executor } from "../context.ts";
 import { agents, intents, wallets, workspaces } from "../db/schema.ts";
 import { HttpError } from "../http/errors.ts";
 import { approvalLink, engineOf } from "./approvals.ts";
 import { ChainError, chainAccess } from "./chains.ts";
+import { findCoveringMandate } from "./mandates.ts";
 import {
   type ExecutionOptions,
   FALLBACK_GAS,
@@ -54,7 +65,7 @@ interface Presentation {
   simulation: Simulation | null;
 }
 
-/** What `approve-intent` keeps sealed in its approval's detail. */
+/** What `approve-intent` and `mandate-use` keep sealed in their approval's detail. */
 interface IntentApprovalDetail {
   intentId: IntentId;
 }
@@ -104,7 +115,9 @@ export async function intentSummary(ctx: AppContext, row: IntentRow): Promise<In
     display: presentation.display,
     memo: intent.memo,
     createdAt: seconds(row.createdAt),
-    approvalId: row.approvalId,
+    // A use of a mandate is no approval people see: the intent names its mandate instead.
+    approvalId: row.mandateId === null ? row.approvalId : null,
+    mandateId: row.mandateId,
     transactionHash: (transaction?.hash as `0x${string}` | undefined) ?? null,
     failureCode: row.failureCode,
   };
@@ -134,6 +147,7 @@ export async function listIntentRows(
   filter: {
     workspaceId: WorkspaceId;
     agentId?: AgentId;
+    mandateId?: MandateId | undefined;
     status?: IntentStatus;
     cursor?: string | undefined;
     limit?: number;
@@ -142,6 +156,7 @@ export async function listIntentRows(
   const limit = filter.limit ?? PAGE_SIZE;
   const conditions = [eq(intents.workspaceId, filter.workspaceId)];
   if (filter.agentId !== undefined) conditions.push(eq(intents.agentId, filter.agentId));
+  if (filter.mandateId !== undefined) conditions.push(eq(intents.mandateId, filter.mandateId));
   if (filter.status !== undefined) conditions.push(eq(intents.status, filter.status));
   if (filter.cursor !== undefined) {
     const [at, id] = Buffer.from(filter.cursor, "base64url").toString("utf8").split("|");
@@ -213,12 +228,17 @@ export interface Proposer {
   agent: AgentRow;
 }
 
+/**
+ * What a proposal became: a request people approve (`person`, with its link and expiry), or a
+ * payment a mandate covers (`mandate`), already approved and on its way to the signer.
+ */
 export interface ProposalResult {
   intentId: IntentId;
   status: IntentStatus;
-  approvalId: ApprovalId;
-  approvalUrl: string;
-  expiresAt: number;
+  authorizedBy: "mandate" | "person";
+  mandateId: MandateId | null;
+  approvalUrl: string | null;
+  expiresAt: number | null;
 }
 
 /** The wallet an agent proposes from: its own, or a treasury whose policy names it. */
@@ -263,6 +283,8 @@ async function propose(
   input: {
     chainId: string;
     walletId?: WalletId | undefined;
+    /** Use exactly this mandate of the agent, or refuse. */
+    mandateId?: MandateId | undefined;
     memo: string;
     build: (
       wallet: WalletRow,
@@ -357,6 +379,64 @@ async function propose(
     },
   };
   const hash = intentHash(intent);
+  // The intent's sealed columns, in whichever transaction records it below.
+  const sealed = async () => ({
+    payload: await ctx.sealer.seal(agent.workspaceId, payloadLocation(id), intent),
+    presentation: await ctx.sealer.seal(agent.workspaceId, presentationLocation(id), presentation),
+  });
+
+  const mandateId = await findCoveringMandate(ctx, agent, wallet.id, intent, input.mandateId);
+  if (mandateId !== null) {
+    // Covered: no person is asked. The use runs through the same workflow as an approved
+    // request, and the signer decides whether the mandate covers it when it signs.
+    await engineOf(ctx).openUse({
+      workspaceId: agent.workspaceId,
+      mandateId,
+      subjectId: id,
+      detail: { intentId: id } satisfies IntentApprovalDetail,
+      requestedBy: { type: "agent", id: agent.id },
+      alongside: async (tx, approvalId) => {
+        await tx.insert(intents).values({
+          id,
+          workspaceId: agent.workspaceId,
+          agentId: agent.id,
+          walletId: wallet.id,
+          chainId,
+          status: "approved",
+          intentHash: hash,
+          ...(await sealed()),
+          approvalId,
+          mandateId,
+          createdAt: new Date(intent.createdAt * 1000),
+          updatedAt: new Date(intent.createdAt * 1000),
+        });
+        await appendAudit(
+          ctx,
+          {
+            workspaceId: agent.workspaceId,
+            actor: { type: "agent", id: agent.id },
+            action: "intent.proposed",
+            subject: { type: "intent", id },
+            detail: { memo: intent.memo, operation: intent.operation, mandateId },
+          },
+          tx,
+        );
+      },
+    });
+    const [stored] = await ctx.db
+      .select({ status: intents.status })
+      .from(intents)
+      .where(eq(intents.id, id));
+    return {
+      intentId: id,
+      status: stored?.status ?? "approved",
+      authorizedBy: "mandate",
+      mandateId,
+      approvalUrl: null,
+      expiresAt: null,
+    };
+  }
+
   const summary = await engineOf(ctx).open({
     workspaceId: agent.workspaceId,
     kind: "approve-intent",
@@ -396,12 +476,7 @@ async function propose(
         chainId,
         status: "pending_approval",
         intentHash: hash,
-        payload: await ctx.sealer.seal(agent.workspaceId, payloadLocation(id), intent),
-        presentation: await ctx.sealer.seal(
-          agent.workspaceId,
-          presentationLocation(id),
-          presentation,
-        ),
+        ...(await sealed()),
         approvalId,
         createdAt: new Date(intent.createdAt * 1000),
         updatedAt: new Date(intent.createdAt * 1000),
@@ -426,7 +501,8 @@ async function propose(
   return {
     intentId: id,
     status: stored?.status ?? "pending_approval",
-    approvalId: summary.id,
+    authorizedBy: "person",
+    mandateId: null,
     approvalUrl: approvalLink(ctx.config.publicOrigin, agent.workspaceId, summary.id),
     expiresAt: summary.expiresAt,
   };
@@ -442,6 +518,7 @@ export function proposeTransfer(
     asset?: "native" | `0x${string}` | undefined;
     memo: string;
     walletId?: WalletId | undefined;
+    mandateId?: MandateId | undefined;
   },
 ): Promise<ProposalResult> {
   const to = input.to.toLowerCase() as `0x${string}`;
@@ -449,6 +526,7 @@ export function proposeTransfer(
   return propose(ctx, agent, {
     chainId: input.chainId,
     walletId: input.walletId,
+    mandateId: input.mandateId,
     memo: input.memo,
     build: async (_wallet, chainId) => {
       const chains = chainAccess(ctx);
@@ -568,15 +646,17 @@ async function walletSummary(ctx: AppContext, walletId: WalletId): Promise<Walle
 }
 
 /**
- * Sign the intent's transaction once. Runs in a workflow step, which may run again after a
- * crash: an existing transaction row ends it, and the signer returns the transaction it already
- * signed for this approval id, so a re-run cannot create a second transaction.
+ * Sign the intent's transaction once, with `sign`: the signer's `sign` with people's
+ * authorization, or its `signUnderMandate` for a use. Runs in a workflow step, which may run
+ * again after a crash: an existing transaction row ends it, and the signer returns the
+ * transaction it already signed for this approval id, so a re-run cannot create a second
+ * transaction.
  */
 async function executeIntent(
   ctx: AppContext,
   approval: ApprovalRow,
-  authorization: Authorization,
   detail: IntentApprovalDetail,
+  sign: (intent: Intent, transaction: TransactionParams) => Promise<SignResponse>,
 ): Promise<void> {
   const row = await intentRow(ctx, detail.intentId);
   if (await transactionOf(ctx, approval.id)) return;
@@ -591,7 +671,7 @@ async function executeIntent(
     maxFeeWei: BigInt(intent.maxFeeWei),
     gasEstimate: BigInt(presentation.simulation?.gasEstimate ?? FALLBACK_GAS.toString()),
     intentId: row.id,
-    sign: (transaction) => ctx.signer.sign({ intent, authorization, transaction }),
+    sign: (transaction) => sign(intent, transaction),
     stored: (tx) =>
       moveIntent(ctx, row, ["approved", "pending_approval"], "signed", { executor: tx }),
   });
@@ -660,49 +740,69 @@ export function approveIntentKind(): ApprovalKindHandler<"approve-intent"> {
       return { kind: "approve-intent", intent };
     },
     async execute(ctx, approval, authorization, detail) {
-      await executeIntent(ctx, approval, authorization, detail as IntentApprovalDetail);
+      await executeIntent(ctx, approval, detail as IntentApprovalDetail, (intent, transaction) =>
+        ctx.signer.sign({ intent, authorization, transaction }),
+      );
     },
-    async abandon(ctx, approval, status, detail) {
-      // Ended without a signature we stored: a reserved nonce goes back to the wallet.
-      await releaseNonce(ctx, approval.id);
-      const row = await intentRow(ctx, (detail as IntentApprovalDetail).intentId);
-      if (status === "failed") {
-        const code = approval.failureCode ?? "failed";
-        await moveIntent(
-          ctx,
-          row,
-          ["pending_approval", "approved"],
-          code === "policy_denied" || isPolicyCode(code) ? "denied" : "failed",
-          { failureCode: code },
-        );
-        return;
-      }
-      await moveIntent(ctx, row, ["pending_approval", "approved"], status);
-    },
+    abandon: abandonIntent,
   };
 }
 
-/** Codes from the policy engine, which the signer passes on as the detail of `policy_denied`. */
-function isPolicyCode(code: string): boolean {
-  return [
-    "wallet_mismatch",
-    "requester_not_allowed",
-    "chain_not_allowed",
-    "recipient_not_allowed",
-    "contract_call_not_allowed",
-    "asset_not_allowed",
-    "over_per_tx_cap",
-    "over_daily_cap",
-    "over_fee_cap",
-  ].includes(code);
+/**
+ * `mandate-use`: one payment a mandate covers, signed with no person asked. The signer checks
+ * the mandate and the wallet's policy against its own records and counts the use in the same
+ * database transaction as the signature; a refusal (for example `mandate_over_window_cap` when
+ * another use took the last of the window) ends the intent `denied` with that code.
+ */
+export function mandateUseKind(): MandateUseHandler {
+  return {
+    kind: "mandate-use",
+    async execute(ctx, use, detail) {
+      const { mandateId } = use;
+      if (mandateId === null) throw new Error("a mandate use without its mandate");
+      await executeIntent(ctx, use, detail as IntentApprovalDetail, (intent, transaction) =>
+        ctx.signer.signUnderMandate(mandateId, { approvalId: use.id, intent, transaction }),
+      );
+    },
+    abandon: abandonIntent,
+  };
 }
 
+/** An intent's request or use ended without a signature: the intent ends with it. */
+async function abandonIntent(
+  ctx: AppContext,
+  approval: ApprovalRow,
+  status: "rejected" | "expired" | "cancelled" | "failed",
+  detail: unknown,
+): Promise<void> {
+  // Ended without a signature we stored: a reserved nonce goes back to the wallet.
+  await releaseNonce(ctx, approval.id);
+  const row = await intentRow(ctx, (detail as IntentApprovalDetail).intentId);
+  if (status === "failed") {
+    const code = approval.failureCode ?? "failed";
+    // A policy's or a mandate's reason, which the signer passes on as the detail of
+    // `policy_denied` and `mandate_denied`, means it was refused, not that something broke.
+    const refused =
+      code === "policy_denied" ||
+      (POLICY_DENY_CODES as readonly string[]).includes(code) ||
+      (MANDATE_DENY_CODES as readonly string[]).includes(code);
+    await moveIntent(ctx, row, ["pending_approval", "approved"], refused ? "denied" : "failed", {
+      failureCode: code,
+    });
+    return;
+  }
+  await moveIntent(ctx, row, ["pending_approval", "approved"], status);
+}
+
+/** `approve-intent` and `mandate-use`: both sign an intent and follow its transaction. */
 export function registerIntentKind(ctx: AppContext, options: ExecutionOptions): void {
   const engine = engineOf(ctx);
   engine.register(approveIntentKind());
-  engine.registerFollowUp("approve-intent", (context, approval) =>
-    followUpIntent(context, approval, options),
-  );
+  engine.registerUse(mandateUseKind());
+  const followUp = (context: AppContext, approval: ApprovalRow) =>
+    followUpIntent(context, approval, options);
+  engine.registerFollowUp("approve-intent", followUp);
+  engine.registerFollowUp("mandate-use", followUp);
 }
 
 export type { IntentRow };

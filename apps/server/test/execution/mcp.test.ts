@@ -47,6 +47,8 @@ describe("the MCP gateway", () => {
         isDefault: true,
       }),
     ]);
+    // No one approved anything in advance for this agent.
+    expect(me.mandates).toEqual([]);
   });
 
   it("refuses a missing or unknown token", async () => {
@@ -106,10 +108,19 @@ describe("the MCP gateway", () => {
         arguments: { chainId: TEST_CHAIN_ID, to: RECIPIENT, amount: "0.01", memo: "rent" },
       }),
     );
-    expect(proposed.status).toBe("pending_approval");
+    expect(proposed).toMatchObject({
+      status: "pending_approval",
+      authorizedBy: "person",
+      mandateId: null,
+    });
     expect(String(proposed.approvalUrl)).toMatch(
       new RegExp(`^${TEST_ORIGIN}/w/${f.workspaceId}/approvals/apr_`),
     );
+    expect(
+      toolJson(
+        await mine.callTool({ name: "get_intent", arguments: { intentId: proposed.intentId } }),
+      ),
+    ).toMatchObject({ authorizedBy: "person", mandateId: null });
 
     const sibling = await f.newAgent("Sibling");
     const theirs = await f.mcp(sibling.token);

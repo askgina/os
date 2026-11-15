@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import type { ApprovalId, IntentId } from "@askgina/os-protocol";
+import type { ApprovalId, IntentId, MandateId } from "@askgina/os-protocol";
 import { scanForMarkers } from "@askgina/os-testkit";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -203,5 +203,67 @@ describe("the approval workflow", () => {
     const nonce = rows[0]?.nonce ?? -1;
     const wallet = f.agent.address;
     expect(await anvil.getTransactionCount({ address: wallet })).toBe(nonce + 1);
+  });
+
+  it("signs a mandated payment exactly once when the process died between the use and its run", async () => {
+    const engine = engineOf(f.t.ctx);
+    const to = randomAddress();
+    // The grant itself runs through the workflow like every other request.
+    const grant = await f.t.owner.browser.api.call("proposeMandate", {
+      params: { workspaceId: f.workspaceId, walletId: f.agent.walletId },
+      body: {
+        agentId: f.agent.id,
+        assets: [
+          {
+            chainId: TEST_CHAIN_ID as `eip155:${number}`,
+            asset: "native",
+            maxPerAction: (10n ** 17n).toString(),
+            maxPerWindow: (10n ** 17n).toString(),
+            maxTotal: (10n ** 17n).toString(),
+          },
+        ],
+        windowSeconds: 86_400,
+        recipients: [to],
+        maxUses: 3,
+        maxFeePerActionWei: "100000000000000000",
+        notAfter: f.t.clock.now() + 86_400,
+        purpose: "workflow mandate",
+      },
+    });
+    await until(
+      () => approvalRow(grant.id as ApprovalId),
+      (row) => row.runId !== null,
+    );
+    await f.t.approveOnPage(f.t.owner, grant.id as ApprovalId);
+    await until(
+      () => approvalRow(grant.id as ApprovalId),
+      (row) => row.status === "executed",
+    );
+
+    // The use row is recorded, then the process dies before any run starts for it.
+    engine.attachRuntime(null);
+    const { client, intentId, approvalId } = await proposeOverMcp("mandated", to);
+    engine.attachRuntime(workflowRuntime(f.t.ctx));
+    const use = await approvalRow(approvalId);
+    expect(use).toMatchObject({ kind: "mandate-use", status: "approved", runId: null });
+
+    // After the restart the sweeper starts its run, which signs under the mandate.
+    const final = await until(
+      async () =>
+        toolJson(
+          await client.callTool({ name: "get_intent", arguments: { intentId, waitSeconds: 2 } }),
+        ),
+      (view) => view.status === "confirmed",
+    );
+    expect(final).toMatchObject({ authorizedBy: "mandate", mandateId: use.mandateId });
+    const rows = await f.t.ctx.db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.intentId, intentId));
+    expect(rows).toHaveLength(1);
+    expect((await approvalRow(approvalId)).status).toBe("executed");
+    expect(await anvil.getBalance({ address: to })).toBe(10n ** 16n);
+    const mandate = await f.t.ctx.signer.getMandate(use.mandateId as MandateId);
+    expect(mandate.usage.uses).toBe(1);
   });
 });

@@ -212,6 +212,27 @@ function Subject({
       );
     case "sweep-wallet":
       return <SweepSubject subject={subject} workspace={workspace} />;
+    case "grant-mandate":
+      return (
+        <Summary
+          title={`Let ${subject.agent.name} pay from ${subject.wallet.label} without asking`}
+        >
+          <Facts>
+            <Fact label="Agent">{subject.agent.name}</Fact>
+            <Fact label="From wallet">{subject.wallet.label}</Fact>
+            <Fact label="Payments">{subject.mandate.maxUses}</Fact>
+            <Fact label="Until">{new Date(subject.mandate.notAfter * 1000).toLocaleString()}</Fact>
+            <Fact label="Recipients" wide>
+              <code className="font-mono text-xs break-all">
+                {subject.mandate.recipients.join(", ")}
+              </code>
+            </Fact>
+          </Facts>
+          <p className="text-sm text-muted-foreground">
+            The signer's confirmation page shows every limit of this approval in advance.
+          </p>
+        </Summary>
+      );
   }
 }
 

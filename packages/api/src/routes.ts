@@ -1,9 +1,12 @@
 import {
   Address,
+  AgentId,
   AssertionResponse,
   AssetRef,
   ChainId,
+  MandateId,
   SignerDecision,
+  WalletId,
 } from "@askgina/os-protocol";
 import { z } from "zod";
 import {
@@ -19,6 +22,9 @@ import {
   IntentDetail,
   IntentSummary,
   InviteSummary,
+  MandateDetail,
+  MandateDraft,
+  MandateSummary,
   Member,
   PasskeySummary,
   PolicyDraft,
@@ -257,6 +263,41 @@ export const routes = {
     ApprovalSummary,
   ),
 
+  // --- mandates -------------------------------------------------------------------------------
+  /**
+   * Owners only. Opens a `grant-mandate` request at the workspace's admin threshold: once enough
+   * people approve it on the signer's confirmation page, the agent's transfers from this wallet
+   * that fit are signed with no person asked. The server checks the draft against the signer's
+   * copy of the wallet's policy first (`invalid_request` with the reason as `detail`, for example
+   * `over_daily_cap` or `lifetime_too_long`); the signer checks it again when it grants it.
+   */
+  proposeMandate: post(
+    "/api/v1/workspaces/:workspaceId/wallets/:walletId/mandates",
+    MandateDraft,
+    ApprovalSummary,
+  ),
+  /** Newest first. `status`: `active` while one can still sign, `ended` once it never will. */
+  listMandates: list(
+    "/api/v1/workspaces/:workspaceId/mandates",
+    z.strictObject({
+      walletId: WalletId.optional(),
+      agentId: AgentId.optional(),
+      status: z.enum(["active", "ended"]).optional(),
+      cursor: Cursor.optional(),
+    }),
+    page(MandateSummary),
+  ),
+  getMandate: get("/api/v1/workspaces/:workspaceId/mandates/:mandateId", MandateDetail),
+  /**
+   * Owners and approvers. Ends the mandate for good at the signer. Needs no passkey, because it
+   * only removes authority; revoking an ended mandate changes nothing.
+   */
+  revokeMandate: post(
+    "/api/v1/workspaces/:workspaceId/mandates/:mandateId/revoke",
+    NoBody,
+    MandateSummary,
+  ),
+
   // --- approvals ------------------------------------------------------------------------------
   listApprovals: list(
     "/api/v1/workspaces/:workspaceId/approvals",
@@ -273,7 +314,12 @@ export const routes = {
   reject: post("/api/v1/approvals/:approvalId/reject", NoBody, ApprovalDetail),
 
   // --- intents --------------------------------------------------------------------------------
-  listIntents: list("/api/v1/workspaces/:workspaceId/intents", cursorQuery, page(IntentSummary)),
+  /** Newest first; with `mandateId`, only the intents signed under that mandate. */
+  listIntents: list(
+    "/api/v1/workspaces/:workspaceId/intents",
+    z.strictObject({ cursor: Cursor.optional(), mandateId: MandateId.optional() }),
+    page(IntentSummary),
+  ),
   getIntent: get("/api/v1/intents/:intentId", IntentDetail),
 
   // --- audit ----------------------------------------------------------------------------------

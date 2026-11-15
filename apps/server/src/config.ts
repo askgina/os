@@ -63,8 +63,13 @@ const Environment = z
     WEB_DIST_DIR: z.string().min(1).optional(),
 
     SESSION_TTL_SECONDS: integer(43_200, 300, 2_592_000),
-    /** How long approvals of policies, approvers, thresholds and resumes stay open. */
+    /** How long approvals of policies, approvers, thresholds, resumes and mandates stay open. */
     ADMIN_APPROVAL_TTL_SECONDS: integer(3_600, 60, 86_400),
+    /**
+     * The longest life of a mandate a person may propose, checked when they propose it. Set it
+     * equal to the signer's `SIGNER_MAX_MANDATE_SECONDS`, whose value decides.
+     */
+    MANDATE_MAX_SECONDS: integer(604_800, 3_600, 2_592_000),
     /** How long a broadcast transaction is watched before it is reported as stuck. */
     RECONCILE_TIMEOUT_SECONDS: integer(3_600, 30, 604_800),
     WORKFLOW_WORKER_CONCURRENCY: integer(10, 1, 200),
@@ -100,6 +105,7 @@ export interface Config {
   webDistDir: string | undefined;
   sessionTtlSeconds: number;
   adminApprovalTtlSeconds: number;
+  mandateMaxSeconds: number;
   reconcileTimeoutSeconds: number;
   workflowWorkerConcurrency: number;
   notifyWebhookUrl: string | undefined;
@@ -137,6 +143,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     webDistDir: parsed.WEB_DIST_DIR,
     sessionTtlSeconds: parsed.SESSION_TTL_SECONDS,
     adminApprovalTtlSeconds: parsed.ADMIN_APPROVAL_TTL_SECONDS,
+    mandateMaxSeconds: parsed.MANDATE_MAX_SECONDS,
     reconcileTimeoutSeconds: parsed.RECONCILE_TIMEOUT_SECONDS,
     workflowWorkerConcurrency: parsed.WORKFLOW_WORKER_CONCURRENCY,
     notifyWebhookUrl: parsed.NOTIFY_WEBHOOK_URL,

@@ -381,7 +381,7 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
       return person.browser.api.call("collectApproval", { params: { approvalId }, body: {} });
     },
     async approve(approvalId, people) {
-      const opened = await engine.row(approvalId);
+      const opened = await engine.request(approvalId);
       if (opened.status === "pending" && opened.envelope.type === "add-approver") {
         const link = await engine.ensureConfirmation(opened);
         if (link === null) throw new Error(`${approvalId} has no confirmation page`);
@@ -391,12 +391,12 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
         }
       }
       for (const person of people) {
-        const row = await engine.row(approvalId);
+        const row = await engine.request(approvalId);
         if (row.status !== "pending") break;
         const link = await engine.ensureConfirmation(row);
         if (link === null) throw new Error(`${approvalId} has no confirmation page`);
         await approveAt(link, person, row.envelope);
-        await engine.collect(await engine.row(approvalId));
+        await engine.collect(await engine.request(approvalId));
         const [counted] = await ctx.db
           .select({ userId: schema.approvalAssertions.userId })
           .from(schema.approvalAssertions)

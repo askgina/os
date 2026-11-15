@@ -1,4 +1,4 @@
-import type { Intent, WalletPolicy } from "@askgina/os-protocol";
+import type { Intent, Mandate, WalletPolicy } from "@askgina/os-protocol";
 import type {
   AgentSummary,
   ApprovalDetail,
@@ -6,6 +6,9 @@ import type {
   AuditEvent,
   IntentDetail,
   IntentSummary,
+  MandateDetail,
+  MandateDraft,
+  MandateSummary,
   Member,
   PasskeySummary,
   SessionInfo,
@@ -22,6 +25,7 @@ export const WALLET = `wal_${ULID}3` as const;
 export const INTENT = `int_${ULID}4` as const;
 export const APPROVAL = `apr_${ULID}5` as const;
 export const USER = `usr_${ULID}6` as const;
+export const MANDATE = `mnd_${ULID}7` as const;
 const T0 = 1_700_000_000;
 const ADDRESS = "0x1111111111111111111111111111111111111111" as const;
 const HASH = "c".repeat(64);
@@ -174,6 +178,7 @@ export const intentSummary: IntentSummary = {
   memo: "refund order 7",
   createdAt: T0,
   approvalId: APPROVAL,
+  mandateId: null,
   transactionHash: null,
   failureCode: null,
 };
@@ -293,6 +298,112 @@ export const signerDecision = {
   code: null,
   previousHash: null,
   hash: HASH,
+};
+
+export const mandate: Mandate = {
+  v: 1,
+  id: MANDATE,
+  workspaceId: WS,
+  walletId: WALLET,
+  agentId: AGENT,
+  assets: [
+    {
+      chainId: "eip155:8453",
+      asset: "native",
+      maxPerAction: "5",
+      maxPerWindow: "10",
+      maxTotal: "15",
+    },
+  ],
+  windowSeconds: 86_400,
+  recipients: [ADDRESS, "0x2222222222222222222222222222222222222222"],
+  maxUses: 3,
+  maxFeePerActionWei: "1000",
+  notBefore: T0,
+  notAfter: T0 + 7 * 86_400,
+  purpose: "refunds this week",
+};
+
+export const mandateDraft: MandateDraft = {
+  agentId: AGENT,
+  assets: mandate.assets,
+  windowSeconds: mandate.windowSeconds,
+  recipients: mandate.recipients,
+  maxUses: mandate.maxUses,
+  maxFeePerActionWei: mandate.maxFeePerActionWei,
+  notAfter: mandate.notAfter,
+  purpose: mandate.purpose,
+};
+
+const mandateAssets = [
+  {
+    chainId: "eip155:8453" as const,
+    asset: "native" as const,
+    symbol: "ETH",
+    decimals: 18,
+    worstCase: "15",
+    policy: { maxPerTx: "10", maxPerDay: "20" },
+  },
+];
+
+export const mandateSummary: MandateSummary = {
+  id: MANDATE,
+  workspaceId: WS,
+  walletId: WALLET,
+  agent: { id: AGENT, name: "billing bot" },
+  mandate,
+  mandateHash: HASH,
+  status: "active",
+  endedReason: null,
+  grantApprovalId: APPROVAL,
+  grantedAt: T0 + 60,
+  grantedBy: [user],
+  revokedAt: null,
+  assets: mandateAssets,
+  usage: {
+    uses: 1,
+    usesLeft: 2,
+    assets: [{ chainId: "eip155:8453", asset: "native", usedTotal: "5", usedInWindow: "5" }],
+  },
+};
+
+export const mandateDetail: MandateDetail = {
+  ...mandateSummary,
+  intents: [{ ...intentSummary, status: "confirmed", approvalId: null, mandateId: MANDATE }],
+  intentsCursor: null,
+};
+
+export const grantApprovalDetail: ApprovalDetail = {
+  ...approvalSummary,
+  kind: "grant-mandate",
+  title: "Let billing bot make up to 3 payments from billing bot without asking",
+  requestedBy: { type: "user", id: USER, name: "Ada" },
+  envelope: {
+    v: 1,
+    type: "grant-mandate",
+    approvalId: APPROVAL,
+    workspaceId: WS,
+    nonce: "AAAAAAAAAAAAAAAAAAAAAA",
+    issuedAt: T0,
+    expiresAt: T0 + 600,
+    mandateId: MANDATE,
+    walletId: WALLET,
+    agentId: AGENT,
+    mandateHash: HASH,
+  },
+  approvedBy: [],
+  rejectedBy: null,
+  canDecide: true,
+  subject: {
+    kind: "grant-mandate",
+    wallet,
+    agent: { id: AGENT, name: "billing bot" },
+    mandate,
+    mandateHash: HASH,
+    assets: mandateAssets,
+    usage: null,
+  },
+  confirmUrl: `https://approve.os.example.com/a/${APPROVAL}#AAAAAAAAAAAAAAAAAAAAAA`,
 };
 
 export const policyDraft = {

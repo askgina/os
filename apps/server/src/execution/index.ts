@@ -4,6 +4,7 @@ import type { AppContext } from "../context.ts";
 import { approvals } from "../db/schema.ts";
 import { engineOf } from "./approvals.ts";
 import { registerIntentKind } from "./intents.ts";
+import { registerMandateKinds } from "./mandates.ts";
 import { registerApprovalAndIntentRoutes } from "./routes.ts";
 import { registerSteps, unregisterSteps } from "./steps.ts";
 import { registerSweepKind } from "./sweeps.ts";
@@ -21,7 +22,10 @@ const START_GRACE_SECONDS = 10;
 const SWEEP_INTERVAL_MS = 3_000;
 const DEFAULT_OPTIONS: ExecutionOptions = { pollSeconds: 5 };
 
-/** The approval, intent and sweep routes, and the kinds that sign: `approve-intent` and `sweep-wallet`. */
+/**
+ * The approval, intent, sweep and mandate routes, and the kinds that sign or grant:
+ * `approve-intent`, `mandate-use`, `sweep-wallet` and `grant-mandate`.
+ */
 export function registerExecution(
   app: Hono,
   ctx: AppContext,
@@ -29,6 +33,7 @@ export function registerExecution(
 ): void {
   registerIntentKind(ctx, options);
   registerSweepKind(ctx, options);
+  registerMandateKinds(ctx);
   registerApprovalAndIntentRoutes(app, ctx);
 }
 

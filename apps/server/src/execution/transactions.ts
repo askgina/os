@@ -169,7 +169,7 @@ export async function releaseNonce(ctx: AppContext, approvalId: ApprovalId): Pro
  * again after a crash: the caller returns early when a transaction row exists, and the signer
  * returns the transaction it already signed for this approval id, so a re-run cannot create a
  * second transaction. A permanent signer refusal releases the nonce and ends the request with
- * the signer's code (for `policy_denied`, the policy's reason).
+ * the signer's code (for `policy_denied` and `mandate_denied`, the policy's or mandate's reason).
  */
 export async function signOnce(
   ctx: AppContext,
@@ -210,7 +210,9 @@ export async function signOnce(
       // A permanent refusal: nothing was signed, so the nonce is free for the next approval.
       await releaseNonce(ctx, approval.id);
       throw new ApprovalFailure(
-        error.code === "policy_denied" && error.detail ? error.detail : error.code,
+        (error.code === "policy_denied" || error.code === "mandate_denied") && error.detail
+          ? error.detail
+          : error.code,
         "the signer refused to sign",
       );
     }

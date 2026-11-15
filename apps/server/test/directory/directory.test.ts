@@ -417,7 +417,7 @@ function directoryKinds(): Map<string, ApprovalKindHandler> {
 
 async function replay(approvalId: ApprovalId): Promise<void> {
   const engine = engineOf(t.ctx);
-  const row = await engine.row(approvalId);
+  const row = await engine.request(approvalId);
   const handler = directoryKinds().get(row.kind);
   if (!handler) throw new Error(`no handler for ${row.kind}`);
   // The signer already applied this approval, so the handler never uses the authorization.

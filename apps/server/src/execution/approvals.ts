@@ -12,6 +12,7 @@ import {
   type Assertion,
   type AssertionResponse,
   Envelope,
+  type MandateId,
   newId,
   PROTOCOL_VERSION,
   type UserId,
@@ -19,17 +20,22 @@ import {
 } from "@askgina/os-protocol";
 import { SignerError } from "@askgina/os-protocol/signer";
 import { verifyAuthorization } from "@askgina/os-protocol/webauthn";
-import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import {
   type ApprovalEngine,
   ApprovalFailure,
   type ApprovalKindHandler,
   type ApprovalRow,
+  isRequest,
+  type MandateUseHandler,
   type OpenApproval,
+  type OpenUse,
+  type RequestRow,
 } from "../approvals/kinds.ts";
 import { appendAudit } from "../audit.ts";
 import type { AppContext, Executor, Session, Transaction } from "../context.ts";
 import {
+  type ApprovalRowKind,
   agents,
   approvalAssertions,
   approvalRejections,
@@ -84,7 +90,8 @@ const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
 export class Engine implements ApprovalEngine {
   readonly #ctx: AppContext;
   readonly #handlers = new Map<ApprovalKind, ApprovalKindHandler>();
-  readonly #followUps = new Map<ApprovalKind, FollowUp>();
+  #useHandler: MandateUseHandler | null = null;
+  readonly #followUps = new Map<ApprovalRowKind, FollowUp>();
   /**
    * Set by `startBackground` once the World runs. Until then requests are recorded without a
    * workflow, and the sweeper starts their workflows when the runtime is up.
@@ -99,11 +106,16 @@ export class Engine implements ApprovalEngine {
     this.#handlers.set(handler.kind, handler as unknown as ApprovalKindHandler);
   }
 
+  /** Called once at boot by the intents module, which signs each use. */
+  registerUse(handler: MandateUseHandler): void {
+    this.#useHandler = handler;
+  }
+
   attachRuntime(runtime: WorkflowRuntime | null): void {
     this.#runtime = runtime;
   }
 
-  registerFollowUp(kind: ApprovalKind, followUp: FollowUp): void {
+  registerFollowUp(kind: ApprovalRowKind, followUp: FollowUp): void {
     this.#followUps.set(kind, followUp);
   }
 
@@ -111,6 +123,11 @@ export class Engine implements ApprovalEngine {
     const handler = this.#handlers.get(kind);
     if (!handler) throw new Error(`no handler registered for approval kind ${kind}`);
     return handler;
+  }
+
+  #use(): MandateUseHandler {
+    if (this.#useHandler === null) throw new Error("no handler registered for mandate uses");
+    return this.#useHandler;
   }
 
   async open<K extends ApprovalKind>(input: OpenApproval<K>): Promise<ApprovalSummary> {
@@ -158,7 +175,7 @@ export class Engine implements ApprovalEngine {
     });
     await this.startRun(id, input.workspaceId, expiresAt);
     this.#notify(id, input.workspaceId, input.kind);
-    const row = await this.row(id);
+    const row = await this.request(id);
     // The confirmation page is ready before anyone looks. The request is already recorded, so a
     // failure here does not fail it: the first view of the request tries again.
     await this.ensureConfirmation(row).catch((error: unknown) => {
@@ -169,6 +186,55 @@ export class Engine implements ApprovalEngine {
       });
     });
     return this.summary(row);
+  }
+
+  /**
+   * Record one use of a mandate: a `mandate-use` row, already approved, with no envelope and no
+   * person, and start the workflow that signs it under the mandate, exactly as it would sign an
+   * approved request. The row's outbox entry is `needed`, so a run that is lost before it first
+   * looks is started again by the sweeper. Not shown in any list of approvals.
+   */
+  async openUse(input: OpenUse): Promise<ApprovalRow> {
+    const ctx = this.#ctx;
+    this.#use();
+    const id = newId("apr");
+    const at = new Date(ctx.now() * 1000);
+    await ctx.db.transaction(async (tx) => {
+      await tx.insert(approvals).values({
+        id,
+        workspaceId: input.workspaceId,
+        kind: "mandate-use",
+        subjectId: input.subjectId,
+        status: "approved",
+        envelope: null,
+        mandateId: input.mandateId,
+        // Nobody approves a use: the mandate's grant was approved at the admin threshold.
+        threshold: 0,
+        detail: await ctx.sealer.seal(input.workspaceId, detailLocation(id), input.detail ?? null),
+        requestedByType: input.requestedBy.type,
+        requestedById: input.requestedBy.id,
+        createdAt: at,
+        // Decided when it is created, so it never waits and never expires.
+        expiresAt: at,
+        decidedAt: at,
+        resumeState: "needed",
+      });
+      await input.alongside?.(tx, id);
+      await appendAudit(
+        ctx,
+        {
+          workspaceId: input.workspaceId,
+          actor: { type: input.requestedBy.type, id: input.requestedBy.id },
+          action: "mandate.used",
+          subject: { type: "approval", id },
+          detail: { mandateId: input.mandateId, subjectId: input.subjectId },
+        },
+        tx,
+      );
+    });
+    await this.startRun(id, input.workspaceId, seconds(at));
+    this.#notifyUse(id, input.workspaceId, input.mandateId);
+    return this.row(id);
   }
 
   /**
@@ -269,6 +335,16 @@ export class Engine implements ApprovalEngine {
     return row;
   }
 
+  /**
+   * A request people decide on. A use of a mandate is no such request and answers `not_found`
+   * like an id that does not exist: it is never shown, approved or rejected.
+   */
+  async request(id: string, executor: Executor = this.#ctx.db): Promise<RequestRow> {
+    const row = await this.row(id, executor);
+    if (!isRequest(row)) throw new HttpError("not_found", "no such approval");
+    return row;
+  }
+
   async openDetail(row: ApprovalRow): Promise<unknown> {
     if (row.detail === null) return null;
     return this.#ctx.sealer.open(row.workspaceId, detailLocation(row.id), row.detail);
@@ -280,7 +356,7 @@ export class Engine implements ApprovalEngine {
     return row.status;
   }
 
-  async summary(row: ApprovalRow): Promise<ApprovalSummary> {
+  async summary(row: RequestRow): Promise<ApprovalSummary> {
     const ctx = this.#ctx;
     const detail = await this.openDetail(row);
     const [count] = await ctx.db
@@ -302,7 +378,7 @@ export class Engine implements ApprovalEngine {
     };
   }
 
-  async detail(row: ApprovalRow, session: Session): Promise<ApprovalDetail> {
+  async detail(row: RequestRow, session: Session): Promise<ApprovalDetail> {
     const ctx = this.#ctx;
     const detail = await this.openDetail(row);
     const approvedBy = await ctx.db
@@ -348,7 +424,7 @@ export class Engine implements ApprovalEngine {
    * have open, so a request is opened once. Null when the request no longer waits, and while
    * the signer refuses to open it or cannot be reached; a later view tries again.
    */
-  async ensureConfirmation(row: ApprovalRow): Promise<string | null> {
+  async ensureConfirmation(row: RequestRow): Promise<string | null> {
     const ctx = this.#ctx;
     if (this.shownStatus(row) !== "pending") return null;
     const link = async (sealed: Uint8Array) => {
@@ -398,7 +474,7 @@ export class Engine implements ApprovalEngine {
    * approver, before it is stored and counted. Safe to repeat. An unreachable signer is logged
    * and asked again on the next call.
    */
-  async collect(row: ApprovalRow): Promise<void> {
+  async collect(row: RequestRow): Promise<void> {
     const ctx = this.#ctx;
     if (this.shownStatus(row) !== "pending" || row.confirmation === null) return;
     let listed: Assertion[];
@@ -446,7 +522,8 @@ export class Engine implements ApprovalEngine {
     filter: { status?: "pending" | "all" | undefined; cursor?: string | undefined },
   ): Promise<{ items: ApprovalSummary[]; nextCursor: string | null }> {
     const ctx = this.#ctx;
-    const conditions = [eq(approvals.workspaceId, workspaceId)];
+    // Uses of mandates are not approvals people make: no list or count ever shows one.
+    const conditions = [eq(approvals.workspaceId, workspaceId), ne(approvals.kind, "mandate-use")];
     if (filter.status !== "all") {
       conditions.push(eq(approvals.status, "pending"));
       conditions.push(sql`${approvals.expiresAt} > ${new Date(ctx.now() * 1000)}`);
@@ -468,14 +545,14 @@ export class Engine implements ApprovalEngine {
     const page = rows.slice(0, PAGE_SIZE);
     const last = page.at(-1);
     // Approvals made on the confirmation page count as soon as someone looks at the inbox.
-    const current: ApprovalRow[] = [];
-    for (const row of page) {
+    const current: RequestRow[] = [];
+    for (const row of page.filter(isRequest)) {
       if (row.confirmation === null || this.shownStatus(row) !== "pending") {
         current.push(row);
         continue;
       }
       await this.collect(row);
-      current.push(await this.row(row.id));
+      current.push(await this.request(row.id));
     }
     return {
       items: await Promise.all(current.map((row) => this.summary(row))),
@@ -519,7 +596,7 @@ export class Engine implements ApprovalEngine {
    * envelope's digest, top-level at the confirmation page's origin. The signer checks again with
    * its own registry when it acts; this refuses garbage before it is stored or counted.
    */
-  async #verify(row: ApprovalRow, userId: UserId, response: AssertionResponse): Promise<Verdict> {
+  async #verify(row: RequestRow, userId: UserId, response: AssertionResponse): Promise<Verdict> {
     const ctx = this.#ctx;
     const [membership] = await ctx.db
       .select({ role: memberships.role })
@@ -551,7 +628,7 @@ export class Engine implements ApprovalEngine {
    * `closed`: the request no longer waits; `duplicate`: this person's approval is already in.
    */
   async #record(
-    row: ApprovalRow,
+    row: RequestRow,
     userId: UserId,
     credentialId: string,
     response: AssertionResponse,
@@ -610,7 +687,7 @@ export class Engine implements ApprovalEngine {
     });
   }
 
-  async reject(row: ApprovalRow, session: Session): Promise<void> {
+  async reject(row: RequestRow, session: Session): Promise<void> {
     const ctx = this.#ctx;
     const mine = await this.activeApproverCredentials(row.workspaceId, session.user.id);
     if (mine.length === 0) {
@@ -703,21 +780,30 @@ export class Engine implements ApprovalEngine {
         const row = await this.row(approvalId);
         if (row.status === "executed") return { ok: true };
         if (row.status !== "approved") return { ok: false, code: `not_approved_${row.status}` };
-        const assertions = await ctx.db
-          .select()
-          .from(approvalAssertions)
-          .where(eq(approvalAssertions.approvalId, row.id))
-          .orderBy(asc(approvalAssertions.createdAt));
-        const authorization = {
-          envelope: row.envelope,
-          assertions: assertions.map((assertion) => ({
-            userId: assertion.userId,
-            credentialId: assertion.credentialId,
-            response: assertion.response,
-          })),
-        };
         try {
-          await this.handler(row.kind).execute(ctx, row, authorization, await this.openDetail(row));
+          if (isRequest(row)) {
+            const assertions = await ctx.db
+              .select()
+              .from(approvalAssertions)
+              .where(eq(approvalAssertions.approvalId, row.id))
+              .orderBy(asc(approvalAssertions.createdAt));
+            const authorization = {
+              envelope: row.envelope,
+              assertions: assertions.map((assertion) => ({
+                userId: assertion.userId,
+                credentialId: assertion.credentialId,
+                response: assertion.response,
+              })),
+            };
+            await this.handler(row.kind).execute(
+              ctx,
+              row,
+              authorization,
+              await this.openDetail(row),
+            );
+          } else {
+            await this.#use().execute(ctx, row, await this.openDetail(row));
+          }
         } catch (error) {
           if (error instanceof ApprovalFailure) return { ok: false, code: error.code };
           throw error;
@@ -794,7 +880,9 @@ export class Engine implements ApprovalEngine {
     status: "rejected" | "expired" | "cancelled" | "failed",
   ): Promise<void> {
     const ctx = this.#ctx;
-    await this.handler(row.kind).abandon?.(ctx, row, status, await this.openDetail(row));
+    const detail = await this.openDetail(row);
+    if (isRequest(row)) await this.handler(row.kind).abandon?.(ctx, row, status, detail);
+    else await this.#use().abandon(ctx, row, status, detail);
     try {
       await ctx.signer.revokeApproval(row.id, row.workspaceId);
     } catch (error) {
@@ -847,12 +935,21 @@ export class Engine implements ApprovalEngine {
 
   /** Tell the operator's webhook that something waits. Identifiers only; never blocks. */
   #notify(approvalId: ApprovalId, workspaceId: WorkspaceId, kind: ApprovalKind): void {
+    this.#post(approvalId, { event: "approval.opened", approvalId, workspaceId, kind });
+  }
+
+  /** Tell the operator's webhook that a mandate is being used. Identifiers only; never blocks. */
+  #notifyUse(approvalId: ApprovalId, workspaceId: WorkspaceId, mandateId: MandateId): void {
+    this.#post(approvalId, { event: "mandate.used", approvalId, workspaceId, mandateId });
+  }
+
+  #post(approvalId: ApprovalId, body: Record<string, string>): void {
     const url = this.#ctx.config.notifyWebhookUrl;
     if (url === undefined) return;
     fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ event: "approval.opened", approvalId, workspaceId, kind }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(5_000),
     }).catch(() => {
       this.#ctx.log.warn("approval webhook failed", { approvalId });

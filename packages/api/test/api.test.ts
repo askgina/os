@@ -3,6 +3,7 @@ import {
   ApiError,
   ApprovalDetail,
   ApprovalSubject,
+  ApprovalSummary,
   apiErrorStatus,
   createApiClient,
   DisplayName,
@@ -94,6 +95,24 @@ const examples: { [N in RouteName]: { body?: unknown; query?: unknown; response:
     body: { chainId: "eip155:8453", asset: "native", to: f.sweep.to },
     response: { ...f.approvalSummary, kind: "sweep-wallet" },
   },
+  proposeMandate: {
+    body: f.mandateDraft,
+    response: { ...f.approvalSummary, kind: "grant-mandate" },
+  },
+  listMandates: {
+    query: { walletId: f.WALLET, agentId: f.AGENT, status: "active", cursor: "c1" },
+    response: { items: [f.mandateSummary], nextCursor: null },
+  },
+  getMandate: { response: f.mandateDetail },
+  revokeMandate: {
+    body: {},
+    response: {
+      ...f.mandateSummary,
+      status: "revoked",
+      endedReason: "revoked",
+      revokedAt: 1_700_000_100,
+    },
+  },
   listApprovals: {
     query: { status: "pending" },
     response: { items: [f.approvalSummary], nextCursor: "c1" },
@@ -105,7 +124,7 @@ const examples: { [N in RouteName]: { body?: unknown; query?: unknown; response:
     response: { ...f.approvalDetail, status: "rejected", rejectedBy: f.user, confirmUrl: null },
   },
   listIntents: {
-    query: { cursor: "c1" },
+    query: { cursor: "c1", mandateId: f.MANDATE },
     response: { items: [f.intentSummary], nextCursor: null },
   },
   getIntent: { response: f.intentDetail },
@@ -178,6 +197,30 @@ describe("route contract", () => {
       false,
     );
     expect(ApprovalDetail.safeParse({ ...f.approvalDetail, extra: 1 }).success).toBe(false);
+  });
+
+  it("a grant's subject carries the exact mandate, and a draft the protocol refuses does not parse", () => {
+    expect(ApprovalDetail.parse(f.grantApprovalDetail)).toEqual(f.grantApprovalDetail);
+    const zero = "0x0000000000000000000000000000000000000000";
+    const subject = f.grantApprovalDetail.subject;
+    expect(
+      ApprovalSubject.safeParse({ ...subject, mandate: { ...f.mandate, recipients: [zero] } })
+        .success,
+    ).toBe(false);
+    const draft = routes.proposeMandate.body;
+    expect(draft.safeParse({ ...f.mandateDraft, recipients: [] }).success).toBe(false);
+    expect(draft.safeParse({ ...f.mandateDraft, purpose: "pay\u202eevil" }).success).toBe(false);
+    expect(draft.safeParse({ ...f.mandateDraft, windowSeconds: 60 }).success).toBe(false);
+    expect(draft.safeParse({ ...f.mandateDraft, workspaceId: f.WS, notBefore: 0 }).success).toBe(
+      false,
+    );
+  });
+
+  it("one use of a mandate is never an approval people see", () => {
+    expect(
+      ApprovalSummary.safeParse({ ...f.approvalSummary, kind: "mandate-use", threshold: 0 })
+        .success,
+    ).toBe(false);
   });
 
   it("the confirmation link the UI turns into a link is only ever an http or https address", () => {

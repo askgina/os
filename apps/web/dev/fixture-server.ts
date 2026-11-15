@@ -33,6 +33,9 @@ import {
   CONTENT_SECURITY_POLICY,
   type IntentDetail,
   type InviteSummary,
+  type MandateAssetView,
+  type MandateDraft,
+  type MandateSummary,
   type Member,
   type PasskeySummary,
   type PolicyDraft,
@@ -45,12 +48,17 @@ import {
 } from "@askgina/os-api";
 import {
   AssertionResponse,
+  checkMandateAgainstPolicy,
   type Envelope,
   envelopeChallenge,
   type Intent,
   intentHash,
   keyFingerprint,
+  type Mandate,
+  mandateHash,
+  mandateWorstCase,
   newId,
+  normalizeMandate,
   normalizePolicy,
   policyHash,
   type SignerDecision,
@@ -159,6 +167,8 @@ interface State {
   workspaces: Map<string, Workspace>;
   approvals: Map<string, Approval>;
   intents: Map<string, IntentDetail & { workspaceId: string }>;
+  /** Granted mandates, as the server reports them. */
+  mandates: Map<string, MandateSummary>;
   tokens: Map<string, string>;
   invites: Map<
     string,
@@ -186,6 +196,7 @@ function freshState(): State {
     workspaces: new Map(),
     approvals: new Map(),
     intents: new Map(),
+    mandates: new Map(),
     tokens: new Map(),
     invites: new Map(),
     spent: new Map(),
@@ -658,6 +669,7 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
     walletId: wallet.id,
     chainId: intent.chainId,
     status: "pending_approval",
+    mandateId: null,
     display: {
       title: kind === "call" ? `Call contract ${short(to)}` : `Send ${formatted} ${symbol}`,
       assetSymbol: symbol,
@@ -1356,6 +1368,182 @@ const handlers: Record<RouteName, Handler> = {
     });
     return approval.summary;
   },
+  proposeMandate: ({ params, body, userId }) => {
+    const id = signedIn(userId);
+    const workspace = workspaceOf(params.workspaceId ?? "");
+    requireOwner(workspace, id);
+    const wallet = workspace.wallets.find((item) => item.id === params.walletId);
+    if (!wallet) throw new Refusal("not_found", "This wallet does not exist.");
+    const draft = body as MandateDraft;
+    const agent = workspace.agents.find((item) => item.id === draft.agentId);
+    if (!agent) throw new Refusal("invalid_request", "agentId: not an agent of this workspace");
+    if (!wallet.policy) {
+      throw new Refusal(
+        "policy_denied",
+        "This wallet has no approved policy yet.",
+        "policy_missing",
+      );
+    }
+    let mandate: Mandate;
+    try {
+      mandate = normalizeMandate({
+        ...draft,
+        v: 1,
+        id: newId("mnd"),
+        workspaceId: workspace.id as Mandate["workspaceId"],
+        walletId: wallet.id,
+        notBefore: now(),
+      });
+    } catch {
+      throw new Refusal("invalid_request", "This mandate is not valid.");
+    }
+    // Mirrors the server: checked against the policy and the longest life (7 days) first.
+    const refusal = checkMandateAgainstPolicy(mandate, wallet.policy, {
+      now: now(),
+      maxSeconds: 604_800,
+    });
+    if (refusal !== null) {
+      throw new Refusal(
+        "invalid_request",
+        "The wallet's policy or the longest mandate life refuses this mandate.",
+        refusal,
+      );
+    }
+    const hash = mandateHash(mandate);
+    const assets: MandateAssetView[] = mandateWorstCase(mandate).map((entry) => {
+      const limit = wallet.policy?.assets.find(
+        (item) => item.chainId === entry.chainId && item.asset === entry.asset,
+      );
+      const known =
+        entry.asset === "native"
+          ? { symbol: "ETH", decimals: 18 }
+          : entry.asset === TEST_USDC
+            ? { symbol: "USDC", decimals: 6 }
+            : { symbol: null, decimals: null };
+      return {
+        chainId: entry.chainId,
+        asset: entry.asset,
+        ...known,
+        worstCase: entry.amount.toString(),
+        policy: limit ? { maxPerTx: limit.maxPerTx, maxPerDay: limit.maxPerDay } : null,
+      };
+    });
+    const payments = mandate.maxUses === 1 ? "1 payment" : `${mandate.maxUses} payments`;
+    const approval = openApproval({
+      workspace,
+      kind: "grant-mandate",
+      title: `Let ${agent.name} make up to ${payments} from ${wallet.label} without asking`,
+      requestedBy: {
+        type: "user",
+        id: id as Member["user"]["id"],
+        name: state.users.get(id) ?? "",
+      },
+      threshold: workspace.adminThreshold,
+      ttl: 3600,
+      envelope: {
+        mandateId: mandate.id,
+        walletId: wallet.id,
+        agentId: agent.id,
+        mandateHash: hash,
+      },
+      subject: {
+        kind: "grant-mandate",
+        wallet: { ...wallet },
+        agent: { id: agent.id, name: agent.name },
+        mandate,
+        mandateHash: hash,
+        assets,
+        usage: null,
+      },
+      apply: () => {
+        state.mandates.set(mandate.id, {
+          id: mandate.id,
+          workspaceId: workspace.id as MandateSummary["workspaceId"],
+          walletId: wallet.id,
+          agent: { id: agent.id, name: agent.name },
+          mandate,
+          mandateHash: hash,
+          status: "active",
+          endedReason: null,
+          grantApprovalId: approval.summary.id,
+          grantedAt: now(),
+          grantedBy: approval.approvedBy.map((user) => userSummary(user.id)),
+          revokedAt: null,
+          assets,
+          usage: {
+            uses: 0,
+            usesLeft: mandate.maxUses,
+            assets: mandate.assets.map((limit) => ({
+              chainId: limit.chainId,
+              asset: limit.asset,
+              usedTotal: "0",
+              usedInWindow: "0",
+            })),
+          },
+        });
+        decide(workspace, approval.summary.id, "grant-mandate", null);
+      },
+    });
+    return approval.summary;
+  },
+  listMandates: ({ params, query, userId }) => {
+    const id = signedIn(userId);
+    const workspace = workspaceOf(params.workspaceId ?? "");
+    memberOf(workspace, id);
+    const items = [...state.mandates.values()]
+      .filter(
+        (item) =>
+          item.workspaceId === workspace.id &&
+          (query.walletId === undefined || item.walletId === query.walletId) &&
+          (query.agentId === undefined || item.agent.id === query.agentId) &&
+          (query.status === undefined ||
+            (query.status === "active") === (item.endedReason === null)),
+      )
+      .sort((a, b) => b.grantedAt - a.grantedAt || (a.id < b.id ? 1 : -1));
+    return { items, nextCursor: null };
+  },
+  getMandate: ({ params, userId }) => {
+    const id = signedIn(userId);
+    const workspace = workspaceOf(params.workspaceId ?? "");
+    memberOf(workspace, id);
+    const mandate = state.mandates.get(params.mandateId ?? "");
+    if (!mandate || mandate.workspaceId !== workspace.id) {
+      throw new Refusal("not_found", "This mandate does not exist.");
+    }
+    const intents = [...state.intents.values()]
+      .filter((item) => item.mandateId === mandate.id)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map((item) => {
+        const {
+          intent: _intent,
+          intentHash: _hash,
+          simulation: _sim,
+          transaction: _tx,
+          ...summary
+        } = stripIntent(item);
+        return summary;
+      });
+    return { ...mandate, intents, intentsCursor: null };
+  },
+  revokeMandate: ({ params, userId }) => {
+    const id = signedIn(userId);
+    const workspace = workspaceOf(params.workspaceId ?? "");
+    if (memberOf(workspace, id).role === "viewer") {
+      throw new Refusal("forbidden", "Only an owner or an approver can do this.");
+    }
+    const mandate = state.mandates.get(params.mandateId ?? "");
+    if (!mandate || mandate.workspaceId !== workspace.id) {
+      throw new Refusal("not_found", "This mandate does not exist.");
+    }
+    if (mandate.status !== "revoked") {
+      mandate.status = "revoked";
+      mandate.revokedAt = now();
+      mandate.endedReason ??= "revoked";
+      decide(workspace, mandate.grantApprovalId, "revoke-mandate", null);
+      audit(workspace, userActor(id), "mandate.revoked", { type: "mandate", id: mandate.id });
+    }
+    return mandate;
+  },
   listApprovals: ({ params, query, userId }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
@@ -1690,6 +1878,15 @@ function confirmationLines(approval: Approval): { label: string; value: string }
       ];
     case "resume-workspace":
       return [{ label: "Workspace", value: workspaceOf(approval.summary.workspaceId).name }];
+    case "grant-mandate":
+      return [
+        { label: "Agent", value: subject.agent.name },
+        { label: "From wallet", value: `${subject.wallet.label} ${subject.wallet.address}` },
+        { label: "Recipients", value: subject.mandate.recipients.join(", ") },
+        { label: "Payments", value: String(subject.mandate.maxUses) },
+        { label: "Until", value: new Date(subject.mandate.notAfter * 1000).toISOString() },
+        { label: "Their purpose", value: subject.mandate.purpose || "(none)" },
+      ];
   }
 }
 

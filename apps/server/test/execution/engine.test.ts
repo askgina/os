@@ -430,9 +430,9 @@ describe("approving an intent", () => {
 
 describe("origin check on the execution routes", () => {
   // The identity test app covers every other write; these exist only here.
-  const writes = (["collectApproval", "reject", "requestSweep"] as const).map(
-    (name) => [name, routes[name]] as const,
-  );
+  const writes = (
+    ["collectApproval", "reject", "requestSweep", "proposeMandate", "revokeMandate"] as const
+  ).map((name) => [name, routes[name]] as const);
 
   it.each(writes)("%s refuses a write without a same-site Origin", async (_name, route) => {
     const path = route.path.replace(/:[A-Za-z]+/g, "x");

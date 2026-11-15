@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { IntentStatus, type IntentSummary } from "@askgina/os-api";
-import { type AgentId, Memo, type WalletId } from "@askgina/os-protocol";
+import { type AgentId, type MandateId, Memo, type WalletId } from "@askgina/os-protocol";
 import { createMcpHandler, type McpHttpHandler, McpServer } from "@modelcontextprotocol/server";
 import { and, eq, isNull, lt, or } from "drizzle-orm";
 import type { Hono } from "hono";
@@ -18,6 +18,7 @@ import {
   proposeContractCall,
   proposeTransfer,
 } from "../execution/intents.ts";
+import { activeMandatesOf } from "../execution/mandates.ts";
 import { HttpError } from "../http/errors.ts";
 
 type AgentRow = typeof agents.$inferSelect;
@@ -46,6 +47,10 @@ const WalletIdInput = z
   .string()
   .regex(/^wal_[0-9a-hjkmnp-tv-z]{26}$/)
   .transform((value) => value as WalletId);
+const MandateIdInput = z
+  .string()
+  .regex(/^mnd_[0-9a-hjkmnp-tv-z]{26}$/)
+  .transform((value) => value as MandateId);
 const CalldataInput = z
   .string()
   .regex(/^0x[0-9a-fA-F]{8}(?:[0-9a-fA-F]{2})*$/)
@@ -73,7 +78,7 @@ export const MCP_TOOL_NAMES = [
 ] as const;
 
 const APPROVAL_NOTE =
-  "Nothing is sent yet: a person must approve the proposal with their passkey first. Call get_intent with the returned intentId and waitSeconds (up to 50) to wait for the outcome; repeat until the status is final (confirmed, reverted, stuck, rejected, expired, cancelled, denied or failed). A stuck transaction is still valid and can later become confirmed or reverted.";
+  'If a mandate a person approved in advance covers the proposal (see whoami), it is signed and sent with no person asked: the answer says authorizedBy "mandate", its mandateId, status approved, and approvalUrl and expiresAt null. Otherwise (authorizedBy "person") nothing is sent yet: a person must approve the proposal with their passkey first, at approvalUrl, before expiresAt. Either way, call get_intent with the returned intentId and waitSeconds (up to 50) to wait for the outcome; repeat until the status is final (confirmed, reverted, stuck, rejected, expired, cancelled, denied or failed). A stuck transaction is still valid and can later become confirmed or reverted. Two proposals racing for the last of a mandate\'s budget can both start approved: the signer signs one and the other ends denied with a counter code such as mandate_over_window_cap, and your next proposal then waits for a person.';
 
 function json(value: unknown) {
   return {
@@ -130,6 +135,8 @@ function intentView(ctx: AppContext, summary: IntentSummary) {
   return {
     intentId: summary.id,
     status: summary.status,
+    authorizedBy: summary.mandateId === null ? "person" : "mandate",
+    mandateId: summary.mandateId,
     walletId: summary.walletId,
     chainId: summary.chainId,
     title: summary.display.title,
@@ -162,12 +169,17 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
     "whoami",
     {
       description:
-        "Describe who you are in this system: your agent id and name, your workspace, and the wallets you may propose from, with their addresses, the chains they work on and their per-transaction and daily limits. Call this first.",
+        "Describe who you are in this system: your agent id and name, your workspace, the wallets you may propose from, with their addresses, the chains they work on and their per-transaction and daily limits, and your live mandates: what people approved in advance, which the signer signs with no person asked (recipients, caps per payment, per window and in total in base units, what was used, payments left, end time). Call this first.",
       inputSchema: z.object({}),
     },
     async () =>
       answer(ctx, "whoami", async () => {
         const usable = await walletsFor(ctx, agent);
+        const live = await activeMandatesOf(
+          ctx,
+          agent,
+          usable.map((wallet) => wallet.id),
+        );
         return json({
           agent: { id: agent.id, name: agent.name },
           workspaceId: agent.workspaceId,
@@ -188,6 +200,30 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
                     contractCalls: wallet.policy.contractCalls,
                     approvalsNeeded: wallet.policy.approvals.threshold,
                   },
+          })),
+          mandates: live.map(({ mandate, usage }) => ({
+            mandateId: mandate.id,
+            walletId: mandate.walletId,
+            purpose: mandate.purpose,
+            recipients: mandate.recipients,
+            windowSeconds: mandate.windowSeconds,
+            assets: mandate.assets.map((limit) => {
+              const used = usage.assets.find(
+                (entry) => entry.chainId === limit.chainId && entry.asset === limit.asset,
+              );
+              return {
+                chainId: limit.chainId,
+                asset: limit.asset,
+                maxPerAction: limit.maxPerAction,
+                maxPerWindow: limit.maxPerWindow,
+                maxTotal: limit.maxTotal,
+                usedInWindow: used?.inWindow ?? "0",
+                usedTotal: used?.total ?? "0",
+              };
+            }),
+            maxFeePerActionWei: mandate.maxFeePerActionWei,
+            usesLeft: Math.max(0, mandate.maxUses - usage.uses),
+            notAfter: mandate.notAfter,
           })),
         });
       }),
@@ -228,7 +264,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
   server.registerTool(
     "propose_transfer",
     {
-      description: `Propose sending the chain's native coin or an ERC-20 token from one of your wallets. ${APPROVAL_NOTE} If the wallet's policy would refuse the transfer, you get a policy_denied error with a reason code and nothing is recorded.`,
+      description: `Propose sending the chain's native coin or an ERC-20 token from one of your wallets. ${APPROVAL_NOTE} If the wallet's policy would refuse the transfer, you get a policy_denied error with a reason code and nothing is recorded. Name a mandateId to use exactly that mandate: if it does not cover the transfer you get a policy_denied error with its reason code (for example mandate_over_window_cap or mandate_expired) and nothing is recorded.`,
       inputSchema: z.object({
         chainId: z.string().describe('The chain, as "eip155:<number>", from whoami.'),
         to: EvmAddress.describe("The recipient's address."),
@@ -244,24 +280,19 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
           "Why you want this, in one or two sentences. People read it before approving.",
         ),
         walletId: WalletIdInput.optional().describe("A wallet id from whoami; defaults to yours."),
+        mandateId: MandateIdInput.optional().describe(
+          "A mandateId from whoami to use exactly that mandate; by default the one that covers the transfer and ends first is used, or a person is asked.",
+        ),
       }),
     },
     async (input) =>
-      answer(ctx, "propose_transfer", async () => {
-        const result = await proposeTransfer(ctx, agent, input);
-        return json({
-          intentId: result.intentId,
-          status: result.status,
-          approvalUrl: result.approvalUrl,
-          expiresAt: result.expiresAt,
-        });
-      }),
+      answer(ctx, "propose_transfer", async () => json(await proposeTransfer(ctx, agent, input))),
   );
 
   server.registerTool(
     "propose_contract_call",
     {
-      description: `Propose calling a contract with raw calldata from one of your wallets. Works only for contracts the wallet's policy allowlists. ${APPROVAL_NOTE}`,
+      description: `Propose calling a contract with raw calldata from one of your wallets. Works only for contracts the wallet's policy allowlists. A mandate never covers a contract call: a person always approves it. ${APPROVAL_NOTE}`,
       inputSchema: z.object({
         chainId: z.string().describe('The chain, as "eip155:<number>", from whoami.'),
         to: EvmAddress.describe("The contract's address."),
@@ -278,22 +309,16 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
       }),
     },
     async (input) =>
-      answer(ctx, "propose_contract_call", async () => {
-        const result = await proposeContractCall(ctx, agent, input);
-        return json({
-          intentId: result.intentId,
-          status: result.status,
-          approvalUrl: result.approvalUrl,
-          expiresAt: result.expiresAt,
-        });
-      }),
+      answer(ctx, "propose_contract_call", async () =>
+        json(await proposeContractCall(ctx, agent, input)),
+      ),
   );
 
   server.registerTool(
     "get_intent",
     {
       description:
-        "Read one of your proposals. With waitSeconds, wait up to that long for its status to change before answering. When the transaction exists, the answer carries its hash and an explorer link; when it ended without one, failureCode says why.",
+        "Read one of your proposals. With waitSeconds, wait up to that long for its status to change before answering. authorizedBy says whether a mandate (mandateId) or a person approves it. When the transaction exists, the answer carries its hash and an explorer link; when it ended without one, failureCode says why.",
       inputSchema: z.object({
         intentId: z.string().describe("The intentId a propose tool returned."),
         waitSeconds: z

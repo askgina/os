@@ -1,10 +1,11 @@
-import type { ApprovalKind } from "@askgina/os-api";
+import type { ApprovalKind, MandateEndedReason } from "@askgina/os-api";
 import type {
   AgentId,
   ApprovalId,
   AssertionResponse,
   Envelope,
   IntentId,
+  MandateId,
   UserId,
   WalletId,
   WalletPolicy,
@@ -12,8 +13,10 @@ import type {
 } from "@askgina/os-protocol";
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   bigint,
   boolean,
+  check,
   customType,
   index,
   integer,
@@ -272,8 +275,17 @@ export type ApprovalStatusColumn =
   | "failed";
 
 /**
- * One request for people to authorize an envelope with their passkeys. Every kind of envelope
- * goes through this table and the same workflow: collect assertions, then apply the effect.
+ * The kinds of row in `approvals`: every request people approve with passkeys, and
+ * `mandate-use`, one payment a mandate covers. A use is created already approved, has no
+ * envelope, and is never shown as an approval; it exists so a mandated payment runs through the
+ * same workflow, signing, crash recovery and follow-up as an approved one.
+ */
+export type ApprovalRowKind = ApprovalKind | "mandate-use";
+
+/**
+ * One request for people to authorize an envelope with their passkeys, or one use of a mandate.
+ * Every kind goes through this table and the same workflow: collect assertions (none for a use),
+ * then apply the effect.
  */
 export const approvals = os.table(
   "approvals",
@@ -284,12 +296,19 @@ export const approvals = os.table(
       .notNull()
       .references(() => workspaces.id),
     /** The kinds this control plane opens, a subset of the envelope kinds the signer knows. */
-    kind: text("kind").$type<ApprovalKind>().notNull(),
-    /** What the request is about: an intent id, a wallet id, a credential id or the workspace id. */
+    kind: text("kind").$type<ApprovalRowKind>().notNull(),
+    /**
+     * What the request is about: an intent id, a wallet id, a credential id, a mandate id or the
+     * workspace id.
+     */
     subjectId: text("subject_id").notNull(),
     status: text("status").$type<ApprovalStatusColumn>().notNull().default("pending"),
-    /** Exactly what passkeys sign. Identifiers, hashes and times only. */
-    envelope: jsonb("envelope").$type<Envelope>().notNull(),
+    /** Exactly what passkeys sign. Identifiers, hashes and times only. Null for a `mandate-use`. */
+    envelope: jsonb("envelope").$type<Envelope>(),
+    /** The mandate a `mandate-use` runs under; null for every other kind. */
+    mandateId: text("mandate_id")
+      .$type<MandateId>()
+      .references((): AnyPgColumn => mandates.id),
     threshold: integer("threshold").notNull(),
     /** Sealed. What the kind's handler needs to apply the effect, for example a proposed policy. */
     detail: bytea("detail"),
@@ -317,6 +336,14 @@ export const approvals = os.table(
     index("approvals_workspace_status_idx").on(table.workspaceId, table.status, table.createdAt),
     index("approvals_subject_idx").on(table.kind, table.subjectId),
     index("approvals_resume_idx").on(table.resumeState),
+    check(
+      "approvals_use_has_no_envelope",
+      sql`(${table.kind} = 'mandate-use') = (${table.envelope} IS NULL)`,
+    ),
+    check(
+      "approvals_use_has_mandate",
+      sql`(${table.kind} = 'mandate-use') = (${table.mandateId} IS NOT NULL)`,
+    ),
   ],
 );
 
@@ -350,6 +377,56 @@ export const approvalRejections = os.table("approval_rejections", {
     .references(() => users.id),
   createdAt: createdAt(),
 });
+
+// --- mandates ---------------------------------------------------------------------------------
+
+/**
+ * Mirror of the mandates the signer holds, written once people granted one. The signer alone
+ * enforces a mandate and counts its uses; `status` is what this control plane last learned
+ * (`active` while it may still sign, `ended` for good, with the first reason seen), refreshed
+ * from the signer whenever a mandate is used or shown.
+ */
+export const mandates = os.table(
+  "mandates",
+  {
+    id: text("id").$type<MandateId>().primaryKey(),
+    workspaceId: text("workspace_id")
+      .$type<WorkspaceId>()
+      .notNull()
+      .references(() => workspaces.id),
+    walletId: text("wallet_id")
+      .$type<WalletId>()
+      .notNull()
+      .references(() => wallets.id),
+    agentId: text("agent_id")
+      .$type<AgentId>()
+      .notNull()
+      .references(() => agents.id),
+    mandateHash: text("mandate_hash").notNull(),
+    /** Sealed. The canonical `Mandate`, its purpose included. */
+    mandate: bytea("mandate").notNull(),
+    notBefore: time("not_before").notNull(),
+    notAfter: time("not_after").notNull(),
+    /** The `grant-mandate` request people approved it with. */
+    grantApprovalId: text("grant_approval_id")
+      .$type<ApprovalId>()
+      .notNull()
+      .references(() => approvals.id),
+    status: text("status").$type<"active" | "ended">().notNull().default("active"),
+    endedReason: text("ended_reason").$type<MandateEndedReason>(),
+    createdAt: createdAt(),
+    updatedAt: time("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("mandates_wallet_idx").on(table.workspaceId, table.walletId, table.status),
+    index("mandates_agent_idx").on(table.agentId, table.status),
+    uniqueIndex("mandates_grant_idx").on(table.grantApprovalId),
+    check(
+      "mandates_ended_has_reason",
+      sql`(${table.status} = 'ended') = (${table.endedReason} IS NOT NULL)`,
+    ),
+  ],
+);
 
 // --- intents and transactions -----------------------------------------------------------------
 
@@ -391,7 +468,12 @@ export const intents = os.table(
     payload: bytea("payload").notNull(),
     /** Sealed. `{ display: IntentDisplay, simulation: Simulation | null }`. */
     presentation: bytea("presentation").notNull(),
+    /** The request that signs it: an `approve-intent`, or the `mandate-use` when a mandate covered it. */
     approvalId: text("approval_id").$type<ApprovalId>(),
+    /** The mandate it was signed under, with no person asked; null when people approve it. */
+    mandateId: text("mandate_id")
+      .$type<MandateId>()
+      .references(() => mandates.id),
     failureCode: text("failure_code"),
     createdAt: createdAt(),
     updatedAt: time("updated_at").notNull().defaultNow(),
@@ -399,6 +481,7 @@ export const intents = os.table(
   (table) => [
     index("intents_workspace_idx").on(table.workspaceId, table.createdAt),
     index("intents_agent_idx").on(table.agentId, table.createdAt),
+    index("intents_mandate_idx").on(table.mandateId, table.createdAt),
   ],
 );
 

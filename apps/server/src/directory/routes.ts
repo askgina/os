@@ -30,6 +30,7 @@ import {
   wallets,
   workspaces,
 } from "../db/schema.ts";
+import { revokeAgentMandates } from "../execution/mandates.ts";
 import { fromSignerError, HttpError } from "../http/errors.ts";
 import { handle } from "../http/route.ts";
 import { finishRegistration, insertPasskey, startRegistration } from "../identity/ceremonies.ts";
@@ -722,6 +723,24 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
       return row;
     });
     if (!updated) throw new HttpError("not_found", "no such agent");
+    // The gateway already refuses the agent; its mandates end at the signer too, so nothing is
+    // signed under them even by a control plane that ignored the status. Done after the status
+    // change, so a grant applied meanwhile sees the agent disabled and revokes itself.
+    await revokeAgentMandates(ctx, updated, actorOf(session)).then(
+      (revoked) =>
+        ctx.log.info("agent mandates revoked", {
+          event: "agent.mandates_revoked",
+          workspaceId,
+          agentId: agent.id,
+          count: revoked,
+        }),
+      (error: unknown) =>
+        ctx.log.warn("revoking an agent's mandates failed", {
+          workspaceId,
+          agentId: agent.id,
+          code: error instanceof SignerError ? error.code : "unreachable",
+        }),
+    );
     return agentSummary(updated);
   });
 

@@ -12,7 +12,11 @@ import {
   Hex32,
   Intent,
   IntentId,
+  Mandate,
+  MandateAssetLimit,
+  MandateId,
   Memo,
+  PositiveAmount,
   Sweep,
   UserId,
   WalletId,
@@ -32,7 +36,11 @@ export const ApiErrorCode = z.enum([
   "rate_limited",
   /** The signer refused. `detail` carries the signer's own error code. */
   "signer_refused",
-  /** A wallet policy would refuse this proposal. `detail` carries the policy's reason code. */
+  /**
+   * A wallet policy, or the mandate an agent named, would refuse this proposal. `detail` carries
+   * the reason code: a policy's (for example `over_daily_cap`) or a mandate's (for example
+   * `mandate_over_window_cap`, `mandate_expired`).
+   */
   "policy_denied",
   "internal",
 ]);
@@ -46,6 +54,12 @@ export const ApiErrorBody = z.strictObject({
   }),
 });
 export type ApiErrorBody = z.infer<typeof ApiErrorBody>;
+
+/** An opaque position in a list. Pass it back to get the next page. */
+export const Cursor = z.string().min(1).max(256);
+
+export const page = <T extends z.ZodType>(item: T) =>
+  z.strictObject({ items: z.array(item), nextCursor: Cursor.nullable() });
 
 export const apiErrorStatus: Record<ApiErrorCode, number> = {
   invalid_request: 400,
@@ -304,7 +318,13 @@ export const IntentSummary = z.strictObject({
   display: IntentDisplay,
   memo: z.string(),
   createdAt: EpochSeconds,
+  /** The request people approve it with; null when a mandate covered it. */
   approvalId: ApprovalId.nullable(),
+  /**
+   * The mandate it was signed under, with no person asked; null when people approve it. Exactly
+   * one of `approvalId` and `mandateId` is set.
+   */
+  mandateId: MandateId.nullable(),
   transactionHash: Hex32.nullable(),
   failureCode: z.string().nullable(),
 });
@@ -338,6 +358,119 @@ export const IntentDetail = IntentSummary.extend({
 });
 export type IntentDetail = z.infer<typeof IntentDetail>;
 
+// --- mandates ---------------------------------------------------------------------------------
+
+/**
+ * What an owner fills in to approve one agent's transfers in advance: from the wallet in the
+ * path, to the listed recipients, within these caps (base units), until `notAfter`. The server
+ * sets the id, the workspace, the wallet and `notBefore` (now) and puts the lists in order. The
+ * signer checks it against the wallet's policy and its own longest lifetime when people grant it.
+ */
+export const MandateDraft = z.strictObject({
+  agentId: AgentId,
+  assets: z.array(MandateAssetLimit).min(1).max(16),
+  /** The rolling span `maxPerWindow` is counted over: 3600 to 604800 seconds. */
+  windowSeconds: z.number().int().min(3600).max(604_800),
+  recipients: z.array(Address).min(1).max(64),
+  maxUses: z.number().int().min(1).max(10_000),
+  maxFeePerActionWei: PositiveAmount,
+  notAfter: EpochSeconds,
+  /** The person's own reason, shown with the mandate. */
+  purpose: Memo,
+});
+export type MandateDraft = z.infer<typeof MandateDraft>;
+
+/**
+ * Where a mandate stands, as the signer computes it when asked.
+ * - `active`: payments that fit are signed with no person asked.
+ * - `not_yet_valid`, `expired`: the signer's clock is before `notBefore`, or at or after `notAfter`.
+ * - `exhausted`: its uses, or every asset's total, are spent.
+ * - `revoked`: ended for good.
+ */
+export const MandateStatus = z.enum(["active", "not_yet_valid", "expired", "exhausted", "revoked"]);
+export type MandateStatus = z.infer<typeof MandateStatus>;
+
+/**
+ * Why a mandate can never sign again, as the control plane first saw it: a person revoked it
+ * (`revoked`), a passkey that granted it stopped approving (`grantor_removed`), the operator
+ * ended it on the signer host or the signer no longer holds it after a restore (`operator`),
+ * `expired`, `exhausted`, or its agent was disabled (`agent_disabled`).
+ */
+export const MandateEndedReason = z.enum([
+  "revoked",
+  "grantor_removed",
+  "operator",
+  "expired",
+  "exhausted",
+  "agent_disabled",
+]);
+export type MandateEndedReason = z.infer<typeof MandateEndedReason>;
+
+/** One asset of a mandate as a person reads it. */
+export const MandateAssetView = z.strictObject({
+  chainId: ChainId,
+  asset: AssetRef,
+  /** How the asset is shown; null when its chain is not configured here or the token could not be read. */
+  symbol: z.string().nullable(),
+  decimals: z.number().int().min(0).max(36).nullable(),
+  /** `min(maxTotal, maxUses × maxPerAction)` in base units: the most that can leave the wallet under it. */
+  worstCase: Amount,
+  /** The wallet policy's caps for this asset, which still apply to every payment; null when the policy lists none. */
+  policy: z.strictObject({ maxPerTx: Amount, maxPerDay: Amount }).nullable(),
+});
+export type MandateAssetView = z.infer<typeof MandateAssetView>;
+
+/** What the signer counted under a mandate. Counted payments are never given back. */
+export const MandateUsageSummary = z.strictObject({
+  uses: z.number().int().min(0),
+  usesLeft: z.number().int().min(0),
+  /** Per asset of the mandate, in base units: all signed under it, and in the last `windowSeconds`. */
+  assets: z
+    .array(
+      z.strictObject({
+        chainId: ChainId,
+        asset: AssetRef,
+        usedTotal: Amount,
+        usedInWindow: Amount,
+      }),
+    )
+    .max(16),
+});
+export type MandateUsageSummary = z.infer<typeof MandateUsageSummary>;
+
+export const MandateSummary = z.strictObject({
+  id: MandateId,
+  workspaceId: WorkspaceId,
+  walletId: WalletId,
+  agent: z.strictObject({ id: AgentId, name: z.string() }),
+  /** Exactly what people approved, and what the signer enforces. */
+  mandate: Mandate,
+  mandateHash: Digest,
+  status: MandateStatus,
+  /** Set once the mandate can never sign again; null while it still can. */
+  endedReason: MandateEndedReason.nullable(),
+  /** The `grant-mandate` request people approved it with. */
+  grantApprovalId: ApprovalId,
+  grantedAt: EpochSeconds,
+  grantedBy: z.array(UserSummary),
+  revokedAt: EpochSeconds.nullable(),
+  assets: z.array(MandateAssetView),
+  /**
+   * What the signer counted under it. Null when the signer no longer holds it: its volume was
+   * restored from a backup older than the grant.
+   */
+  usage: MandateUsageSummary.nullable(),
+});
+export type MandateSummary = z.infer<typeof MandateSummary>;
+
+export const MandateDetail = MandateSummary.extend({
+  /** The intents signed under it, newest first: the first page of `listIntents` with its `mandateId`. */
+  intents: z.array(IntentSummary),
+  /** Pass to `listIntents` with this `mandateId` for the next page. */
+  intentsCursor: Cursor.nullable(),
+});
+export type MandateDetail = z.infer<typeof MandateDetail>;
+
 // --- approvals --------------------------------------------------------------------------------
 
 /**
@@ -366,6 +499,7 @@ export const ApprovalKind = z.enum([
   "set-admin-threshold",
   "resume-workspace",
   "sweep-wallet",
+  "grant-mandate",
 ]);
 export type ApprovalKind = z.infer<typeof ApprovalKind>;
 
@@ -441,6 +575,17 @@ export const ApprovalSubject = z.discriminatedUnion("kind", [
     destination: z.enum(["allowlist", "treasury"]).nullable(),
     transaction: TransactionInfo.nullable(),
   }),
+  z.strictObject({
+    kind: z.literal("grant-mandate"),
+    wallet: WalletSummary,
+    agent: z.strictObject({ id: AgentId, name: z.string() }),
+    /** The exact structure whose hash people approve. */
+    mandate: Mandate,
+    mandateHash: Digest,
+    assets: z.array(MandateAssetView),
+    /** What the signer counted under it once granted; null while the grant waits. */
+    usage: MandateUsageSummary.nullable(),
+  }),
 ]);
 export type ApprovalSubject = z.infer<typeof ApprovalSubject>;
 
@@ -505,9 +650,3 @@ export const AuditVerification = z.strictObject({
   brokenAt: z.number().int().nullable(),
 });
 export type AuditVerification = z.infer<typeof AuditVerification>;
-
-/** An opaque position in a list. Pass it back to get the next page. */
-export const Cursor = z.string().min(1).max(256);
-
-export const page = <T extends z.ZodType>(item: T) =>
-  z.strictObject({ items: z.array(item), nextCursor: Cursor.nullable() });
