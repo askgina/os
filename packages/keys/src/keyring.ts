@@ -2,16 +2,77 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 /**
- * Wraps and unwraps per-run data keys under a key-encryption key (KEK) that
- * lives outside Postgres. A KMS-backed provider implements the same shape.
+ * Wraps and unwraps per-run data keys under a key-encryption key (KEK) that lives outside
+ * Postgres: in a keyring file ({@link LocalKeyring}) or in a key service such as OpenBao Transit
+ * (`TransitKeyProvider`). Every failure throws {@link KeyProviderUnavailableError} or
+ * {@link KeyProviderRefusedError}; nothing resolves to "no key", because the layers above read
+ * a missing key as permission to store plaintext.
  */
 export interface KeyProvider {
+  /** Connect and read the active KEK. Safe to call again; a network provider re-reads it. */
+  ready(): Promise<void>;
   /** KEK id that new wraps (and `rewrap`) use. */
   activeKekId(): string;
-  /** Whether this provider can unwrap under `kekId`. */
-  hasKek(kekId: string): boolean;
   wrap(kekId: string, dataKey: Uint8Array, aad: Uint8Array): Promise<Uint8Array>;
   unwrap(kekId: string, wrapped: Uint8Array, aad: Uint8Array): Promise<Uint8Array>;
+  /** Stop timers and let go of connections. */
+  close(): Promise<void>;
+}
+
+/** What a failure is about. Ids and HTTP statuses only, never key material or AAD bytes. */
+export interface KeyProviderFailure {
+  kekId?: string;
+  status?: number;
+}
+
+/**
+ * The provider could not be reached or did not answer in time (network error, timeout, 429,
+ * 5xx, a sealed server). Nothing was decided: the same call may succeed later.
+ */
+export class KeyProviderUnavailableError extends Error {
+  override readonly name = "KeyProviderUnavailableError";
+  readonly retryable = true;
+  readonly kekId: string | undefined;
+  readonly status: number | undefined;
+
+  constructor(message: string, failure: KeyProviderFailure = {}) {
+    super(message);
+    this.kekId = failure.kekId;
+    this.status = failure.status;
+  }
+}
+
+/**
+ * The provider answered and refused: the wrapped key does not open under this KEK and AAD, the
+ * KEK or its version is unknown or retired, or the credentials lack permission. Repeating the
+ * call does not help.
+ */
+export class KeyProviderRefusedError extends Error {
+  override readonly name = "KeyProviderRefusedError";
+  readonly retryable = false;
+  readonly kekId: string | undefined;
+  readonly status: number | undefined;
+
+  constructor(message: string, failure: KeyProviderFailure = {}) {
+    super(message);
+    this.kekId = failure.kekId;
+    this.status = failure.status;
+  }
+}
+
+/**
+ * A key provider's settings are missing or malformed. Raised while a provider is built, before
+ * it is used. `setting` names the variable or option, never its value.
+ */
+export class KeyProviderConfigError extends Error {
+  override readonly name = "KeyProviderConfigError";
+  /** The variable or option at fault; boot logs print it. */
+  readonly code: string;
+
+  constructor(message: string, setting: string) {
+    super(message);
+    this.code = setting;
+  }
 }
 
 /** On-disk keyring: `{ "active": "k2", "keys": { "k1": "<base64 32 bytes>", "k2": "..." } }`. */
@@ -19,6 +80,9 @@ export interface KeyringFile {
   active: string;
   keys: Record<string, string>;
 }
+
+/** File KEK ids; never `:` or `@`, so a file id cannot be mistaken for a `bao:` id. */
+const FILE_KEK_ID = /^[A-Za-z0-9_-]+$/;
 
 /** Check the shape of a parsed keyring file. Messages name fields, never values. */
 function parseKeyringFile(value: unknown): KeyringFile {
@@ -34,6 +98,9 @@ function parseKeyringFile(value: unknown): KeyringFile {
   }
   const out: Record<string, string> = {};
   for (const [id, key] of Object.entries(keys)) {
+    if (!FILE_KEK_ID.test(id)) {
+      throw new Error("keyring: every KEK id must match [A-Za-z0-9_-]+");
+    }
     if (typeof key !== "string") throw new Error(`keyring: KEK ${id} is not a base64 string`);
     out[id] = key;
   }
@@ -82,17 +149,17 @@ export class LocalKeyring implements KeyProvider {
     return { active: kekId, keys: { [kekId]: randomBytes(32).toString("base64") } };
   }
 
+  async ready(): Promise<void> {}
+
+  async close(): Promise<void> {}
+
   activeKekId(): string {
     return this.#active;
   }
 
-  hasKek(kekId: string): boolean {
-    return this.#keys.has(kekId);
-  }
-
   #kek(kekId: string): Buffer {
     const kek = this.#keys.get(kekId);
-    if (!kek) throw new Error(`keyring: unknown KEK ${kekId}`);
+    if (!kek) throw new KeyProviderRefusedError(`keyring: unknown KEK ${kekId}`, { kekId });
     return kek;
   }
 
@@ -106,15 +173,24 @@ export class LocalKeyring implements KeyProvider {
 
   async unwrap(kekId: string, wrapped: Uint8Array, aad: Uint8Array): Promise<Uint8Array> {
     const buf = Buffer.from(wrapped);
-    if (buf.length !== IV_BYTES + 32 + TAG_BYTES) throw new Error("keyring: malformed wrapped key");
+    if (buf.length !== IV_BYTES + 32 + TAG_BYTES) {
+      throw new KeyProviderRefusedError("keyring: malformed wrapped key", { kekId });
+    }
     const decipher = createDecipheriv("aes-256-gcm", this.#kek(kekId), buf.subarray(0, IV_BYTES));
     decipher.setAAD(aad);
     decipher.setAuthTag(buf.subarray(buf.length - TAG_BYTES));
-    return new Uint8Array(
-      Buffer.concat([
-        decipher.update(buf.subarray(IV_BYTES, buf.length - TAG_BYTES)),
-        decipher.final(),
-      ]),
-    );
+    try {
+      return new Uint8Array(
+        Buffer.concat([
+          decipher.update(buf.subarray(IV_BYTES, buf.length - TAG_BYTES)),
+          decipher.final(),
+        ]),
+      );
+    } catch {
+      throw new KeyProviderRefusedError(
+        `keyring: the wrapped key does not open under KEK ${kekId} and its associated data`,
+        { kekId },
+      );
+    }
   }
 }

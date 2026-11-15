@@ -9,7 +9,16 @@ import {
 } from "@askgina/os-api";
 import { useMutation } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Ban, Landmark, OctagonAlert, PauseCircle, Trash2, TriangleAlert } from "lucide-react";
+import {
+  Ban,
+  Clock,
+  Landmark,
+  OctagonAlert,
+  PauseCircle,
+  SearchX,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
 import { type ReactNode, useId, useState } from "react";
 import { ErrorState, FormError, Loading, linkClass, useNow } from "@/components/common.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
@@ -23,7 +32,14 @@ import {
 } from "@/components/ui/card.tsx";
 import { Choice } from "@/components/ui/choice.tsx";
 import { Dialog } from "@/components/ui/dialog.tsx";
-import { api, keys, queryClient, useDeletionPreflight } from "@/lib/api.ts";
+import {
+  api,
+  keys,
+  queryClient,
+  useApprovalDetails,
+  useDeletionPreflight,
+  usePendingApprovals,
+} from "@/lib/api.ts";
 import { chainName } from "@/lib/assets.ts";
 import { explainLifecycleError } from "@/lib/codes.ts";
 import { formatUnits, shortAddress } from "@/lib/format.ts";
@@ -36,6 +52,9 @@ import {
   formatDelay,
   heldBalances,
   serverClockOffset,
+  waitingRequests,
+  waitingRetirementOf,
+  walletChangeable,
 } from "@/lib/lifecycle.ts";
 import { formatEndTime } from "@/lib/mandate.ts";
 
@@ -220,6 +239,7 @@ export function RetireWalletCard({
       }),
     onSuccess: async (approval) => {
       await queryClient.invalidateQueries({ queryKey: keys.workspace(workspace.id) });
+      await queryClient.invalidateQueries({ queryKey: ["approvals", workspace.id] });
       await navigate({
         to: "/w/$workspaceId/approvals/$approvalId",
         params: { workspaceId: workspace.id, approvalId: approval.id },
@@ -298,6 +318,7 @@ export function DeleteWorkspaceCard({ workspace }: { workspace: WorkspaceDetail 
       }),
     onSuccess: async (approval) => {
       await queryClient.invalidateQueries({ queryKey: keys.workspace(workspace.id) });
+      await queryClient.invalidateQueries({ queryKey: ["approvals", workspace.id] });
       await navigate({
         to: "/w/$workspaceId/approvals/$approvalId",
         params: { workspaceId: workspace.id, approvalId: approval.id },
@@ -442,6 +463,100 @@ export function DeletedWorkspace({ name }: { name: string }) {
         </div>
       </Alert>
     </div>
+  );
+}
+
+/**
+ * Shown for a workspace the server will not show this person: one that never existed, one they
+ * are not a member of, or one whose deletion finished before this page was opened (a reload after
+ * it, say). The server answers the same for each, so this page does not guess which.
+ */
+export function MissingWorkspace() {
+  return (
+    <div className="grid grid-cols-1 gap-4">
+      <Link to="/" className={linkClass}>
+        ← All workspaces
+      </Link>
+      <Alert className="items-start">
+        <SearchX aria-hidden />
+        <div className="grid min-w-0 grid-cols-1 gap-1">
+          <h1 className="text-lg font-semibold">This workspace does not exist or was deleted</h1>
+          <p className="text-muted-foreground">
+            Or you are not one of its members. If someone sent you a link to it, ask them for an
+            invite.
+          </p>
+        </div>
+      </Alert>
+    </div>
+  );
+}
+
+/**
+ * Links the waiting request to delete the workspace, where people look for it besides the inbox:
+ * on the overview. Shown to every member, as the inbox is.
+ */
+export function WaitingDeletionNotice({ workspace }: { workspace: WorkspaceDetail }) {
+  const watch = workspace.lifecycle.state === "active" && workspace.pendingApprovals > 0;
+  const pending = usePendingApprovals(workspace.id, watch);
+  const request = watch
+    ? waitingRequests(pending.data?.items ?? [], "delete-workspace")[0]
+    : undefined;
+  if (!request) return null;
+  return (
+    <WaitingNotice workspaceId={workspace.id} approvalId={request.id}>
+      Deleting this workspace is waiting for approval.
+    </WaitingNotice>
+  );
+}
+
+/** Links the waiting request to retire this wallet, from the wallet's page. */
+export function WaitingRetirementNotice({
+  wallet,
+  workspace,
+}: {
+  wallet: WalletDetail;
+  workspace: WorkspaceDetail;
+}) {
+  const watch =
+    workspace.lifecycle.state === "active" &&
+    walletChangeable(wallet.lifecycle) &&
+    workspace.pendingApprovals > 0;
+  const pending = usePendingApprovals(workspace.id, watch);
+  // A summary does not name its wallet, so each waiting retirement is read in full.
+  const candidates = watch ? waitingRequests(pending.data?.items ?? [], "retire-wallet") : [];
+  const details = useApprovalDetails(candidates.map((item) => item.id));
+  const request = waitingRetirementOf(details, wallet.id);
+  if (!request) return null;
+  return (
+    <WaitingNotice workspaceId={workspace.id} approvalId={request.id}>
+      Retiring this wallet is waiting for approval.
+    </WaitingNotice>
+  );
+}
+
+function WaitingNotice({
+  workspaceId,
+  approvalId,
+  children,
+}: {
+  workspaceId: string;
+  approvalId: string;
+  children: ReactNode;
+}) {
+  return (
+    <Alert tone="warning">
+      <Clock aria-hidden />
+      <p>
+        {children}{" "}
+        <Link
+          to="/w/$workspaceId/approvals/$approvalId"
+          params={{ workspaceId, approvalId }}
+          className={linkClass}
+        >
+          Open the request
+        </Link>
+      </p>
+    </Alert>
   );
 }
 

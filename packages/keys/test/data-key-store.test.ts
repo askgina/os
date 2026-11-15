@@ -11,6 +11,8 @@ import {
   DataKeyStore,
   DataKeyTenantMismatchError,
   DataKeyUnavailableError,
+  type KeyProvider,
+  KeyProviderUnavailableError,
   type KeyringFile,
   type KeyScope,
   LocalKeyring,
@@ -369,6 +371,84 @@ describe("rewrap", () => {
         [shredded],
       );
       expect(tombstone.rows[0]).toMatchObject({ kek_id: null });
+    } finally {
+      await rotationPool.end();
+      await rotationDb.drop();
+    }
+  });
+});
+
+/** A keyring whose service is down: `ready`, `wrap` and `unwrap` fail while `down` is set. */
+function flakyProvider(file: KeyringFile): KeyProvider & { down: boolean; readyCalls: number } {
+  const ring = new LocalKeyring(file);
+  const outage = () => new KeyProviderUnavailableError("test: the provider is down");
+  return {
+    down: true,
+    readyCalls: 0,
+    async ready() {
+      this.readyCalls += 1;
+      if (this.down) throw outage();
+    },
+    activeKekId: () => ring.activeKekId(),
+    async wrap(kekId, dataKey, aad) {
+      if (this.down) throw outage();
+      return ring.wrap(kekId, dataKey, aad);
+    },
+    async unwrap(kekId, wrapped, aad) {
+      if (this.down) throw outage();
+      return ring.unwrap(kekId, wrapped, aad);
+    },
+    close: () => ring.close(),
+  };
+}
+
+describe("a key provider that is down", () => {
+  test("getOrCreate waits for ready(), fails with its error, mints nothing, and works once it is back", async () => {
+    const provider = flakyProvider(k1);
+    const flaky = new DataKeyStore({ pool: pool(), provider, cacheTtlMs: 0 });
+    const id = newId();
+    await expect(flaky.getOrCreate("run", id)).rejects.toBeInstanceOf(KeyProviderUnavailableError);
+    await expect(flaky.ensureMigrated()).rejects.toBeInstanceOf(KeyProviderUnavailableError);
+    expect(await query("SELECT 1 FROM os_keys.data_keys WHERE key_id = $1", [id])).toHaveLength(0);
+    provider.down = false;
+    const key = await flaky.getOrCreate("run", id);
+    expect(key).toHaveLength(32);
+    // Ready once it worked; a later outage shows up on the operation itself.
+    const calls = provider.readyCalls;
+    provider.down = true;
+    await expect(flaky.get("run", id)).rejects.toBeInstanceOf(KeyProviderUnavailableError);
+    expect(provider.readyCalls).toBe(calls);
+  });
+
+  test("shred and shredTenant do not need the provider", async () => {
+    const id = newId();
+    await store().getOrCreate("run", id, "ws_down");
+    const down = new DataKeyStore({ pool: pool(), provider: flakyProvider(k1), cacheTtlMs: 0 });
+    expect(await down.shredTenant("run", "ws_down")).toEqual({ shredded: 1 });
+    expect(await down.shred("run", newId())).toBe(false);
+    await expect(store().get("run", id)).rejects.toBeInstanceOf(DataKeyUnavailableError);
+  });
+
+  test("rewrap stops with the provider's error instead of listing reachable rows as failed", async () => {
+    const rotationDb = await createTestDatabase("keys_store_rewrap_down");
+    const rotationPool = new pg.Pool({ connectionString: rotationDb.url, max: 4 });
+    try {
+      await new DataKeyStore({ pool: rotationPool, provider: new LocalKeyring(k1) }).getOrCreate(
+        "run",
+        newId(),
+      );
+      const k2: KeyringFile = {
+        active: "k2",
+        keys: { ...k1.keys, k2: randomBytes(32).toString("base64") },
+      };
+      const provider = flakyProvider(k2);
+      provider.down = false;
+      const rotating = new DataKeyStore({ pool: rotationPool, provider, cacheTtlMs: 0 });
+      await rotating.ensureMigrated();
+      provider.down = true;
+      await expect(rotating.rewrap()).rejects.toBeInstanceOf(KeyProviderUnavailableError);
+      provider.down = false;
+      expect(await rotating.rewrap()).toEqual({ rewrapped: 1, failed: [] });
     } finally {
       await rotationPool.end();
       await rotationDb.drop();

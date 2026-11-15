@@ -1,5 +1,6 @@
 import { createRootRoute, createRoute, createRouter, redirect } from "@tanstack/react-router";
 import { AppShell, NotFound, ShellError } from "@/components/app-shell.tsx";
+import { ErasedNotice } from "@/components/erase.tsx";
 import { api, keys, queryClient } from "@/lib/api.ts";
 import { DEFAULT_LANDING, safeReturnPath, signInHref } from "@/lib/return-path.ts";
 import { ActivityPage } from "@/routes/activity.tsx";
@@ -7,6 +8,7 @@ import { AgentPage } from "@/routes/agent.tsx";
 import { ApprovalPage } from "@/routes/approval.tsx";
 import { ApprovalsPage } from "@/routes/approvals.tsx";
 import { JoinPage, LoginPage, SetupPage } from "@/routes/auth.tsx";
+import { CreatedPage } from "@/routes/created.tsx";
 import { MandatePage } from "@/routes/mandate.tsx";
 import { MembersPage } from "@/routes/members.tsx";
 import { PaymentPage } from "@/routes/payment.tsx";
@@ -16,7 +18,7 @@ import { WorkspaceLayout, WorkspaceOverview } from "@/routes/workspace.tsx";
 import { WorkspacesPage } from "@/routes/workspaces.tsx";
 
 /** Pages a person can open without being signed in. */
-const PUBLIC_PATHS = [/^\/login$/, /^\/setup$/, /^\/join\//];
+const PUBLIC_PATHS = [/^\/login$/, /^\/setup$/, /^\/join\//, /^\/erased$/];
 
 const rootRoute = createRootRoute({
   // Decide where a person belongs before any page renders, so no page asks the API for data
@@ -64,6 +66,15 @@ const login = createRoute({
     }
   },
   component: LoginPage,
+});
+// Where a person lands once erased, signed out; anyone signed in has nothing to read here.
+const erased = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/erased",
+  beforeLoad: ({ context }) => {
+    if (context.session.user) throw redirect({ to: "/", replace: true });
+  },
+  component: ErasedNotice,
 });
 const join = createRoute({
   getParentRoute: () => rootRoute,
@@ -128,15 +139,32 @@ const activity = createRoute({
   path: "/activity",
   component: ActivityPage,
 });
+// The one page that shows a copied or imported workspace's new tokens and invite links.
+const created = createRoute({
+  getParentRoute: () => workspace,
+  path: "/created",
+  component: CreatedPage,
+});
 
 const routeTree = rootRoute.addChildren([
   setup,
   login,
   join,
+  erased,
   home,
   settings,
   approval,
-  workspace.addChildren([overview, approvals, wallet, agent, mandate, payment, members, activity]),
+  workspace.addChildren([
+    overview,
+    approvals,
+    wallet,
+    agent,
+    mandate,
+    payment,
+    members,
+    activity,
+    created,
+  ]),
 ]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent" });

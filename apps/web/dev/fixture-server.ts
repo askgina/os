@@ -17,11 +17,15 @@
  * waits for the person it adds to answer there with the new passkey ("This passkey is mine"),
  * which shows them its fingerprint; until then nobody can approve it.
  *
- * Besides the contract it has five development endpoints under `/__fixture/`: one lets a test
+ * Besides the contract it has six development endpoints under `/__fixture/`: one lets a test
  * act as an agent and propose a payment (the real server takes those over MCP), one puts a sent
  * payment into a chain outcome (stuck, or rejected by the chain), one turns Web Push off or on
  * as an operator would with `WEB_PUSH_ENABLED`, one makes a retirement or deletion due (`due`,
- * below), and one resets state.
+ * below), one dates every sign-in back past the 300 seconds the record and erasure need
+ * (`stale-sign-in`), and one resets state.
+ *
+ * Like the server, downloading a workspace's record and erasing oneself need a passkey sign-in
+ * from the last 300 seconds, else `forbidden` with the detail `sign_in_again`.
  *
  * Approvals in advance (mandates) are held and counted here as the signer holds them: a proposed
  * transfer that one of the agent's live mandates covers is sent with no request, checked against
@@ -216,6 +220,8 @@ interface State {
   users: Map<string, string>;
   credentials: Map<string, Credential>;
   sessions: Map<string, string>;
+  /** When each session's passkey sign-in happened, by session token. */
+  signedInAt: Map<string, number>;
   ceremonies: Map<string, { challenge: string; kind: string; data: Record<string, string> }>;
   workspaces: Map<string, Workspace>;
   approvals: Map<string, Approval>;
@@ -260,6 +266,7 @@ function freshState(): State {
     users: new Map(),
     credentials: new Map(),
     sessions: new Map(),
+    signedInAt: new Map(),
     ceremonies: new Map(),
     workspaces: new Map(),
     approvals: new Map(),
@@ -955,7 +962,19 @@ function registerCredential(
 function startSession(res: ServerResponse, userId: string): void {
   const token = randomToken();
   state.sessions.set(token, userId);
+  state.signedInAt.set(token, now());
   res.setHeader("set-cookie", `fixture_session=${token}; Path=/; HttpOnly; SameSite=Strict`);
+}
+
+/** As the server asks before the record and erasure: a passkey sign-in at most 300 s old. */
+function requireRecentSignIn(signedInAt: number | null): void {
+  if (signedInAt === null || now() - signedInAt > 300) {
+    throw new Refusal(
+      "forbidden",
+      "Sign in again with your passkey first: this needs a sign-in from the last 5 minutes.",
+      "sign_in_again",
+    );
+  }
 }
 
 function sessionInfo(userId: string | null): SessionInfo {
@@ -1528,6 +1547,8 @@ type Handler = (input: {
   query: Record<string, string>;
   body: Record<string, unknown>;
   userId: string | null;
+  /** When the session's passkey sign-in happened; null without a session. */
+  signedInAt: number | null;
   res: ServerResponse;
   origin: string;
 }) => unknown;
@@ -1615,6 +1636,85 @@ const handlers: Record<RouteName, Handler> = {
   logout: ({ res }) => {
     res.setHeader("set-cookie", "fixture_session=; Path=/; Max-Age=0");
     return {};
+  },
+  eraseMe: ({ userId, signedInAt, res }) => {
+    const id = signedIn(userId);
+    requireRecentSignIn(signedInAt);
+    const theirs = [...state.workspaces.values()].filter(
+      (workspace) =>
+        workspace.lifecycle.state !== "deleted" &&
+        workspace.members.some((member) => member.user.id === id),
+    );
+    for (const workspace of theirs) {
+      const owners = workspace.members.filter((member) => member.role === "owner");
+      if (owners.length === 1 && owners[0]?.user.id === id) {
+        throw new Refusal(
+          "conflict",
+          `You are the only owner of ${workspace.name}. Make someone else an owner, or delete it, first.`,
+          "last_owner",
+        );
+      }
+    }
+    // While their passkeys still approve somewhere, the signer must stop accepting them first.
+    const approving = theirs.filter((workspace) => memberOf(workspace, id).approver === "active");
+    if (approving.length > 0) {
+      for (const workspace of approving) {
+        if (workspace.lifecycle.state === "deleting") {
+          throw new Refusal(
+            "conflict",
+            `${workspace.name} is being deleted. Wait until the deletion finishes, or cancel it.`,
+            "workspace_deleting",
+          );
+        }
+        const others = workspace.members.filter(
+          (member) => member.user.id !== id && member.approver === "active",
+        ).length;
+        if (others < workspace.adminThreshold) {
+          throw new Refusal(
+            "conflict",
+            `Without your passkeys ${workspace.name} would have too few approvers. Add another approver first.`,
+            "last_approver",
+          );
+        }
+      }
+      const approvals = approving.flatMap((workspace) => {
+        const waiting = [...state.approvals.values()]
+          .filter(
+            ({ summary, subject }) =>
+              summary.workspaceId === workspace.id &&
+              summary.status === "pending" &&
+              subject.kind === "remove-approver" &&
+              subject.user.id === id,
+          )
+          .map((approval) => approval.summary);
+        return waiting.length > 0
+          ? waiting
+          : approverApprovals(workspace, id, "remove-approver", id);
+      });
+      return { status: "waiting", approvals };
+    }
+    for (const workspace of theirs) {
+      workspace.members = workspace.members.filter((member) => member.user.id !== id);
+      audit(workspace, userActor(id), "member.erased", { type: "user", id });
+    }
+    for (const [credentialId, credential] of state.credentials) {
+      if (credential.userId === id) state.credentials.delete(credentialId);
+    }
+    for (const [token, owner] of state.sessions) {
+      if (owner !== id) continue;
+      state.sessions.delete(token);
+      state.signedInAt.delete(token);
+    }
+    for (const [subscriptionId, subscription] of state.pushSubscriptions) {
+      if (subscription.userId === id) state.pushSubscriptions.delete(subscriptionId);
+    }
+    for (const key of state.notificationSwitches.keys()) {
+      if (key.startsWith(`${id} `)) state.notificationSwitches.delete(key);
+    }
+    state.quietHours.delete(id);
+    state.users.set(id, "Erased person");
+    res.setHeader("set-cookie", "fixture_session=; Path=/; Max-Age=0");
+    return { status: "erased", approvals: [] };
   },
   listPasskeys: ({ userId }) => {
     const id = signedIn(userId);
@@ -2794,11 +2894,11 @@ const handlers: Record<RouteName, Handler> = {
     requireOwner(workspace, id);
     return toTemplate(workspace);
   },
-  exportRecord: ({ params, userId }) => {
-    // Unlike the server, the fixture does not ask for a recent passkey sign-in first.
+  exportRecord: ({ params, userId, signedInAt }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
+    requireRecentSignIn(signedInAt);
     audit(workspace, userActor(id), "workspace.exported", { type: "workspace", id: workspace.id });
     const head = (log: { seq: number; hash: string }[]) => {
       const last = log.at(-1);
@@ -3117,6 +3217,11 @@ const server = createServer(async (req, res) => {
       }
       return send(res, 200, { ok: true });
     }
+    // Lets a test make every sign-in older than the 300 seconds the record and erasure need.
+    if (url.pathname === "/__fixture/stale-sign-in" && req.method === "POST") {
+      for (const [token, at] of state.signedInAt) state.signedInAt.set(token, at - 301);
+      return send(res, 200, { ok: true });
+    }
     const proposeMatch = /^\/__fixture\/propose$/.exec(url.pathname);
     if (proposeMatch && req.method === "POST") {
       const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
@@ -3153,13 +3258,22 @@ const server = createServer(async (req, res) => {
     }
     const cookie = /fixture_session=([^;]+)/.exec(req.headers.cookie ?? "")?.[1];
     const userId = cookie ? (state.sessions.get(cookie) ?? null) : null;
+    const signedInAt = cookie ? (state.signedInAt.get(cookie) ?? null) : null;
     if (match.route.auth === "session" && !userId)
       throw new Refusal("unauthenticated", "Sign in first.");
     const deleting = state.workspaces.get(params.workspaceId ?? "")?.lifecycle.state === "deleting";
     if (deleting && match.route.method !== "GET" && !ALLOWED_WHILE_DELETING[match.name]) {
       throw new Refusal("conflict", "This workspace is being deleted. Cancel the deletion first.");
     }
-    const output = await handlers[match.name]({ params, query, body, userId, res, origin });
+    const output = await handlers[match.name]({
+      params,
+      query,
+      body,
+      userId,
+      signedInAt,
+      res,
+      origin,
+    });
     // Fails loudly (500) when the fixture drifts from the contract.
     send(res, 200, match.route.response.parse(output));
   } catch (error) {

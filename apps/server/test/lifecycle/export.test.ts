@@ -8,7 +8,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { intents, pushSubscriptions, transactions } from "../../src/db/schema.ts";
 import { engineOf } from "../../src/execution/approvals.ts";
-import { RECORD_SIGN_IN_MAX_AGE_SECONDS } from "../../src/lifecycle/export.ts";
+import { RECENT_SIGN_IN_MAX_AGE_SECONDS } from "../../src/identity/sessions.ts";
 import {
   main,
   RECORD_FORMAT,
@@ -241,7 +241,7 @@ describe("exporting a workspace's record", () => {
   });
 
   it("needs an owner whose passkey signed in within the last five minutes", async () => {
-    f.t.clock.advance(RECORD_SIGN_IN_MAX_AGE_SECONDS + 1);
+    f.t.clock.advance(RECENT_SIGN_IN_MAX_AGE_SECONDS + 1);
     const refused = await api()
       .call("exportRecord", { params: { workspaceId: f.workspaceId } })
       .then(

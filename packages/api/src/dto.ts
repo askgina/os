@@ -1098,3 +1098,20 @@ export const CloneResult = z.strictObject({
   templateAdminThreshold: z.number().int().min(1).max(16),
 });
 export type CloneResult = z.infer<typeof CloneResult>;
+
+/**
+ * What asking to erase the signed-in person did.
+ * - `erased`: their name, passkeys, sessions, push subscriptions and notification settings are
+ *   gone and they are no longer a member of any workspace; the session that asked is signed out.
+ *   Their user id stays where history keeps it (audit chains, approvals, the signer's records),
+ *   shown with the name "Erased person". `approvals` is empty.
+ * - `waiting`: nothing is erased yet. Their passkeys still approve in some workspace, and the
+ *   signer stops accepting a passkey only through a `remove-approver` request people approve on
+ *   its confirmation page (which also ends every mandate that passkey granted). `approvals` lists
+ *   those requests, opened now or already waiting; ask again once they are applied.
+ */
+export const ErasureResult = z.strictObject({
+  status: z.enum(["erased", "waiting"]),
+  approvals: z.array(ApprovalSummary),
+});
+export type ErasureResult = z.infer<typeof ErasureResult>;

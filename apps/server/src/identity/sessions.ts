@@ -3,9 +3,16 @@ import { and, eq, gt, isNull } from "drizzle-orm";
 import type { Context } from "hono";
 import type { AppContext, Executor, Session, Sessions } from "../context.ts";
 import { sessions, users } from "../db/schema.ts";
+import { HttpError } from "../http/errors.ts";
 import { randomToken, sha256Hex } from "./secrets.ts";
 
 type Deps = Pick<AppContext, "db" | "config" | "now">;
+
+/**
+ * How long ago the passkey that signed the session in may have been used to export a record or
+ * to erase the person.
+ */
+export const RECENT_SIGN_IN_MAX_AGE_SECONDS = 300;
 
 /**
  * Over HTTPS the cookie gets the `__Host-` prefix, which browsers only accept with `Secure`, no
@@ -88,13 +95,43 @@ export async function issueSession(
   });
 }
 
+/**
+ * Refuse unless the session's passkey sign-in is recent. A record opens every sealed detail of a
+ * workspace and erasing a person cannot be undone, so a session left signed in on a shared
+ * machine must not do either. `purpose` ends the refusal's message, for example "export the
+ * record".
+ */
+export async function requireRecentSignIn(
+  ctx: Pick<AppContext, "db" | "now">,
+  session: Session,
+  purpose: string,
+): Promise<void> {
+  const [row] = await ctx.db
+    .select({ createdAt: sessions.createdAt })
+    .from(sessions)
+    .where(eq(sessions.idHash, session.idHash));
+  const age = row ? ctx.now() - Math.floor(row.createdAt.getTime() / 1000) : Infinity;
+  if (age > RECENT_SIGN_IN_MAX_AGE_SECONDS) {
+    throw new HttpError(
+      "forbidden",
+      `sign in again with your passkey to ${purpose}`,
+      "sign_in_again",
+    );
+  }
+}
+
 /** Revoke the session behind a request and tell the browser to forget its cookie. */
 export async function endSession(ctx: Deps, c: Context, session: Session): Promise<void> {
   await ctx.db
     .update(sessions)
     .set({ revokedAt: new Date(ctx.now() * 1000) })
     .where(eq(sessions.idHash, session.idHash));
-  c.header("set-cookie", serializeCookie(ctx.config, "", 0), { append: true });
+  clearSessionCookie(ctx.config, c);
+}
+
+/** Tell the browser to forget its session cookie. */
+export function clearSessionCookie(config: AppContext["config"], c: Context): void {
+  c.header("set-cookie", serializeCookie(config, "", 0), { append: true });
 }
 
 function serializeCookie(config: AppContext["config"], value: string, maxAge: number): string {

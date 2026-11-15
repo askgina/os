@@ -23,6 +23,7 @@ import {
   Cursor,
   DeletionPreflight,
   DisplayName,
+  ErasureResult,
   IntentDetail,
   IntentSummary,
   InviteSummary,
@@ -166,6 +167,17 @@ export const routes = {
   ),
   /** Stops the passkey signing in at once, and opens `remove-approver` requests where it approves. */
   removePasskey: del("/api/v1/me/passkeys/:credentialId", approvals),
+  /**
+   * Erase the signed-in person (see `ErasureResult`). Where their passkeys still approve, this
+   * first opens a `remove-approver` request per passkey and workspace and answers `waiting`;
+   * once none approves anywhere, it erases and answers `erased`, clearing the session cookie.
+   * Refused with `forbidden` and the detail `sign_in_again` unless the session's passkey sign-in
+   * is at most 300 seconds old; with `conflict` and `last_owner` while they are the only owner of
+   * a workspace not deleted, and `last_approver` while a workspace would be left with fewer
+   * approvers than its admin threshold or a wallet policy's threshold (the message names the
+   * workspace); with `conflict` and `try_again` when their passkeys changed meanwhile.
+   */
+  eraseMe: post("/api/v1/me/erase", NoBody, ErasureResult),
 
   // --- workspaces -----------------------------------------------------------------------------
   listWorkspaces: get("/api/v1/workspaces", items(WorkspaceSummary)),

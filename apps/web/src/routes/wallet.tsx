@@ -18,7 +18,11 @@ import {
   linkClass,
   PageHeader,
 } from "@/components/common.tsx";
-import { RetireWalletCard, WalletLifecycleNotice } from "@/components/lifecycle.tsx";
+import {
+  RetireWalletCard,
+  WaitingRetirementNotice,
+  WalletLifecycleNotice,
+} from "@/components/lifecycle.tsx";
 import { MandatesCard } from "@/components/mandate.tsx";
 import { PolicyTable } from "@/components/policy.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
@@ -86,6 +90,7 @@ function WalletView({ wallet, workspace }: { wallet: WalletDetail; workspace: Wo
         }
       />
       <WalletLifecycleNotice wallet={wallet} workspace={workspace} />
+      <WaitingRetirementNotice wallet={wallet} workspace={workspace} />
       <Card>
         <CardHeader>
           <CardTitle>Address</CardTitle>

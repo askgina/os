@@ -45,6 +45,13 @@ const examples: { [N in RouteName]: { body?: unknown; query?: unknown; response:
     response: { passkey: f.passkey, approvals: [f.approvalSummary] },
   },
   removePasskey: { response: approvalsList },
+  eraseMe: {
+    body: {},
+    response: {
+      status: "waiting",
+      approvals: [{ ...f.approvalSummary, kind: "remove-approver" }],
+    },
+  },
   listWorkspaces: { response: { items: [f.workspaceSummary] } },
   createWorkspace: { body: { name: "Acme" }, response: f.workspace },
   getWorkspace: { response: f.workspace },

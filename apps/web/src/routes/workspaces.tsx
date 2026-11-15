@@ -3,6 +3,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { Building2, ChevronRight, Pause, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { EmptyState, ErrorState, FormError, Loading, PageHeader } from "@/components/common.tsx";
+import { ImportTemplateCard } from "@/components/export.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Card, CardContent } from "@/components/ui/card.tsx";
@@ -71,6 +72,7 @@ export function WorkspacesPage() {
             </ul>
           )}
           <CreateWorkspace />
+          <ImportTemplateCard />
         </div>
       ) : null}
     </>

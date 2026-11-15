@@ -88,8 +88,8 @@ const Environment = z
      * set, it replaces the password part of `DATABASE_URL`.
      */
     DATABASE_PASSWORD_FILE: z.string().min(1).optional(),
-    /** Keyring JSON with the key-encryption keys. Kept outside the database. */
-    KEYRING_FILE: z.string().min(1),
+    // The key provider (`KEY_PROVIDER`, `KEYRING_FILE`, `OPENBAO_*`) is read and checked by
+    // `keyProviderFromEnv` from `@askgina/os-keys`, which `main.ts` calls at boot.
     SIGNER_URL: z.url(),
     /** File holding the secret shared with the signer for request signatures. */
     SIGNER_HMAC_SECRET_FILE: z.string().min(1),
@@ -222,7 +222,6 @@ export interface Config {
   port: number;
   internalPort: number;
   databaseUrl: string;
-  keyringFile: string;
   signerUrl: string;
   signerSecret: Uint8Array;
   chains: ChainConfig[];
@@ -286,7 +285,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port: parsed.PORT,
     internalPort: parsed.INTERNAL_PORT,
     databaseUrl: databaseUrl.toString(),
-    keyringFile: parsed.KEYRING_FILE,
     signerUrl: parsed.SIGNER_URL,
     signerSecret: new Uint8Array(
       Buffer.from(readFileSync(parsed.SIGNER_HMAC_SECRET_FILE, "utf8").trim(), "base64"),

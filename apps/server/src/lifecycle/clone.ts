@@ -6,7 +6,7 @@ import type {
   WorkspaceTemplate,
 } from "@askgina/os-api";
 import { type AgentId, canonicalJson, type WalletId, type WorkspaceId } from "@askgina/os-protocol";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { appendAudit } from "../audit.ts";
 import type { AppContext, Session } from "../context.ts";
 import { users, workspaces } from "../db/schema.ts";
@@ -126,14 +126,18 @@ export async function cloneWorkspace(
   const invites: CloneResult["invites"] = [];
   const others = template.members.filter((member) => member.userId !== session.user.id);
   if (input.includeMembers && others.length > 0) {
-    // A template from another installation names people unknown here: they are dropped.
+    // A template from another installation names people unknown here, and one made before a
+    // person was erased names someone who no longer exists: both are dropped.
     const known = await ctx.db
       .select({ id: users.id, displayName: users.displayName })
       .from(users)
       .where(
-        inArray(
-          users.id,
-          others.map((member) => member.userId),
+        and(
+          inArray(
+            users.id,
+            others.map((member) => member.userId),
+          ),
+          isNull(users.erasedAt),
         ),
       );
     const nameOf = new Map(known.map((user) => [user.id, user.displayName]));

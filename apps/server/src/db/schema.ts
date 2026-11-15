@@ -65,6 +65,11 @@ export const users = os.table("users", {
   createdAt: createdAt(),
   /** When this person's devices stay silent; null for never. The webhook ignores it. */
   quietHours: jsonb("quiet_hours").$type<QuietHours>(),
+  /**
+   * When the person was erased (`src/identity/erase.ts`). The row stays, so the ids that audit
+   * chains, approvals and the signer keep still name someone; only the id and times are left.
+   */
+  erasedAt: time("erased_at"),
 });
 
 /** A passkey a person signs in with. Whether it may also approve is `approver_credentials`. */

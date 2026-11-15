@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Pool } from "pg";
-import type { KeyProvider } from "./keyring.ts";
+import { type KeyProvider, KeyProviderRefusedError } from "./keyring.ts";
 
 export const KEYS_SCHEMA = "os_keys";
 const TABLE = `${KEYS_SCHEMA}.data_keys`;
@@ -100,6 +100,7 @@ export class DataKeyStore {
     { key: Uint8Array; tenantId: string | null; expires: number }
   >();
   readonly #onEvent: DataKeyStoreOptions["onEvent"];
+  #table: Promise<void> | undefined;
   #migrated: Promise<void> | undefined;
 
   constructor(options: DataKeyStoreOptions) {
@@ -109,12 +110,25 @@ export class DataKeyStore {
     this.#onEvent = options.onEvent;
   }
 
+  /** Create the key table and wait for the key provider to be ready. Retried after a failure. */
   ensureMigrated(): Promise<void> {
-    this.#migrated ??= migrateKeys(this.#pool).catch((error) => {
-      this.#migrated = undefined;
+    this.#migrated ??= Promise.all([this.#ensureTable(), this.#provider.ready()]).then(
+      () => {},
+      (error: unknown) => {
+        this.#migrated = undefined;
+        throw error;
+      },
+    );
+    return this.#migrated;
+  }
+
+  /** The table alone: a shred needs no key provider, so it works while the provider is down. */
+  #ensureTable(): Promise<void> {
+    this.#table ??= migrateKeys(this.#pool).catch((error) => {
+      this.#table = undefined;
       throw error;
     });
-    return this.#migrated;
+    return this.#table;
   }
 
   /**
@@ -205,8 +219,9 @@ export class DataKeyStore {
   /**
    * Re-wrap every live key that is not under the active KEK. Each row is updated only if it
    * still holds the bytes that were read, so a concurrent shred or rewrap is never undone. A row
-   * that cannot be unwrapped (tampered with, or its KEK is gone) is reported, not fatal, so one
-   * bad row cannot block a rotation.
+   * the provider refuses to unwrap (tampered with, or its KEK is gone) is reported, not fatal, so
+   * one bad row cannot block a rotation. A provider that cannot be reached stops the run with
+   * its error; rows already moved stay moved, and a second run continues.
    */
   async rewrap(batchSize = 500): Promise<{ rewrapped: number; failed: string[] }> {
     await this.ensureMigrated();
@@ -238,7 +253,8 @@ export class DataKeyStore {
             row.wrapped_key,
             wrapAad(row.scope, row.key_id, row.tenant_id, row.kek_id),
           );
-        } catch {
+        } catch (error) {
+          if (!(error instanceof KeyProviderRefusedError)) throw error;
           failed.push(`${row.scope}:${row.key_id}`);
           continue;
         }
@@ -265,7 +281,7 @@ export class DataKeyStore {
    * Returns whether a live key was destroyed.
    */
   async shred(scope: KeyScope, keyId: string): Promise<boolean> {
-    await this.ensureMigrated();
+    await this.#ensureTable();
     this.#cache.delete(`${scope}\n${keyId}`);
     const result = await this.#pool.query<{ existed: boolean }>(
       `INSERT INTO ${TABLE} (scope, key_id, shredded_at) VALUES ($1, $2, now())
@@ -285,7 +301,7 @@ export class DataKeyStore {
    * many live keys were destroyed; a repeat finds none and returns 0.
    */
   async shredTenant(scope: KeyScope, tenantId: string): Promise<{ shredded: number }> {
-    await this.ensureMigrated();
+    await this.#ensureTable();
     const { rows } = await this.#pool.query<{ key_id: string }>(
       `UPDATE ${TABLE} SET kek_id = NULL, wrapped_key = NULL, shredded_at = now()
        WHERE scope = $1 AND tenant_id = $2 AND shredded_at IS NULL

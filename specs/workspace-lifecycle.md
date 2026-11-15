@@ -1,7 +1,8 @@
 # Clone, export and delete a workspace whose wallets hold assets
 
 - Branch: main (private), one milestone at a time
-- Status: In progress (owner decisions taken 2026-11-15; Milestone 1 built, CI pending)
+- Status: In progress (owner decisions taken 2026-11-15; Milestones 1 to 7 green in CI run
+  43729783071; Milestone 8 and the export, clone and erase screens built, CI pending)
 - Owner(s): Eric Juta
 - Created: 2026-11-14
 - Last Updated: 2026-11-15
@@ -84,7 +85,13 @@ Success means:
       `repricing` (17), `signing` (32), `sweep` (7), `governance` (15), `hardening` (8),
       `possession` (6). Not run: the release gates (`stack`), which start the signer image at
       version 7.
-- [ ] Milestone 3: key store. Not started (left for the next agent).
+- [x] (2026-11-15) CI evidence for Milestones 1 to 7, which supersedes every "CI pending" on the
+      lines around this one: protocol `4ce6600` (run 43723994522), signer `72469fc` (run
+      43725464509), key store `fd242c3` (run 43726335486), control plane, export and clone, web
+      and release gates `a4299f3` (run 43729783071: check, test, ui, packages, stack amd64, arm64
+      and tls; 35 release gates and 10 lifecycle gates passed on amd64 and arm64).
+- [x] (2026-11-15) Milestone 3: key store. `DataKeyStore.shredTenant(scope, tenantId)`, the
+      partial index `data_keys_tenant_idx`, CLI `shred-tenant`. `fd242c3`.
 - [x] (2026-11-15) Milestone 4: control plane, retire, delete, remove agent. Local checks only,
       CI pending. Migration `0008_lifecycle.sql` (`workspaces.lifecycle`, `destroy_after`,
       `deleted_at`; `wallets.lifecycle`, `destroy_after`); `apps/server/src/lifecycle/`
@@ -122,9 +129,31 @@ Success means:
       the six lifecycle writes included), `packages/api/test/api.test.ts` (147), and unchanged in
       behavior `directory/directory.test.ts` (32), `identity/identity.test.ts` (40),
       `execution/mandates.test.ts` (14), `lifecycle/delete.test.ts` (3). Not run: CI.
-- [ ] Milestone 6: web UI.
-- [ ] Milestone 7: release gates and documentation.
-- [ ] Milestone 8: erasing a person (in scope by D6; counsel review still owed).
+- [x] (2026-11-15) Milestone 6: web UI. Retire a wallet, delete a workspace (request, countdown,
+      cancel, tombstone), agent removal wording, confirmation-page wording; journey on
+      phone-light and phone-wide-font locally, all five projects in CI. The export, clone, import
+      and erase screens follow in a second pass (CI pending).
+- [x] (2026-11-15) Milestone 7: release gates and documentation. `e2e/test/lifecycle.spec.ts`,
+      10 gates. Deviation: they run on their own fresh stack (`<project>-lifecycle`) after the
+      release gates, because the first stack ends as the restored copy behind the restore fence
+      and its passkey lives only in that run's memory; over TLS they are skipped. The e2e overlay
+      sets `SIGNER_MIN_DESTROY_DELAY_SECONDS` to 0. Threat model, architecture, deploy guide,
+      README and protocol section 8 updated. The stated backup retention in the deploy guide is
+      30 days (the plan asked for a number and gave none).
+- [x] (2026-11-15) Milestone 8: erasing a person (in scope by D6; counsel review still owed,
+      flagged for Eric: whether keeping the user id satisfies GDPR Article 17). Local checks only,
+      CI pending. Migration `0009_erasure.sql` (`users.erased_at`); `apps/server/src/identity/`
+      `erase.ts` (`checkErasable`, `eraseOnRequest`, `eraseUser`, `ERASED_NAME`) and
+      `erase-cli.ts` (`node apps/server/src/identity/erase-cli.ts --user <id>`); the route and
+      DTO in `packages/api` (additive): `eraseMe` `POST /api/v1/me/erase` answering
+      `ErasureResult` `{ status: "erased" | "waiting", approvals }`; `requireRecentSignIn` and
+      `RECENT_SIGN_IN_MAX_AGE_SECONDS` moved to `apps/server/src/identity/sessions.ts` (from
+      `lifecycle/export.ts`, `RECORD_SIGN_IN_MAX_AGE_SECONDS`); a clone no longer invites an
+      erased person. Proven locally, one file at a time: `tsc --noEmit` clean in `apps/server`,
+      `packages/api` and `apps/web`; `apps/server/test/identity/erase.test.ts` (9),
+      `packages/api/test/api.test.ts` (149), and unchanged in behavior
+      `identity/identity.test.ts` (41, the origin check now covers `eraseMe`),
+      `lifecycle/export.test.ts` (4), `lifecycle/clone.test.ts` (10). Not run: CI.
 
 ## Surprises & Discoveries
 
@@ -358,6 +387,49 @@ Success means:
   - `apps/web/dev/fixture-server.ts` serves the four routes (written with Milestone 6, aligned
     here): the template and a record of the fixture's audit and decisions, and clone and import
     through the fixture's own creation handlers. The fixture asks for no recent sign-in.
+- Observation (2026-11-15, Milestone 8): erasing cannot be one step. The control plane cannot
+  take a passkey out of the signer's approver set; only a `remove-approver` request people
+  approve on the confirmation page does (and ending the mandates that passkey granted, reason
+  `grantor_removed`, comes with it). Deleting `credentials` while the signer still accepted them
+  would leave an approver nobody can see or remove from the app. As built:
+  - `eraseMe` (`POST /api/v1/me/erase`, the person, with a passkey sign-in at most 300 s old as
+    for `exportRecord`) first withdraws their passkeys still waiting to be added, then opens one
+    `remove-approver` request per active passkey and workspace (requested by them, membership
+    kept, sign-in kept so they can approve their own removal) and answers `waiting` with those
+    requests and any already waiting. Once no passkey of theirs approves anywhere, a later call
+    erases and answers `erased`, clearing the session cookie.
+  - Refusals, all `conflict`: `last_owner` (the only owner of a workspace not deleted, the rule
+    `removeMember` keeps; the plan did not name it), `workspace_deleting` (their passkeys approve
+    in a workspace being deleted, where the signer takes no approver change), `last_approver`
+    (other people the signer accepts, `active` or `removing`, fewer than the largest of the
+    admin threshold and every wallet policy's threshold, destroyed wallets included as the signer
+    keeps their policies: the signer's `threshold_unreachable` rule, checked first), and
+    `try_again` (a passkey of theirs was enrolled meanwhile).
+  - The operator command cannot open requests (a CLI has no workflow runtime to start their
+    runs), so it erases only someone whose passkeys approve nowhere and otherwise exits 3 with
+    `still_approving` and the workspaces, changing nothing; an owner then removes the person
+    there. Exit 0 erased (or already), 2 refused, 1 usage.
+  - Migration `0009` adds `users.erased_at`: a name alone cannot mark an erased person (anyone
+    may choose "Erased person"), and the marker makes erasing again a no-op and lets a clone
+    drop erased people.
+  - Where a person's name was in the `os` schema: `users.display_name`, `credentials.label`,
+    `push_subscriptions.label` and the registration context in `ceremonies`. Erasing deletes
+    their ceremonies with their passkeys, sessions, push subscriptions and preferences, sets the
+    name to "Erased person" and quiet hours to null, drops their `pending` deliveries (code
+    `person_erased`), and drops the unused invites they created, as `removeMember` does.
+    `erase.test.ts` scans every table of the schema for the name, as text, hex and base64.
+  - No sealed audit detail names a person: they carry user ids. Nothing sealed is rewritten, so
+    every chain verifies. `member.erased` is appended to each workspace they are a member of
+    when erased, actor the person (`user`) or the operator (`system`), detail empty.
+  - Exports carry user ids, never names: a record after erasure still holds the id, and the API
+    shows it as "Erased person". A template exported before erasure still lists the id;
+    importing or cloning it no longer invites an erased person.
+  - `requireRecentSignIn` moved from `lifecycle/export.ts` to `identity/sessions.ts` with a
+    `purpose` for its message; `RECORD_SIGN_IN_MAX_AGE_SECONDS` is now
+    `RECENT_SIGN_IN_MAX_AGE_SECONDS`.
+  - `eraseUser` locks the person's row `FOR NO KEY UPDATE`, not `FOR UPDATE`: the stronger lock
+    would wait for every insert referring to the person (an outbox row, an assertion) while that
+    insert's transaction holds a workspace's audit lock this one then needs.
 
 ## Decision Log
 

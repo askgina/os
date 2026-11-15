@@ -1,4 +1,9 @@
-import { DeletionBlocker } from "@askgina/os-api";
+import {
+  type ApprovalDetail,
+  type ApprovalSummary,
+  DeletionBlocker,
+  type WalletSummary,
+} from "@askgina/os-api";
 import { describe, expect, it } from "vitest";
 import {
   blockerText,
@@ -10,6 +15,8 @@ import {
   formatDelay,
   heldBalances,
   serverClockOffset,
+  waitingRequests,
+  waitingRetirementOf,
   walletChangeable,
   walletLifecycleLabel,
 } from "../src/lib/lifecycle.ts";
@@ -92,5 +99,49 @@ describe("a wallet's lifecycle", () => {
     expect(walletChangeable({ state: "held", destroyAfter: null })).toBe(true);
     expect(walletChangeable({ state: "retiring", destroyAfter: 1 })).toBe(false);
     expect(walletChangeable({ state: "destroyed", destroyAfter: 1 })).toBe(false);
+  });
+});
+
+describe("a waiting retirement or deletion, linked from its wallet or workspace", () => {
+  const request = (
+    id: string,
+    kind: ApprovalSummary["kind"],
+    status: ApprovalSummary["status"],
+    createdAt: number,
+  ) => ({ id, kind, status, createdAt });
+
+  it("lists the waiting requests of one kind, oldest first", () => {
+    const items = [
+      request("b", "delete-workspace", "pending", 20),
+      request("a", "delete-workspace", "pending", 10),
+      request("c", "delete-workspace", "rejected", 5),
+      request("d", "retire-wallet", "pending", 1),
+      request("e", "set-policy", "pending", 2),
+    ];
+    expect(waitingRequests(items, "delete-workspace").map((item) => item.id)).toEqual(["a", "b"]);
+    expect(waitingRequests(items, "retire-wallet").map((item) => item.id)).toEqual(["d"]);
+  });
+
+  it("finds the waiting retirement of this wallet among requests read in full", () => {
+    const wallet = (id: string) => ({ id }) as WalletSummary;
+    const detail = (
+      id: string,
+      walletId: string,
+      status: ApprovalDetail["status"] = "pending",
+    ): Pick<ApprovalDetail, "id" | "status" | "subject"> => ({
+      id: id as ApprovalDetail["id"],
+      status,
+      subject: { kind: "retire-wallet", wallet: wallet(walletId), destroyAfter: 1 },
+    });
+    const details = [
+      undefined,
+      detail("apr_other", "wal_2"),
+      detail("apr_done", "wal_1", "approved"),
+      detail("apr_mine", "wal_1"),
+    ];
+    expect(waitingRetirementOf(details, "wal_1")?.id).toBe("apr_mine");
+    expect(waitingRetirementOf(details, "wal_3")).toBeNull();
+    // Not read yet: nothing to link.
+    expect(waitingRetirementOf([undefined], "wal_1")).toBeNull();
   });
 });

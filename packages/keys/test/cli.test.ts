@@ -12,7 +12,9 @@ import {
   DataKeyUnavailableError,
   type KeyringFile,
   LocalKeyring,
+  TransitKeyProvider,
 } from "../src/index.ts";
+import { startTransitStub, type TransitStub } from "./support/transit-stub.ts";
 
 const execFileAsync = promisify(execFile);
 const cli = join(import.meta.dirname, "..", "src", "cli.ts");
@@ -179,6 +181,90 @@ describe("keys CLI", () => {
     });
     expect(result.code).toBe(1);
     expect(result.lines[0]).toMatchObject({ event: "keys.cli.usage_error" });
+  });
+
+  describe("with KEY_PROVIDER=openbao", () => {
+    let stub: TransitStub;
+    let baoDb: TestDatabase;
+    let baoPool: pg.Pool;
+    let env: Record<string, string>;
+
+    beforeAll(async () => {
+      stub = await startTransitStub();
+      baoDb = await createTestDatabase("keys_cli_openbao");
+      baoPool = new pg.Pool({ connectionString: baoDb.url, max: 2 });
+      const tokenFile = join(dir, "bao-token");
+      writeFileSync(tokenFile, stub.rootToken, { mode: 0o600 });
+      env = {
+        DATABASE_URL: baoDb.url,
+        KEY_PROVIDER: "openbao",
+        OPENBAO_ADDR: stub.address.href,
+        OPENBAO_AUTH: "token",
+        OPENBAO_TOKEN_FILE: tokenFile,
+      };
+    });
+
+    afterAll(async () => {
+      await baoPool.end();
+      await baoDb.drop();
+      await stub.close();
+    });
+
+    test("rewrap with the keyring file still set moves file keys to Transit", async () => {
+      const fileStore = new DataKeyStore({ pool: baoPool, provider: new LocalKeyring(k1) });
+      const key = await fileStore.getOrCreate("workspace", "ws_bao", "ws_bao");
+      const result = await runCli(["rewrap"], {
+        ...env,
+        KEYRING_FILE: ringFile("k1-bao.json", k1),
+      });
+      expect(result.code).toBe(0);
+      expect(result.lines).toEqual([
+        {
+          event: "keys.rewrap",
+          activeKek: "bao:transit/os-kek@1",
+          rewrapped: 1,
+          failedCount: 0,
+          failed: [],
+        },
+      ]);
+      const transit = new TransitKeyProvider({
+        address: stub.address,
+        auth: { kind: "token", tokenFile: env.OPENBAO_TOKEN_FILE ?? "" },
+        refreshSeconds: 0,
+      });
+      try {
+        const transitOnly = new DataKeyStore({ pool: baoPool, provider: transit, cacheTtlMs: 0 });
+        expect(Buffer.from(await transitOnly.get("workspace", "ws_bao"))).toEqual(Buffer.from(key));
+      } finally {
+        await transit.close();
+      }
+    });
+
+    test("an unreachable OpenBao exits 4; shred-tenant needs no provider and exits 0", async () => {
+      const down = { ...env, OPENBAO_ADDR: "http://127.0.0.1:1", OPENBAO_TIMEOUT_MS: "500" };
+      const rewrap = await runCli(["rewrap"], down);
+      expect(rewrap.code).toBe(4);
+      expect(rewrap.lines).toEqual([
+        {
+          event: "keys.cli.provider_error",
+          error: "KeyProviderUnavailableError",
+          message: "openbao: the server could not be reached (ECONNREFUSED)",
+        },
+      ]);
+      const shred = await runCli(["shred-tenant", "workspace", "ws_bao"], down);
+      expect(shred.code).toBe(0);
+      expect(shred.lines).toEqual([
+        { event: "keys.shred_tenant", scope: "workspace", tenantId: "ws_bao", shredded: 1 },
+      ]);
+    });
+
+    test("missing OpenBao settings exit 1 naming the variable", async () => {
+      const result = await runCli(["rewrap"], { ...env, OPENBAO_ADDR: "" });
+      expect(result.code).toBe(1);
+      expect(result.lines).toEqual([
+        { event: "keys.cli.usage_error", message: "OPENBAO_ADDR is not set" },
+      ]);
+    });
   });
 
   test("missing configuration and a broken keyring exit 1", async () => {

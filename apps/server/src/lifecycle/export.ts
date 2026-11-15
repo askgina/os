@@ -9,7 +9,6 @@ import {
   auditEvents,
   intents,
   mandates,
-  sessions,
   transactionAttempts,
   transactions,
   wallets,
@@ -17,7 +16,6 @@ import {
 import { engineOf } from "../execution/approvals.ts";
 import { readIntent } from "../execution/intents.ts";
 import { openMandate } from "../execution/mandates.ts";
-import { HttpError } from "../http/errors.ts";
 import {
   RECORD_FORMAT,
   RECORD_SECTIONS,
@@ -33,9 +31,6 @@ import {
 /** What a `set-policy` request applies: the policy people approved. */
 const SetPolicyDetail = z.object({ policy: WalletPolicy });
 
-/** How long ago the passkey that signed the session in may have been used to export a record. */
-export const RECORD_SIGN_IN_MAX_AGE_SECONDS = 300;
-
 const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
 const byKey = (a: RecordLine, b: RecordLine) => {
   const left = recordLineKey(a);
@@ -45,24 +40,6 @@ const byKey = (a: RecordLine, b: RecordLine) => {
 
 /** Where record lines go, one JSON document at a time, in order. */
 export type RecordSink = (line: string) => void | Promise<void>;
-
-/**
- * Refuse a record export unless the session's passkey sign-in is recent: a record opens every
- * sealed detail of the workspace, so a session left signed in on a shared machine must not do it.
- */
-export async function requireRecentSignIn(ctx: AppContext, session: Session): Promise<void> {
-  const [row] = await ctx.db
-    .select({ createdAt: sessions.createdAt })
-    .from(sessions)
-    .where(eq(sessions.idHash, session.idHash));
-  if (!row || ctx.now() - seconds(row.createdAt) > RECORD_SIGN_IN_MAX_AGE_SECONDS) {
-    throw new HttpError(
-      "forbidden",
-      "sign in again with your passkey to export the record",
-      "sign_in_again",
-    );
-  }
-}
 
 /**
  * Write a workspace's record (format {@link RECORD_FORMAT}) to `sink` as JSON Lines: a header,

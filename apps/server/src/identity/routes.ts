@@ -20,8 +20,9 @@ import {
   startLogin,
   startRegistration,
 } from "./ceremonies.ts";
+import { eraseOnRequest } from "./erase.ts";
 import { revokePasskey } from "./passkeys.ts";
-import { endSession, issueSession } from "./sessions.ts";
+import { clearSessionCookie, endSession, issueSession, requireRecentSignIn } from "./sessions.ts";
 import { checkSetupToken, setupRequired, setupTokenKey } from "./setup.ts";
 
 const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
@@ -229,5 +230,13 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
     }
     ctx.log.info("passkey removed", { event: "passkey.removed", userId: session.user.id });
     return { approvals: opened };
+  });
+
+  handle(app, ctx, "eraseMe", async ({ session, c }) => {
+    await requireRecentSignIn(ctx, session, "erase yourself");
+    const outcome = await eraseOnRequest(ctx, session.user.id);
+    // Erasing deleted every session of the person, this one included.
+    if (outcome.status === "erased") clearSessionCookie(ctx.config, c);
+    return outcome;
   });
 }

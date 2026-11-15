@@ -1,4 +1,6 @@
 import type {
+  ApprovalDetail,
+  ApprovalSummary,
   AssetBalance,
   DeletionBlocker,
   DeletionPreflight,
@@ -97,4 +99,32 @@ export function walletLifecycleLabel(lifecycle: WalletLifecycle): string | null 
  */
 export function walletChangeable(lifecycle: WalletLifecycle): boolean {
   return lifecycle.state === "active" || lifecycle.state === "held";
+}
+
+/** The waiting requests of one kind, oldest first, from a list of a workspace's approvals. */
+export function waitingRequests<T extends Pick<ApprovalSummary, "kind" | "status" | "createdAt">>(
+  items: readonly T[],
+  kind: "retire-wallet" | "delete-workspace",
+): T[] {
+  return items
+    .filter((item) => item.kind === kind && item.status === "pending")
+    .sort((a, b) => a.createdAt - b.createdAt);
+}
+
+/**
+ * The waiting request to retire this wallet, among requests read in full: a summary does not name
+ * its wallet. Undefined entries are requests not read yet.
+ */
+export function waitingRetirementOf<T extends Pick<ApprovalDetail, "status" | "subject">>(
+  details: readonly (T | undefined)[],
+  walletId: string,
+): T | null {
+  return (
+    details.find(
+      (detail) =>
+        detail?.status === "pending" &&
+        detail.subject.kind === "retire-wallet" &&
+        detail.subject.wallet.id === walletId,
+    ) ?? null
+  );
 }

@@ -5,21 +5,30 @@
  *   node packages/keys/src/cli.ts shred <run|workspace> <id>
  *   node packages/keys/src/cli.ts shred-tenant <run|workspace> <tenant id>
  *
- * Each reads `DATABASE_URL` and `KEYRING_FILE` from the environment, and `DATABASE_PASSWORD_FILE`
- * where the database password is kept in a file instead of in the URL (as in the Compose stack,
- * so the commands work inside the server's container as they are). Each prints one JSON line
- * with identifiers and counts, never key material.
+ * Each reads `DATABASE_URL`, and `DATABASE_PASSWORD_FILE` where the database password is kept in
+ * a file instead of in the URL (as in the Compose stack, so the commands work inside the server's
+ * container as they are), and the key provider's settings the server reads: `KEYRING_FILE`, or
+ * `KEY_PROVIDER=openbao` with the `OPENBAO_*` variables (see `keyProviderFromEnv`). The shred
+ * commands do not contact the key provider. Each prints one JSON line with identifiers and
+ * counts, never key material.
  *
  * Exit codes: 0 done; 1 usage or configuration error; 2 `rewrap` finished but some rows could
  * not be unwrapped (they are listed, and the old KEK must stay in the keyring until they are
  * dealt with); 3 `shred` found no live key (already shredded, or never created; a tombstone is
- * in place either way). `shred-tenant` exits 0 with the count it destroyed, also when that is 0:
- * a repeat finds nothing left to shred.
+ * in place either way); 4 the key provider could not be reached or refused the operation (rows
+ * `rewrap` moved before that stay moved; run it again). `shred-tenant` exits 0 with the count it
+ * destroyed, also when that is 0: a repeat finds nothing left to shred.
  */
 import { readFileSync } from "node:fs";
 import pg from "pg";
 import { DataKeyStore, type KeyScope } from "./data-key-store.ts";
-import { LocalKeyring } from "./keyring.ts";
+import {
+  type KeyProvider,
+  KeyProviderConfigError,
+  KeyProviderRefusedError,
+  KeyProviderUnavailableError,
+} from "./keyring.ts";
+import { keyProviderFromEnv } from "./providers.ts";
 
 const USAGE =
   "usage: cli.ts rewrap [--batch <n>] | cli.ts shred <run|workspace> <id> | cli.ts shred-tenant <run|workspace> <tenant id>";
@@ -62,19 +71,20 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
       operation = { kind: command, ...parseShred(args) };
     } else throw new UsageError(USAGE);
     if (!env.DATABASE_URL) throw new UsageError("DATABASE_URL is not set");
-    if (!env.KEYRING_FILE) throw new UsageError("KEYRING_FILE is not set");
   } catch (error) {
     if (!(error instanceof UsageError)) throw error;
     emit({ event: "keys.cli.usage_error", message: error.message });
     return 1;
   }
 
-  let provider: LocalKeyring;
+  let provider: KeyProvider;
   try {
-    provider = LocalKeyring.fromFile(env.KEYRING_FILE);
+    provider = keyProviderFromEnv(env, { keyringFileVariable: "KEYRING_FILE" });
   } catch (error) {
-    // Keyring errors carry fixed messages that name fields, never values.
-    emit({ event: "keys.cli.keyring_error", message: (error as Error).message });
+    // Both kinds carry fixed messages that name variables or fields, never values.
+    const event =
+      error instanceof KeyProviderConfigError ? "keys.cli.usage_error" : "keys.cli.keyring_error";
+    emit({ event, message: (error as Error).message });
     return 1;
   }
 
@@ -83,6 +93,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
     try {
       databaseUrl.password = readFileSync(env.DATABASE_PASSWORD_FILE, "utf8").trim();
     } catch {
+      await provider.close();
       emit({ event: "keys.cli.usage_error", message: "DATABASE_PASSWORD_FILE cannot be read" });
       return 1;
     }
@@ -114,8 +125,19 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
     const shredded = await store.shred(operation.scope, operation.id);
     emit({ event: "keys.shred", scope: operation.scope, id: operation.id, shredded });
     return shredded ? 0 : 3;
+  } catch (error) {
+    if (
+      !(error instanceof KeyProviderUnavailableError) &&
+      !(error instanceof KeyProviderRefusedError)
+    ) {
+      throw error;
+    }
+    // Provider messages carry ids and HTTP statuses, never key material.
+    emit({ event: "keys.cli.provider_error", error: error.name, message: error.message });
+    return 4;
   } finally {
     await pool.end();
+    await provider.close();
   }
 }
 

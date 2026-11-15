@@ -1,4 +1,4 @@
-import type { WalletSummary, WorkspaceDetail } from "@askgina/os-api";
+import { ApiError, type WalletSummary, type WorkspaceDetail } from "@askgina/os-api";
 import { useMutation } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useParams } from "@tanstack/react-router";
 import {
@@ -14,11 +14,14 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { backLinkClass, EmptyState, ErrorState, FormError, Loading } from "@/components/common.tsx";
+import { ExportCard } from "@/components/export.tsx";
 import {
   DeletedWorkspace,
   DeleteWorkspaceCard,
   DeletingNotice,
   deletedWhileOpen,
+  MissingWorkspace,
+  WaitingDeletionNotice,
 } from "@/components/lifecycle.tsx";
 import { NotificationLevelCard } from "@/components/notifications.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
@@ -55,6 +58,11 @@ export function WorkspaceLayout() {
     // Read while it was being deleted, then gone: the deletion finished while this page was open.
     if (deletedWhileOpen(workspace.error, workspace.data)) {
       return <DeletedWorkspace name={workspace.data.name} />;
+    }
+    // Opened afresh after its deletion finished, or never one of this person's: the server says
+    // only `not_found`, and so does this page.
+    if (workspace.error instanceof ApiError && workspace.error.code === "not_found") {
+      return <MissingWorkspace />;
     }
     return <ErrorState error={workspace.error} retry={() => void workspace.refetch()} />;
   }
@@ -142,6 +150,7 @@ export function WorkspaceOverview() {
 
   return (
     <div className="grid grid-cols-1 gap-6">
+      <WaitingDeletionNotice workspace={data} />
       {active ? <NextStep workspace={data} /> : null}
       {active && withoutPolicy.length > 0 && data.agents.length > 0 ? (
         <Alert tone="warning">
@@ -275,6 +284,8 @@ export function WorkspaceOverview() {
       <NotificationLevelCard workspace={data} />
 
       <PauseCard workspace={data} />
+
+      {data.role === "owner" ? <ExportCard workspace={data} /> : null}
 
       {canAdmin ? <DeleteWorkspaceCard workspace={data} /> : null}
     </div>

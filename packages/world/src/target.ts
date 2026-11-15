@@ -4,12 +4,15 @@
  * builds its own Postgres pool calls `createEncryptedWorld()` directly.
  *
  * - `WORKFLOW_POSTGRES_URL` (or `DATABASE_URL`): the database.
- * - `WORLD_KEYRING_FILE`: path to the keyring JSON, kept outside the database.
+ * - `WORLD_KEYRING_FILE`: path to the keyring JSON, kept outside the database. Or
+ *   `KEY_PROVIDER=openbao` with the `OPENBAO_*` variables, for OpenBao Transit (see
+ *   `keyProviderFromEnv` in `@askgina/os-keys`); with both, file keys still unwrap while new ones
+ *   go to Transit.
  * - `WORLD_READABLE_ATTRIBUTE_KEYS`: optional, comma-separated run attribute keys whose values
  *   may be stored readable. Every other attribute's value is stored as `[withheld]`.
  * - The upstream Postgres World's own tuning variables keep their meaning.
  */
-import { DataKeyStore, LocalKeyring } from "@askgina/os-keys";
+import { DataKeyStore, keyProviderFromEnv } from "@askgina/os-keys";
 import pg from "pg";
 import { createEncryptedWorld, type EncryptedWorld } from "./index.ts";
 
@@ -23,9 +26,8 @@ function optionalNumber(name: string): number | undefined {
 
 export function createWorld(): EncryptedWorld {
   const connectionString = process.env.WORKFLOW_POSTGRES_URL || process.env.DATABASE_URL;
-  const keyringFile = process.env.WORLD_KEYRING_FILE;
   if (!connectionString) throw new Error("WORKFLOW_POSTGRES_URL is not set");
-  if (!keyringFile) throw new Error("WORLD_KEYRING_FILE is not set");
+  const provider = keyProviderFromEnv(process.env, { keyringFileVariable: "WORLD_KEYRING_FILE" });
 
   const queueConcurrency = optionalNumber("WORKFLOW_POSTGRES_WORKER_CONCURRENCY") ?? 50;
   const pool = new pg.Pool({
@@ -50,7 +52,7 @@ export function createWorld(): EncryptedWorld {
       ...(pollInterval === undefined ? {} : { pollInterval }),
       ...(jobLockStaleSeconds === undefined ? {} : { jobLockStaleSeconds }),
     },
-    dataKeys: new DataKeyStore({ pool, provider: LocalKeyring.fromFile(keyringFile) }),
+    dataKeys: new DataKeyStore({ pool, provider }),
     readableAttributeKeys,
   });
 }

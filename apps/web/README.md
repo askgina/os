@@ -102,6 +102,41 @@ new limits are approved. A destroyed wallet says so and offers nothing. While a 
 deleted, every page of it shows when its keys go, a countdown and "Cancel deletion" (any member,
 no passkey; it stays paused); nothing can be added or resumed. If the deletion finishes while its
 page is open, the page says the workspace was deleted: its former members can no longer read it.
+Opened afresh after that (a reload, an old link), the server answers `not_found` as for any
+workspace a person cannot read, and the page says only that the workspace does not exist or was
+deleted.
+
+Until a retirement or a deletion is decided, the wallet's page and the workspace's overview link
+the waiting request ("Open the request"), besides the approval inbox. A request summary does not
+name its wallet, so the wallet page reads each waiting retirement in full to find its own.
+
+## Export, copy and import
+
+An owner's overview has "Export or copy". "Download template" saves the workspace's setup as
+`<name>-template.json`: its wallets, their limits, its agents' names and its members, with no key,
+token, address, history or approval in advance. "Download record" saves its whole history as
+`<name>-record-<date>.jsonl`, which verifies offline; the server gives it only after a passkey
+sign-in from the last 5 minutes, and otherwise the card offers "Sign in again", which signs out
+and goes through the sign-in page back to the card. "Copy this workspace…" makes a new workspace
+from the template (its name, and whether to take the agents and the members along); the workspace
+list has "Import a template…", which reads a template file in the browser, checks it with the
+contract's schema and says what is wrong with it before anything is sent. Both open the new
+workspace's one-time page (`/w/<id>/created`): each new agent's token with a warning that it is
+shown only now, the limits waiting for approval, one invite link per member, and that admin
+changes need 1 approval until changed, with the template's own threshold to raise to. The result
+passes from the form to that page in memory only (`revealCloneResult` in `src/lib/reveal.ts`),
+never the URL, history or storage, and the mutations keep no copy; a reload says the tokens are
+gone.
+
+## Erasing yourself
+
+The settings page ends with "Erase me from this server". The server refuses while the person is
+the only owner of a workspace, while their passkeys approve in a workspace being deleted or one
+that would be left with too few approvers, and asks for a recent sign-in as the record does
+("Sign in again"). While their passkeys still approve somewhere it erases nothing and opens a
+request per passkey and workspace for the signer to stop accepting it; the page links them, and
+the person asks again once they are approved. Once erased, they are signed out and land on
+`/erased`.
 
 "Remove" on an agent's page is the API's `disableAgent`: its token stops working, its waiting
 payment requests are cancelled and its mandates end, for good. Its wallet stays until retired.
@@ -192,6 +227,9 @@ as the server does (`push_off`, `endpoint_refused`, a key that is not a P-256 po
 on with a key made at start; `OS_WEB_FIXTURE_WEB_PUSH=0` starts it off, and `/__fixture/web-push`
 turns it off or on as the operator's `WEB_PUSH_ENABLED` would. The fixture never pushes anything.
 
+Like the server, the fixture gives the record and erases a person only after a passkey sign-in
+from the last 300 seconds; `/__fixture/stale-sign-in` dates every sign-in back past that.
+
 ```bash
 bun run fixture   # the fixture API on 127.0.0.1:55731, its confirmation page on :55732
 bun run dev       # the UI on http://localhost:55730, proxying /api to the fixture
@@ -214,7 +252,9 @@ the React plugin's Fast Refresh: a change reloads the page.
   (what each message shows, that only a page of this site opens, that it listens for nothing
   else), `push.test.ts` the support matrix (desktop, Android, iPhone and iPad in a tab and from
   the Home Screen, before and after iOS 16.4, blocked) and the state of this device, and
-  `quiet-hours.test.ts` the quiet hours form.
+  `quiet-hours.test.ts` the quiet hours form. `export.test.ts` covers the export file names, the
+  template file check, the fresh sign-in refusal and the copy's one-time handover;
+  `lifecycle.test.ts` the delays, balances and which waiting request a page links.
 - `bunx playwright test --project=<phone-light|phone-dark|desktop-light|desktop-dark|phone-wide-font>`:
   the first-day journey in Chromium with a virtual authenticator. Every approval goes through
   the confirmation page's link and back. A second person, with their own authenticator, joins as
@@ -230,8 +270,12 @@ the React plugin's Fast Refresh: a change reloads the page.
   path leads through sign-in back to its approval. A second journey, on a fresh server, removes an
   agent, retires its wallet and cancels that, retires the treasury to the end, then deletes the
   workspace: refused until paused, cancelled during the delay, asked again and finished, after
-  which the page says it was deleted. The 7-day delay is skipped with `/__fixture/due`, so that
-  journey runs against the fixture only. Headless Chromium reaches no push service, so
+  which the page says it was deleted, and a reload says only that it does not exist or was
+  deleted. The 7-day delay is skipped with `/__fixture/due`, so that journey runs against the
+  fixture only. A third, also fixture-only, downloads a template, signs in again for the record
+  (`/__fixture/stale-sign-in`), copies the workspace and imports the template, each showing its
+  token once and gone after a reload, then has the only owner refused erasure and a viewer
+  erased. Headless Chromium reaches no push service, so
   the browser's push subscription is a stand-in (`test/push-stand-in.ts`: real keys, a made-up
   endpoint) and messages reach the real worker through the DevTools protocol, unencrypted; the
   permission, the worker's registration under the production Content-Security-Policy and the

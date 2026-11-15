@@ -9,8 +9,9 @@ import { approvals, wallets, workspaces } from "../db/schema.ts";
 import { loadWallet, walletSummary, workspaceDetail } from "../directory/views.ts";
 import { fromSignerError, HttpError } from "../http/errors.ts";
 import { handle } from "../http/route.ts";
+import { requireRecentSignIn } from "../identity/sessions.ts";
 import { cloneWorkspace } from "./clone.ts";
-import { requireRecentSignIn, writeRecord } from "./export.ts";
+import { writeRecord } from "./export.ts";
 import { deletionPreflight } from "./preflight.ts";
 import { cancelRequests, mirrorWallet, mirrorWorkspace } from "./state.ts";
 import { toTemplate } from "./template.ts";
@@ -259,7 +260,7 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
   handle(app, ctx, "exportRecord", async ({ session, params }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "owner");
-    await requireRecentSignIn(ctx, session);
+    await requireRecentSignIn(ctx, session, "export the record");
     const lines: string[] = [];
     await writeRecord(ctx, session, workspaceId, (line) => {
       lines.push(line);

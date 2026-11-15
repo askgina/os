@@ -1,4 +1,4 @@
-import { DataKeyStore, LocalKeyring } from "@askgina/os-keys";
+import { DataKeyStore, keyProviderFromEnv } from "@askgina/os-keys";
 import { createSignerClient } from "@askgina/os-protocol/signer";
 import { serve } from "@hono/node-server";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -27,7 +27,12 @@ async function main(): Promise<void> {
   pool.on("error", (error) => log.warn("idle database connection failed", { name: error.name }));
 
   await migrateDatabase(pool);
-  const keys = new DataKeyStore({ pool, provider: LocalKeyring.fromFile(config.keyringFile) });
+  const keyProvider = keyProviderFromEnv(process.env, {
+    keyringFileVariable: "KEYRING_FILE",
+    // `event` is keys.provider_unavailable or keys.provider_refresh_failed, with ids and counts.
+    onEvent: (event) => log.warn("key provider", { ...event }),
+  });
+  const keys = new DataKeyStore({ pool, provider: keyProvider });
   await keys.ensureMigrated();
 
   const db = drizzle(pool, { schema });
@@ -81,6 +86,7 @@ async function main(): Promise<void> {
     // Stop taking requests, let in-flight work settle, then let go of the database.
     await Promise.all([closed(publicServer), closed(internalServer)]);
     await background.stop();
+    await keyProvider.close();
     await pool.end();
     log.info("stopped", { event: "server.stopped" });
     process.exit(0);

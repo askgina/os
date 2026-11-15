@@ -148,7 +148,10 @@ export interface TestContextOptions {
   beforeOwner?: (setup: { token: string; browser: TestBrowser }) => Promise<void>;
 }
 
-function testConfig(databaseUrl: string, overrides: Partial<Config>): Config {
+function testConfig(
+  databaseUrl: string,
+  overrides: Partial<Config>,
+): { config: Config; keyringFile: string } {
   const dir = mkdtempSync(join(tmpdir(), "os-server-test-"));
   const keyringFile = join(dir, "keyring.json");
   writeFileSync(keyringFile, JSON.stringify(LocalKeyring.generate()));
@@ -161,18 +164,18 @@ function testConfig(databaseUrl: string, overrides: Partial<Config>): Config {
       { chainId: TEST_CHAIN_ID, name: "Local", rpcUrl: TEST_RPC_URL, nativeSymbol: "ETH" },
     ]),
   );
-  return {
+  const config = {
     ...loadConfig({
       PUBLIC_ORIGIN: TEST_ORIGIN,
       APPROVE_ORIGIN: TEST_APPROVAL_ORIGIN,
       DATABASE_URL: databaseUrl,
-      KEYRING_FILE: keyringFile,
       SIGNER_URL: "http://signer.test",
       SIGNER_HMAC_SECRET_FILE: secretFile,
       CHAINS_FILE: chainsFile,
     }),
     ...overrides,
   };
+  return { config, keyringFile };
 }
 
 /**
@@ -183,7 +186,7 @@ function testConfig(databaseUrl: string, overrides: Partial<Config>): Config {
  */
 export async function createTestContext(options: TestContextOptions): Promise<TestContext> {
   const database: TestDatabase = await createTestDatabase(options.label);
-  const config = testConfig(database.url, options.config ?? {});
+  const { config, keyringFile } = testConfig(database.url, options.config ?? {});
   let time = 1_800_000_000;
   const clock: TestClock = {
     now: () => time,
@@ -193,7 +196,7 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
   };
   const pool = new pg.Pool({ connectionString: config.databaseUrl, max: 8 });
   await migrateDatabase(pool);
-  const keys = new DataKeyStore({ pool, provider: LocalKeyring.fromFile(config.keyringFile) });
+  const keys = new DataKeyStore({ pool, provider: LocalKeyring.fromFile(keyringFile) });
   await keys.ensureMigrated();
   const confirmSecret = new Uint8Array(randomBytes(32));
   const signer = createSigner({

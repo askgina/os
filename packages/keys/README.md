@@ -17,9 +17,26 @@ controls a running server process.
 
 ## What it provides
 
+- `KeyProvider`: `ready()`, `activeKekId()`, `wrap(kekId, dataKey, aad)`,
+  `unwrap(kekId, wrapped, aad)`, `close()`. Every failure throws `KeyProviderUnavailableError`
+  (retryable: no answer, a timeout, 429, 5xx, a sealed server) or `KeyProviderRefusedError`
+  (permanent: the wrapped key does not open, the KEK or its version is unknown or retired, no
+  permission). Messages carry KEK ids and HTTP statuses, never key material or AAD bytes. No
+  provider falls back to another.
 - `LocalKeyring`: a keyring file `{ "active": "k2", "keys": { "k1": "<base64>", "k2": "<base64>" } }`
-  (each key 32 bytes, canonical base64). `LocalKeyring.generate()` makes a new one. It
-  implements `KeyProvider`, so a KMS-backed provider can replace it without other changes.
+  (each key 32 bytes, canonical base64; ids match `[A-Za-z0-9_-]+`). `LocalKeyring.generate()`
+  makes a new one.
+- `TransitKeyProvider`: an [OpenBao](https://openbao.org/) Transit key holds the KEK; KEK ids are
+  `bao:<mount>/<key>@<version>`. The data key travels to OpenBao and back, so use an `https:`
+  address between hosts. It signs in with a token file, AppRole or Kubernetes, renews its token
+  at two thirds of its TTL, and reads the key's latest version again every `refreshSeconds`
+  (default 300), so a rotation is picked up. One operation, its one retry included, takes at
+  most `timeoutMs` (default 2000).
+- `CompositeKeyProvider`: for moving from the file to Transit. New keys are wrapped under
+  Transit only; `bao:` ids unwrap with Transit and file ids with the keyring.
+- `keyProviderFromEnv(env, { keyringFileVariable })`: the provider the environment selects (see
+  "Choosing the key provider"). Bad settings throw `KeyProviderConfigError`, whose `code` names
+  the variable.
 - `DataKeyStore`: `getOrCreate(scope, id, tenantId?)`, `get`, `rewrap`, `shred`,
   `shredTenant(scope, tenantId)`, in the table
   `os_keys.data_keys`, created by its own idempotent migration. The wrapping is bound to the
@@ -38,11 +55,44 @@ timestamps, statuses and attributes stay readable; the full table is in the
 [`@askgina/os-world` README](../world/README.md#what-stays-readable). In `os_keys.data_keys`:
 scope, id, tenant id, KEK id and timestamps. Ciphertext lengths reveal plaintext lengths.
 
+## Choosing the key provider
+
+`KEY_PROVIDER=file` (the default) uses the keyring file named by `KEYRING_FILE` (the server and
+the CLI) or `WORLD_KEYRING_FILE` (`@askgina/os-world/target`). `KEY_PROVIDER=openbao` uses Transit:
+
+| Variable                                                 | Meaning                                                                                                                    |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `OPENBAO_ADDR`                                           | The server, `https://…:8200` (`http:` only on one host)                                                                    |
+| `OPENBAO_AUTH`                                           | `token`, `approle` or `kubernetes`                                                                                         |
+| `OPENBAO_TOKEN_FILE`                                     | With `token`: a file holding the token                                                                                     |
+| `OPENBAO_ROLE_ID_FILE`, `OPENBAO_SECRET_ID_FILE`         | With `approle`: files holding the role and secret ids                                                                      |
+| `OPENBAO_KUBERNETES_ROLE`, `OPENBAO_KUBERNETES_JWT_FILE` | With `kubernetes`: the role, and the service account token (default `/var/run/secrets/kubernetes.io/serviceaccount/token`) |
+| `OPENBAO_TRANSIT_MOUNT`, `OPENBAO_TRANSIT_KEY`           | Default `transit` and `os-kek`; the key must be `aes256-gcm96`, `aes128-gcm96` or `chacha20-poly1305`                      |
+| `OPENBAO_CA_FILE`                                        | PEM CA for the server's certificate, when it is not a public one                                                           |
+| `OPENBAO_TIMEOUT_MS`                                     | Per operation, 100 to 60000, default 2000                                                                                  |
+
+Credential files are read at each login, so a sidecar may rewrite them. The token needs `update`
+on `<mount>/encrypt/<key>` and `<mount>/decrypt/<key>` and `read` on `<mount>/keys/<key>`;
+token lookup and renewal come from OpenBao's `default` policy. With `KEYRING_FILE` set as well,
+the provider is the composite. When OpenBao is down, every operation that needs a key fails
+with `KeyProviderUnavailableError` until it is back; shredding does not need it.
+
+Move from the keyring file to OpenBao: set `KEY_PROVIDER=openbao` and the `OPENBAO_*`
+variables, keep `KEYRING_FILE`, restart; run `node packages/keys/src/cli.ts rewrap` until it
+reports `failedCount` 0; remove `KEYRING_FILE`; restart.
+
+Rotate the Transit key: `bao write -f transit/keys/os-kek/rotate`; wait `refreshSeconds` (or
+restart); run `rewrap`; then raise the key's `min_decryption_version` to the new version, after
+which copies wrapped under older versions (in backups, too) no longer open.
+
 ## Operations
 
-Every command reads `DATABASE_URL` and `KEYRING_FILE` and prints one JSON line with ids and counts.
+Every command reads `DATABASE_URL` and the key provider's variables above, and prints one JSON
+line with ids and counts. Exit code 4 means the key provider could not be reached or refused;
+rows `rewrap` moved before that stay moved, so run it again. `shred` and `shred-tenant` do not
+contact the key provider.
 
-Rotate the KEK:
+Rotate the KEK in the keyring file:
 
 1. Add a new key to the keyring file and make it `active`; keep the old one. Restart the
    services, so new data keys are wrapped under the new KEK.
@@ -83,3 +133,6 @@ found this way. The same cache TTL applies.
   (see [`deploy/README.md`](../../deploy/README.md#backups-and-restoring)); store the two
   archives encrypted, and apart if you can, because together they read everything. A keyring that is not valid
   JSON is reported without quoting its contents.
+- With Transit, the KEK never leaves OpenBao, but OpenBao, or anyone holding the server's
+  OpenBao token, unwraps every data key it is given; with a database copy that reads everything.
+  A backup then needs the database and an OpenBao that still holds the key versions it used.

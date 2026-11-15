@@ -64,6 +64,13 @@
       "when": 1794753831468,
       "tag": "0008_lifecycle",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794756589223,
+      "tag": "0009_erasure",
+      "breakpoints": true
     }
   ]
 }

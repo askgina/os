@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
-import { LocalKeyring } from "../src/index.ts";
+import { KeyProviderRefusedError, LocalKeyring } from "../src/index.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "os-keys-keyring-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -54,6 +54,26 @@ describe("LocalKeyring wrap and unwrap", () => {
     }
   });
 
+  test("every refusal is a KeyProviderRefusedError that names the KEK, not the key or the AAD", async () => {
+    const wrapped = Buffer.from(await ring.wrap("k1", dataKey, aad));
+    wrapped[20] = (wrapped[20] ?? 0) ^ 1;
+    for (const attempt of [
+      ring.unwrap("k1", wrapped, aad),
+      ring.unwrap("k1", wrapped.subarray(1), aad),
+      ring.unwrap("k9", wrapped, aad),
+      ring.wrap("k9", dataKey, aad),
+    ]) {
+      const error = await attempt.then(
+        () => undefined,
+        (failure: unknown) => failure,
+      );
+      expect(error).toBeInstanceOf(KeyProviderRefusedError);
+      expect((error as KeyProviderRefusedError).kekId).toMatch(/^k[19]$/);
+      expect((error as Error).message).not.toContain(dataKey.toString("base64"));
+      expect((error as Error).message).not.toContain("scope:id");
+    }
+  });
+
   test("a wrapped key of the wrong length and an unknown KEK id are refused", async () => {
     const wrapped = await ring.wrap("k1", dataKey, aad);
     await expect(ring.unwrap("k1", wrapped.subarray(1), aad)).rejects.toThrow(/malformed/);
@@ -61,14 +81,14 @@ describe("LocalKeyring wrap and unwrap", () => {
     await expect(ring.wrap("k9", dataKey, aad)).rejects.toThrow(/unknown KEK/);
   });
 
-  test("hasKek and activeKekId reflect the file", () => {
+  test("activeKekId reflects the file; ready and close resolve", async () => {
     const two = new LocalKeyring({
       active: "k2",
       keys: { ...file.keys, k2: randomBytes(32).toString("base64") },
     });
+    await expect(two.ready()).resolves.toBeUndefined();
     expect(two.activeKekId()).toBe("k2");
-    expect(two.hasKek("k1")).toBe(true);
-    expect(two.hasKek("k3")).toBe(false);
+    await expect(two.close()).resolves.toBeUndefined();
   });
 });
 
@@ -119,6 +139,17 @@ describe("LocalKeyring configuration", () => {
     ["no active field", JSON.stringify({ keys: {} })],
     ["keys not an object", JSON.stringify({ active: "k1", keys: "abc" })],
     ["a key that is not a string", JSON.stringify({ active: "k1", keys: { k1: 5 } })],
+    [
+      "an id that looks like a Transit id",
+      JSON.stringify({
+        active: "bao:transit/os-kek@1",
+        keys: { "bao:transit/os-kek@1": randomBytes(32).toString("base64") },
+      }),
+    ],
+    [
+      "an id with a space",
+      JSON.stringify({ active: "k 1", keys: { "k 1": randomBytes(32).toString("base64") } }),
+    ],
   ])("a file with %s is refused", (_name, body) => {
     expect(() => LocalKeyring.fromFile(writeRing(`shape-${_name}.json`, body))).toThrow(
       /^keyring:/,

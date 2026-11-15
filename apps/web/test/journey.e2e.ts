@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import {
   type APIRequestContext,
   test as baseTest,
@@ -1198,6 +1199,13 @@ test("the end of a wallet and of a workspace: retire, cancel, destroy, delete", 
     await expect(page.getByText("1.25 ETH")).toBeVisible();
     await expectOnFirstScreen(page, testInfo, page.getByRole("region", { name: "Decision" }));
     await shot("03-approval-retire");
+    // Until it is decided, the wallet's own page links the waiting request.
+    const retireRequest = page.url();
+    await page.goBack();
+    await expect(page.getByText("Retiring this wallet is waiting for approval.")).toBeVisible();
+    await shot("03b-wallet-retire-waiting");
+    await page.getByRole("link", { name: "Open the request" }).click();
+    await expect(page).toHaveURL(retireRequest);
     await approveDestruction("Retire a wallet");
     await expect(page.getByText("The wallet signs nothing more.", { exact: false })).toBeVisible();
     await page.getByRole("link", { name: "Open the wallet" }).click();
@@ -1264,6 +1272,13 @@ test("the end of a wallet and of a workspace: retire, cancel, destroy, delete", 
     await expect(page.getByRole("heading", { name: "Still in the wallet" })).toBeVisible();
     await expectOnFirstScreen(page, testInfo, page.getByRole("region", { name: "Decision" }));
     await shot("08-approval-delete");
+    // Until it is decided, the overview links the waiting request.
+    const deleteRequest = page.url();
+    await page.goBack();
+    await expect(page.getByText("Deleting this workspace is waiting for approval.")).toBeVisible();
+    await shot("08b-overview-delete-waiting", { viewport: true });
+    await page.getByRole("link", { name: "Open the request" }).click();
+    await expect(page).toHaveURL(deleteRequest);
     await approveDestruction("Delete this workspace");
     await page.getByRole("link", { name: "Open the workspace" }).click();
 
@@ -1298,12 +1313,266 @@ test("the end of a wallet and of a workspace: retire, cancel, destroy, delete", 
       timeout: 15_000,
     });
     await shot("11-deleted");
-    // That read was refused as the server refuses its former members: the one expected failure.
+    // Opened again, the page knows nothing of it, as the server answers anyone.
+    await page.reload();
+    await expect(
+      page.getByRole("heading", { name: "This workspace does not exist or was deleted" }),
+    ).toBeVisible();
+    await shot("12-missing");
+    // Those reads were refused as the server refuses its former members: the expected failures.
     const gone = (line: string) =>
       line.includes(`/api/v1/workspaces/${workspaceId}`) && /404|Not Found/.test(line);
     problems.splice(0, problems.length, ...problems.filter((line) => !gone(line)));
     await page.getByRole("link", { name: "← All workspaces" }).click();
     await expect(page.getByText("No workspaces yet")).toBeVisible();
+  });
+
+  expect(problems).toEqual([]);
+});
+
+/**
+ * Taking a workspace elsewhere, and a person leaving the server. The owner downloads the
+ * template; the record needs a recent sign-in, so the owner signs in again and comes back to it.
+ * A copy and an import each show their new agent's token once, the limits waiting for approval,
+ * the invite links and the admin threshold to raise; a reload shows the tokens gone. Erasing: the
+ * only owner is told what to do first, and a viewer, after signing in again, is erased and signed
+ * out.
+ *
+ * Every sign-in is dated back with the fixture's `/__fixture/stale-sign-in`, so this runs against
+ * the fixture only.
+ */
+test("export, copy and import a workspace; erase a person", async ({
+  page,
+  request,
+  baseURL,
+  browser,
+  widerText,
+}, testInfo) => {
+  test.skip(Boolean(process.env.OS_WEB_BASE_URL), "sign-ins are dated back with the fixture only");
+  test.setTimeout(240_000);
+  const shot = (
+    name: string,
+    target: { element?: Locator; viewport?: true } = {},
+    on: Page = page,
+  ) => capture(on, testInfo, `export-${name}`, target);
+  const problems = watchConsole(page);
+  /** Drops the expected refusals of `path` with `status` from a list of problems. */
+  const expectRefused = (list: string[], status: number, path: string) => {
+    const refused = (line: string) => line.includes(String(status)) && line.includes(path);
+    expect(list.filter(refused).length).toBeGreaterThan(0);
+    list.splice(0, list.length, ...list.filter((line) => !refused(line)));
+  };
+  await request.post(`${baseURL}/__fixture/reset`);
+  if (widerText) await widenText(page.context());
+  await addAuthenticator(page);
+  const staleSignIns = async () => {
+    expect((await request.post(`${baseURL}/__fixture/stale-sign-in`)).ok()).toBe(true);
+  };
+
+  let overview = "";
+  let viewer: Page | null = null;
+  let viewerProblems: string[] = [];
+  await test.step("a workspace with an agent, approved limits and a viewer", async () => {
+    await setUpServer(page, "Ada Owner");
+    await page.getByLabel("New workspace").fill("Ops team");
+    await page.getByRole("button", { name: "Create workspace" }).click();
+    await expect(page.getByText("Next: add an agent")).toBeVisible();
+    overview = new URL(page.url()).pathname;
+    await page.getByLabel("Agent name").fill("Invoice payer");
+    await page.getByRole("button", { name: "Add an agent" }).click();
+    await expect(page.getByRole("heading", { name: "Invoice payer" })).toBeVisible();
+    await page.goto(overview);
+    await page.getByRole("link", { name: "Set this wallet's policy" }).click();
+    await page.getByLabel("Most per transaction ETH").fill("0.05");
+    await page.getByLabel("Most per 24 hours ETH").fill("0.2");
+    await page.getByRole("button", { name: "Submit for approval" }).click();
+    await expect(page.getByRole("heading", { name: /Change the limits of/ })).toBeVisible();
+    await approveOnSignerPage(page);
+    await expect(page.getByText("Done. The change is in effect.")).toBeVisible();
+
+    await page.goto(`${overview}/members`);
+    await page.getByLabel("Role", { exact: true }).selectOption("viewer");
+    await page.getByRole("button", { name: "Create invite link" }).click();
+    const invite = await page.getByLabel(/Invite link/).inputValue();
+    const { viewport, deviceScaleFactor, isMobile, hasTouch, colorScheme } = testInfo.project.use;
+    const context = await browser.newContext({
+      baseURL,
+      viewport,
+      deviceScaleFactor,
+      isMobile,
+      hasTouch,
+      colorScheme: colorScheme ?? "light",
+    });
+    if (widerText) await widenText(context);
+    viewer = await context.newPage();
+    viewerProblems = watchConsole(viewer);
+    await addAuthenticator(viewer);
+    await viewer.goto(new URL(invite).pathname);
+    await viewer.getByLabel("Your name").fill("Lin Viewer");
+    await viewer.getByRole("button", { name: "Create passkey and join" }).click();
+    await expect(viewer.getByRole("heading", { name: "Workspaces" })).toBeVisible();
+  });
+
+  let templatePath = "";
+  await test.step("the template downloads; the record waits for a fresh sign-in", async () => {
+    await page.goto(overview);
+    const card = page.locator("#export");
+    const [template] = await Promise.all([
+      page.waitForEvent("download"),
+      card.getByRole("button", { name: "Download template" }).click(),
+    ]);
+    expect(template.suggestedFilename()).toBe("ops-team-template.json");
+    templatePath = testInfo.outputPath("ops-team-template.json");
+    await template.saveAs(templatePath);
+    const text = await readFile(templatePath, "utf8");
+    expect(JSON.parse(text)).toMatchObject({
+      format: "askgina.os/workspace-template/v1",
+      name: "Ops team",
+      wallets: [{ ref: "w1", kind: "agent", agent: { name: "Invoice payer" } }],
+    });
+    // Configuration only: no token, and no wallet's address.
+    expect(text).not.toContain("osa_");
+    expect(text).not.toMatch(/"address"/);
+
+    await staleSignIns();
+    await card.getByRole("button", { name: "Download record" }).click();
+    await expect(
+      card.getByText(/^Sign in again with your passkey to download the record/),
+    ).toBeVisible();
+    await shot("01-sign-in-again", { element: card });
+    expectRefused(problems, 403, "/export/record");
+    await card.getByRole("button", { name: "Sign in again" }).click();
+    await expect(page).toHaveURL(/\/login\?next=/);
+    await page.getByRole("button", { name: "Sign in with passkey" }).click();
+    await expect(page).toHaveURL((url) => url.pathname === overview && url.hash === "#export");
+    const [record] = await Promise.all([
+      page.waitForEvent("download"),
+      page.locator("#export").getByRole("button", { name: "Download record" }).click(),
+    ]);
+    expect(record.suggestedFilename()).toMatch(/^ops-team-record-\d{4}-\d{2}-\d{2}\.jsonl$/);
+    const lines = (await readFile(await record.path(), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { format?: string; type?: string; action?: string });
+    expect(lines[0]).toMatchObject({ format: "askgina.os/workspace-record/v1" });
+    expect(lines.at(-1)).toMatchObject({ type: "end" });
+    // The record holds its own export.
+    expect(lines.some((line) => line.action === "workspace.exported")).toBe(true);
+  });
+
+  await test.step("a copy shows its agent's token once, its waiting limits and its invite", async () => {
+    const card = page.locator("#export");
+    await card.getByRole("button", { name: "Copy this workspace…" }).click();
+    await expect(card.getByLabel("Name of the new workspace")).toHaveValue("Ops team (copy)");
+    await expect(card.getByLabel(/^Its agents/)).toBeChecked();
+    await expect(card.getByLabel(/^Its members/)).toBeChecked();
+    await shot("02-copy-form", { element: card });
+    await card.getByRole("button", { name: "Create the copy" }).click();
+
+    await expect(page.getByRole("heading", { name: "The new workspace is ready" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Ops team (copy)" })).toBeVisible();
+    await expect(page.getByText("Copy these tokens now. They are shown only now.")).toBeVisible();
+    const tokens = page.getByRole("list", { name: "New agent tokens" });
+    await expect(tokens.getByRole("link", { name: "Invoice payer" })).toBeVisible();
+    const token = (await tokens.locator("code").first().textContent()) ?? "";
+    expect(token).toMatch(/^osa_/);
+    await expect(
+      page.getByRole("list", { name: "Limits waiting for approval" }).getByRole("link"),
+    ).toHaveCount(1);
+    const invites = page.getByRole("list", { name: "Invite links" });
+    await expect(invites.getByText("Lin Viewer", { exact: true })).toBeVisible();
+    await expect(invites.getByRole("textbox")).toHaveValue(/\/join\//);
+    await expect(
+      page.getByText(/^Admin changes in this workspace need 1 approval until you change it/),
+    ).toBeVisible();
+    await shot("03-copy-result");
+
+    // Shown once: a reload finds the token gone.
+    await page.reload();
+    await expect(page.getByText("Shown once, and gone")).toBeVisible();
+    await expect(page.locator("code", { hasText: token })).toHaveCount(0);
+    await page.getByRole("link", { name: "Open the workspace" }).click();
+    await expect(page.getByText("Next: set this wallet's limits")).toBeVisible();
+  });
+
+  await test.step("a template file imports as a new workspace, and a wrong file is refused", async () => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Import a template…" }).click();
+    const card = page.locator("#import");
+    const file = card.getByLabel("Template file");
+    await file.setInputFiles({
+      name: "notes.json",
+      mimeType: "application/json",
+      buffer: Buffer.from("not a template"),
+    });
+    await expect(card.getByRole("alert")).toHaveText(
+      "This file is not a workspace template: it is not JSON.",
+    );
+    await file.setInputFiles(templatePath);
+    const name = card.getByLabel("Name of the new workspace");
+    await expect(name).toHaveValue("Ops team");
+    await expect(card.getByText(/^Ops team: 1 wallet, 1 agent, 2 members\./)).toBeVisible();
+    await name.fill("Ops team imported");
+    await card.getByLabel(/^Its members/).uncheck();
+    await shot("04-import-form", { element: card });
+    await card.getByRole("button", { name: "Create workspace from template" }).click();
+
+    await expect(page.getByRole("heading", { level: 1, name: "Ops team imported" })).toBeVisible();
+    await expect(page.getByRole("list", { name: "New agent tokens" }).locator("code")).toHaveCount(
+      1,
+    );
+    await expect(page.getByRole("list", { name: "Invite links" })).toHaveCount(0);
+    await shot("05-import-result");
+  });
+
+  await test.step("erasing: the only owner must hand over first; a viewer is erased", async () => {
+    await page.goto("/settings");
+    const card = page.locator("#erase");
+    await card.getByRole("button", { name: "Erase me…" }).click();
+    await page
+      .getByRole("dialog", { name: "Erase yourself?" })
+      .getByRole("button", { name: "Erase me", exact: true })
+      .click();
+    await expect(card.getByRole("alert")).toHaveText(/only owner of Ops team/);
+    await shot("06-erase-last-owner", { element: card });
+    expectRefused(problems, 409, "/me/erase");
+
+    if (!viewer) throw new Error("the viewer joined in the first step");
+    const person: Page = viewer;
+    await person.goto("/settings");
+    const theirs = person.locator("#erase");
+    await theirs.getByRole("button", { name: "Erase me…" }).click();
+    await person
+      .getByRole("dialog", { name: "Erase yourself?" })
+      .getByRole("button", { name: "Erase me", exact: true })
+      .click();
+    // Their sign-in was dated back with everyone's: they sign in again and come back.
+    await expect(
+      theirs.getByText(/^Sign in again with your passkey to erase yourself/),
+    ).toBeVisible();
+    expectRefused(viewerProblems, 403, "/me/erase");
+    await theirs.getByRole("button", { name: "Sign in again" }).click();
+    await person.getByRole("button", { name: "Sign in with passkey" }).click();
+    await expect(person).toHaveURL((url) => url.pathname === "/settings" && url.hash === "#erase");
+    await person.locator("#erase").getByRole("button", { name: "Erase me…" }).click();
+    await person
+      .getByRole("dialog", { name: "Erase yourself?" })
+      .getByRole("button", { name: "Erase me", exact: true })
+      .click();
+    await expect(
+      person.getByRole("heading", { name: "You were erased from this server" }),
+    ).toBeVisible();
+    await shot("07-erased", {}, person);
+    // Signed out for good: the app sends them to sign in, and their passkey no longer works.
+    await person.goto("/");
+    await expect(person).toHaveURL(/\/login$/);
+    expect(viewerProblems).toEqual([]);
+    await person.context().close();
+
+    await page.goto(`${overview}/members`);
+    await expect(page.getByText("Lin Viewer")).toHaveCount(0);
+    await page.goto(`${overview}/activity`);
+    await expect(page.getByText("member.erased")).toBeVisible();
   });
 
   expect(problems).toEqual([]);

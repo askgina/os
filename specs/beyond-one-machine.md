@@ -42,10 +42,21 @@ Success means:
 
 - [x] (2026-11-14 21:38Z) Research current behavior and relevant code paths: [`specs/research/beyond-one-machine.md`](./research/beyond-one-machine.md).
 - [x] (2026-11-15) Owner decisions D1 to D9 (see `Decision Log`). D5 was taken (2026-11-14): (a). D1 to D4 and D6 to D9 were taken 2026-11-15 by the lead under Eric's delegation, each as the recommended option (a).
-- [ ] Milestone 1: the signer on its own host.
+- [ ] Milestone 1: the signer on its own host. First half built and green in CI (2026-11-15,
+      `8e78b3f`, run 43727759164): signer mutual TLS with each client certificate bound to its
+      scope, the loopback health listener, the expiry check at boot, `createSignerFetch`
+      (`@askgina/os-protocol/signer-transport`), the `approve` service's TLS client,
+      `deploy/split/make-peer-certs.sh`. Left: the server's TLS client and `SIGNER_ADMIN_COMMAND`,
+      `init --domain`, the two split Compose files, the `split` CI stack and its gates.
 - [x] (2026-11-14) Milestone 2: the restore fence, built ahead of Milestone 1 as a fix to v0.1: `apps/signer/src/fence.ts`, the `fence` admin command, `envelope_fenced` for every envelope kind, a `PRAGMA user_version` migration step for the signer's SQLite (version 2 adds `signer_meta`), detection of a replaced database file, the rewritten restore gate and restore procedure. Proven locally: `apps/signer/test/fence.test.ts` (10 tests) and `apps/signer/test/admin.test.ts` (3 tests) pass, one file at a time.
 - [ ] Milestone 2 in CI: the restore gate in `e2e/test/release-gates.spec.ts` on a real stack (`stack (amd64)`, `stack (arm64)`), including `docker compose run --rm signer node src/admin.ts fence` on restored volumes. Written and type-checked, not run.
-- [ ] Milestone 3: key providers and OpenBao Transit.
+- [ ] Milestone 3: key providers and OpenBao Transit. Built (2026-11-15), CI pending:
+      `KeyProvider` gains `ready` and `close` and loses `hasKek`; `TransitKeyProvider`,
+      `CompositeKeyProvider`, `keyProviderFromEnv` (`KEY_PROVIDER`, `OPENBAO_*`); typed
+      `KeyProviderUnavailableError` and `KeyProviderRefusedError`; shredding works during a
+      provider outage; `@askgina/os-keys` 0.2.0; the test services gain a development OpenBao;
+      `deploy/openbao/policy.hcl`. Left: the World ciphertext test on both providers with the
+      20-second outage, and the `stack (openbao)` CI entry.
 - [ ] Milestone 4: a replica-safe control plane.
 - [ ] Milestone 5: Kubernetes manifests proven on kind.
 - [ ] Milestone 6: HA Postgres with CloudNativePG.

@@ -6,6 +6,7 @@ import {
   QueryClient,
   type QueryKey,
   useInfiniteQuery,
+  useQueries,
   useQuery,
 } from "@tanstack/react-query";
 import { signInHref } from "@/lib/return-path.ts";
@@ -135,6 +136,29 @@ export const useApprovals = (workspaceId: string, status: "pending" | "all") =>
     queryFn: () => api.call("listApprovals", { params: { workspaceId }, query: { status } }),
     refetchInterval: 3_000,
     placeholderData: keepPreviousData,
+  });
+
+/**
+ * The waiting requests, read each time a page opens rather than every few seconds: enough for a
+ * page to link one of them. Shares the inbox's cache, so either refreshes the other.
+ */
+export const usePendingApprovals = (workspaceId: string, enabled: boolean) =>
+  useQuery({
+    queryKey: keys.approvals(workspaceId, "pending"),
+    queryFn: () =>
+      api.call("listApprovals", { params: { workspaceId }, query: { status: "pending" } }),
+    enabled,
+    staleTime: 0,
+  });
+
+/** Several requests read in full, in the order asked, each undefined until read. */
+export const useApprovalDetails = (approvalIds: readonly string[]) =>
+  useQueries({
+    queries: approvalIds.map((approvalId) => ({
+      queryKey: keys.approval(approvalId),
+      queryFn: () => api.call("getApproval", { params: { approvalId } }),
+    })),
+    combine: (results) => results.map((result) => result.data),
   });
 
 const ACTIVE_APPROVAL = new Set(["pending", "approved"]);

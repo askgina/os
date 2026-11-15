@@ -1,5 +1,5 @@
 # Throwaway services for the test suites. Nothing here keeps data.
-#   bun run services:up    start Postgres and a local chain
+#   bun run services:up    start Postgres, a local chain and a development OpenBao
 #   bun run services:down  remove them
 name: os-test
 
@@ -25,6 +25,22 @@ services:
       - "127.0.0.1:55545:8545"
     healthcheck:
       test: ["CMD-SHELL", "cast block-number --rpc-url http://127.0.0.1:8545"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  # Development mode: in memory, unsealed, with a fixed root token. For the key-provider tests only.
+  openbao:
+    image: quay.io/openbao/openbao:2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f
+    command: ["server", "-dev", "-dev-root-token-id=test-root", "-dev-listen-address=0.0.0.0:8200"]
+    cap_add:
+      - IPC_LOCK
+    environment:
+      BAO_ADDR: http://127.0.0.1:8200
+    ports:
+      - "127.0.0.1:55820:8200"
+    healthcheck:
+      test: ["CMD", "bao", "status"]
       interval: 1s
       timeout: 3s
       retries: 30

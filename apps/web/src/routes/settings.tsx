@@ -11,6 +11,7 @@ import {
   linkClass,
   PageHeader,
 } from "@/components/common.tsx";
+import { EraseCard } from "@/components/erase.tsx";
 import { NotificationSettings } from "@/components/notifications.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
@@ -116,6 +117,7 @@ export function SettingsPage() {
         </CardContent>
       </Card>
       {session.data?.user ? <NotificationSettings userId={session.data.user.id} /> : null}
+      <EraseCard />
     </div>
   );
 }
