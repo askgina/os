@@ -1,10 +1,10 @@
 # Approve on a page the control plane cannot change: a trusted display for passkey approvals
 
 - Branch: main
-- Status: In Progress
+- Status: Ready for Review
 - Owner(s): Eric Juta
 - Created: 2026-11-14
-- Last Updated: 2026-11-14
+- Last Updated: 2026-11-15
 - Links: [Issue askgina/os#20](https://github.com/askgina/os/issues/20) | [Map askgina/os#18](https://github.com/askgina/os/issues/18) | [Research report](./research/trusted-display.md) | [v0.1 ExecPlan](./agent-workspaces-v0.1.md)
 
 This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`,
@@ -111,8 +111,8 @@ Success means:
       new release gates run; `stack (tls)`, where the browser gate approves on
       `https://localhost:8443` with the passkey enrolled on `https://localhost`, which also
       tests whether Chromium's virtual authenticator follows the tab across the origin change.
-- [ ] Milestone 3: cutover; the signer accepts approvals only from the confirmation origin;
-      documents corrected.
+- [x] (2026-11-15 01:15Z) Milestone 3: cutover; the signer accepts approvals only from the
+      confirmation origin; documents corrected. Green in CI with milestone 4 (see below).
   - [x] (2026-11-15 00:20Z) Code and tests, without `apps/web` and the prose documents (split
         to a second agent and a docs pass). Built: `verifyAuthorization` refuses an assertion
         made in a frame (`crossOrigin: true`, any `topOrigin`, unreadable client data) and
@@ -287,8 +287,19 @@ Success means:
         the signer refuses it with `possession_unproven`, `directory/kinds.ts` turns that into
         an `ApprovalFailure`, and the request ends `failed`. So the step's `complete` window
         rarely helps; `deploy/README.md` says such a request must be proposed again.
-- [ ] Run validation and record evidence (CI run URLs, one manual phone run).
-- [ ] Update this spec with the final outcome and residual risks.
+- [x] (2026-11-15 01:15Z) Validation in CI: run
+      [43661427736](https://github.com/askgina/os/actions/runs/43661427736) at `df9a904`, all six
+      jobs green. `test`: 39 files. `stack (amd64)` and `stack (arm64)`: 20 release gates and 4
+      browser gates each (the HTTPS one is skipped there). `stack (tls)`: 5 browser gates over
+      HTTPS, including the possession step on the real confirmation page. `ui`: the journey on
+      five projects. Earlier runs on the way: 43650081725 (milestone 1), 43655239594 and
+      43656127986 (milestone 2, stack green, `ui` red on a phone overflow), 43660112114
+      (milestones 3 and 4, `ui` red on the wide-font project's height rule).
+- [ ] One manual run with a real phone and a real passkey on the confirmation page. Not done.
+      Every passkey in the gates is Chromium's virtual authenticator or the test
+      SoftAuthenticator.
+- [x] (2026-11-15 01:15Z) Final outcome and residual risks are in Outcomes and in
+      `docs/threat-model.md`.
 
 ## Surprises & Discoveries
 
