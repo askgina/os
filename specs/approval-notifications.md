@@ -40,9 +40,9 @@ Success means:
 - [x] (2026-11-15) Owner decisions D1 to D7 in `Decision Log`: Eric chose the recommended option of each.
 - [x] (2026-11-15) Milestones 1 and 2 are commit `371c2ce`, CI run 43705883757 green (check, test, ui, stack amd64/arm64/tls). Milestone 1: notification outbox and signed webhook (`apps/server/src/notify/`, migration `0005_notifications`). The webhook also reports `mandate.used`. First start creates `notify-webhook-secret`; Compose passes it.
 - [x] (2026-11-15) Milestone 2: Web Push sender (RFC 8291, RFC 8292), reproducing the RFC 8291 Appendix A body byte for byte. First start creates `vapid-key.pem`.
-- [ ] Milestone 3: subscriptions, preferences, content levels, API.
+- [x] (2026-11-15) Milestone 3: subscriptions, preferences, content levels, API (commit `e8ae6ff`, migration `0006_push_subscriptions`, seven routes). CI run 43707841094: test, ui and stack amd64/arm64/tls green; `check` red on one unformatted Markdown table, fixed in the next commit.
 - [ ] Milestone 4: web app manifest, service worker, return path after sign-in.
-- [ ] Milestone 5: expiry reminders and quiet hours.
+- [x] (2026-11-15) Milestone 5: expiry reminders and quiet hours (same commit and run as Milestone 3). The webhook is not held by quiet hours.
 - [ ] Milestone 6: ntfy sidecar example, docs, threat model, release gates.
 - [ ] Manual staging check: a real phone receives a push and opens the approval.
 
@@ -302,8 +302,8 @@ Scope: show the sidecar pattern, document every third party, and gate the webhoo
 
 Files and interfaces:
 
-- `examples/notify-ntfy/` (new): `src/main.ts` (Node 26, no framework): listens on `PORT`, verifies `x-os-signature` with `NOTIFY_WEBHOOK_SECRET_FILE` and the 300-second timestamp window, dedupes `x-os-delivery` in memory for 24 hours, POSTs to `${NTFY_URL}/${NTFY_TOPIC}` with body "Approval waiting", header `Click: <link>` only when `NTFY_INCLUDE_LINK=1`, and `Authorization: Bearer` from `NTFY_TOKEN_FILE` if set. `Dockerfile` in the style of `examples/scripted-agent/Dockerfile`; `test/bridge.test.ts`; `README.md` stating that on iOS a self-hosted ntfy forwards a poll request with the message id and a SHA-256 of the topic URL to its `upstream-base-url` (ntfy.sh by default).
-- `compose.yaml`: service `notify-ntfy` under profile `notify`, on the `control` network, with the webhook secret mounted read-only.
+- `examples/ntfy-sidecar/` (new): `src/bridge.ts` (verification, dedupe, publishing), `src/config.ts` (settings and the files they name), `src/main.ts` (Node 26, no framework, listens on `PORT`). It verifies `x-os-signature` with `NOTIFY_WEBHOOK_SECRET_FILE` and the 300-second timestamp window, dedupes `x-os-delivery` in memory for 24 hours, and POSTs to `${NTFY_URL}/${NTFY_TOPIC}` a fixed text per event ("Approval waiting" for `approval.opened`), header `Click: <link>` only when `NTFY_INCLUDE_LINK=1` and the link is on `PUBLIC_ORIGIN`, and `Authorization: Bearer` from `NTFY_TOKEN_FILE` if set. `Dockerfile` in the style of `examples/scripted-agent/Dockerfile`; `test/bridge.test.ts`; `README.md` stating that on iOS a self-hosted ntfy forwards a poll request with the message id to its `upstream-base-url` (ntfy.sh by default).
+- `examples/ntfy-sidecar/compose.yaml`: its own Compose overlay on the root `compose.yaml` (`docker compose -f compose.yaml -f examples/ntfy-sidecar/compose.yaml up -d --build`), not a profile of the root file. It adds `ntfy-sidecar-init`, which copies the webhook secret (and an ntfy token file, if named) from the server's secrets volume into the sidecar's own volume with no network, and `ntfy-sidecar` on the `control` network, which never mounts the server's volume; it points the server's `NOTIFY_WEBHOOK_URL` at the sidecar.
 - `e2e/compose.e2e.yaml` and `e2e/src/stack.ts`: a webhook receiver service that answers 503 to the first request and 200 after, and records requests.
 - `e2e/test/release-gates.spec.ts`: gate "an approval is announced once, signed, with no sealed content, even after a failed delivery".
 - `docs/threat-model.md`: new section "Notifications" (text in `Risks and Open Questions` below and the threat summary); remove "Notifications outside the inbox: web push and chat." from "Out of scope for v0.1" only when this ships, and record what remains (email, chat adapters built in).
@@ -313,7 +313,7 @@ Files and interfaces:
 
 Acceptance:
 
-- `examples/notify-ntfy/test/bridge.test.ts`: a bad signature, an old timestamp, and a replayed delivery id are refused; a valid one produces one POST to a fake ntfy server with no link unless enabled.
+- `examples/ntfy-sidecar/test/bridge.test.ts`: a bad signature, an old timestamp, and a replayed delivery id are refused; a valid one produces one POST to a fake ntfy server with no link unless enabled.
 - The new release gate passes in CI on the `stack` jobs (amd64, arm64, tls): after the scripted agent proposes a payment, the receiver records two requests with the same `x-os-delivery`, the second answered 200, the signature verifies with the stack's secret, and a scan of all recorded bodies finds none of the proposal's marker strings.
 - CI `check` passes for the docs (Biome, link targets exist).
 

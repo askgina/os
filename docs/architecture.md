@@ -238,9 +238,43 @@ with HMAC-SHA-256 under `notify-webhook-secret`, a file in the server's secrets 
 channel is a sidecar of that webhook, a small service next to the stack that verifies the
 signature and forwards with its own credential: [`examples/ntfy-sidecar`](../examples/ntfy-sidecar)
 publishes fixed text to an ntfy topic. The format, the checks a receiver makes and the retry rules
-are in [`deploy/README.md`](../deploy/README.md#notifications). Web Push to people's own browsers
-is off unless the operator sets `WEB_PUSH_ENABLED=1`; its design is in
-[`specs/approval-notifications.md`](../specs/approval-notifications.md).
+are in [`deploy/README.md`](../deploy/README.md#notifications).
+
+Web Push to people's own browsers is off unless the operator sets `WEB_PUSH_ENABLED=1`, and then
+each person turns it on per device. The server identifies itself to browsers' push services with
+a VAPID key (RFC 8292), a P-256 key in the file `vapid-key.pem` that `init` creates. A browser
+subscribes under that key's public half, which the web app reads from `GET /api/v1/me/push`, and
+the web app sends the subscription to `POST /api/v1/me/push-subscriptions`: an endpoint at the
+browser's push service and the browser's own keys. The server keeps it only if the endpoint is
+`https:` under a host of `WEB_PUSH_ENDPOINT_HOSTS`.
+
+```mermaid
+sequenceDiagram
+  participant B as browser and its service worker
+  participant S as server
+  participant P as push service
+  B->>S: GET /api/v1/me/push (VAPID public key)
+  B->>P: subscribe under that key
+  P-->>B: endpoint
+  B->>S: POST /api/v1/me/push-subscriptions (endpoint, keys)
+  Note over S: a request opens: one delivery row per device
+  S->>P: POST to the endpoint: VAPID token, encrypted 512-byte body
+  P->>B: the encrypted message
+  Note over B: decrypts and shows the notification, and a tap opens the request's page
+```
+
+When a push row is due, the server checks that the person can still approve, has not approved,
+wants it and is outside their quiet hours, then builds the message at the workspace's content
+level ([`content.ts`](../apps/server/src/notify/content.ts)): a Declarative Web Push JSON with a
+title, a body and a link to the request's page. It encrypts that JSON for the device with the
+subscription's keys (RFC 8291, `aes128gcm`), padded to 512 bytes, and posts it to the endpoint
+with a VAPID token valid for 12 hours, a `Topic` that is a hash of the request's id, and a time to
+live that ends with the request
+([`webpush/`](../apps/server/src/notify/webpush/)). The push service passes it to the device,
+where the browser, or the web app's service worker `/sw.js`, shows it. A reminder reuses the
+same `Topic` and the same notification tag, so it replaces the first one. A push service's 404 or
+410 deletes the subscription. What each party learns is in
+[the threat model](./threat-model.md#notifications).
 
 No notification carries what a request is about, and none is an input to an approval: the
 signer is not involved at any step.
@@ -262,6 +296,9 @@ signer is not involved at any step.
 | Confirmation request secret                                                                                                                                          | A file read by the signer and, as a copy, by the `approve` service                                           | The operator                                                                                                   |
 | Notifications waiting to be sent, and each one's outcome                                                                                                             | Postgres, `os.notification_deliveries`                                                                       | The server                                                                                                     |
 | Webhook signing secret                                                                                                                                               | A file read by the server; the operator gives the receiver a copy                                            | The operator                                                                                                   |
+| Push subscriptions (each device's endpoint, keys and label), each person's notification switches per workspace and quiet hours                                       | Postgres, `os.push_subscriptions`, `os.notification_preferences`, `os.users.quiet_hours`                     | The server, at the person's request; it deletes a subscription its push service reports gone                   |
+| Each workspace's notification content level (`count` or `summary`)                                                                                                   | Postgres, `os.workspaces.notification_detail`                                                                | The server, at an owner's request, recorded in the audit log                                                   |
+| VAPID key (identifies the server to push services; every subscription is bound to it)                                                                                | A file read by the server, `vapid-key.pem` in its secrets volume                                             | The operator; `init` creates it when it is missing and never replaces it                                       |
 
 Some rows in Postgres mirror the signer's state for display (the policy on `wallets`, the paused
 flag on `workspaces`, the `approver_credentials` table, the `mandates` table). The schema's

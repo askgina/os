@@ -326,8 +326,7 @@ receiver accepts it. The receiver turns it into whatever reaches people: a chat 
 a phone notification. [`examples/ntfy-sidecar`](../examples/ntfy-sidecar) is a complete receiver
 that publishes to an [ntfy](https://ntfy.sh) topic; other channels are built the same way, so the
 control plane never holds a chat service's or a push provider's credential. Web Push to people's
-own browsers is a separate setting, off unless `WEB_PUSH_ENABLED=1`
-([`specs/approval-notifications.md`](../specs/approval-notifications.md)).
+own browsers is a separate setting, off unless `WEB_PUSH_ENABLED=1` (see "Web Push" below).
 
 This replaces the webhook of v0.1, which sent `{"event","approvalId","workspaceId","kind"}` once,
 unsigned. A receiver built for that one must verify the signature and dedupe, as below.
@@ -337,7 +336,7 @@ unsigned. A receiver built for that one must verify the signature and dedupe, as
 | `event`             | When                                                                                                                               | Body keys                                                                            |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
 | `approval.opened`   | A request people decide on opens: a payment, a policy or approver change, the admin threshold, a resume, a sweep, a mandate grant. | `approvalId`, `deliveryId`, `event`, `expiresAt`, `kind`, `link`, `v`, `workspaceId` |
-| `approval.reminder` | A reminder that the same request still waits, before it expires.                                                                   | The same                                                                             |
+| `approval.reminder` | Not sent to the webhook today: reminders go only to Web Push devices (see "Reminders" below). The format keeps the event.          | The same                                                                             |
 | `mandate.used`      | A payment a mandate covers goes to the signer with no person asked.                                                                | `approvalId`, `deliveryId`, `event`, `link`, `mandateId`, `v`, `workspaceId`         |
 
 One request, as it arrives:
@@ -418,6 +417,131 @@ one. A delivery the old receiver refuses in between is not retried.
 - The receiver's answer body is never read. The server logs `notification delivered`,
   `notification retry`, `notification dropped` and `notification failed` with the delivery's and
   the request's ids and a short code such as `http_503`.
+
+### Web Push
+
+With `WEB_PUSH_ENABLED=1`, people who can approve may turn on notifications on their own devices,
+and the server then sends each of those devices a notification when a request waits for that
+person, through the push service of the device's browser. It is off unless you set it, because
+those push services are third parties (below). It is opt-in per person and per device: a device
+gets nothing until its person turns notifications on there.
+
+To turn it on:
+
+1. Serve the control plane over HTTPS, with `compose.tls.yaml` or a proxy in front (see the top
+   of this page). Browsers offer Web Push only to pages over HTTPS or on `http://localhost`.
+2. In `.env`, set `WEB_PUSH_ENABLED=1`. Set `WEB_PUSH_SUBJECT` too when `PUBLIC_ORIGIN` is not
+   `https:`. `PUBLIC_ORIGIN` must be at most 128 characters, because every message carries a link
+   on it and must fit in 511 bytes. The server refuses to start when a rule in this step is not met.
+3. Start the stack as usual. `init` creates `vapid-key.pem` in the `server-secrets` volume
+   whenever it is missing, and Compose already passes its path to the server.
+4. Each person turns on notifications on each device in the web app. On an iPhone or iPad, Web
+   Push works only for a web app added to the Home Screen: open the site in Safari, tap Share, then
+   Add to Home Screen, and turn notifications on in the app opened from there.
+
+| Setting                   | Meaning                                                                                                                                                                                                                               |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WEB_PUSH_ENABLED`        | `1` turns Web Push on. Empty or `0`: off.                                                                                                                                                                                             |
+| `WEB_PUSH_VAPID_KEY_FILE` | The PEM file with the server's P-256 VAPID private key. Compose sets it to `/run/secrets/server/vapid-key.pem`. Required with `WEB_PUSH_ENABLED=1`; any other kind of key stops the server at start.                                  |
+| `WEB_PUSH_SUBJECT`        | How a push service can reach you: a `mailto:` or `https:` URI, sent with every message. Defaults to `PUBLIC_ORIGIN` when that is `https:`; required otherwise.                                                                        |
+| `WEB_PUSH_ENDPOINT_HOSTS` | Comma-separated lowercase host names. A device's push endpoint must be `https:`, carry no user name or password, and have one of these hosts or a host under one. Setting it replaces the built-in list below; empty keeps that list. |
+
+The server checks a device's endpoint against that list when a person turns notifications on,
+and again before every message, and never contacts an endpoint that fails it (`endpoint_refused`).
+A member chooses the endpoint, so this check is what keeps the server from posting to an
+internal address on a member's behalf: list only push services.
+
+#### Who learns what
+
+The browser picks its push service; the server sends to whichever one the device's endpoint
+names. The built-in list:
+
+| Push service                                 | Endpoint host                       | Used by                                 |
+| -------------------------------------------- | ----------------------------------- | --------------------------------------- |
+| Google Firebase Cloud Messaging              | `fcm.googleapis.com`                | Chrome and most Chromium-based browsers |
+| Mozilla's push service                       | `updates.push.services.mozilla.com` | Firefox                                 |
+| Apple Push Notification service              | `push.apple.com`                    | Safari on macOS, iOS and iPadOS         |
+| Microsoft Windows Push Notification Services | `notify.windows.com`                | Microsoft Edge                          |
+
+For every message, the push service learns: which device it is for, when it was sent, the
+server's address, the `WEB_PUSH_SUBJECT` (or `PUBLIC_ORIGIN`), urgency `high`, how long to keep
+it for an offline device (until the request expires, at least 60 seconds), and a `Topic` that is
+a hash and names no request. The body is encrypted for the device (RFC 8291) and padded to 512
+bytes, so the push service cannot read it or tell one message from another by its length. It sees
+when and how often a device is notified, never what about. The device then shows the text, on
+its lock screen too.
+
+#### What a notification says
+
+Each workspace has a content level. Only an owner changes it, without a passkey; each change is
+recorded in the workspace's audit log as `workspace.notification_detail_set`.
+
+| Level             | Title                                              | Body                                                                                 |
+| ----------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `count` (default) | `Approval waiting`                                 | `1 request needs your passkey`, or `N requests need your passkey` (to `99+`)         |
+| `summary`         | The kind of request, for example `Payment waiting` | `<requester> in <workspace>`: the agent's or person's name, and the workspace's name |
+
+`summary` cuts each line to 60 characters and removes control and bidirectional characters. No
+level ever holds an amount, a recipient, an address or a memo: the message is built from a
+structure that has no field for them
+([`apps/server/src/notify/content.ts`](../apps/server/src/notify/content.ts)). The app's badge
+shows how many requests wait for the person's passkey. A notification has no action buttons.
+Tapping it opens the request's page on `PUBLIC_ORIGIN`; the link carries no token and never
+creates a session, so a signed-out person signs in with their passkey first, and approving still
+happens only on the signer's confirmation page.
+
+#### Who gets one
+
+One notification per device of each owner or approver whose passkey the signer accepts in the
+request's workspace, unless that person turned Web Push off for that workspace. The devices are
+those turned on when the request opens; a device turned on later hears only about later
+requests. Just before sending, the server checks again and drops the notification, logging
+`notification dropped` with a code, when Web Push was turned off (`channel_off`), the device was
+removed or moved to another person (`unsubscribed`), the person can no longer approve or turned
+Web Push off for the workspace (`not_recipient`), they already approved (`already_approved`), or
+the request was decided or expired (`approval_ended`).
+
+Sending follows the webhook's retry rules above, with these differences: a push service's 404 or
+410 means the device's subscription is gone, so the server deletes it and drops the notification
+(`gone`); the person turns notifications on again to get more. Log lines name the target `push`,
+never the device's endpoint.
+
+#### Reminders
+
+A request that lives 30 minutes or more gets one reminder per device, a quarter of its lifetime
+before it expires and at least ten minutes before: a one-hour request reminds 15 minutes before
+its expiry, a 24-hour request six hours before. A request that lives less than 30 minutes gets
+none. The reminder's title starts with `Expiring soon: ` and it replaces the first notification on
+the device. Each person can turn reminders off per workspace (`reminders_off`). Reminders go only
+to Web Push devices, never to the webhook, and are dropped like any notification once the
+request is decided or expired.
+
+#### Quiet hours
+
+Each person may set quiet hours: a start and an end time in their time zone, which may cross
+midnight. A push notification due inside them is held (`notification held`) and sent when they
+end, or dropped (`quiet_hours`) when the request expires before they end. Quiet hours do not
+apply to the webhook: it is sent at once, and your receiver decides what to do at night.
+
+#### The VAPID key
+
+`vapid-key.pem` identifies this server to the push services, and every device's subscription is
+bound to it. It is a file in the `server-secrets` volume, not a database row, so a copy of the
+database cannot send a push message. Back it up with that volume (see "Backups and restoring").
+
+Never replace it. `init` writes a new key only when the file is missing, and with a new key every
+existing subscription stops working: deliveries to them fail, and every person must turn
+notifications on again on every device.
+
+#### Removing a service worker
+
+To receive push, the web app installs a service worker, `/sw.js`, which stays on each device and
+which the browser checks for updates. If a bad `/sw.js` was ever served, serving a good one again
+replaces it on each device when the browser next checks. To remove the worker instead, serve a
+no-op worker at `/sw.js`, or send the header `Clear-Site-Data: "storage"` on the site's responses
+for a while: it removes the site's stored data, its service worker included, from browsers that
+receive it. Deleting the file is not enough: the server answers any missing path with the app's
+page, not a worker.
 
 ## The setup token
 

@@ -154,6 +154,11 @@ approving still happens on the confirmation page.
 or push provider's credential. The format and how to verify it are in
 [`deploy/README.md`](deploy/README.md#notifications).
 
+To notify people's own phones and browsers directly, serve the stack over HTTPS and set
+`WEB_PUSH_ENABLED=1`; each person then turns notifications on per device, and the messages are
+encrypted for the device and never show an amount or a recipient
+([`deploy/README.md`](deploy/README.md#web-push)).
+
 ## What this protects, and what it does not
 
 | If this is compromised       | The attacker can                                                                                        | The attacker cannot                                                                                             |
@@ -190,7 +195,7 @@ This is a first release (v0.1) and has not been audited. Use test funds.
 Scope: EVM chains; native transfers, ERC-20 transfers and allowlisted contract calls; one
 approval for one transaction, or a mandate for a bounded series of one agent's transfers. Not in
 this release: mandates for contract calls or trades, other chains, a bundled agent runtime,
-cloud key management, push notifications. The
+cloud key management. The
 [map of open questions](https://github.com/askgina/os/issues/1) lists what is planned and why.
 
 ## Documentation
