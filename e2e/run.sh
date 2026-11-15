@@ -174,8 +174,9 @@ if [ "$split" = "1" ]; then
     "${compose[@]}" up -d --wait --wait-timeout 300 postgres server caddy agent-gateway anvil || status=$?
   fi
   if [ "$status" -eq 0 ]; then
-    (cd e2e && bunx playwright test split.spec.ts) || status=$?
-    (cd e2e && bunx playwright test release-gates.spec.ts) || status=$?
+    # Each its own results directory: one run would clear the other's failure trace.
+    (cd e2e && bunx playwright test split.spec.ts --output test-results/split) || status=$?
+    (cd e2e && bunx playwright test release-gates.spec.ts --output test-results/release-gates) || status=$?
   fi
 elif [ -n "$variant" ]; then
   # The variant's own gates on a fresh stack: they claim the installation themselves. Then,

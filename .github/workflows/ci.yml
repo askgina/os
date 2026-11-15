@@ -183,6 +183,13 @@ jobs:
       # release gates against it, prints the server and signer logs on failure, and removes it.
       - name: Release gates against the real stack
         run: ./e2e/run.sh
+      # What the browser saw when a gate failed: the trace has its requests and console.
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stack-traces-${{ matrix.name }}
+          path: e2e/test-results
+          retention-days: 7
 
   # The control plane on Kubernetes (specs/beyond-one-machine.md, milestone 5): the manifests
   # under deploy/k8s validated against Kubernetes 1.37, then the kind overlay on a throwaway kind

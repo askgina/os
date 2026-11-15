@@ -127,6 +127,11 @@ describe("the workflow bundle guard", () => {
       other.release(true);
     }
     await held.release();
-    expect(await holders()).toEqual([]);
+    // The other starter's connection was closed, not unlocked: Postgres drops its lock when it
+    // notices, a moment after the socket closes.
+    await vi.waitFor(async () => expect(await holders()).toEqual([]), {
+      timeout: 5_000,
+      interval: 50,
+    });
   });
 });
