@@ -436,6 +436,21 @@ marked **Eric's** below.
   proposal had expired, and proposed again (`int_01m7gzz5j46qzx6hr53c2p7td6`). One run on one
   model; the fork's gates use a scripted model and do not cover it. Both stacks were torn down
   at 01:37Z, which ended the staging agent's token.
+  A second flaw seen there: after sending the approval link the bot ended its turn, so nobody
+  reported the result. Fixed in the fork (`87eac69`): the `wallet` skill has the bot send the
+  link together with its first `get_intent` call and keep calling while the status waits. Checked
+  by hand on throwaway stacks (os at `82d9003`, model `gpt-6-luna`, an owner with a software
+  passkey from the release gates' helpers who approved 75 s after each proposal on the
+  confirmation page and made no call to the app): a new bot sent the link, called `get_intent`
+  three times and reported the payment confirmed with its transaction hash ("Acme invoice
+  2305", 02:56Z to 02:58Z). A bot whose chat already held turns that had stopped after one check
+  went on stopping after one check under the same text (invoices 2301 to 2304), so the wording
+  does not hold against that history. One passing run on one model; not a CI gate.
+  The same runs showed the approval's own run counting an approval nobody came back for: with
+  the bot no longer asking, invoices 2301, 2303 and 2304 were signed 78 to 83 s after the
+  passkey, at the run's look 155 s after it started, and confirmed.
+  A changed bot template reaches a bot only through a rebuilt Hub image: the Hub compiles the
+  template in at build time (`apps/hub/scripts/bundle-template.mjs`).
 
 - Outcome: research done; nothing built.
   Evidence: [research/busy-fork.md](./research/busy-fork.md).
