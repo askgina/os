@@ -534,7 +534,11 @@ test("an agent on the agents network reads each configured venue's own prices", 
       },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
       signal: AbortSignal.timeout(15000),
-    }).then((r) => r.json()).then((m) => JSON.parse(m.result.content[0].text), (e) => String(e));
+    }).then((r) => r.text()).then((body) => {
+      // The gateway answers as JSON or as one event of a stream, whichever it chose.
+      const data = body.split("\\n").find((line) => line.startsWith("data: "));
+      return JSON.parse(JSON.parse(data ? data.slice(6) : body).result.content[0].text);
+    }).catch((e) => String(e));
     (async () => {
       console.log(JSON.stringify({
         testnet: await call("get_prices", { network: ${JSON.stringify(TESTNET)}, coins: ["BTC"] }),
