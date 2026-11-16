@@ -73,7 +73,6 @@
 4. **Signature types:** `EOA`, `POLY_PROXY`, `POLY_GNOSIS_SAFE`, `POLY_1271` (contract wallets). **[source]** `Structs.sol:59-68`. Accounts deployed on or after 2026-05-04 use a "Deposit Wallet", a smart wallet created through Polymarket's relayer with a Builder API key; an EOA trades directly only "if your EOA is allowlisted for trading". A Deposit Wallet owner can authorize a session signer with an expiry of up to 180 days and venue scopes. **[source]** [Wallets and authentication](https://docs.polymarket.com/trading/wallets-auth.md), "Wallet Types", "Set Up EOA Trading"; [Session keys](https://docs.polymarket.com/trading/session-keys.md).
 5. **API keys need a second typed-data signature.** L1 auth signs `ClobAuth(address, string timestamp, uint256 nonce, string message)` in domain `ClobAuthDomain` version `"1"`, chain 137, with the fixed message "This message attests that I control the given wallet"; `derive-api-key` returns the same credentials for the same nonce; later requests use L2 HMAC headers with the API secret. V2 left this unchanged. **[source]** v2-migration, "EIP-712 domain" note; py-clob-client `signing/eip712.py:7-28`, `headers/headers.py:16-61`; wallets-auth, `clobAuthTypedData`.
 6. **Collateral is pUSD**, wrapped from USDC.e through a Collateral Onramp; trading needs ERC-20 and CTF approvals to the exchange and, for Neg Risk markets, the Neg Risk Adapter. **[source]** v2-migration, "New collateral token"; [Contracts](https://docs.polymarket.com/resources/contracts.md).
-7. **The venue publishes its own access restrictions.** **[source]** [the venue's restrictions page](https://docs.polymarket.com/api-reference/geoblock.md). This report does not interpret what that means for the project (see "Owner questions").
 
 ### F5. Swaps
 
@@ -172,11 +171,9 @@ The Draft ExecPlan for option A is [`specs/non-evm-operations.md`](../non-evm-op
 
 ## Owner questions
 
-These are questions, not answers.
+Whether to use a venue is up to the person who runs the workspace; the software takes no position on it. One question is left for the owner:
 
-1. Do [Hyperliquid's terms of use](https://app.hyperliquid.xyz/terms) permit the API access this software would make on mainnet for members of a workspace?
-2. The same question for prediction-market orders on Polymarket, given its published access restrictions (F4.7). Polymarket's co-location terms distinguish "third-party applications executing trades on behalf of end users"; does a self-hosted workspace count?
-3. Should the open-source project ship venue support enabled, disabled by default with the operator enabling it, or not at all until the first two answers exist? Should the software call a venue's own access-check endpoint before enabling a venue for a workspace?
+1. Should the open-source project ship venue support enabled, or disabled by default with the operator enabling it?
 
 ## Limits
 

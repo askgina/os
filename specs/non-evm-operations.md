@@ -406,7 +406,7 @@ Owner decisions D1 and D3 to D9 were taken on 2026-11-15 by the lead under Eric'
   "the signer builds what it signs".
   Date/Author: 2026-11-14 / research agent
 - Decision (owner, D2, **open: Eric's**): whether mainnet venue support ships. Until Eric
-  answers the questions in the research report ("Owner questions"), the plan builds only the
+  decides (research report, "Owner questions"), the plan builds only the
   fail-closed default: venue support ships disabled (no `VENUES_FILE`), testnet only, and the
   server refuses to start with a mainnet venue configured.
   Rationale: mainnet moves real value at a venue; the feature stays off until the owner turns
