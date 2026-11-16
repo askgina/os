@@ -56,7 +56,7 @@ means the page the `approve` service serves at `APPROVE_ORIGIN`.
 
 Each plan starts with a `Status` line. The template allows `Draft | In Progress | Ready for Review | Merged`. The plans use:
 
-- `Draft`: written, nothing built. No plan is in this state now; the word appears in `Revision Notes`.
+- `Draft`: written, nothing built. One plan is in this state: `agent-read-tools.md`.
 - `In Progress` (or `In progress`): being built.
 - `Ready for Review`: the milestones are built, apart from any the Status line names as open. Most
   add, in brackets, the date and the CI run that showed the milestones passing.
@@ -79,6 +79,7 @@ The Status line is edited less often than `Progress`. Where they disagree, `Prog
 | [`non-evm-operations.md`](./non-evm-operations.md)                   | Sign Hyperliquid orders that the signer builds from an approved intent.                            | Ready for Review (Milestones 1 to 6 built 2026-11-15, …; the manual testnet proof is open because no funded testnet account exists). Milestone 7, Hyperliquid mainnet …, is open |
 | [`busy-fork.md`](./busy-fork.md)                                     | Run a fork of Busy self-hosted next to this system, with wallet proposals through the MCP gateway. | Ready for Review (built 2026-11-15 in the private repository `askgina/busy`; …)                                                                                                  |
 | [`anti-slop.md`](./anti-slop.md)                                     | Vendor the anti-slop Oxlint rules and make the code pass them.                                     | In progress                                                                                                                                                                      |
+| [`agent-read-tools.md`](./agent-read-tools.md)                       | Give agents read tools for the venue they trade on, drawn from Gina Read in `askgina/gina`.        | Draft (nothing built; owner decisions open)                                                                                                                                      |
 
 Three Status lines lag their plan's `Progress`: `agent-workspaces-v0.1.md` and `anti-slop.md`
 tick every milestone, and `non-evm-operations.md` ticks Milestone 7 (Hyperliquid mainnet) as done
@@ -101,6 +102,7 @@ on 2026-11-16.
 | [`approval-notifications.md`](./research/approval-notifications.md)                                   | How should people learn about a waiting approval outside the inbox?                        |
 | [`beyond-one-machine.md`](./research/beyond-one-machine.md)                                           | What changes when the system runs on more than one machine?                                |
 | [`busy-fork.md`](./research/busy-fork.md)                                                             | What would a fork of Busy that runs self-hosted on this system take?                       |
+| [`agent-read-tools.md`](./research/agent-read-tools.md)                                               | What of Gina Read, the read-only MCP server in `askgina/gina`, belongs in this system?     |
 
 ## Adding a plan
 
