@@ -142,6 +142,17 @@ tests in [`e2e/test/`](../e2e/test/) that `./e2e/run.sh` runs against the whole 
   real agent; transfers inside that agent's live mandates, which no person sees before they are
   signed. Disabling the agent stops its token at once and revokes its mandates (see "Mandates").
 
+### A pairing allowed by mistake
+
+- **Can:** someone who started a pairing (`POST /agent-pairing`) and got a person to allow it
+  receives the token of a new agent, whose new wallet has no limits.
+- **Stopped by:** that wallet signing nothing until an owner sets limits with a passkey, and
+  holding nothing until someone funds it. Pairing never hands over an existing agent or wallet.
+  The page shows the code the agent showed and warns the person to allow only what they started;
+  pairings end after ten minutes, and the agent endpoints are rate-limited per client.
+- **Not stopped:** a person who allows a stranger's pairing and then sets limits on, and funds,
+  the stranger's wallet. Disabling the agent stops its token at once.
+
 ### A compromised host of bots
 
 An operator may run agents as bots on a separate host of bots. One such host is `askgina/busy`, a

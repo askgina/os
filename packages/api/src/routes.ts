@@ -33,6 +33,7 @@ import {
   Member,
   NotificationDetail,
   NotificationPreferences,
+  PairingDetail,
   PasskeySummary,
   PolicyDraft,
   PushConfig,
@@ -312,6 +313,18 @@ export const routes = {
       mcpUrl: z.string(),
     }),
   ),
+  /**
+   * An agent asking to be connected (it started at `POST /agent-pairing`, outside this API).
+   * Allowing it creates a new agent with its own new wallet, exactly as `createAgent` does; the
+   * agent collects its token by polling, so the token is never shown here.
+   */
+  getPairing: get("/api/v1/pairings/:pairingId", PairingDetail),
+  approvePairing: post(
+    "/api/v1/pairings/:pairingId/approve",
+    z.strictObject({ workspaceId: z.string(), name: DisplayName }),
+    z.strictObject({ workspaceId: z.string(), agentId: AgentId, walletId: WalletId }),
+  ),
+  denyPairing: post("/api/v1/pairings/:pairingId/deny", NoBody, Empty),
   rotateAgentToken: post(
     "/api/v1/workspaces/:workspaceId/agents/:agentId/rotate-token",
     NoBody,

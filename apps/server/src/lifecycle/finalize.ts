@@ -4,6 +4,7 @@ import { and, desc, eq, inArray, lte, not, sql } from "drizzle-orm";
 import { type AuditDetail, appendAudit } from "../audit.ts";
 import type { AppContext } from "../context.ts";
 import {
+  agentPairings,
   agents,
   approvalAssertions,
   approvalRejections,
@@ -294,8 +295,8 @@ async function finalizeWorkspace(
 
 /**
  * Leave what a deleted workspace keeps: ids, statuses, times, hashes, addresses, the audit chain
- * and the nonces used; names and labels cleared; memberships, invites, approver mirrors,
- * assertions, rejections, nonce reservations and notification preferences removed; undelivered
+ * and the nonces used; names and labels cleared; memberships, invites, agent pairings, approver
+ * mirrors, assertions, rejections, nonce reservations and notification preferences removed; undelivered
  * notifications dropped. Null when another round already did it.
  */
 async function tombstone(
@@ -359,6 +360,12 @@ async function tombstone(
           .delete(invites)
           .where(eq(invites.workspaceId, workspaceId))
           .returning({ id: invites.id })
+      ).length,
+      pairings: (
+        await tx
+          .delete(agentPairings)
+          .where(eq(agentPairings.workspaceId, workspaceId))
+          .returning({ id: agentPairings.id })
       ).length,
       approverCredentials: (
         await tx

@@ -19,6 +19,7 @@ import {
   MandateId,
   Memo,
   Network,
+  PairingId,
   PositiveAmount,
   PositiveDecimal,
   PushSubscriptionId,
@@ -1093,6 +1094,22 @@ export const InviteSummary = z.strictObject({
 });
 
 export type InviteSummary = z.infer<typeof InviteSummary>;
+
+/**
+ * An agent asking to be connected, as the owner who answers it sees it. `userCode` is the code
+ * the agent shows on its own screen; the owner allows only when the two match.
+ */
+export const PairingDetail = z.strictObject({
+  id: PairingId,
+  clientName: z.string(),
+  userCode: z.string(),
+  status: z.enum(["pending", "approved", "denied", "expired", "claimed"]),
+  expiresAt: EpochSeconds,
+  workspaceId: WorkspaceId.nullable(),
+  walletId: WalletId.nullable(),
+});
+
+export type PairingDetail = z.infer<typeof PairingDetail>;
 
 export const AuditVerification = z.strictObject({
   ok: z.boolean(),

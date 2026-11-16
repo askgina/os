@@ -120,6 +120,22 @@ const examples: Record<RouteName, RouteExample> = {
       mcpUrl: "https://os.example.com/mcp",
     },
   },
+  getPairing: {
+    response: {
+      id: "pai_01jz8n0000000000000000000a",
+      clientName: "Hermes",
+      userCode: "QF7K-2M9X",
+      status: "pending",
+      expiresAt: 1_800_000_600,
+      workspaceId: null,
+      walletId: null,
+    },
+  },
+  approvePairing: {
+    body: { workspaceId: f.WS, name: "Hermes" },
+    response: { workspaceId: f.WS, agentId: f.agent.id, walletId: f.wallet.id },
+  },
+  denyPairing: { body: {}, response: {} },
   rotateAgentToken: { body: {}, response: { token: "osa_new" } },
   disableAgent: { body: {}, response: { ...f.agent, status: "disabled" } },
   createTreasury: {

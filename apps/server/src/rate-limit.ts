@@ -46,3 +46,15 @@ export async function hasToken(
 
   return rows.length === 0 || Number(rows[0]?.tokens) >= 1;
 }
+
+/**
+ * The client a request is charged to: the address `forwardedHops` entries from the end of
+ * `X-Forwarded-For`, which the proxies in front of the server appended (the bundled one appends
+ * the last). Fewer entries than that means a proxy was bypassed, and the first is the peer that did
+ * it. A request without the header is charged to a shared bucket.
+ */
+export function clientOf(request: Request, forwardedHops: number): string {
+  const entries = request.headers.get("x-forwarded-for")?.split(",") ?? [];
+
+  return entries[Math.max(0, entries.length - forwardedHops)]?.trim() || "direct";
+}

@@ -71,7 +71,7 @@ async function signerCall<T>(call: () => Promise<T>): Promise<T> {
 }
 
 /** `osa_<agent ulid>_<32 random bytes>`: recognizable in a leaked-secret scan, unguessable. */
-function mintAgentToken(agentId: AgentId) {
+export function mintAgentToken(agentId: AgentId) {
   const token = `osa_${agentId.slice("agt_".length)}_${randomToken(32)}`;
 
   // The prefix names the agent and four characters of the secret: enough to tell tokens apart.

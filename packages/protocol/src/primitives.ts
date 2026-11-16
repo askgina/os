@@ -68,7 +68,12 @@ export const PushSubscriptionId = prefixedId("psb");
 
 export type PushSubscriptionId = z.infer<typeof PushSubscriptionId>;
 
-const ID_PREFIXES = ["ws", "usr", "agt", "wal", "int", "apr", "mnd", "ndl", "psb"] as const;
+/** A request from an agent to be connected to a workspace, answered by an owner in the web app. */
+export const PairingId = prefixedId("pai");
+
+export type PairingId = z.infer<typeof PairingId>;
+
+const ID_PREFIXES = ["ws", "usr", "agt", "wal", "int", "apr", "mnd", "ndl", "psb", "pai"] as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[number];
 

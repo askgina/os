@@ -166,6 +166,27 @@ Any MCP client that supports Streamable HTTP with a bearer token works:
 }
 ```
 
+### Or pair it, with no token to copy
+
+An agent that runs next to a person can ask to be connected instead:
+
+1. It sends `POST /agent-pairing` with `{"clientName": "…"}` and gets a short code, a link
+   (`/pair/<id>`), a poll secret and an expiry ten minutes away.
+2. It shows the person the code and opens the link. Signed in, the person checks that the two
+   codes match, picks a workspace they own and allows it.
+3. It polls `POST /agent-pairing/poll` with the id and the poll secret. The first answer after
+   the person allows it carries the token and the MCP address, once; later polls answer `claimed`.
+
+Allowing always creates a new agent with its own new wallet, which has no limits and can sign
+nothing until an owner sets them. No token is stored: the agent's token is minted when its poll
+collects it. Agent containers on the `agents` network cannot start a pairing: their gateway
+forwards `/mcp` only. CI covers this in the server tests
+([`apps/server/test/directory/pairing.test.ts`](apps/server/test/directory/pairing.test.ts)), in
+a release gate through the public proxy
+([`e2e/test/release-gates.spec.ts`](e2e/test/release-gates.spec.ts)) and, for the page, in the
+web journey against the fixture server
+([`apps/web/test/journey.e2e.ts`](apps/web/test/journey.e2e.ts)).
+
 The tools are `whoami`, `get_balances`, `propose_transfer`, `propose_contract_call`,
 `propose_order`, `get_intent`, `list_intents` and `cancel_intent` (the list in code is
 `MCP_TOOL_NAMES` in [`apps/server/src/mcp/gateway.ts`](apps/server/src/mcp/gateway.ts)).

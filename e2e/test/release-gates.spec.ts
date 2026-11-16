@@ -624,6 +624,7 @@ test("a container on the agents network reaches the MCP gateway and nothing else
         resolved,
         mcp: await tryFetch("http://agent-gateway/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }),
         api: await tryFetch("http://agent-gateway/api/v1/session"),
+        pairing: await tryFetch("http://agent-gateway/agent-pairing", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientName: "Probe" }) }),
         ui: await tryFetch("http://agent-gateway/"),
         workflow: await tryFetch("http://agent-gateway/.well-known/workflow/v1/flow", { method: "POST", body: "{}" }),
         internet: await tryFetch("https://example.com/"),
@@ -642,9 +643,90 @@ test("a container on the agents network reaches the MCP gateway and nothing else
   });
   expect(seen.mcp).toBe(401);
   expect(seen.api).toBe(404);
+  expect(seen.pairing).toBe(404);
   expect(seen.ui).toBe(404);
   expect(seen.workflow).toBe(404);
   expect(seen.internet).toBe("unreachable");
+});
+
+/** What `POST /agent-pairing` answers. */
+const StartedPairing = z.strictObject({
+  pairingId: z.string(),
+  userCode: z.string(),
+  verificationUrl: z.string(),
+  pollSecret: z.string(),
+  expiresAt: z.number(),
+  interval: z.number(),
+});
+
+/** What a poll answers once an owner has allowed the pairing, and after. */
+const PolledPairing = z.object({
+  status: z.string(),
+  token: z.string().optional(),
+  mcpUrl: z.string().optional(),
+  walletId: z.string().optional(),
+});
+
+test("an agent pairs through the public proxy: an owner allows it, its token arrives once, and its new wallet has no limits", async () => {
+  const post = (path: string, body: JsonObject) =>
+    fetch(`${stack.origin}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  const started = await post("/agent-pairing", { clientName: "Paired" });
+  expect(started.status).toBe(201);
+  const pairing = StartedPairing.parse(await started.json());
+  expect(pairing.verificationUrl).toBe(`${stack.origin}/pair/${pairing.pairingId}`);
+
+  const poll = async () =>
+    PolledPairing.parse(
+      await (
+        await post("/agent-pairing/poll", {
+          pairingId: pairing.pairingId,
+          pollSecret: pairing.pollSecret,
+        })
+      ).json(),
+    );
+
+  expect(await poll()).toEqual({ status: "pending" });
+
+  const seen = await ada.api.call("getPairing", { params: { pairingId: pairing.pairingId } });
+  expect(seen.userCode).toBe(pairing.userCode);
+
+  const allowed = await ada.api.call("approvePairing", {
+    params: { pairingId: pairing.pairingId },
+    body: { workspaceId: workspace.id, name: "Paired" },
+  });
+
+  const first = await poll();
+  expect(first).toMatchObject({
+    status: "approved",
+    mcpUrl: `${stack.origin}/mcp`,
+    walletId: allowed.walletId,
+  });
+  expect(await poll()).toEqual({ status: "claimed" });
+
+  // The token works at the gateway as this new agent, whose wallet no owner has set limits on.
+  const paired = await connectAgent(`${stack.origin}/mcp`, first.token ?? "");
+
+  try {
+    expect(await paired.tools()).toEqual(AGENT_TOOLS);
+    expect(await paired.call("whoami")).toMatchObject({ agent: { id: allowed.agentId } });
+  } finally {
+    await paired.close();
+  }
+
+  const detail = await ada.api.call("getWallet", {
+    params: { workspaceId: workspace.id, walletId: allowed.walletId },
+  });
+
+  expect(detail.policy).toBeNull();
+  // The logs a deployment ships hold neither the token nor the poll secret.
+  const logs = await compose("logs", "--no-color");
+  expect(logs).not.toContain(first.token ?? "");
+  expect(logs).not.toContain(pairing.pollSecret);
 });
 
 test("the example agent, in a container on the agents network, gets its payment approved", async () => {

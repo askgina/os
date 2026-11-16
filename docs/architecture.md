@@ -91,6 +91,10 @@ rules it encodes:
   `cancel_intent` (`MCP_TOOL_NAMES` in [`gateway.ts`](../apps/server/src/mcp/gateway.ts)); none
   of them signs, approves or administers. `cancel_intent` also cancels an order of the agent's
   that rests at the venue.
+  An agent that runs outside that network, next to a person, can ask to be connected at
+  `PUBLIC_ORIGIN` instead of being handed a token (`POST /agent-pairing`, then
+  `/agent-pairing/poll`; [`pairing.ts`](../apps/server/src/directory/pairing.ts)): an owner
+  compares a code and allows it, which creates a new agent with a new wallet that has no limits.
 - **Caddy (the edge).** The entry point for browsers, with two sites
   ([`deploy/Caddyfile`](../deploy/Caddyfile)). `PUBLIC_ORIGIN` goes to the server's public
   listener; `APPROVE_ORIGIN` goes to the `approve` service. It answers 404 to the Workflow

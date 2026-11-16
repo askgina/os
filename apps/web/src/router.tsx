@@ -11,6 +11,7 @@ import { JoinPage, LoginPage, SetupPage } from "@/routes/auth.tsx";
 import { CreatedPage } from "@/routes/created.tsx";
 import { MandatePage } from "@/routes/mandate.tsx";
 import { MembersPage } from "@/routes/members.tsx";
+import { PairPage } from "@/routes/pair.tsx";
 import { PaymentPage } from "@/routes/payment.tsx";
 import { SettingsPage } from "@/routes/settings.tsx";
 import { WalletPage } from "@/routes/wallet.tsx";
@@ -90,6 +91,13 @@ const join = createRoute({
   getParentRoute: () => rootRoute,
   path: "/join/$token",
   component: JoinPage,
+});
+
+// An agent's pairing link. Signed-out visitors sign in first and come back here.
+const pair = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/pair/$pairingId",
+  component: PairPage,
 });
 
 const home = createRoute({ getParentRoute: () => rootRoute, path: "/", component: WorkspacesPage });
@@ -173,6 +181,7 @@ const routeTree = rootRoute.addChildren([
   login,
   join,
   erased,
+  pair,
   home,
   settings,
   approval,

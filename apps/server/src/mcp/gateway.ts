@@ -32,7 +32,8 @@ import { activeMandatesOf } from "../execution/mandates.ts";
 import { cancelIntentOrOrder, proposeOrder, proposeVenueWithdrawal } from "../execution/orders.ts";
 import { attemptViews, transactionOf } from "../execution/transactions.ts";
 import { HttpError } from "../http/errors.ts";
-import { hasToken, takeToken } from "../rate-limit.ts";
+import { approvalLink } from "../notify/content.ts";
+import { clientOf, hasToken, takeToken } from "../rate-limit.ts";
 
 type AgentRow = typeof agents.$inferSelect;
 
@@ -230,6 +231,11 @@ async function intentView(ctx: AppContext, row: IntentRow) {
           }
         : null,
     memo: summary.memo,
+    // Where a person approves it with a passkey; null when a mandate covers it.
+    approvalUrl:
+      summary.mandateId === null && row.approvalId !== null
+        ? approvalLink(ctx.config.publicOrigin, row.workspaceId, row.approvalId)
+        : null,
     createdAt: summary.createdAt,
     transactionHash: summary.transactionHash,
     explorerUrl:
@@ -622,21 +628,10 @@ export function mountMcp(app: Hono, ctx: AppContext): void {
   /** Saves building a handler per request; it holds nothing about the agent but its id. */
   const handlers = new Map<string, McpHttpHandler>();
 
-  /**
-   * The client a failed authentication is charged to: the address `FORWARDED_HOPS` entries from
-   * the end of `X-Forwarded-For`, which the proxies in front of the server appended (the bundled
-   * one appends the last). Fewer entries than that means a proxy was bypassed, and the first is
-   * the peer that did it. A request without the header is charged to a shared bucket.
-   */
-  const clientOf = (request: Request) => {
-    const entries = request.headers.get("x-forwarded-for")?.split(",") ?? [];
-
-    return entries[Math.max(0, entries.length - ctx.config.forwardedHops)]?.trim() || "direct";
-  };
-
   // Both limits are buckets in the database, so every replica counts against the same ones.
   const authenticate = async (request: Request): Promise<AgentRow | Response> => {
-    const bucket = `auth-fail:${clientOf(request)}`;
+    // Failed authentications are charged to the client (`clientOf`), not to a token.
+    const bucket = `auth-fail:${clientOf(request, ctx.config.forwardedHops)}`;
 
     // Checked before the agents are read, so guessing tokens costs no lookup there.
     if (!(await hasToken(ctx.db, bucket, FAILED_AUTH_PER_MINUTE))) {

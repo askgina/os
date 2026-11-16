@@ -263,6 +263,9 @@ async function setUpServer(page: Page, name: string): Promise<void> {
 /** The agent API's answer to a proposal that waits for people: the approval to decide. */
 const WaitingProposal = z.object({ approvalId: z.string() });
 
+/** What an agent gets when it starts a pairing, as far as the journey reads it. */
+const StartedPairing = z.object({ pairingId: z.string(), userCode: z.string() });
+
 /** The same answer when the journey also follows the payment itself. */
 const WaitingPayment = WaitingProposal.extend({ id: z.string() });
 
@@ -1198,6 +1201,42 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Workspaces" })).toBeVisible();
     await expect(page.getByText("Research team")).toBeVisible();
+  });
+
+  await test.step("an agent's pairing link shows its code; one is refused, one allowed into a new wallet", async () => {
+    // The fixture treats any well-formed id as a waiting pairing from "Hermes" with this code; a
+    // real server is asked for one, as an agent asks.
+    const startPairing = async (suffix: string) => {
+      if (!process.env.OS_WEB_BASE_URL) {
+        return { pairingId: `pai_01jz8n000000000000000000${suffix}`, userCode: "QF7K-2M9X" };
+      }
+
+      const started = await request.post(`${baseURL}/agent-pairing`, {
+        data: { clientName: "Hermes" },
+      });
+
+      expect(started.status()).toBe(201);
+
+      return StartedPairing.parse(await started.json());
+    };
+
+    const refused = await startPairing("0a");
+    await page.goto(`/pair/${refused.pairingId}`);
+    await expect(page.getByRole("heading", { name: "Connect Hermes" })).toBeVisible();
+    await expect(page.getByText(refused.userCode, { exact: true })).toBeVisible();
+    await expect(page.getByText(/Only allow this if you started it yourself/)).toBeVisible();
+    await shot("23-pair");
+    await page.getByRole("button", { name: "Don't allow" }).click();
+    await expect(page.getByRole("heading", { name: "Not connected" })).toBeVisible();
+
+    const allowed = await startPairing("0b");
+    await page.goto(`/pair/${allowed.pairingId}`);
+    await expect(page.getByText(allowed.userCode, { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Allow", exact: true }).click();
+    // The agent's own wallet, which has no limits yet: the page leads to setting them.
+    await page.getByRole("link", { name: "Set spending limits" }).click();
+    await expect(page.getByRole("heading", { name: "Hermes's wallet" })).toBeVisible();
+    await shot("24-paired-wallet");
   });
 
   expect(problems).toEqual([]);

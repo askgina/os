@@ -142,11 +142,16 @@ describe("the MCP gateway", () => {
     expect(String(proposed.approvalUrl)).toMatch(
       new RegExp(`^${TEST_ORIGIN}/w/${f.workspaceId}/approvals/apr_`),
     );
+    // Reading it back points at the same approval page the proposal named, so a client can link a
+    // person to it without building one.
     expect(
       toolJson(
         await mine.callTool({ name: "get_intent", arguments: { intentId: proposed.intentId } }),
       ),
-    ).toMatchObject({ authorizedBy: "person", mandateId: null });
+    ).toMatchObject({ authorizedBy: "person", mandateId: null, approvalUrl: proposed.approvalUrl });
+    expect(
+      toolJson(await mine.callTool({ name: "list_intents", arguments: {} })).intents,
+    ).toMatchObject([{ intentId: proposed.intentId, approvalUrl: proposed.approvalUrl }]);
 
     const sibling = await f.newAgent("Sibling");
     const theirs = await f.mcp(sibling.token);

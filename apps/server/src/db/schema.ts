@@ -12,6 +12,7 @@ import type {
   IntentId,
   MandateId,
   NotificationDeliveryId,
+  PairingId,
   PushSubscriptionId,
   UserId,
   VenueNetwork,
@@ -881,6 +882,42 @@ export const notificationPreferences = os.table(
     reminders: boolean("reminders").notNull().default(true),
   },
   (table) => [primaryKey({ columns: [table.userId, table.workspaceId] })],
+);
+
+// --- agent pairing ----------------------------------------------------------------------------
+
+/**
+ * An agent asking to be connected without anyone copying a token (`src/directory/pairing.ts`).
+ * The agent holds `poll_secret`, stored here only as its hash; an owner compares `user_code` with
+ * the code the agent shows and allows it, which creates a new agent with its own new wallet. No
+ * token is stored: the one the agent receives is minted when its poll claims the pairing.
+ */
+export const agentPairings = os.table(
+  "agent_pairings",
+  {
+    id: text("id").$type<PairingId>().primaryKey(),
+    clientName: text("client_name").notNull(),
+    userCode: text("user_code").notNull(),
+    /** SHA-256 hex of the secret the agent polls with. */
+    pollSecretHash: text("poll_secret_hash").notNull(),
+    createdAt: createdAt(),
+    expiresAt: time("expires_at").notNull(),
+    workspaceId: text("workspace_id")
+      .$type<WorkspaceId>()
+      .references(() => workspaces.id),
+    agentId: text("agent_id")
+      .$type<AgentId>()
+      .references(() => agents.id),
+    walletId: text("wallet_id").$type<WalletId>(),
+    approvedBy: text("approved_by")
+      .$type<UserId>()
+      .references(() => users.id),
+    approvedAt: time("approved_at"),
+    deniedAt: time("denied_at"),
+    /** When the agent's poll received its token; the token works only from then. */
+    claimedAt: time("claimed_at"),
+  },
+  (table) => [index("agent_pairings_expires_at_idx").on(table.expiresAt)],
 );
 
 // --- limits every replica shares --------------------------------------------------------------

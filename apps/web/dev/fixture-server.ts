@@ -72,6 +72,7 @@ import {
   type Member,
   type NotificationDetail,
   type NotificationPreferences,
+  type PairingDetail,
   type PasskeySummary,
   type PolicyDraft,
   type PushSubscriptionSummary,
@@ -114,6 +115,7 @@ import {
   normalizeMandate,
   normalizePolicy,
   orderNotionalUsd6,
+  PairingId,
   policyHash,
   type SignerDecision,
   type Sweep,
@@ -295,6 +297,9 @@ interface State {
   /** Granted mandates, as the signer holds and counts them. */
   mandates: Map<string, FixtureMandate>;
   tokens: Map<string, string>;
+  pairingApprovers: Map<string, UserId>;
+  /** Agent pairings; any id opened in the browser is a waiting one, so the page can be previewed. */
+  pairings: Map<string, PairingDetail>;
   invites: Map<
     string,
     {
@@ -346,6 +351,8 @@ function freshState(): State {
     intents: new Map(),
     mandates: new Map(),
     tokens: new Map(),
+    pairingApprovers: new Map(),
+    pairings: new Map(),
     invites: new Map(),
     spent: new Map(),
     sentAt: new Map(),
@@ -366,6 +373,30 @@ const b64url = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url");
 const randomToken = (bytes = 24) => b64url(randomBytes(bytes));
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+
+/** A pairing an agent started; an id seen for the first time is a fresh, waiting one. */
+function pairingOf(id: string): PairingDetail {
+  if (!/^pai_[0-9a-z]{26}$/.test(id))
+    throw new Refusal("not_found", "This pairing does not exist.");
+
+  const known = state.pairings.get(id);
+
+  if (known) return known;
+
+  const pairing: PairingDetail = {
+    id: PairingId.parse(id),
+    clientName: "Hermes",
+    userCode: "QF7K-2M9X",
+    status: "pending",
+    expiresAt: now() + 600,
+    workspaceId: null,
+    walletId: null,
+  };
+
+  state.pairings.set(id, pairing);
+
+  return pairing;
+}
 
 function workspaceOf(id: string): Workspace {
   const workspace = state.workspaces.get(id);
@@ -2810,6 +2841,48 @@ const handlers: Handlers = {
     decide(workspace, null, "create_wallet", null);
 
     return { agent, wallet, token, mcpUrl: `${origin}/mcp` };
+  },
+  getPairing: ({ params, userId }) => {
+    const id = signedIn(userId);
+    const pairing = pairingOf(params.pairingId ?? "");
+
+    return pairing.status === "pending" || state.pairingApprovers.get(pairing.id) === id
+      ? pairing
+      : { ...pairing, workspaceId: null, walletId: null };
+  },
+  approvePairing: async (input) => {
+    const id = signedIn(input.userId);
+    const pairing = pairingOf(input.params.pairingId ?? "");
+
+    if (pairing.status !== "pending")
+      throw new Refusal("conflict", "This pairing is no longer waiting.");
+    const workspaceId = workspaceOf(input.body.workspaceId).id;
+
+    const created = await handlers.createAgent({
+      ...input,
+      params: { workspaceId },
+      body: { name: input.body.name },
+    });
+
+    state.pairings.set(pairing.id, {
+      ...pairing,
+      status: "claimed",
+      workspaceId,
+      walletId: created.wallet.id,
+    });
+    state.pairingApprovers.set(pairing.id, id);
+
+    return { workspaceId, agentId: created.agent.id, walletId: created.wallet.id };
+  },
+  denyPairing: ({ params, userId }) => {
+    signedIn(userId);
+    const pairing = pairingOf(params.pairingId ?? "");
+
+    if (pairing.status !== "pending")
+      throw new Refusal("conflict", "This pairing is no longer waiting.");
+    state.pairings.set(pairing.id, { ...pairing, status: "denied" });
+
+    return {};
   },
   rotateAgentToken: ({ params, userId }) => {
     const id = signedIn(userId);
