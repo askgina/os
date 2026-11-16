@@ -165,34 +165,27 @@ tests in [`e2e/test/`](../e2e/test/) that `./e2e/run.sh` runs against the whole 
 
 ### A compromised host of bots
 
-An operator may run agents as bots on a separate host of bots. One such host is `askgina/busy`, a
-separate repository that forks an outside project named [Busy](https://github.com/MatiSolina/busy)
-so that its bots run on the operator's own machines; its plan is
-[`specs/busy-fork.md`](../specs/busy-fork.md). To this stack each bot is an ordinary agent: it
-holds its own agent token and reaches the MCP gateway over the agents network (`os_agents`).
-Nothing in this section needs that repository; what it says about the fork comes from its plan.
+An operator may run agents as bots on a separate host of bots, for example a self-hosted fork of
+the outside project [Busy](https://github.com/MatiSolina/busy);
+[`specs/research/busy-fork.md`](../specs/research/busy-fork.md) looks at what such a fork would
+take. To this stack each bot is an ordinary agent: it holds its own agent token and reaches the
+MCP gateway over the agents network (`os_agents`).
 
-- **Can:** whoever controls the host (in the fork, its Hub web app, which stores each token
-  sealed, or the runner that starts bots and hands each its token as a secret file) holds every
-  bot's agent token. That is a stolen agent token for each of them: propose, cancel those
-  agents' own requests, and spend any live mandate of theirs up to its worst case with no person
-  asked.
+- **Can:** whoever controls the host (its web app, if that stores the tokens, or whatever starts
+  bots and hands each its token) holds every bot's agent token. That is a stolen agent token for
+  each of them: propose, cancel those agents' own requests, and spend any live mandate of theirs
+  up to its worst case with no person asked.
 - **Cannot:** approve anything. No gateway tool approves; the only authorization is a passkey
-  approval on the signer's confirmation page, or a mandate granted there. A bot sends the
-  request's link as plain text; the confirmation page and the control plane's pages refuse to
-  load in a frame, so no chat card can host them. The fork does not receive this stack's
-  webhook.
+  approval on the signer's confirmation page, or a mandate granted there. A bot should send the
+  request's link as plain text: the confirmation page and the control plane's pages refuse to
+  load in a frame, so no chat card can host them.
 - **Bound it:** small mandates or none for bot agents; one agent per bot; on any doubt about the
-  host, disable the agent here, which stops its token and revokes its mandates at once. The
-  fork's runner holds a Docker socket, which is root on its host: never run it on the signer's
-  host. The fork's Hub keeps its own tables (messages, memories) in plaintext; the bots' workflow
-  state is encrypted by `@askgina/os-world`, the encrypting World this repository publishes, with
-  a keyring per bot.
-- **Proven once by hand, on a local chain, not in CI:** on one machine running both stacks, a
-  real hosted model, told in plain words to pay an invoice, called `propose_transfer` through a
-  bot of the fork; the owner approved on the confirmation page with a phone's passkey; the
-  transaction confirmed on a local Anvil chain. The fork's own CI gates use a scripted model and a
-  stub gateway. No job of this repository's CI runs a bot.
+  host, disable the agent here, which stops its token and revokes its mandates at once. A bot
+  runner that holds a Docker socket is root on its host: never run it on the signer's host. What
+  the host stores of its conversations is outside this stack; a bot's workflow state can be
+  encrypted with `@askgina/os-world`, the encrypting World this repository publishes, with a
+  keyring per bot.
+- **Unproven:** no job of this repository's CI runs a host of bots.
 
 ### Read access to the control plane's database
 

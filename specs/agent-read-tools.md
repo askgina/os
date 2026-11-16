@@ -610,9 +610,6 @@ Regression checks:
 - Monitoring: one log line for each refused read, with the tool, the network and the code
   (`venue_budget`, `venue_unreachable`, `venue_stale`); never a market name an agent typed.
 - Rollback: revert.
-- After merge, in the fork `askgina/busy` (a separate repository and a separate change): its
-  bot template's wallet guidance can tell a bot to read a price before it proposes an order.
-  Bots discover the tools without it.
 
 ## Risks and Open Questions
 
@@ -626,7 +623,7 @@ Regression checks:
 - Risk: fifteen tools make an agent's tool list long enough to change how a small model
   chooses.
   Mitigation or validation: seven tools, not Gina Read's thirteen; descriptions say when to use
-  each. The fork's real-model runs are the place to see it.
+  each. No run with a real model has used them yet.
 - Risk: an agent treats a mid or a preview as a promise.
   Mitigation or validation: the descriptions say they are not; an order is still a limit order
   that a person approves.

@@ -155,7 +155,7 @@ From the Apache License 2.0 text in `busy@3dd91e1:LICENSE` and [apache.org/licen
 
 **Recommendation:** build option B, laid out so that its seams can later be offered upstream (option D) if the owner chooses to.
 
-- Keep the fork in a separate repository that is a GitHub fork of `MatiSolina/busy` (owner decision; see the ExecPlan). It keeps upstream history for rebasing, keeps pnpm, and keeps the Apache-2.0 boundary out of the MIT askgina/os tree.
+- Keep the fork in a separate repository that carries the history of `MatiSolina/busy`. It keeps upstream history for rebasing, keeps pnpm, and keeps the Apache-2.0 boundary out of the MIT askgina/os tree.
 - Put the platform replacements behind interfaces in new files: the existing `DeployDeps` and `SchedulesClient`, plus new `ObjectStore`, `BotIdentity`, a computer broker client and an OpenAI-compatible model connection. Edit upstream files only at the selection points.
 - Run the runner (Docker socket) on a host or VM other than the signer's in production.
 - Give each bot its own askgina/os agent and token, a bot-side MCP connection with eve approval `never()`, and a skill that sends the person to the `approvalUrl`. Never add a Busy-side route that tells askgina/os something was approved.

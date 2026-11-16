@@ -218,10 +218,9 @@ Examples:
 - [`examples/eve-agent`](examples/eve-agent) runs an agent framework,
   [eve](https://github.com/vercel/eve), with no Vercel service, and keeps its conversations
   encrypted in its own database.
-- `askgina/busy`, a separate repository (private for now) that runs a fork of
-  [Busy](https://github.com/MatiSolina/busy), a host for AI chat bots, without Vercel services,
-  connects its bots the same way, one agent token per bot. A payment that a bot's model chose
-  settled once, by hand, on a local chain; it is not a CI gate.
+- A host of chat bots connects the same way, with one agent token per bot.
+  [`docs/threat-model.md`](docs/threat-model.md#a-compromised-host-of-bots) says what such a
+  host can and cannot do; no CI job runs one.
 
 ## Approve in advance with a mandate
 
