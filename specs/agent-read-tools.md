@@ -1,8 +1,9 @@
 # Let an agent read the venue it trades on: markets, prices, its account
 
 - Branch: `feature/port-read-only-mcp`
-- Status: Draft (2026-11-16). Nothing is built. Owner decisions D1 to D5 are open; the plan is
-  written for the option each one recommends.
+- Status: Draft, parked (2026-11-16). Nothing is built and nothing is planned to be. See the
+  first entry of `Decision Log`. One part stays worth doing on its own: hardening the venue
+  client (Milestone 1's refusal of redirects and its cap on answer size).
 - Owner(s): the repository owner
 - Created: 2026-11-16
 - Last Updated: 2026-11-16
@@ -86,7 +87,8 @@ Success means:
 - [x] (2026-11-16) Research: what Gina Read is, what this repository has, and what fits
       ([research report](research/agent-read-tools.md)).
 - [x] (2026-11-16) Define the approach and the validation plan (this file).
-- [ ] Owner decisions D1 to D5.
+- [x] (2026-11-16) Parked before any owner decision; see `Decision Log`.
+- [ ] Owner decisions D1 to D5 (not asked for while the plan is parked).
 - [ ] Milestone 1: the venue client reads markets, books, candles and fills, and refuses
       redirects and oversized answers.
 - [ ] Milestone 2: the read budget.
@@ -125,6 +127,18 @@ Success means:
 ## Decision Log
 
 Owner decisions. Each is open; the plan is written for the recommended option.
+
+- Decision: park this plan.
+  Rationale: it was written for an agent that can reach nothing but this gateway. The agent it
+  was meant to serve first, the Hermes plugin in `askgina/hermes-gina`, runs next to a person
+  and takes its market and account data from the hosted Gina Read endpoint directly, so seven
+  rebuilt market reads here would give that agent the same data twice. What this repository
+  owed that plugin was agent pairing and `approvalUrl` on intent reads (PRs 29 and 30). Two
+  parts of the plan stand without it and can be picked up alone: the venue client follows
+  redirects and reads answers of any size (Milestone 1), and no hosted read can see a wallet
+  held here, so `get_venue_account` and `get_venue_fills` are the tools to build first if an
+  agent on the `agents` network needs to see its own positions.
+  Date/Author: 2026-11-16, the lead.
 
 - Decision D1 (open): which of Gina Read's data families come across. Recommended: (a) the
   Hyperliquid reads only. (b) also token prices from a data provider the operator holds a key
