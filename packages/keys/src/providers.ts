@@ -16,13 +16,13 @@ export interface KeyProviderFromEnvOptions {
 const KUBERNETES_JWT_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/token";
 
 /** The option of `TransitKeyProviderOptions` each variable sets, to name the variable at fault. */
-const VARIABLE_OF_OPTION: Record<string, string> = {
-  address: "OPENBAO_ADDR",
-  mount: "OPENBAO_TRANSIT_MOUNT",
-  key: "OPENBAO_TRANSIT_KEY",
-  caFile: "OPENBAO_CA_FILE",
-  timeoutMs: "OPENBAO_TIMEOUT_MS",
-};
+const VARIABLE_OF_OPTION = new Map([
+  ["address", "OPENBAO_ADDR"],
+  ["mount", "OPENBAO_TRANSIT_MOUNT"],
+  ["key", "OPENBAO_TRANSIT_KEY"],
+  ["caFile", "OPENBAO_CA_FILE"],
+  ["timeoutMs", "OPENBAO_TIMEOUT_MS"],
+]);
 
 function required(env: NodeJS.ProcessEnv, variable: string): string {
   const value = env[variable];
@@ -84,15 +84,20 @@ function transitOptions(
     }
   }
 
-  return {
-    address,
-    auth: transitAuth(env),
-    ...(env.OPENBAO_TRANSIT_MOUNT ? { mount: env.OPENBAO_TRANSIT_MOUNT } : {}),
-    ...(env.OPENBAO_TRANSIT_KEY ? { key: env.OPENBAO_TRANSIT_KEY } : {}),
-    ...(env.OPENBAO_CA_FILE ? { caFile: env.OPENBAO_CA_FILE } : {}),
-    ...(timeoutMs === undefined ? {} : { timeoutMs }),
-    ...(onEvent ? { onEvent } : {}),
-  };
+  // An unset or empty variable leaves its option out, so the provider's default applies.
+  const options: TransitKeyProviderOptions = { address, auth: transitAuth(env) };
+
+  if (env.OPENBAO_TRANSIT_MOUNT) options.mount = env.OPENBAO_TRANSIT_MOUNT;
+
+  if (env.OPENBAO_TRANSIT_KEY) options.key = env.OPENBAO_TRANSIT_KEY;
+
+  if (env.OPENBAO_CA_FILE) options.caFile = env.OPENBAO_CA_FILE;
+
+  if (timeoutMs !== undefined) options.timeoutMs = timeoutMs;
+
+  if (onEvent) options.onEvent = onEvent;
+
+  return options;
 }
 
 /**
@@ -139,8 +144,10 @@ export function keyProviderFromEnv(
   try {
     active = new TransitKeyProvider(transitOptions(env, options.onEvent));
   } catch (error) {
-    if (error instanceof KeyProviderConfigError && VARIABLE_OF_OPTION[error.code] !== undefined) {
-      throw new KeyProviderConfigError(error.message, VARIABLE_OF_OPTION[error.code] ?? error.code);
+    if (error instanceof KeyProviderConfigError) {
+      const variable = VARIABLE_OF_OPTION.get(error.code);
+
+      if (variable !== undefined) throw new KeyProviderConfigError(error.message, variable);
     }
 
     throw error;

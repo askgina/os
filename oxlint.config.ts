@@ -62,4 +62,22 @@ export default defineConfig({
     "anti-slop-martinfowler/mysterious-name": "warn",
     "anti-slop-martinfowler/repeated-switches": "warn",
   },
+  overrides: [
+    {
+      // These files run with no node_modules: browser scripts served as they are, single files
+      // mounted into a bare Node container, and the example that is dependency-free on purpose.
+      // `no-runtime-typeof` asks for a schema decode at the boundary, and no schema library can
+      // load there, so a `typeof` check is the decode. Every other rule still applies to them.
+      files: [
+        "apps/web/public/*.js",
+        "apps/approve/public/*.js",
+        "apps/web/dev/confirm/*.js",
+        "deploy/init/*.mjs",
+        "e2e/src/openbao-bootstrap.mts",
+        "e2e/src/webhook-receiver.mts",
+        "examples/ntfy-sidecar/**",
+      ],
+      rules: { "anti-slop/no-runtime-typeof": "off" },
+    },
+  ],
 });

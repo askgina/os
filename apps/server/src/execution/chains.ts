@@ -1,5 +1,5 @@
 import type { AssetBalance, ChainInfo } from "@askgina/os-api";
-import type { Address, AssetRef, ChainId } from "@askgina/os-protocol";
+import { type Address, type AssetRef, ChainId } from "@askgina/os-protocol";
 import {
   BaseError,
   ContractFunctionRevertedError,
@@ -37,6 +37,13 @@ export type ReceiptState =
   | { state: "pending"; blockNumber: number }
   | { state: "confirmed" | "reverted"; blockNumber: number };
 
+/** A call's data, as a field that is absent when there is none rather than undefined. */
+type CallData = { data?: Hex };
+
+function callData(data: Hex | undefined): CallData {
+  return data === undefined ? {} : { data };
+}
+
 /** Longest revert reason kept. It is shown to people and agents, so it stays short and plain. */
 const REASON_LENGTH = 160;
 
@@ -61,6 +68,10 @@ export class ChainAccess implements Chains {
 
   constructor(chains: readonly ChainConfig[]) {
     for (const config of chains) {
+      // SAFETY: the client is created with only a transport, no `chain` and no `account`; the
+      // assertion only restates its chain and account type parameters as PublicClient's
+      // defaults. Nothing here uses a client-level account (`call` and `estimateGas` pass
+      // `account` themselves) or chain (#ready checks the endpoint's chain id).
       const client = createPublicClient({
         transport: http(config.rpcUrl, { retryCount: 1, timeout: 15_000 }),
       }) as PublicClient;
@@ -79,7 +90,11 @@ export class ChainAccess implements Chains {
   }
 
   has(chainId: string): chainId is ChainId {
-    return this.#chains.has(chainId as ChainId);
+    // Every configured id is a ChainId (the chains file is parsed with it), so a string that is
+    // not one is not configured.
+    const parsed = ChainId.safeParse(chainId);
+
+    return parsed.success && this.#chains.has(parsed.data);
   }
 
   config(chainId: ChainId): ChainConfig {
@@ -185,7 +200,7 @@ export class ChainAccess implements Chains {
       account: input.from,
       to: input.to,
       value: input.value,
-      ...(input.data === undefined ? {} : { data: input.data }),
+      ...callData(input.data),
       blockNumber: block.number,
     };
 
@@ -196,7 +211,7 @@ export class ChainAccess implements Chains {
         account: input.from,
         to: input.to,
         value: input.value,
-        ...(input.data === undefined ? {} : { data: input.data }),
+        ...callData(input.data),
       });
 
       return { ok: true, blockNumber: Number(block.number), gasEstimate, error: null };
@@ -339,21 +354,21 @@ export class ChainError extends Error {
   }
 }
 
-function errorText(error: unknown): string {
-  if (error instanceof BaseError) return `${error.shortMessage} ${error.details ?? ""}`;
+function errorText(cause: unknown): string {
+  if (cause instanceof BaseError) return `${cause.shortMessage} ${cause.details ?? ""}`;
 
-  return error instanceof Error ? error.message : String(error);
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
-function revertReason(error: unknown): string {
-  if (error instanceof BaseError) {
-    const reverted = error.walk((cause) => cause instanceof ContractFunctionRevertedError);
+function revertReason(cause: unknown): string {
+  if (cause instanceof BaseError) {
+    const reverted = cause.walk((inner) => inner instanceof ContractFunctionRevertedError);
 
     if (reverted instanceof ContractFunctionRevertedError && reverted.reason) {
       return sanitizeReason(reverted.reason) || "reverted";
     }
 
-    return sanitizeReason(error.details || error.shortMessage) || "reverted";
+    return sanitizeReason(cause.details || cause.shortMessage) || "reverted";
   }
 
   return "reverted";

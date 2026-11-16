@@ -195,7 +195,7 @@ describe("keyProviderFromEnv", () => {
         OPENBAO_CA_FILE: "/etc/hosts",
       },
     ],
-  ] as [string, NodeJS.ProcessEnv][])(
+  ] satisfies [string, NodeJS.ProcessEnv][])(
     "a bad or missing %s is a configuration error naming it",
     (variable, env) => {
       const error = configError(env);

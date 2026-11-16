@@ -43,7 +43,7 @@ export function Loading({ label = "Loading" }: { label?: string }) {
 }
 
 /** A failed load, with the API's own message and a way to try again. */
-export function ErrorState({ error, retry }: { error: unknown; retry?: () => void }) {
+export function ErrorState({ error, retry }: { error: Error | null; retry?: () => void }) {
   return (
     <Alert tone="danger" className="my-4 items-start">
       <AlertTriangle aria-hidden />
@@ -70,8 +70,8 @@ export function FormError({
   error,
   explain,
 }: {
-  error: unknown;
-  explain?: (error: unknown) => string | null;
+  error: Error | null;
+  explain?: (error: Error) => string | null;
 }) {
   if (!error) return null;
 

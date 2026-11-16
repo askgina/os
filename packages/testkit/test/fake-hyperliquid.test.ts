@@ -6,9 +6,10 @@
  * refused from any other account, and refused when any one byte changes. The behaviour tests
  * after that sign their own requests with the hash those vectors proved.
  */
-import { bytesToHex, type Hex, parseSignature, zeroAddress } from "viem";
+import { bytesToHex, parseSignature, zeroAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import vectors from "../../../apps/signer/test/vectors/hyperliquid-python-sdk.json" with {
   type: "json",
 };
@@ -22,7 +23,10 @@ import {
 } from "../src/fake-hyperliquid.ts";
 import { referenceMsgpackEncode } from "../src/msgpack.ts";
 
-const sdkKey = privateKeyToAccount(vectors.privateKey as Hex);
+/** Hex as the vectors write it. */
+const VectorHex = z.templateLiteral(["0x", z.string()]);
+
+const sdkKey = privateKeyToAccount(VectorHex.parse(vectors.privateKey));
 
 const SDK_ADDRESS = sdkKey.address.toLowerCase();
 
@@ -57,8 +61,8 @@ interface SdkRequest {
   expiresAfter: number | null;
 }
 
-function sdkBody(
-  action: unknown,
+function sdkBody<Action>(
+  action: Action,
   nonce: number,
   signature: VectorSignature,
   expiresAfter: number | null,
@@ -70,7 +74,7 @@ function sdkBody(
 function signed(body: SdkRequest): SignedAction {
   const { r, s, v } = body.signature;
 
-  return { ...body, signature: { r: r as Hex, s: s as Hex, v } };
+  return { ...body, signature: { r: VectorHex.parse(r), s: VectorHex.parse(s), v } };
 }
 
 const generated = vectors.generated.output;
@@ -109,17 +113,22 @@ function venueAt(time: number, network: FakeNetwork = "testnet") {
   return new FakeHyperliquid({ network, now: () => time });
 }
 
-async function post(venue: FakeHyperliquid, path: string, body: unknown) {
+/** Posts `text` exactly, as a JSON body. */
+async function postText(venue: FakeHyperliquid, path: string, text: string) {
   const response = await venue.fetch(`http://fake-hyperliquid:8080${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: typeof body === "string" ? body : JSON.stringify(body),
+    body: text,
   });
 
   const isJson = response.headers.get("content-type")?.startsWith("application/json") ?? false;
   const answer: unknown = isJson ? await response.json() : await response.text();
 
   return { status: response.status, body: answer };
+}
+
+async function post<Body>(venue: FakeHyperliquid, path: string, body: Body) {
+  return postText(venue, path, JSON.stringify(body));
 }
 
 function lastRecord(venue: FakeHyperliquid): ExchangeRecord | undefined {
@@ -253,7 +262,7 @@ describe("the venue SDK's own signed requests", () => {
         replacement = char === "f" ? "a" : String.fromCharCode(char.charCodeAt(0) + 1);
       } else continue;
       const mutated = original.slice(0, index) + replacement + original.slice(index + 1);
-      const answer = await post(venue, "/exchange", mutated);
+      const answer = await postText(venue, "/exchange", mutated);
       mutations++;
       const record = lastRecord(venue);
       expect(record?.accepted, `byte ${index}: ${mutated}`).toBe(false);
@@ -279,7 +288,7 @@ describe("the venue SDK's own signed requests", () => {
     // parses and recovers someone else.
     expect(bySignature).toBeGreaterThan(130);
 
-    expect((await post(venue, "/exchange", original)).body).toMatchObject({ status: "ok" });
+    expect((await postText(venue, "/exchange", original)).body).toMatchObject({ status: "ok" });
     expect(venue.orders()).toHaveLength(1);
   });
 
@@ -372,8 +381,8 @@ const CLOID_A = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 const CLOID_B = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-async function signL1(
-  action: unknown,
+async function signL1<Action>(
+  action: Action,
   nonce: number,
   expiresAfter: number | null,
   account = sdkKey,
@@ -631,7 +640,7 @@ describe("the fake venue's rules", () => {
     expect((await post(venue, "/exchange", reordered)).status).toBe(422);
     const trailingZero = await signL1(order("Gtc", { p: "1670.10" }), NOW, null);
     expect((await post(venue, "/exchange", trailingZero)).status).toBe(422);
-    expect((await post(venue, "/exchange", "{")).status).toBe(422);
+    expect((await postText(venue, "/exchange", "{")).status).toBe(422);
     expect((await post(venue, "/info", { type: "allMids" })).status).toBe(422);
     expect(venue.orders()).toEqual([]);
   });
@@ -748,7 +757,7 @@ describe("the fake venue's rules", () => {
     ]);
     const log = await venue.fetch("http://fake-hyperliquid/control/exchange");
     expect(await log.json()).toMatchObject([{ body: JSON.stringify(body), accepted: true }]);
-    expect((await post(venue, "/control/reset", "")).status).toBe(204);
+    expect((await postText(venue, "/control/reset", "")).status).toBe(204);
     expect(venue.orders()).toEqual([]);
     expect((await post(venue, "/exchange", body)).body).toEqual({
       status: "err",

@@ -39,7 +39,7 @@ import {
 
 const ZERO = "0x0000000000000000000000000000000000000000" as const;
 
-const ok = (value: unknown) => MandateSchema.safeParse(value).success;
+const ok = <Value>(value: Value) => MandateSchema.safeParse(value).success;
 
 /** A USDC payment from the fixture wallet by the fixture agent, inside every fixture cap. */
 const pay = (amount = "100000000", overrides: Partial<EvmIntent> = {}): EvmIntent =>

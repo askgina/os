@@ -6,8 +6,9 @@ import {
   type CancelTransactionEnvelope,
   type ChainId,
   envelopeChallenge,
+  Hex,
   type IntentId,
-  type MandateId,
+  MandateId,
   newId,
   PROTOCOL_VERSION,
   type WorkspaceId,
@@ -19,7 +20,7 @@ import {
 } from "@askgina/os-protocol/signer";
 import type { Client } from "@modelcontextprotocol/client";
 import { and, asc, eq } from "drizzle-orm";
-import { formatEther, type Hex, parseTransaction } from "viem";
+import { formatEther, parseTransaction } from "viem";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   auditEvents,
@@ -39,6 +40,7 @@ import {
   draftFor,
   type Fixture,
   fund,
+  intentIdOf,
   type TestAgent,
   toolJson,
 } from "./fixture.ts";
@@ -63,7 +65,7 @@ afterAll(async () => {
   await f?.close();
 });
 
-const randomAddress = () => `0x${randomBytes(20).toString("hex")}` as `0x${string}`;
+const randomAddress = (): `0x${string}` => `0x${randomBytes(20).toString("hex")}`;
 
 const steps = () => engineOf(f.t.ctx).steps();
 
@@ -150,12 +152,9 @@ async function propose(client: Client, to: `0x${string}`) {
     }),
   );
 
-  if (typeof answer.intentId !== "string") throw new Error(JSON.stringify(answer));
+  const intentId = intentIdOf(answer);
 
-  const [row] = await f.t.ctx.db
-    .select()
-    .from(intents)
-    .where(eq(intents.id, answer.intentId as IntentId));
+  const [row] = await f.t.ctx.db.select().from(intents).where(eq(intents.id, intentId));
 
   if (!row?.approvalId) throw new Error("an intent without its approval");
 
@@ -201,22 +200,26 @@ async function rawOf(payment: Payment, attempt: number): Promise<Hex> {
   if (attempt === 0) {
     const row = await transactionRow(payment.approvalId);
 
-    return (await f.t.ctx.sealer.open(
-      payment.workspaceId,
-      `transactions.raw:${payment.approvalId}`,
-      row.raw,
-    )) as Hex;
+    return Hex.parse(
+      await f.t.ctx.sealer.open(
+        payment.workspaceId,
+        `transactions.raw:${payment.approvalId}`,
+        row.raw,
+      ),
+    );
   }
 
   const stored = (await attemptRows(payment.approvalId)).find((row) => row.attempt === attempt);
 
   if (!stored) throw new Error(`no attempt ${attempt}`);
 
-  return (await f.t.ctx.sealer.open(
-    payment.workspaceId,
-    `transactions.raw:${payment.approvalId}:${attempt}`,
-    stored.raw,
-  )) as Hex;
+  return Hex.parse(
+    await f.t.ctx.sealer.open(
+      payment.workspaceId,
+      `transactions.raw:${payment.approvalId}:${attempt}`,
+      stored.raw,
+    ),
+  );
 }
 
 /** Hand an attempt to the chain directly; the test chain mines it at once. */
@@ -644,7 +647,7 @@ describe("automatic repricing", () => {
         body: {},
       });
 
-      expect((await f.t.approve(resume.id as ApprovalId, [f.t.owner])).status).toBe("executed");
+      expect((await f.t.approve(resume.id, [f.t.owner])).status).toBe("executed");
       due();
       await followUp(payment.approvalId);
       expect(await attemptRows(payment.approvalId)).toHaveLength(1);
@@ -663,7 +666,7 @@ describe("automatic repricing", () => {
         agentId: agent.id,
         assets: [
           {
-            chainId: TEST_CHAIN_ID as MandateDraft["assets"][number]["chainId"],
+            chainId: TEST_CHAIN_ID,
             asset: "native",
             maxPerAction: (1n * ETH).toString(),
             maxPerWindow: (2n * ETH).toString(),
@@ -683,9 +686,9 @@ describe("automatic repricing", () => {
         body: draft,
       });
 
-      const granted = await f.t.approve(opened.id as ApprovalId, [bob]);
+      const granted = await f.t.approve(opened.id, [bob]);
       expect(granted.status).toBe("executed");
-      const mandateId = granted.subjectId as MandateId;
+      const mandateId = MandateId.parse(granted.subjectId);
 
       const { intentId, approvalId } = await propose(client, to);
       expect(await steps().execute(approvalId)).toEqual({ ok: true });
@@ -794,7 +797,7 @@ describe("recovery and races", () => {
 
   it("holds the nonce until an attempt is final at the confirmation depth", async () => {
     const chains = chainAccess(f.t.ctx);
-    const config = chains.config(TEST_CHAIN_ID as ChainId);
+    const config = chains.config(TEST_CHAIN_ID);
     await holding(async () => {
       const payment = await sendPayment("Deep");
       due();

@@ -5,6 +5,12 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { ConfigError, loadConfig } from "../../src/config.ts";
 
+/** One entry of a venues file as a test writes it, whether the server would take it or not. */
+interface VenueEntry {
+  network: string;
+  apiUrl: string;
+}
+
 describe("the server's venues file", () => {
   const dir = mkdtempSync(join(tmpdir(), "os-server-venues-"));
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -23,7 +29,7 @@ describe("the server's venues file", () => {
     ]),
   );
 
-  const base: Record<string, string> = {
+  const base: NodeJS.ProcessEnv = {
     PUBLIC_ORIGIN: "https://os.example.com",
     APPROVE_ORIGIN: "https://approve.os.example.com",
     DATABASE_URL: "postgres://localhost/none",
@@ -34,19 +40,23 @@ describe("the server's venues file", () => {
 
   let files = 0;
 
-  /** The configuration with a venues file holding `content`. */
-  const withVenues = (content: unknown): Record<string, string> => {
+  /** The configuration with a venues file holding `text`. */
+  const withVenuesText = (text: string): NodeJS.ProcessEnv => {
     files += 1;
     const file = join(dir, `venues-${files}.json`);
-    writeFileSync(file, typeof content === "string" ? content : JSON.stringify(content));
+    writeFileSync(file, text);
 
     return { ...base, VENUES_FILE: file };
   };
 
-  /** The message a refused venues file stops the boot with. */
-  const refusal = (content: unknown): string | null => {
+  /** The configuration with a venues file holding `content` as JSON. */
+  const withVenues = (content: VenueEntry | readonly VenueEntry[]) =>
+    withVenuesText(JSON.stringify(content));
+
+  /** The message a refused configuration stops the boot with. */
+  const refusalOf = (environment: NodeJS.ProcessEnv): string | null => {
     try {
-      loadConfig(withVenues(content));
+      loadConfig(environment);
     } catch (error) {
       if (error instanceof ConfigError) return error.message;
       throw error;
@@ -54,6 +64,9 @@ describe("the server's venues file", () => {
 
     return null;
   };
+
+  /** The message a refused venues file holding `content` as JSON stops the boot with. */
+  const refusal = (content: VenueEntry | readonly VenueEntry[]) => refusalOf(withVenues(content));
 
   it("has no venues without a venues file", () => {
     expect(loadConfig(base).venues).toEqual([]);
@@ -106,8 +119,11 @@ describe("the server's venues file", () => {
   });
 
   it("refuses a file that is not a JSON array of entries", () => {
+    expect(refusalOf(withVenuesText("not json"))).toBe(
+      "VENUES_FILE: expected a JSON array of { network, apiUrl }",
+    );
+
     for (const content of [
-      "not json",
       { network: "hyperliquid:testnet", apiUrl: "http://127.0.0.1:9000" },
       [{ network: "hyperliquid:devnet", apiUrl: "http://127.0.0.1:9000" }],
       [

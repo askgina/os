@@ -16,7 +16,7 @@ import {
   type Intent,
   Mandate,
   type MandateDenyCode,
-  type MandateId,
+  MandateId,
   type MandateUsage,
   mandateHash,
   mandateTimeState,
@@ -31,6 +31,7 @@ import {
 } from "@askgina/os-protocol";
 import { type MandateState, SignerError } from "@askgina/os-protocol/signer";
 import { and, asc, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
+import { z } from "zod";
 import { ApprovalFailure, type ApprovalKindHandler } from "../approvals/kinds.ts";
 import { type AuditInput, appendAudit } from "../audit.ts";
 import type { AppContext } from "../context.ts";
@@ -60,10 +61,17 @@ import { chainAccess } from "./chains.ts";
 
 export type MandateRow = typeof mandates.$inferSelect;
 
-/** What `grant-mandate` keeps sealed in its approval's detail. */
-interface GrantDetail {
-  mandate: Mandate;
-}
+/**
+ * What `grant-mandate` keeps sealed in its approval's detail. The mandate was sealed as
+ * `normalizeMandate` returned it, a Mandate the schema parsed, so parsing it again changes
+ * nothing that is hashed or sent.
+ */
+const GrantDetail = z.object({ mandate: Mandate });
+
+type GrantDetail = z.infer<typeof GrantDetail>;
+
+/** The mirror's status for one state the signer reported. */
+type Mirror = { status: "active" | "ended"; endedReason: MandateEndedReason | null };
 
 const PAGE_SIZE = 50;
 
@@ -107,10 +115,7 @@ async function atSigner<T>(call: () => Promise<T>): Promise<T> {
 }
 
 /** The mirror's status for a state the signer reported. */
-function mirrorOf(state: MandateState): {
-  status: "active" | "ended";
-  endedReason: MandateEndedReason | null;
-} {
+function mirrorOf(state: MandateState): Mirror {
   switch (state.status) {
     case "active":
     case "not_yet_valid":
@@ -476,14 +481,14 @@ async function agentName(ctx: AppContext, agentId: AgentId): Promise<string> {
 const grantMandate: ApprovalKindHandler<"grant-mandate"> = {
   kind: "grant-mandate",
   async title(ctx, approval, detail) {
-    const { mandate } = detail as GrantDetail;
+    const { mandate } = GrantDetail.parse(detail);
     const { wallet } = await loadWallet(ctx, approval.workspaceId, mandate.walletId);
     const payments = mandate.maxUses === 1 ? "1 payment" : `${mandate.maxUses} payments`;
 
     return `Let ${await agentName(ctx, mandate.agentId)} make up to ${payments} from ${wallet.label} without asking`;
   },
   async describe(ctx, approval, detail) {
-    const { mandate } = detail as GrantDetail;
+    const { mandate } = GrantDetail.parse(detail);
     const { wallet, agentId } = await loadWallet(ctx, approval.workspaceId, mandate.walletId);
     const [granted] = await ctx.db.select().from(mandates).where(eq(mandates.id, mandate.id));
     const state = granted ? (await refresh(ctx, granted)).state : null;
@@ -499,10 +504,10 @@ const grantMandate: ApprovalKindHandler<"grant-mandate"> = {
     };
   },
   async confirmationSubject(_ctx, _approval, detail) {
-    return { kind: "grant-mandate", mandate: (detail as GrantDetail).mandate };
+    return { kind: "grant-mandate", mandate: GrantDetail.parse(detail).mandate };
   },
   async execute(ctx, approval, authorization, detail) {
-    const { mandate } = detail as GrantDetail;
+    const { mandate } = GrantDetail.parse(detail);
 
     const agentActive = async () => {
       const [agent] = await ctx.db
@@ -714,10 +719,15 @@ export async function loadMandate(
   workspaceId: WorkspaceId,
   mandateId: string,
 ): Promise<{ row: MandateRow; state: MandateState | null }> {
+  // A string that is no mandate id names no mandate, and is refused as one that does not exist.
+  const id = MandateId.safeParse(mandateId);
+
+  if (!id.success) throw new HttpError("not_found", "no such mandate");
+
   const [row] = await ctx.db
     .select()
     .from(mandates)
-    .where(and(eq(mandates.id, mandateId as MandateId), eq(mandates.workspaceId, workspaceId)));
+    .where(and(eq(mandates.id, id.data), eq(mandates.workspaceId, workspaceId)));
 
   if (!row) throw new HttpError("not_found", "no such mandate");
 
@@ -798,11 +808,11 @@ export async function listMandates(
     .from(mandates)
     .where(and(...scope, eq(mandates.status, "active")));
 
-  const states = new Map<MandateId, MandateState | null>();
+  const refreshed = await Promise.all(live.map((row) => refresh(ctx, row)));
 
-  for (const { row, state } of await Promise.all(live.map((row) => refresh(ctx, row)))) {
-    states.set(row.id, state);
-  }
+  const states = new Map<MandateId, MandateState | null>(
+    refreshed.map(({ row, state }) => [row.id, state]),
+  );
 
   const conditions = [...scope];
 
@@ -816,6 +826,8 @@ export async function listMandates(
       throw new HttpError("invalid_request", "cursor: not a cursor from this list");
     }
 
+    // SAFETY: the cursor's id is only compared with `<` against mandates.id to order the page;
+    // any string orders, and one that names no mandate still starts the page there.
     const before = or(
       lt(mandates.createdAt, new Date(time)),
       and(eq(mandates.createdAt, new Date(time)), lt(mandates.id, id as MandateId)),

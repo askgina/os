@@ -42,6 +42,7 @@ import {
   CONFIRMATION_SETTINGS,
   confirmationEnvironment,
   ETH,
+  eip1559Serialized,
   grantRequest,
   header,
   intentFor,
@@ -346,7 +347,7 @@ describe("the real OWS vault, across a restart of the signer process", () => {
     const signed = await inProcess.sign(transferRequest);
 
     const from = await recoverTransactionAddress({
-      serializedTransaction: signed.signedTransaction as `0x02${string}`,
+      serializedTransaction: eip1559Serialized(signed.signedTransaction),
     });
 
     expect(from.toLowerCase()).toBe(wallet.address);
@@ -382,7 +383,7 @@ describe("the real OWS vault, across a restart of the signer process", () => {
     expect(
       (
         await recoverTransactionAddress({
-          serializedTransaction: tokenSigned.signedTransaction as `0x02${string}`,
+          serializedTransaction: eip1559Serialized(tokenSigned.signedTransaction),
         })
       ).toLowerCase(),
     ).toBe(wallet.address);
@@ -475,7 +476,7 @@ describe("the real OWS vault, across a restart of the signer process", () => {
     expect(
       (
         await recoverTransactionAddress({
-          serializedTransaction: underMandate.signedTransaction as `0x02${string}`,
+          serializedTransaction: eip1559Serialized(underMandate.signedTransaction),
         })
       ).toLowerCase(),
     ).toBe(wallet.address);

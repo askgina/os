@@ -7,6 +7,7 @@ import type {
   EvmIntent,
   GrantMandateEnvelope,
   HyperliquidRules,
+  JsonValue,
   Mandate,
   MandateAssetLimit,
   RemoveApproverEnvelope,
@@ -327,19 +328,20 @@ export const deleteWorkspace = (
  * For every field of every envelope type, a replacement value that is still valid. Each entry is
  * one way a compromised control plane could try to reuse an approval for something else.
  */
-const headerChanges: Record<string, unknown> = {
+const headerChanges = {
   v: undefined,
   approvalId: `apr_${ULID}a`,
   workspaceId: `ws_${ULID}b`,
   nonce: "BAAAAAAAAAAAAAAAAAAAAA",
   issuedAt: T0 + 1,
   expiresAt: T0 + 601,
-};
+} satisfies Record<string, JsonValue | undefined>;
 
 export const envelopeVariants: {
   name: string;
   base: Envelope;
-  changes: Record<string, unknown>;
+  /** A replacement per field; `undefined` lists a field that gets no variant. */
+  changes: Record<string, JsonValue | undefined>;
 }[] = [
   {
     name: "approve-intent",
@@ -445,6 +447,9 @@ export function changedEnvelopes(
     .filter(([, value]) => value !== undefined)
     .map(([field, value]) => ({
       field,
+      // SAFETY: `field` is one of `base`'s own fields (the coverage tests compare the list with
+      // `Object.keys(base)`), and each replacement is a valid value for that field, so the result
+      // is still an envelope of `base`'s type.
       envelope: { ...variant.base, [field]: value } as Envelope,
     }));
 }

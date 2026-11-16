@@ -145,6 +145,19 @@ async function answerWithPasskey(webauthn, path, token, result, nothing) {
 
   const { response } = credential;
 
+  /**
+   * The assertion's parts in base64url; `userHandle` only when the passkey returned one.
+   * @type {{ clientDataJSON: string, authenticatorData: string, signature: string,
+   *   userHandle?: string }}
+   */
+  const assertion = {
+    clientDataJSON: toBase64Url(response.clientDataJSON),
+    authenticatorData: toBase64Url(response.authenticatorData),
+    signature: toBase64Url(response.signature),
+  };
+
+  if (response.userHandle !== null) assertion.userHandle = toBase64Url(response.userHandle);
+
   const answer = await fetch(path, {
     method: "POST",
     headers: { "content-type": "application/json", [TOKEN_HEADER]: token },
@@ -153,12 +166,7 @@ async function answerWithPasskey(webauthn, path, token, result, nothing) {
         id: credential.id,
         rawId: toBase64Url(credential.rawId),
         type: "public-key",
-        response: {
-          clientDataJSON: toBase64Url(response.clientDataJSON),
-          authenticatorData: toBase64Url(response.authenticatorData),
-          signature: toBase64Url(response.signature),
-          ...(response.userHandle === null ? {} : { userHandle: toBase64Url(response.userHandle) }),
-        },
+        response: assertion,
         clientExtensionResults: {},
       },
     }),

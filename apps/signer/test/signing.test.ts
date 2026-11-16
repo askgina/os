@@ -20,10 +20,11 @@ import {
   approveIntent,
   authorize,
   ETH,
+  eip1559Serialized,
   header,
   intentFor,
   ORIGIN,
-  type Person,
+  personAt,
   RECIPIENT,
   ROUTER,
   refused,
@@ -36,7 +37,7 @@ import {
 describe("where an approval was made", () => {
   it("refuses an approval made on the control plane's page or in a frame, and signs nothing", async () => {
     const world = await setUpWorld(startSigner());
-    const person = world.people[0] as Person;
+    const person = personAt(world, 0);
     const intent = intentFor(world);
     const { envelope } = approveIntent(world, intent);
     // The control plane's own page: same RP ID, same passkey, but the control plane chose what
@@ -102,7 +103,7 @@ describe("signing an approved intent", () => {
     expect(tx.data).toBeUndefined();
 
     const from = await recoverTransactionAddress({
-      serializedTransaction: signed.signedTransaction as `0x02${string}`,
+      serializedTransaction: eip1559Serialized(signed.signedTransaction),
     });
 
     expect(from.toLowerCase()).toBe(world.address);
@@ -130,10 +131,10 @@ describe("signing an approved intent", () => {
     expect(tx.value ?? 0n).toBe(0n);
     const call = decodeFunctionData({ abi: erc20Abi, data: tx.data ?? "0x" });
     expect(call.functionName).toBe("transfer");
-    expect(call.args.map((arg) => (typeof arg === "string" ? arg.toLowerCase() : arg))).toEqual([
-      RECIPIENT,
-      250000n,
-    ]);
+
+    if (call.functionName !== "transfer") throw new Error("not a transfer");
+
+    expect([call.args[0].toLowerCase(), call.args[1]]).toEqual([RECIPIENT, 250000n]);
   });
 
   it("returns the same signed transaction for a repeated request and never signs twice", async () => {
@@ -199,27 +200,35 @@ describe("signing an approved intent", () => {
     const alterations = [
       [
         "amount",
-        (i: EvmIntent): unknown => ({ ...i, operation: { ...i.operation, valueWei: "2" } }),
+        (i: EvmIntent): EvmIntent => {
+          if (i.operation.type !== "evm.transfer") throw new Error("not an ether transfer");
+
+          return { ...i, operation: { ...i.operation, valueWei: "2" } };
+        },
         "intent_mismatch",
       ],
       [
         "recipient",
-        (i: EvmIntent): unknown => ({ ...i, operation: { ...i.operation, to: TOKEN } }),
+        (i: EvmIntent): EvmIntent => ({ ...i, operation: { ...i.operation, to: TOKEN } }),
         "intent_mismatch",
       ],
-      ["memo", (i: EvmIntent): unknown => ({ ...i, memo: "something else" }), "intent_mismatch"],
+      ["memo", (i: EvmIntent): EvmIntent => ({ ...i, memo: "something else" }), "intent_mismatch"],
       [
         "fee ceiling",
-        (i: EvmIntent): unknown => ({ ...i, maxFeeWei: "999999999999999999" }),
+        (i: EvmIntent): EvmIntent => ({ ...i, maxFeeWei: "999999999999999999" }),
         "intent_mismatch",
       ],
-      ["chain", (i: EvmIntent): unknown => ({ ...i, chainId: "eip155:1" }), "envelope_mismatch"],
+      ["chain", (i: EvmIntent): EvmIntent => ({ ...i, chainId: "eip155:1" }), "envelope_mismatch"],
       [
         "wallet",
-        (i: EvmIntent): unknown => ({ ...i, walletId: newId("wal") }),
+        (i: EvmIntent): EvmIntent => ({ ...i, walletId: newId("wal") }),
         "envelope_mismatch",
       ],
-      ["agent", (i: EvmIntent): unknown => ({ ...i, agentId: newId("agt") }), "envelope_mismatch"],
+      [
+        "agent",
+        (i: EvmIntent): EvmIntent => ({ ...i, agentId: newId("agt") }),
+        "envelope_mismatch",
+      ],
     ] as const;
 
     for (const [field, alter, code] of alterations) {
@@ -230,7 +239,7 @@ describe("signing an approved intent", () => {
         await refused(
           // The altered intent is still well formed; only the approval no longer covers it.
           world.t.client.sign({
-            intent: alter(intent) as EvmIntent,
+            intent: alter(intent),
             authorization,
             transaction: txParams(),
           }),
@@ -532,7 +541,8 @@ describe("signing an approved intent", () => {
 
   it("refuses an assertion from an approver who was removed", async () => {
     const world = await setUpWorld(startSigner(), { people: 2 });
-    const [alice, bob] = world.people as [(typeof world.people)[0], (typeof world.people)[0]];
+    const alice = personAt(world, 0);
+    const bob = personAt(world, 1);
     const intent = intentFor(world);
     const byBob = approveIntent(world, intent, { people: [bob] });
     await world.t.client.removeApprover(
@@ -614,11 +624,14 @@ describe("request authentication and the route surface", () => {
       body: new TextEncoder().encode(options.signedBody ?? body),
     });
 
-    return t.signer.app.request(`http://signer.test${path}`, {
+    const init: RequestInit = {
       method,
       headers: { [SIGNATURE_HEADER]: signature, [TIMESTAMP_HEADER]: String(timestamp) },
-      ...(method === "GET" ? {} : { body }),
-    });
+    };
+
+    if (method !== "GET") init.body = body;
+
+    return t.signer.app.request(`http://signer.test${path}`, init);
   }
 
   it("answers the health check without a signature", async () => {
@@ -664,12 +677,12 @@ describe("request authentication and the route surface", () => {
 
     for (const [method, path] of routes) {
       const body = method === "GET" ? "" : JSON.stringify({ workspaceId: world.workspaceId });
+      const unsigned: RequestInit = { method };
+
+      if (method !== "GET") unsigned.body = body;
 
       for (const response of [
-        await t.signer.app.request(`http://signer.test${path}`, {
-          method,
-          ...(method === "GET" ? {} : { body }),
-        }),
+        await t.signer.app.request(`http://signer.test${path}`, unsigned),
         await raw(t, method, path, { body, secret: new Uint8Array(32).fill(7) }),
         await raw(t, method, path, { body, timestamp: t.clock.value - 61 }),
         // The `approve` service's secret reaches the confirm routes only.
@@ -726,7 +739,7 @@ describe("request authentication and the route surface", () => {
     const t = startSigner();
     const response = await raw(t, "POST", "/v1/sign", { body: "{not json" });
     expect(response.status).toBe(400);
-    const wrongShape = await raw(t, "POST", "/v1/sign", { body: JSON.stringify({ intent: 1 }) });
-    expect(wrongShape.status).toBe(400);
+    const notAnIntent = await raw(t, "POST", "/v1/sign", { body: JSON.stringify({ intent: 1 }) });
+    expect(notAnIntent.status).toBe(400);
   });
 });

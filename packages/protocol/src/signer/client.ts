@@ -53,6 +53,29 @@ export class SignerError extends Error {
   }
 }
 
+/** What a signer client passes to its `fetch`, and nothing else. */
+export interface SignerRequestInit {
+  method: string;
+  headers: Record<string, string>;
+  /** The JSON body as UTF-8 bytes; absent on a `GET`. */
+  body?: Uint8Array<ArrayBuffer>;
+  /** Aborts the request once the client's timeout has passed. */
+  signal: AbortSignal;
+}
+
+/** What a signer client reads from an answer: its status and its body as text. */
+export interface SignerResponse {
+  ok: boolean;
+  status: number;
+  text(): Promise<string>;
+}
+
+/**
+ * The `fetch` a signer client sends with, called with a URL string. The global `fetch` is one,
+ * and so is the mutual-TLS one from `createSignerFetch`.
+ */
+export type SignerFetch = (url: string, init: SignerRequestInit) => Promise<SignerResponse>;
+
 export interface SignerClientOptions {
   /** For example `http://signer:8787`. */
   baseUrl: string;
@@ -61,7 +84,7 @@ export interface SignerClientOptions {
    * {@link createSignerClient}, the `approve` service's for {@link createConfirmClient}.
    */
   secret: Uint8Array;
-  fetch?: typeof globalThis.fetch;
+  fetch?: SignerFetch;
   /** Seconds since the Unix epoch. Tests inject a clock. */
   now?: () => number;
   /**
@@ -180,7 +203,7 @@ type CallInput = {
 
 /** One signed request to the signer, answered with a schema-checked body or a SignerError. */
 function createCaller(options: SignerClientOptions) {
-  const doFetch = options.fetch ?? globalThis.fetch;
+  const doFetch: SignerFetch = options.fetch ?? globalThis.fetch;
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const baseUrl = options.baseUrl.replace(/\/+$/, "");
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -205,7 +228,7 @@ function createCaller(options: SignerClientOptions) {
 
     const timestamp = now();
 
-    const response = await doFetch(`${baseUrl}${pathWithQuery}`, {
+    const init: SignerRequestInit = {
       method: route.method,
       headers: {
         ...input.headers,
@@ -218,13 +241,19 @@ function createCaller(options: SignerClientOptions) {
           body,
         }),
       },
-      ...(route.method === "GET" ? {} : { body }),
       signal: AbortSignal.timeout(timeoutMs),
-    });
+    };
+
+    if (route.method !== "GET") init.body = body;
+    const response = await doFetch(`${baseUrl}${pathWithQuery}`, init);
 
     // A proxy in front of the signer may answer with a non-JSON error page; that is still a
-    // refusal the caller must see as a SignerError, not a parse failure.
-    const payload: unknown = await response.json().catch(() => null);
+    // refusal the caller must see as a SignerError, not a parse failure. The body is read as
+    // text and parsed here, as `Response.json()` does.
+    const payload: unknown = await response
+      .text()
+      .then((text) => JSON.parse(text))
+      .catch(() => null);
 
     if (!response.ok) {
       const parsed = SignerErrorBody.safeParse(payload);
@@ -271,14 +300,18 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
         ...workspace(workspaceId),
         body: { authorization },
       }),
-    listDecisions: (workspaceId, page = {}) =>
-      call(signerRoutes.listDecisions, ListDecisionsResponse, {
+    listDecisions: (workspaceId, page = {}) => {
+      const query: Record<string, string> = {};
+
+      if (page.after !== undefined) query.after = String(page.after);
+
+      if (page.limit !== undefined) query.limit = String(page.limit);
+
+      return call(signerRoutes.listDecisions, ListDecisionsResponse, {
         ...workspace(workspaceId),
-        query: {
-          ...(page.after === undefined ? {} : { after: String(page.after) }),
-          ...(page.limit === undefined ? {} : { limit: String(page.limit) }),
-        },
-      }),
+        query,
+      });
+    },
 
     createWallet: (request: CreateWalletRequest) =>
       call(signerRoutes.createWallet, WalletState, { body: request }),

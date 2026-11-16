@@ -11,6 +11,7 @@ import {
   SchemaTooNewError,
   type Signer,
 } from "./index.ts";
+import type { JsonObject } from "./json.ts";
 import { LIFECYCLE_ACTIONS } from "./lifecycle.ts";
 import { MANDATE_ACTIONS } from "./mandates.ts";
 
@@ -46,7 +47,7 @@ const USAGE =
   "       admin.ts revoke-mandate --all --workspace <ws_id>\n" +
   "       admin.ts export-wallet --workspace <ws_id> --wallet <wal_id> --out <absolute path>\n";
 
-function print(line: object): void {
+function print(line: JsonObject): void {
   process.stdout.write(`${JSON.stringify(line)}\n`);
 }
 

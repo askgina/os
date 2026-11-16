@@ -19,7 +19,8 @@ import { crc32, deflateSync } from "node:zlib";
 
 const BLUE = [0x1d, 0x4e, 0xd8] as const;
 
-const CHECK: [number, number][] = [
+/** The check mark's three points: two strokes, from the first to the second to the third. */
+const CHECK: [[number, number], [number, number], [number, number]] = [
   [10, 16.5],
   [14, 20.5],
   [22, 11.5],
@@ -47,14 +48,12 @@ function distanceToSegment(x: number, y: number, a: [number, number], b: [number
 }
 
 function onCheck(x: number, y: number): boolean {
-  for (let index = 1; index < CHECK.length; index++) {
-    const a = CHECK[index - 1] as [number, number];
-    const b = CHECK[index] as [number, number];
+  const [start, corner, end] = CHECK;
 
-    if (distanceToSegment(x, y, a, b) <= HALF_STROKE) return true;
-  }
-
-  return false;
+  return (
+    distanceToSegment(x, y, start, corner) <= HALF_STROKE ||
+    distanceToSegment(x, y, corner, end) <= HALF_STROKE
+  );
 }
 
 /** RGBA rows, each led by PNG filter byte 0. */
@@ -85,8 +84,7 @@ function draw(size: number, radius: number): Buffer {
       const share = square === 0 ? 0 : white / square;
       const offset = row + 1 + px * 4;
 
-      for (let channel = 0; channel < 3; channel++) {
-        const blue = BLUE[channel] as number;
+      for (const [channel, blue] of BLUE.entries()) {
         rows[offset + channel] = Math.round(blue + (255 - blue) * share);
       }
 

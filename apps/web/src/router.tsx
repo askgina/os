@@ -63,7 +63,7 @@ const login = createRoute({
   path: "/login",
   // `next` is kept only when it is a path on this site; anything else is dropped here, so the
   // page never sees an unsafe value.
-  validateSearch: (search: Record<string, unknown>): { next?: string } => {
+  validateSearch: (search: { next?: unknown }): { next?: string } => {
     const next = safeReturnPath(search.next);
 
     return next === DEFAULT_LANDING ? {} : { next };

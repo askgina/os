@@ -37,7 +37,7 @@ export function quietHoursForm(saved: QuietHours | null, deviceZone: string): Qu
 function clockTime(value: string): string | null {
   const match = /^((?:[01]\d|2[0-3]):[0-5]\d)(?::[0-5]\d(?:\.\d+)?)?$/.exec(value.trim());
 
-  return match ? (match[1] as string) : null;
+  return match?.[1] ?? null;
 }
 
 /**

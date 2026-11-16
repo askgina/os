@@ -1,26 +1,29 @@
+import { z } from "zod";
 import { MsgpackMap, type MsgpackValue } from "../src/venues/msgpack.ts";
+import vectors from "./vectors/hyperliquid-python-sdk.json" with { type: "json" };
 
-/**
- * An action as the SDK wrote it in JSON (`vectors/hyperliquid-python-sdk.json`), as a
- * `MsgpackMap` tree with the SDK's key order.
- */
-export function mapFromJson(value: object): MsgpackMap {
-  return new MsgpackMap(Object.entries(value).map(([key, entry]) => [key, fromJson(entry)]));
-}
+/** An action as the SDK wrote it in JSON (`vectors/hyperliquid-python-sdk.json`). */
+export type SdkAction =
+  | (typeof vectors.sdkTests.signatures)[number]["action"]
+  | typeof vectors.sdkTests.connectionId.action;
 
-function fromJson(value: unknown): MsgpackValue {
-  if (Array.isArray(value)) return value.map(fromJson);
+/** A JSON value as a `MsgpackValue`; each object becomes a `MsgpackMap` in its key order. */
+const jsonAsMsgpack: z.ZodType<MsgpackValue> = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.number(),
+    z.boolean(),
+    z.null(),
+    z.array(jsonAsMsgpack),
+    jsonMapAsMsgpack,
+  ]),
+);
 
-  if (value !== null && typeof value === "object") return mapFromJson(value);
+const jsonMapAsMsgpack = z
+  .record(z.string(), jsonAsMsgpack)
+  .transform((object) => new MsgpackMap(Object.entries(object)));
 
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    return value;
-  }
-
-  throw new TypeError(`not JSON: ${typeof value}`);
+/** `action` as a `MsgpackMap` tree with the SDK's key order. */
+export function mapFromJson(action: SdkAction): MsgpackMap {
+  return jsonMapAsMsgpack.parse(action);
 }

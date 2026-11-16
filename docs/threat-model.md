@@ -757,11 +757,12 @@ What is proven, and what is not:
   is checked only by recovering its signer, not against an SDK vector.
 - The signer's venue routes and their refusals (caps, fence, pause, a cancel with no passkey):
   unit tests ([`venue-signing.test.ts`](../apps/signer/test/venue-signing.test.ts)), green in CI
-  (runs 43735023880 and 43737561979) for testnet. Written for mainnet: unit tests for a mainnet
-  order signed under a mainnet policy, and for the refusals across networks (a testnet policy
-  with a mainnet intent, and the reverse).
-- Mainnet at the release gates: written, against a second fake venue in mainnet mode
-  ([`venue.spec.ts`](../e2e/test/venue.spec.ts)).
+  (runs 43735023880 and 43737561979) for testnet. For mainnet, green in CI (run 43842629503):
+  unit tests for a mainnet order signed under a mainnet policy, and for the refusals across
+  networks (a testnet policy with a mainnet intent, and the reverse).
+- Mainnet at the release gates: green in CI (run 43842629503, amd64 and arm64), against a
+  second fake venue in mainnet mode ([`venue.spec.ts`](../e2e/test/venue.spec.ts)). A fake venue
+  is not the venue: no real mainnet order has been placed.
 - The control plane's proposal checks, posting, follow-up, cancel and the withdrawal ledger read:
   unit tests ([`orders.test.ts`](../apps/server/test/execution/orders.test.ts)) against a fake
   venue that checks signatures with an encoder of its own (`@askgina/os-testkit/fake-hyperliquid`).

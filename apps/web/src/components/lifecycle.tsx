@@ -159,7 +159,7 @@ function DestroyForm({
   submit: {
     mutate: (destroyAfter: number) => void;
     isPending: boolean;
-    error: unknown;
+    error: Error | null;
   };
 }) {
   const now = useNow();
@@ -582,7 +582,7 @@ function WaitingNotice({
 
 /** Whether a failed read of a workspace means it was deleted while its page was open. */
 export function deletedWhileOpen(
-  error: unknown,
+  error: Error | null,
   last: WorkspaceDetail | undefined,
 ): last is WorkspaceDetail {
   return (

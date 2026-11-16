@@ -1,4 +1,5 @@
 import type { PushSubscriptionInput } from "@askgina/os-api";
+import { z } from "zod";
 
 /**
  * Notifications on this device: whether the browser can get them, its push subscription, and
@@ -50,7 +51,8 @@ function isAppleMobile(userAgent: string, maxTouchPoints: number): boolean {
 
 export function readPushEnvironment(): PushEnvironment {
   const hasNotification = "Notification" in window;
-  const iosStandalone = (navigator as Navigator & { standalone?: boolean }).standalone === true;
+  // `navigator.standalone` is Safari's own, on iOS and iPadOS only; the DOM types do not name it.
+  const iosStandalone = "standalone" in navigator && navigator.standalone === true;
 
   return {
     secureContext: window.isSecureContext,
@@ -139,21 +141,23 @@ export interface DeviceRecord {
 
 const RECORD_KEY = "os.push.device";
 
-export function readDeviceRecord(): DeviceRecord | null {
-  let value: unknown;
+/** A `DeviceRecord` as `writeDeviceRecord` stores it; anything else in storage is no record. */
+const StoredDeviceRecord = z.object({
+  userId: z.string(),
+  subscriptionId: z.string(),
+  endpoint: z.string(),
+});
 
+export function readDeviceRecord(): DeviceRecord | null {
   try {
-    value = JSON.parse(localStorage.getItem(RECORD_KEY) ?? "null");
+    const stored = StoredDeviceRecord.safeParse(
+      JSON.parse(localStorage.getItem(RECORD_KEY) ?? "null"),
+    );
+
+    return stored.success ? stored.data : null;
   } catch {
     return null;
   }
-
-  if (typeof value !== "object" || value === null) return null;
-  const { userId, subscriptionId, endpoint } = value as Record<string, unknown>;
-
-  if (typeof userId !== "string" || typeof subscriptionId !== "string") return null;
-
-  return typeof endpoint === "string" ? { userId, subscriptionId, endpoint } : null;
 }
 
 export function writeDeviceRecord(record: DeviceRecord | null): void {
@@ -324,11 +328,14 @@ export async function subscribeThisBrowser(input: {
 
   const keys = subscription.toJSON().keys ?? {};
 
-  return {
+  const subscribed: PushSubscriptionInput = {
     endpoint: subscription.endpoint,
     keys: { p256dh: keys.p256dh ?? "", auth: keys.auth ?? "" },
-    ...(input.label ? { label: input.label } : {}),
   };
+
+  if (input.label) subscribed.label = input.label;
+
+  return subscribed;
 }
 
 /**

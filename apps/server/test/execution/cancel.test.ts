@@ -1,17 +1,17 @@
 import { randomBytes } from "node:crypto";
 import type { ApprovalSummary, MandateDraft } from "@askgina/os-api";
-import type {
-  ApprovalId,
-  ChainId,
-  IntentId,
+import {
+  type ApprovalId,
+  type ChainId,
+  Hex,
+  type IntentId,
   MandateId,
-  WalletId,
-  WorkspaceId,
+  type WorkspaceId,
 } from "@askgina/os-protocol";
 import { type RepriceRequest, SignerError } from "@askgina/os-protocol/signer";
 import type { Client } from "@modelcontextprotocol/client";
 import { and, asc, eq } from "drizzle-orm";
-import { formatEther, type Hex } from "viem";
+import { formatEther } from "viem";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   auditEvents,
@@ -30,6 +30,7 @@ import {
   draftFor,
   type Fixture,
   fund,
+  intentIdOf,
   type TestAgent,
   toolJson,
 } from "./fixture.ts";
@@ -53,7 +54,7 @@ afterAll(async () => {
 
 const api = () => f.t.owner.browser.api;
 
-const randomAddress = () => `0x${randomBytes(20).toString("hex")}` as `0x${string}`;
+const randomAddress = (): `0x${string}` => `0x${randomBytes(20).toString("hex")}`;
 
 const steps = () => engineOf(f.t.ctx).steps();
 
@@ -114,12 +115,9 @@ async function propose(client: Client, to: `0x${string}`) {
     }),
   );
 
-  if (typeof answer.intentId !== "string") throw new Error(JSON.stringify(answer));
+  const intentId = intentIdOf(answer);
 
-  const [row] = await f.t.ctx.db
-    .select()
-    .from(intents)
-    .where(eq(intents.id, answer.intentId as IntentId));
+  const [row] = await f.t.ctx.db.select().from(intents).where(eq(intents.id, intentId));
 
   if (!row?.approvalId) throw new Error("an intent without its approval");
 
@@ -182,7 +180,7 @@ async function mine(workspaceId: WorkspaceId, approvalId: ApprovalId, attempt: n
   const location =
     attempt === 0 ? `transactions.raw:${approvalId}` : `transactions.raw:${approvalId}:${attempt}`;
 
-  const raw = (await f.t.ctx.sealer.open(workspaceId, location, sealed)) as Hex;
+  const raw = Hex.parse(await f.t.ctx.sealer.open(workspaceId, location, sealed));
   await anvil.sendRawTransaction({ serializedTransaction: raw });
 }
 
@@ -213,7 +211,7 @@ async function invited(workspaceId: WorkspaceId, role: "viewer" | "approver", na
   const passkey = f.t.register(start.options);
   await browser.api.call("finishInviteRegistration", {
     params: { token },
-    body: { ceremonyId: start.ceremonyId, response: passkey.response as never },
+    body: { ceremonyId: start.ceremonyId, response: passkey.response },
   });
 
   return browser;
@@ -404,7 +402,7 @@ describe("cancelling a payment", () => {
       body: { adminThreshold: 2 },
     });
 
-    expect((await f.t.approve(raise.id as ApprovalId, [f.t.owner])).status).toBe("executed");
+    expect((await f.t.approve(raise.id, [f.t.owner])).status).toBe("executed");
     const agent = await f.newAgent("Cancelled", workspaceId);
 
     const policy = await api().call("requestPolicy", {
@@ -412,9 +410,7 @@ describe("cancelling a payment", () => {
       body: { draft: draftFor(agent.id, { approvals: { threshold: 2, ttlSeconds: 3_600 } }) },
     });
 
-    expect((await f.t.approve(policy.id as ApprovalId, [f.t.owner, second])).status).toBe(
-      "executed",
-    );
+    expect((await f.t.approve(policy.id, [f.t.owner, second])).status).toBe("executed");
     await fund(agent.address, 50n * ETH);
     const sender = { agent, client: await f.mcp(agent.token) };
     await holding(async (sent) => {
@@ -438,7 +434,7 @@ describe("cancelling a payment", () => {
 
       expect(opened).toMatchObject({ kind: "cancel-transaction", status: "pending", threshold: 2 });
       expect(opened.title).toMatch(/^Cancel payment: Send 0\.01 ETH to 0x/);
-      const cancelId = opened.id as ApprovalId;
+      const cancelId = opened.id;
 
       const outbox = await f.t.ctx.db
         .select({ event: notificationDeliveries.event, target: notificationDeliveries.target })
@@ -549,7 +545,7 @@ describe("cancelling a payment", () => {
         expect(await attemptRows(payment.approvalId)).toEqual([]);
 
         const opened = await api().call("requestCancel", { params, body: {} });
-        const cancelId = opened.id as ApprovalId;
+        const cancelId = opened.id;
         expect((await f.t.approve(cancelId, [f.t.owner])).status).toBe("executed");
         const rows = await attemptRows(payment.approvalId);
         expect(
@@ -593,9 +589,9 @@ describe("cancelling a payment", () => {
       const opened = await api().call("requestCancel", { params, body: {} });
       await mine(payment.workspaceId, payment.approvalId, 0);
       await followUntilDone(payment.approvalId);
-      const ended = await f.t.settle(opened.id as ApprovalId);
+      const ended = await f.t.settle(opened.id);
       expect(ended.status).toBe("cancelled");
-      expect(await f.t.ctx.signer.getApproval(opened.id as ApprovalId)).toMatchObject({
+      expect(await f.t.ctx.signer.getApproval(opened.id)).toMatchObject({
         state: "revoked",
       });
       expect(await intentOf(payment.intentId)).toMatchObject({
@@ -611,10 +607,10 @@ describe("cancelling a payment", () => {
         body: {},
       });
 
-      expect((await f.t.approveOnPage(f.t.owner, late.id as ApprovalId)).status).toBe("approved");
+      expect((await f.t.approveOnPage(f.t.owner, late.id)).status).toBe("approved");
       await mine(raced.workspaceId, raced.approvalId, 0);
       await followUntilDone(raced.approvalId);
-      expect(await steps().execute(late.id as ApprovalId)).toEqual({
+      expect(await steps().execute(late.id)).toEqual({
         ok: false,
         code: "transaction_final",
       });
@@ -637,7 +633,7 @@ describe("cancelling a payment", () => {
         body: { chainId: TEST_CHAIN_ID, asset: "native", to: treasury.address },
       });
 
-      const sweepId = sweep.id as ApprovalId;
+      const sweepId = sweep.id;
       expect((await f.t.approve(sweepId, [f.t.owner])).status).toBe("executed");
       await followUp(sweepId);
       await api().call("pauseWorkspace", { params: { workspaceId }, body: {} });
@@ -654,7 +650,7 @@ describe("cancelling a payment", () => {
       });
 
       expect(opened.title).toMatch(/^Cancel sweep: Empty /);
-      const cancelId = opened.id as ApprovalId;
+      const cancelId = opened.id;
       const detail = await api().call("getApproval", { params: { approvalId: cancelId } });
       expect(detail.subject).toMatchObject({
         kind: "cancel-transaction",
@@ -683,7 +679,7 @@ describe("cancelling a payment", () => {
       agentId: mandated.agent.id,
       assets: [
         {
-          chainId: TEST_CHAIN_ID as MandateDraft["assets"][number]["chainId"],
+          chainId: TEST_CHAIN_ID,
           asset: "native",
           maxPerAction: ETH.toString(),
           maxPerWindow: (2n * ETH).toString(),
@@ -699,13 +695,13 @@ describe("cancelling a payment", () => {
     };
 
     const grant = await api().call("proposeMandate", {
-      params: { workspaceId: f.workspaceId, walletId: mandated.agent.walletId as WalletId },
+      params: { workspaceId: f.workspaceId, walletId: mandated.agent.walletId },
       body: draft,
     });
 
-    const granted = await f.t.approve(grant.id as ApprovalId, [bob]);
+    const granted = await f.t.approve(grant.id, [bob]);
     expect(granted.status).toBe("executed");
-    const mandateId = granted.subjectId as MandateId;
+    const mandateId = MandateId.parse(granted.subjectId);
     await holding(async () => {
       const { intentId, approvalId } = await propose(mandated.client, to);
       expect(await steps().execute(approvalId)).toEqual({ ok: true });
@@ -717,7 +713,7 @@ describe("cancelling a payment", () => {
         body: {},
       });
 
-      expect((await f.t.approve(opened.id as ApprovalId, [f.t.owner])).status).toBe("executed");
+      expect((await f.t.approve(opened.id, [f.t.owner])).status).toBe("executed");
       await mine(f.workspaceId, approvalId, 1);
       await followUntilDone(approvalId);
       expect(await intentOf(intentId)).toMatchObject({

@@ -200,18 +200,17 @@ async function waitingRemoval(ctx: AppContext, row: ApproverRow): Promise<Approv
 export async function eraseOnRequest(ctx: AppContext, userId: UserId): Promise<ErasureOutcome> {
   const approving = await checkErasable(ctx, userId);
   const requestedBy = { type: "user" as const, id: userId };
-  const pendingIn = new Map<WorkspaceId, string[]>();
 
-  for (const row of approving) {
-    if (row.state !== "pending") continue;
-    pendingIn.set(row.workspaceId, [...(pendingIn.get(row.workspaceId) ?? []), row.credentialId]);
-  }
+  const pendingIn = Map.groupBy(
+    approving.filter((row) => row.state === "pending"),
+    (row) => row.workspaceId,
+  );
 
-  for (const [workspaceId, credentialIds] of pendingIn) {
+  for (const [workspaceId, pending] of pendingIn) {
     await withdrawApprover(ctx, {
       workspaceId,
       userId,
-      credentialIds,
+      credentialIds: pending.map((row) => row.credentialId),
       afterwards: "keep",
       requestedBy,
     });

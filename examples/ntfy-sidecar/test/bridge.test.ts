@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type BridgeConfig, createBridge } from "../src/bridge.ts";
+import { type BridgeConfig, createBridge, type LogFields } from "../src/bridge.ts";
 import { readConfig } from "../src/config.ts";
 
 const SECRET = "webhook-secret-with-more-than-thirty-two-characters";
@@ -39,13 +39,15 @@ let bridge: Server | undefined;
 
 let bridgeUrl: string;
 
-let logged: Record<string, unknown>[] = [];
+let logged: LogFields[] = [];
 
 async function listen(server: Server): Promise<string> {
   const { promise, resolve } = Promise.withResolvers<void>();
   server.listen(0, "127.0.0.1", resolve);
   await promise;
 
+  // SAFETY: the server was just told to listen on TCP port 0 of 127.0.0.1, not on a pipe, and
+  // `listening` fired, so its address is an AddressInfo.
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 
@@ -65,9 +67,12 @@ async function startBridge(overrides: Partial<BridgeConfig> = {}): Promise<void>
   bridgeUrl = await listen(bridge);
 }
 
+/** A delivery's fields, as the control plane writes them or as a test changes them. */
+type DeliveryFields = { [field: string]: string | number };
+
 /** A delivery body as the control plane writes it: canonical JSON, keys sorted. */
-function delivery(deliveryId: string, fields: Record<string, unknown> = {}): string {
-  const body: Record<string, unknown> = {
+function delivery(deliveryId: string, fields: DeliveryFields = {}): string {
+  const body = {
     approvalId: APPROVAL,
     deliveryId,
     event: "approval.opened",
@@ -131,7 +136,11 @@ beforeEach(async () => {
   ntfy = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
 
-    for await (const chunk of request) chunks.push(chunk as Buffer);
+    for await (const chunk of request) {
+      // SAFETY: nothing calls `setEncoding` on this request, so Node yields its body as Buffers.
+      chunks.push(chunk as Buffer);
+    }
+
     published.push({
       path: request.url ?? "",
       headers: request.headers,

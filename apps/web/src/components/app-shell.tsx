@@ -25,7 +25,10 @@ export function ShellError({ error }: ErrorComponentProps) {
 
   return (
     <Frame productName={null} signedIn={false}>
-      <ErrorState error={error} retry={() => void router.invalidate()} />
+      <ErrorState
+        error={error instanceof Error ? error : null}
+        retry={() => void router.invalidate()}
+      />
     </Frame>
   );
 }

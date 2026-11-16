@@ -24,6 +24,17 @@ export const MESSAGES = {
 
 type Event = keyof typeof MESSAGES;
 
+/** Whether a delivery's event is one this sidecar has a text for. */
+function isEvent(name: string): name is Event {
+  return Object.hasOwn(MESSAGES, name);
+}
+
+/** One log line's fields: identifiers, codes and settings, never a body. */
+export type LogFields = { [field: string]: string | number | null | undefined };
+
+/** The headers of one publish to ntfy. */
+type NtfyHeaders = { "content-type": string; authorization?: string; click?: string };
+
 export interface BridgeConfig {
   /** The webhook's signing secret: the trimmed text of the control plane's file. */
   secret: string;
@@ -43,7 +54,7 @@ export interface BridgeOptions {
   /** The clock, in Unix seconds. */
   now?: () => number;
   /** Where one line per delivery goes: identifiers and codes only, never a body. */
-  log?: (fields: Record<string, unknown>) => void;
+  log?: (fields: LogFields) => void;
 }
 
 /** What one request came to: the status answered, and a short code saying why. */
@@ -59,6 +70,8 @@ async function readBody(request: IncomingMessage): Promise<Buffer | null> {
   let size = 0;
 
   for await (const chunk of request) {
+    // SAFETY: nothing calls `setEncoding` on this request, so Node's IncomingMessage yields its
+    // body as raw Buffer chunks.
     const bytes = chunk as Buffer;
     size += bytes.length;
 
@@ -76,8 +89,8 @@ function header(request: IncomingMessage, name: string): string | undefined {
 }
 
 /** The delivery's link when it is a page on `origin`, else null. */
-function linkOn(origin: string, value: unknown): string | null {
-  if (typeof value !== "string" || !URL.canParse(value)) return null;
+function linkOn(origin: string, value: string): string | null {
+  if (!URL.canParse(value)) return null;
   const url = new URL(value);
 
   return url.origin === origin ? url.href : null;
@@ -114,7 +127,7 @@ export function createBridge(config: BridgeConfig, options: BridgeOptions = {}):
   }
 
   async function publish(event: Event, link: string | null): Promise<boolean> {
-    const headers: Record<string, string> = { "content-type": "text/plain; charset=utf-8" };
+    const headers: NtfyHeaders = { "content-type": "text/plain; charset=utf-8" };
 
     if (config.token !== null) headers.authorization = `Bearer ${config.token}`;
 
@@ -168,7 +181,7 @@ export function createBridge(config: BridgeConfig, options: BridgeOptions = {}):
       return { status: 401, code: "bad_signature" };
     }
 
-    let delivery: Record<string, unknown>;
+    let delivery: object;
 
     try {
       const parsed: unknown = JSON.parse(body.toString("utf8"));
@@ -177,27 +190,34 @@ export function createBridge(config: BridgeConfig, options: BridgeOptions = {}):
         return { status: 400, code: "not_a_delivery" };
       }
 
-      delivery = parsed as Record<string, unknown>;
+      delivery = parsed;
     } catch {
       return { status: 400, code: "not_a_delivery" };
     }
 
-    if (delivery.v !== 1) return { status: 400, code: "unknown_version" };
+    const version = "v" in delivery ? delivery.v : undefined;
+
+    if (version !== 1) return { status: 400, code: "unknown_version" };
     // The header is not signed; the id in the body is. Dedupe on the signed one.
-    const deliveryId = delivery.deliveryId;
+    const deliveryId = "deliveryId" in delivery ? delivery.deliveryId : undefined;
 
     if (typeof deliveryId !== "string" || deliveryId !== header(request, "x-os-delivery")) {
       return { status: 400, code: "delivery_id_mismatch" };
     }
 
-    const event = delivery.event;
+    const event = "event" in delivery ? delivery.event : undefined;
 
-    if (typeof event !== "string" || !Object.hasOwn(MESSAGES, event)) {
+    if (typeof event !== "string" || !isEvent(event)) {
       return { status: 204, code: "ignored", deliveryId };
     }
 
-    const known = event as Event;
-    const link = config.linkOrigin === null ? null : linkOn(config.linkOrigin, delivery.link);
+    const linked = "link" in delivery ? delivery.link : undefined;
+
+    const link =
+      config.linkOrigin === null || typeof linked !== "string"
+        ? null
+        : linkOn(config.linkOrigin, linked);
+
     const linkDropped = config.linkOrigin !== null && link === null;
 
     forget();
@@ -208,7 +228,7 @@ export function createBridge(config: BridgeConfig, options: BridgeOptions = {}):
     const first = attempt === undefined;
 
     if (attempt === undefined) {
-      attempt = publish(known, link);
+      attempt = publish(event, link);
       publishing.set(deliveryId, attempt);
     }
 

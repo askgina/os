@@ -1,6 +1,17 @@
 import type { PolicyDraft } from "@askgina/os-api";
-import type { AgentId, ApprovalId, WalletId, WorkspaceId } from "@askgina/os-protocol";
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import {
+  Address,
+  type AgentId,
+  IntentId,
+  type WalletId,
+  type WorkspaceId,
+} from "@askgina/os-protocol";
+import {
+  type CallToolRequestParams,
+  type CallToolResult,
+  Client,
+  StreamableHTTPClientTransport,
+} from "@modelcontextprotocol/client";
 import { createTestClient, http, publicActions, walletActions } from "viem";
 import { foundry } from "viem/chains";
 import { z } from "zod";
@@ -97,7 +108,7 @@ export async function deployToken(holder: `0x${string}`, supply: bigint): Promis
 
   if (!receipt.contractAddress) throw new Error("token deployment failed");
 
-  return receipt.contractAddress.toLowerCase() as `0x${string}`;
+  return Address.parse(receipt.contractAddress.toLowerCase());
 }
 
 export async function createFixture(
@@ -120,7 +131,7 @@ export async function createFixture(
   const api = t.owner.browser.api;
 
   const newWorkspace = async (name: string) =>
-    (await api.call("createWorkspace", { body: { name } })).id as WorkspaceId;
+    (await api.call("createWorkspace", { body: { name } })).id;
 
   const setPolicy = async (workspaceId: WorkspaceId, walletId: WalletId, draft: PolicyDraft) => {
     const approval = await api.call("requestPolicy", {
@@ -128,7 +139,7 @@ export async function createFixture(
       body: { draft },
     });
 
-    const row = await t.approve(approval.id as ApprovalId, [t.owner]);
+    const row = await t.approve(approval.id, [t.owner]);
 
     if (row.status !== "executed") throw new Error(`policy approval ended ${row.status}`);
   };
@@ -137,10 +148,10 @@ export async function createFixture(
     const created = await api.call("createAgent", { params: { workspaceId }, body: { name } });
 
     return {
-      id: created.agent.id as AgentId,
+      id: created.agent.id,
       token: created.token,
-      walletId: created.wallet.id as WalletId,
-      address: created.wallet.address as `0x${string}`,
+      walletId: created.wallet.id,
+      address: created.wallet.address,
     };
   };
 
@@ -176,7 +187,7 @@ export async function createFixture(
 
       const session = await browser.api.call("finishInviteRegistration", {
         params: { token },
-        body: { ceremonyId: start.ceremonyId, response: passkey.response as never },
+        body: { ceremonyId: start.ceremonyId, response: passkey.response },
       });
 
       if (session.user === null) throw new Error("invite registration did not sign in");
@@ -187,7 +198,7 @@ export async function createFixture(
       });
 
       for (const approval of pending.items.filter((item) => item.kind === "add-approver")) {
-        const row = await t.approve(approval.id as ApprovalId, [t.owner]);
+        const row = await t.approve(approval.id, [t.owner]);
 
         if (row.status !== "executed") throw new Error(`add-approver ended ${row.status}`);
       }
@@ -218,13 +229,30 @@ export async function createFixture(
   };
 }
 
+/** The arguments a tool is called with, as the MCP client takes them. */
+export type ToolArguments = NonNullable<CallToolRequestParams["arguments"]>;
+
 /** The JSON a tool answered with, or its error body. */
 const ToolResult = z.looseObject({
   content: z.array(z.looseObject({ type: z.string(), text: z.string().optional() })),
 });
 
-export function toolJson(result: unknown): Record<string, unknown> {
+/** A tool's answer: the JSON object in its text content. */
+const ToolAnswer = z.record(z.string(), z.json());
+
+export type ToolAnswer = z.infer<typeof ToolAnswer>;
+
+export function toolJson(result: CallToolResult): ToolAnswer {
   const text = ToolResult.parse(result).content.find((part) => part.type === "text")?.text;
 
-  return z.record(z.string(), z.unknown()).parse(JSON.parse(text ?? "{}"));
+  return ToolAnswer.parse(JSON.parse(text ?? "{}"));
+}
+
+/** The intent a `propose_*` tool answered with; throws with the whole answer when it has none. */
+export function intentIdOf(answer: ToolAnswer): IntentId {
+  const intentId = IntentId.safeParse(answer.intentId);
+
+  if (!intentId.success) throw new Error(JSON.stringify(answer));
+
+  return intentId.data;
 }

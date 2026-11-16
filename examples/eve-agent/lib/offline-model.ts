@@ -8,23 +8,25 @@
  */
 import { MockLanguageModelV4 } from "ai/test";
 
-type Part = Record<string, unknown>;
+type StreamOptions = Parameters<MockLanguageModelV4["doStream"]>[0];
 
-type Message = { role: string; content: unknown };
+type Message = StreamOptions["prompt"][number];
+
+type StreamResult = Awaited<ReturnType<MockLanguageModelV4["doStream"]>>;
+
+/** One part of the stream the model answers with. */
+type Part = StreamResult["stream"] extends ReadableStream<infer P> ? P : never;
 
 const usage = {
   inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
   outputTokens: { total: 1, text: 1, reasoning: 0 },
 };
 
-function textOf(content: unknown): string {
-  if (typeof content === "string") return content;
+/** The text a person typed in a user message; nothing for any other message. */
+function textOf(message: Message | undefined): string {
+  if (message?.role !== "user") return "";
 
-  if (!Array.isArray(content)) return "";
-
-  return content
-    .map((part: Part) => (part.type === "text" && typeof part.text === "string" ? part.text : ""))
-    .join(" ");
+  return message.content.map((part) => (part.type === "text" ? part.text : "")).join(" ");
 }
 
 function reply(text: string): Part[] {
@@ -39,7 +41,7 @@ function reply(text: string): Part[] {
 
 function respond(prompt: readonly Message[]): Part[] {
   const lastUser = prompt.findLastIndex((message) => message.role === "user");
-  const request = textOf(prompt[lastUser]?.content);
+  const request = textOf(prompt[lastUser]);
   const toolResult = prompt.slice(lastUser + 1).find((message) => message.role === "tool");
 
   if (toolResult) {
@@ -91,12 +93,12 @@ export const offlineModel = new MockLanguageModelV4({
   provider: "askgina-os-offline",
   modelId: "smoke-test",
   doStream: async (options) => {
-    const parts = respond(options.prompt as unknown as Message[]);
+    const parts = respond(options.prompt);
 
     return {
-      stream: new ReadableStream({
+      stream: new ReadableStream<Part>({
         start(controller) {
-          for (const part of parts) controller.enqueue(part as never);
+          for (const part of parts) controller.enqueue(part);
           controller.close();
         },
       }),

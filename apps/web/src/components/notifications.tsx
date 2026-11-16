@@ -60,11 +60,11 @@ import {
 } from "@/lib/quiet-hours.ts";
 
 /** Refusals after which the server will never send to this browser's subscription. */
-const DEVICE_REFUSED: Record<string, true> = {
+const DEVICE_REFUSED = {
   push_off: true,
   endpoint_refused: true,
   bad_subscription: true,
-};
+} satisfies Record<string, true>;
 
 /** Removes one of the person's devices; one already gone counts as removed. */
 async function removeDevice(subscriptionId: string): Promise<void> {
@@ -671,10 +671,7 @@ function QuietHoursEditor({ saved }: { saved: QuietHours | null }) {
 }
 
 /** What each level lets a notification say, with the example a phone would show. */
-function levelText(
-  detail: NotificationDetail,
-  workspace: WorkspaceDetail,
-): { label: string; detail: string } {
+function levelText(detail: NotificationDetail, workspace: WorkspaceDetail) {
   if (detail === "count") {
     return {
       label: "Only that requests wait",

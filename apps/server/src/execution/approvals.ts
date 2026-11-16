@@ -7,7 +7,8 @@ import type {
   Requester,
 } from "@askgina/os-api";
 import {
-  type ApprovalId,
+  type AgentId,
+  ApprovalId,
   type ApproverCredential,
   type Assertion,
   type AssertionResponse,
@@ -20,6 +21,7 @@ import {
 import { SignerError } from "@askgina/os-protocol/signer";
 import { verifyAuthorization } from "@askgina/os-protocol/webauthn";
 import { and, asc, desc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { z } from "zod";
 import {
   type ApprovalEngine,
   ApprovalFailure,
@@ -44,6 +46,7 @@ import {
   memberships,
   users,
 } from "../db/schema.ts";
+import type { JsonValue } from "../db/sealed.ts";
 import { HttpError } from "../http/errors.ts";
 import { enqueueApprovalNotifications, enqueueMandateUseNotification } from "../notify/outbox.ts";
 import type { SettledStatus, StepImplementations } from "./steps.ts";
@@ -57,7 +60,14 @@ export type FollowUp = (
 
 const PAGE_SIZE = 50;
 
+type Ended = "rejected" | "expired" | "cancelled" | "failed";
+
 const ENDED: readonly SettledStatus[] = ["rejected", "expired", "cancelled", "failed"];
+
+/** Whether a run settled a request as ended without its effect. */
+function isEnded(status: SettledStatus): status is Ended {
+  return ENDED.includes(status);
+}
 
 const detailLocation = (id: string) => `approvals.detail:${id}`;
 
@@ -66,12 +76,27 @@ const confirmationLocation = (id: string) => `approvals.confirmation:${id}`;
 /** Why an assertion does not count, with the code the signer would give for it. */
 type Verdict = { ok: true; credentialId: string } | { ok: false; code: string };
 
+/** Where a page of approvals starts: after this creation time and id. */
+type CursorPosition = { at: Date; id: string };
+
+/**
+ * The approval an id names. A string that is no approval id names no approval, so it is refused
+ * exactly as an approval that does not exist is.
+ */
+function approvalIdOf(id: string): ApprovalId {
+  const parsed = ApprovalId.safeParse(id);
+
+  if (!parsed.success) throw new HttpError("not_found", "no such approval");
+
+  return parsed.data;
+}
+
 /** A list position: the last row's creation time and id, so equal timestamps still page. */
 function encodeCursor(row: { createdAt: Date; id: string }): string {
   return Buffer.from(`${row.createdAt.getTime()}|${row.id}`).toString("base64url");
 }
 
-function decodeCursor(cursor: string): { at: Date; id: string } {
+function decodeCursor(cursor: string): CursorPosition {
   const [at, id] = Buffer.from(cursor, "base64url").toString("utf8").split("|");
   const time = Number(at);
 
@@ -103,7 +128,11 @@ export class Engine implements ApprovalEngine {
   }
 
   register<K extends ApprovalKind>(handler: ApprovalKindHandler<K>): void {
-    this.#handlers.set(handler.kind, handler as unknown as ApprovalKindHandler);
+    // Only `describe` depends on the kind: wrapped, it answers its subject as any kind's.
+    this.#handlers.set(handler.kind, {
+      ...handler,
+      describe: (ctx, approval, detail) => handler.describe(ctx, approval, detail),
+    });
   }
 
   /** Called once at boot by the intents module, which signs each use. */
@@ -194,11 +223,11 @@ export class Engine implements ApprovalEngine {
     const row = await this.request(id);
     // The confirmation page is ready before anyone looks. The request is already recorded, so a
     // failure here does not fail it: the first view of the request tries again.
-    await this.ensureConfirmation(row).catch((error: unknown) => {
+    await this.ensureConfirmation(row).catch((cause: unknown) => {
       ctx.log.warn("opening a confirmation failed", {
         approvalId: id,
         code: "internal",
-        error: error instanceof Error ? error.name : "unknown",
+        error: cause instanceof Error ? cause.name : "unknown",
       });
     });
 
@@ -263,9 +292,9 @@ export class Engine implements ApprovalEngine {
    * End a pending request with no effect. True only when this call cancelled it; `alongside`
    * runs in the same transaction, so a subject is marked cancelled exactly when its request is.
    */
-  async cancel(
+  async cancel<R>(
     approvalId: ApprovalId,
-    alongside?: (tx: Transaction) => Promise<unknown>,
+    alongside?: (tx: Transaction) => Promise<R>,
   ): Promise<boolean> {
     const ctx = this.#ctx;
 
@@ -366,7 +395,7 @@ export class Engine implements ApprovalEngine {
     const [row] = await executor
       .select()
       .from(approvals)
-      .where(eq(approvals.id, id as ApprovalId));
+      .where(eq(approvals.id, approvalIdOf(id)));
 
     if (!row) throw new HttpError("not_found", "no such approval");
 
@@ -385,7 +414,7 @@ export class Engine implements ApprovalEngine {
     return row;
   }
 
-  async openDetail(row: ApprovalRow): Promise<unknown> {
+  async openDetail(row: ApprovalRow): Promise<JsonValue> {
     if (row.detail === null) return null;
 
     return this.#ctx.sealer.open(row.workspaceId, detailLocation(row.id), row.detail);
@@ -480,11 +509,12 @@ export class Engine implements ApprovalEngine {
     if (this.shownStatus(row) !== "pending") return null;
 
     const link = async (sealed: Uint8Array) => {
-      const path = await ctx.sealer.open(row.workspaceId, confirmationLocation(row.id), sealed);
+      const opened = await ctx.sealer.open(row.workspaceId, confirmationLocation(row.id), sealed);
+      const path = z.string().safeParse(opened);
 
-      if (typeof path !== "string") throw new Error("a stored confirmation link is not a path");
+      if (!path.success) throw new Error("a stored confirmation link is not a path");
 
-      return `${ctx.config.approveOrigin}${path}`;
+      return `${ctx.config.approveOrigin}${path.data}`;
     };
 
     if (row.confirmation !== null) return link(row.confirmation);
@@ -608,6 +638,8 @@ export class Engine implements ApprovalEngine {
     if (filter.cursor !== undefined) {
       const { at, id } = decodeCursor(filter.cursor);
 
+      // SAFETY: the cursor's id is only compared with `<` against approvals.id to order the
+      // page; any string orders, and one that names no approval still starts the page there.
       const before = or(
         lt(approvals.createdAt, at),
         and(eq(approvals.createdAt, at), lt(approvals.id, id as ApprovalId)),
@@ -827,10 +859,10 @@ export class Engine implements ApprovalEngine {
       );
     });
     // From here on the signer refuses this approval id for good, whatever happens to our rows.
-    await ctx.signer.revokeApproval(row.id, row.workspaceId).catch((error: unknown) => {
+    await ctx.signer.revokeApproval(row.id, row.workspaceId).catch((cause: unknown) => {
       ctx.log.warn("revoking a rejected approval failed", {
         approvalId: row.id,
-        error: error instanceof Error ? error.name : "unknown",
+        error: cause instanceof Error ? cause.name : "unknown",
       });
     });
     await this.wake(row.id);
@@ -842,7 +874,7 @@ export class Engine implements ApprovalEngine {
 
     return {
       settle: async (approvalId, runId) => {
-        const id = approvalId as ApprovalId;
+        const id = approvalIdOf(approvalId);
         await ctx.db
           .update(approvals)
           .set({ runId })
@@ -984,8 +1016,8 @@ export class Engine implements ApprovalEngine {
       },
 
       abandon: async (approvalId, status) => {
-        if (!ENDED.includes(status)) return;
-        await this.#end(await this.row(approvalId), status as "rejected");
+        if (!isEnded(status)) return;
+        await this.#end(await this.row(approvalId), status);
       },
 
       followUp: async (approvalId) => {
@@ -1004,10 +1036,7 @@ export class Engine implements ApprovalEngine {
    * fail the cleanup: the first is final, and an unreachable signer cannot be sent the request
    * by anyone either, since only this request's own run would.
    */
-  async #end(
-    row: ApprovalRow,
-    status: "rejected" | "expired" | "cancelled" | "failed",
-  ): Promise<void> {
+  async #end(row: ApprovalRow, status: Ended): Promise<void> {
     const ctx = this.#ctx;
     const detail = await this.openDetail(row);
 
@@ -1058,20 +1087,29 @@ export class Engine implements ApprovalEngine {
     const ctx = this.#ctx;
 
     if (row.requestedByType === "agent") {
+      // SAFETY: open() and openUse() store requestedBy.id beside requestedByType, and a requester
+      // of type "agent" is always an agent's id (OpenUse takes an AgentId; intents.ts passes
+      // agent.id).
+      const agentId = row.requestedById as AgentId;
+
       const [agent] = await ctx.db
         .select({ name: agents.name })
         .from(agents)
-        .where(eq(agents.id, row.requestedById as never));
+        .where(eq(agents.id, agentId));
 
-      return { type: "agent", id: row.requestedById as never, name: agent?.name ?? "" };
+      return { type: "agent", id: agentId, name: agent?.name ?? "" };
     }
+
+    // SAFETY: open() stores requestedBy.id beside requestedByType, and every requester of type
+    // "user" is a signed-in user's id (session.user.id, or a UserId the directory passes).
+    const userId = row.requestedById as UserId;
 
     const [user] = await ctx.db
       .select({ name: users.displayName })
       .from(users)
-      .where(eq(users.id, row.requestedById as never));
+      .where(eq(users.id, userId));
 
-    return { type: "user", id: row.requestedById as never, name: user?.name ?? "" };
+    return { type: "user", id: userId, name: user?.name ?? "" };
   }
 }
 

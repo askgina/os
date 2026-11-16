@@ -1,13 +1,14 @@
 import type { ApprovalSummary, AuditEvent, PolicyDraft, Role } from "@askgina/os-api";
 import {
-  type AgentId,
+  Address,
+  AgentId,
   type AssetRef,
   type ChainId,
   newId,
   normalizePolicy,
   PROTOCOL_VERSION,
   policyHash,
-  type UserId,
+  UserId,
   type WalletId,
   type WalletPolicy,
   type WorkspaceId,
@@ -15,7 +16,7 @@ import {
 import { SignerError } from "@askgina/os-protocol/signer";
 import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { Hono } from "hono";
-import { requireMember } from "../access.ts";
+import { requireMember, workspaceIdFromPath } from "../access.ts";
 import { appendAudit, openAuditDetail, verifyAudit } from "../audit.ts";
 import type { AppContext, Executor, Session } from "../context.ts";
 import {
@@ -70,7 +71,7 @@ async function signerCall<T>(call: () => Promise<T>): Promise<T> {
 }
 
 /** `osa_<agent ulid>_<32 random bytes>`: recognizable in a leaked-secret scan, unguessable. */
-function mintAgentToken(agentId: AgentId): { token: string; hash: string; prefix: string } {
+function mintAgentToken(agentId: AgentId) {
   const token = `osa_${agentId.slice("agt_".length)}_${randomToken(32)}`;
 
   // The prefix names the agent and four characters of the secret: enough to tell tokens apart.
@@ -178,22 +179,34 @@ async function enrollPasskeys(
 
 const LAST_OWNER = "a workspace needs at least one owner";
 
-async function memberRole(ctx: AppContext, workspaceId: WorkspaceId, userId: string) {
+/**
+ * The member a request path names, with their role. A segment that is no user id names no member.
+ */
+async function pathMember(ctx: AppContext, workspaceId: WorkspaceId, segment: string) {
+  const userId = UserId.safeParse(segment);
+
+  if (!userId.success) throw new HttpError("not_found", "no such member");
+
   const [row] = await ctx.db
     .select({ role: memberships.role })
     .from(memberships)
-    .where(and(eq(memberships.workspaceId, workspaceId), eq(memberships.userId, userId as UserId)));
+    .where(and(eq(memberships.workspaceId, workspaceId), eq(memberships.userId, userId.data)));
 
   if (!row) throw new HttpError("not_found", "no such member");
 
-  return row.role;
+  return { userId: userId.data, role: row.role };
 }
 
-async function loadAgent(ctx: AppContext, workspaceId: WorkspaceId, agentId: string) {
+async function loadAgent(ctx: AppContext, workspaceId: WorkspaceId, segment: string) {
+  const agentId = AgentId.safeParse(segment);
+
+  // A segment that is no agent id names no agent.
+  if (!agentId.success) throw new HttpError("not_found", "no such agent");
+
   const [row] = await ctx.db
     .select()
     .from(agents)
-    .where(and(eq(agents.id, agentId as AgentId), eq(agents.workspaceId, workspaceId)));
+    .where(and(eq(agents.id, agentId.data), eq(agents.workspaceId, workspaceId)));
 
   if (!row) throw new HttpError("not_found", "no such agent");
 
@@ -218,7 +231,7 @@ async function createWallet(
       workspaceId: input.workspaceId,
       kind: input.kind,
       label: input.label,
-      address: state.address.toLowerCase() as `0x${string}`,
+      address: Address.parse(state.address.toLowerCase()),
     })
     .onConflictDoNothing();
   const [row] = await ctx.db.select().from(wallets).where(eq(wallets.id, input.walletId));
@@ -489,7 +502,7 @@ export async function openPolicyRequest(
     walletId: wallet.id,
     revision: (current.policy?.revision ?? 0) + 1,
     previousHash: current.policyHash,
-  } as WalletPolicy);
+  });
 
   // One draft at a time per wallet: a newer draft replaces the one still waiting.
   const waiting = await ctx.db
@@ -557,7 +570,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "getWorkspace", async ({ session, params }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     const role = await requireMember(ctx, session, workspaceId);
 
     try {
@@ -575,7 +588,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "pauseWorkspace", async ({ session, params }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     // Any approver may pull the brake; it only removes authority, so it needs no passkey.
     const role = await requireMember(ctx, session, workspaceId, "approver");
     await signerCall(() => ctx.signer.pauseWorkspace(workspaceId));
@@ -603,7 +616,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "requestResume", async ({ session, params }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "approver");
 
     const [workspace] = await ctx.db
@@ -626,7 +639,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "requestAdminThreshold", async ({ session, params, body }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "owner");
 
     const [workspace] = await ctx.db
@@ -666,14 +679,14 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   // --- members --------------------------------------------------------------------------------
 
   handle(app, ctx, "createInvite", async ({ session, params, body }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "owner");
 
     return createInviteIn(ctx, session, workspaceId, body.role);
   });
 
   handle(app, ctx, "listInvites", async ({ session, params }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "owner");
 
     const rows = await ctx.db
@@ -701,7 +714,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "revokeInvite", async ({ session, params }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "owner");
     await ctx.db.transaction(async (tx) => {
       const deleted = await tx
@@ -768,7 +781,10 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
       throw new HttpError("not_found", "this invite is not valid any more");
     }
 
-    const userId = ceremony.userId as UserId;
+    const { userId } = ceremony;
+
+    // startInviteRegistration stores the new person's id with every invite ceremony.
+    if (userId === null) throw new Error("an invite ceremony without its user id");
     const displayName = ceremony.context.displayName ?? "Member";
 
     const joined = await ctx.db.transaction(async (tx) => {
@@ -796,10 +812,9 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "setMemberRole", async ({ session, params, body }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "owner");
-    const userId = params.userId as UserId;
-    const current = await memberRole(ctx, workspaceId, userId);
+    const { userId, role: current } = await pathMember(ctx, workspaceId, params.userId);
     const demotingOwner = current === "owner" && body.role !== "owner";
 
     // Checked early for a clear answer, and again inside the transaction that changes the role.
@@ -863,10 +878,9 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "removeMember", async ({ session, params }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "owner");
-    const userId = params.userId as UserId;
-    const current = await memberRole(ctx, workspaceId, userId);
+    const { userId, role: current } = await pathMember(ctx, workspaceId, params.userId);
 
     if (current === "owner" && !(await anotherOwnerRemains(ctx.db, workspaceId, userId))) {
       throw new HttpError("conflict", LAST_OWNER);
@@ -910,7 +924,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   // --- agents and wallets ---------------------------------------------------------------------
 
   handle(app, ctx, "createAgent", async ({ session, params, body }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "owner");
     const created = await createAgentIn(ctx, session, workspaceId, body.name);
 
@@ -923,7 +937,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "rotateAgentToken", async ({ session, params }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "owner");
     const agent = await loadAgent(ctx, workspaceId, params.agentId);
 
@@ -950,7 +964,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "disableAgent", async ({ session, params }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "owner");
     const agent = await loadAgent(ctx, workspaceId, params.agentId);
 
@@ -989,11 +1003,11 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
           agentId: agent.id,
           count: revoked,
         }),
-      (error: unknown) =>
+      (cause: unknown) =>
         ctx.log.warn("revoking an agent's mandates failed", {
           workspaceId,
           agentId: agent.id,
-          code: error instanceof SignerError ? error.code : "unreachable",
+          code: cause instanceof SignerError ? cause.code : "unreachable",
         }),
     );
 
@@ -1019,11 +1033,11 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
           agentId: agent.id,
           count: cancelled,
         }),
-      (error: unknown) =>
+      (cause: unknown) =>
         ctx.log.warn("cancelling an agent's payments failed", {
           workspaceId,
           agentId: agent.id,
-          error: error instanceof Error ? error.name : "unknown",
+          error: cause instanceof Error ? cause.name : "unknown",
         }),
     );
 
@@ -1031,14 +1045,14 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "createTreasury", async ({ session, params, body }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "owner");
 
     return walletSummary(await createTreasuryIn(ctx, session, workspaceId, body.label), null);
   });
 
   handle(app, ctx, "getWallet", async ({ session, params }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId);
     const { wallet, agentId } = await loadWallet(ctx, workspaceId, params.walletId);
     const state = await signerCall(() => ctx.signer.getWallet(wallet.id));
@@ -1071,18 +1085,22 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
         ),
       );
 
-    return {
+    const detail = {
       // The signer's copy of the policy is the one that is enforced.
       ...walletSummary({ ...wallet, policy, policyHash: state.policyHash }, agentId),
       balances,
       spent: state.spent,
       pendingPolicyApprovalId: pending?.id ?? null,
-      ...(venue === null ? {} : { venue }),
     };
+
+    // A wallet without venue rules has no venue account to show.
+    if (venue === null) return detail;
+
+    return { ...detail, venue };
   });
 
   handle(app, ctx, "requestPolicy", async ({ session, params, body }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "owner");
 
     return openPolicyRequest(ctx, session, workspaceId, params.walletId, body.draft);
@@ -1091,7 +1109,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   // --- audit ----------------------------------------------------------------------------------
 
   handle(app, ctx, "listAudit", async ({ session, params, query }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId);
     const before = query.cursor === undefined ? null : Number.parseInt(query.cursor, 10);
 
@@ -1105,7 +1123,8 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
       .where(
         and(
           eq(auditEvents.workspaceId, workspaceId),
-          ...(before === null ? [] : [lt(auditEvents.seq, before)]),
+          // `and` leaves out an undefined condition.
+          before === null ? undefined : lt(auditEvents.seq, before),
         ),
       )
       .orderBy(desc(auditEvents.seq))
@@ -1145,14 +1164,14 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "verifyAudit", async ({ session, params }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId);
 
     return verifyAudit(ctx, workspaceId);
   });
 
   handle(app, ctx, "listSignerDecisions", async ({ session, params, query }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId);
 
     const response = await signerCall(() =>
@@ -1170,15 +1189,26 @@ async function actorNames(
   ctx: AppContext,
   rows: { actorType: string; actorId: string | null }[],
 ): Promise<Map<string, string>> {
-  const userIds = rows.filter((r) => r.actorType === "user" && r.actorId).map((r) => r.actorId);
-  const agentIds = rows.filter((r) => r.actorType === "agent" && r.actorId).map((r) => r.actorId);
+  // An actor id that is no user or agent id names nobody, so it gets no name.
+  const userIds = rows.flatMap((row) => {
+    const id = UserId.safeParse(row.actorType === "user" ? row.actorId : null);
+
+    return id.success ? [id.data] : [];
+  });
+
+  const agentIds = rows.flatMap((row) => {
+    const id = AgentId.safeParse(row.actorType === "agent" ? row.actorId : null);
+
+    return id.success ? [id.data] : [];
+  });
+
   const names = new Map<string, string>();
 
   if (userIds.length > 0) {
     const found = await ctx.db
       .select({ id: users.id, name: users.displayName })
       .from(users)
-      .where(inArray(users.id, userIds as UserId[]));
+      .where(inArray(users.id, userIds));
 
     for (const row of found) names.set(row.id, row.name);
   }
@@ -1187,7 +1217,7 @@ async function actorNames(
     const found = await ctx.db
       .select({ id: agents.id, name: agents.name })
       .from(agents)
-      .where(inArray(agents.id, agentIds as AgentId[]));
+      .where(inArray(agents.id, agentIds));
 
     for (const row of found) names.set(row.id, row.name);
   }

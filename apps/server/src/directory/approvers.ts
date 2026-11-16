@@ -1,29 +1,35 @@
 import type { ApprovalSummary } from "@askgina/os-api";
-import type { UserId, WorkspaceId } from "@askgina/os-protocol";
+import { UserId, type WorkspaceId } from "@askgina/os-protocol";
 import { and, eq, inArray, isNull } from "drizzle-orm";
+import { z } from "zod";
 import { appendAudit } from "../audit.ts";
 import type { AppContext } from "../context.ts";
 import { approvals, approverCredentials, credentials, workspaces } from "../db/schema.ts";
 import { HttpError } from "../http/errors.ts";
 
 /** What happens to a membership once the last of its passkeys stops approving. */
-export type AfterRemoval = "keep" | "viewer" | "remove";
+export const AfterRemoval = z.enum(["keep", "viewer", "remove"]);
 
-export interface AddApproverDetail {
-  userId: UserId;
-  credentialId: string;
-}
+export type AfterRemoval = z.infer<typeof AfterRemoval>;
 
-export interface RemoveApproverDetail {
-  userId: UserId;
-  credentialId: string;
-  afterwards: AfterRemoval;
+/** The sealed detail of an `add-approver` request. */
+export const AddApproverDetail = z.object({ userId: UserId, credentialId: z.string() });
+
+export type AddApproverDetail = z.infer<typeof AddApproverDetail>;
+
+/** The sealed detail of a `remove-approver` request. */
+export const RemoveApproverDetail = z.object({
+  userId: UserId,
+  credentialId: z.string(),
+  afterwards: AfterRemoval,
   /**
    * The person removed the passkey itself. Its sign-in ends once no workspace's signer accepts
    * it any more: ending it earlier would leave someone unable to approve their own removal.
    */
-  revokeSignIn?: boolean;
-}
+  revokeSignIn: z.boolean().optional(),
+});
+
+export type RemoveApproverDetail = z.infer<typeof RemoveApproverDetail>;
 
 type Requester = { type: "user"; id: string };
 
@@ -150,9 +156,10 @@ export async function withdrawApprover(
       and(
         eq(approverCredentials.workspaceId, input.workspaceId),
         eq(approverCredentials.userId, input.userId),
-        ...(input.credentialIds === undefined
-          ? []
-          : [inArray(approverCredentials.credentialId, input.credentialIds)]),
+        // `and` leaves out an undefined condition.
+        input.credentialIds === undefined
+          ? undefined
+          : inArray(approverCredentials.credentialId, input.credentialIds),
       ),
     );
 

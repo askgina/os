@@ -229,7 +229,7 @@ export function policyHash(policy: WalletPolicy): Digest {
 
 /** Put a policy's sets into the one order the schema accepts. */
 export function normalizePolicy(policy: WalletPolicy): WalletPolicy {
-  return WalletPolicy.parse({
+  const normalized = {
     ...policy,
     chains: sortedUnique(policy.chains),
     requesters: sortedUnique(policy.requesters),
@@ -242,16 +242,19 @@ export function normalizePolicy(policy: WalletPolicy): WalletPolicy {
       policy.contractCalls.mode === "allowlist"
         ? { mode: "allowlist", targets: sortedUnique(policy.contractCalls.targets) }
         : policy.contractCalls,
-    ...(policy.venues?.hyperliquid === undefined
-      ? {}
-      : {
-          venues: {
-            hyperliquid: {
-              ...policy.venues.hyperliquid,
-              markets: [...policy.venues.hyperliquid.markets].sort((a, b) => a.asset - b.asset),
-              timeInForce: sortedUnique(policy.venues.hyperliquid.timeInForce),
-            },
-          },
-        }),
-  });
+  };
+
+  const hyperliquid = policy.venues?.hyperliquid;
+
+  if (hyperliquid !== undefined) {
+    normalized.venues = {
+      hyperliquid: {
+        ...hyperliquid,
+        markets: [...hyperliquid.markets].sort((a, b) => a.asset - b.asset),
+        timeInForce: sortedUnique(hyperliquid.timeInForce),
+      },
+    };
+  }
+
+  return WalletPolicy.parse(normalized);
 }

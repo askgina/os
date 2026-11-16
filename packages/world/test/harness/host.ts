@@ -2,8 +2,10 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import type { JsonValue } from "@askgina/os-keys";
 import pg from "pg";
 import { vi } from "vitest";
+import type { z } from "zod";
 
 const execFileAsync = promisify(execFile);
 
@@ -16,9 +18,11 @@ const bootstrap = fileURLToPath(new URL("../../node_modules/.bin/bootstrap", imp
 export interface Host {
   process: ChildProcess;
   output(): string;
-  call<T = Record<string, unknown>>(
+  /** POST `body` as JSON, or GET when there is none, and decode the JSON answer with `answer`. */
+  call<T>(
     path: string,
-    body?: unknown,
+    answer: z.ZodType<T>,
+    body?: JsonValue,
   ): Promise<{ status: number; json: T }>;
   kill(): Promise<void>;
 }
@@ -71,13 +75,13 @@ export async function startHost(options: {
   const host: Host = {
     process: child,
     output: () => output,
-    async call<T>(path: string, body?: unknown) {
+    async call<T>(path: string, answer: z.ZodType<T>, body?: JsonValue) {
       const response = await fetch(
         base + path,
         body === undefined ? {} : { method: "POST", body: JSON.stringify(body) },
       );
 
-      return { status: response.status, json: (await response.json()) as T };
+      return { status: response.status, json: answer.parse(await response.json()) };
     },
     async kill() {
       running.delete(host);

@@ -12,7 +12,7 @@ import {
   policyHash,
   type RenderInput,
   renderConfirmation,
-  type UserId,
+  UserId,
   type VenueIntent,
   type WalletPolicy,
 } from "@askgina/os-protocol";
@@ -20,7 +20,7 @@ import {
   CONFIRM_TOKEN_HEADER,
   createConfirmClient,
   SIGNATURE_HEADER,
-  type SignerErrorBody,
+  SignerErrorBody,
   type SignerErrorCode,
   signerErrorStatus,
   TIMESTAMP_HEADER,
@@ -80,9 +80,12 @@ function viewOf(
   approvalId: ApprovalId = newId("apr"),
   change: { possessionProven: boolean } | null = null,
 ): ConfirmationView {
+  const request =
+    change === null ? { type: "resume-workspace" } : { type: "add-approver", ...NEW_PASSKEY };
+
   const envelope = Envelope.parse({
     v: 1,
-    ...(change === null ? { type: "resume-workspace" } : { type: "add-approver", ...NEW_PASSKEY }),
+    ...request,
     approvalId,
     workspaceId: newId("ws"),
     nonce: randomBytes(16).toString("base64url"),
@@ -195,26 +198,22 @@ function orderViewOf(policy: { venues: boolean; btc: boolean }): ConfirmationVie
     contractCalls: { mode: "deny" },
     fees: { maxPerTxWei: "10000000000000000" },
     approvals: { threshold: 1, ttlSeconds: 3_600 },
-    ...(policy.venues
-      ? {
-          venues: {
-            hyperliquid: {
-              network: "hyperliquid:testnet",
-              markets: [
-                ...(policy.btc
-                  ? [{ asset: 3, coin: "BTC", maxNotionalPerOrderUsd6: "1000000000" }]
-                  : []),
-                { asset: 4, coin: "ETH", maxNotionalPerOrderUsd6: "500000000" },
-              ],
-              maxNotionalPerDayUsd6: "2000000000",
-              timeInForce: ["Gtc", "Ioc"],
-              submitWindowSeconds: 60,
-              withdrawals: false,
-            },
-          },
-        }
-      : {}),
   };
+
+  if (policy.venues) {
+    const eth = { asset: 4, coin: "ETH", maxNotionalPerOrderUsd6: "500000000" };
+    const btc = { asset: 3, coin: "BTC", maxNotionalPerOrderUsd6: "1000000000" };
+    current.venues = {
+      hyperliquid: {
+        network: "hyperliquid:testnet",
+        markets: policy.btc ? [btc, eth] : [eth],
+        maxNotionalPerDayUsd6: "2000000000",
+        timeInForce: ["Gtc", "Ioc"],
+        submitWindowSeconds: 60,
+        withdrawals: false,
+      },
+    };
+  }
 
   const envelope = Envelope.parse({
     v: 1,
@@ -333,7 +332,7 @@ function assertionFor(view: ConfirmationView) {
 }
 
 async function errorOf(response: Response): Promise<SignerErrorBody["error"]> {
-  return ((await response.json()) as SignerErrorBody).error;
+  return SignerErrorBody.parse(await response.json()).error;
 }
 
 describe("the approve service", () => {
@@ -551,10 +550,9 @@ describe("the approve service", () => {
     const oversized = `${assertion}${" ".repeat(MAX_BODY_BYTES + 1 - assertion.length)}`;
 
     for (const body of [oversized, chunked(oversized)]) {
-      const response = await app.request(
-        path,
-        withToken({ method: "POST", body, duplex: "half" } as RequestInit),
-      );
+      // Node's fetch needs `duplex` for a streamed body; the DOM's RequestInit does not list it.
+      const init: RequestInit & { duplex: "half" } = { method: "POST", body, duplex: "half" };
+      const response = await app.request(path, withToken(init));
 
       expect(response.status).toBe(413);
       expect((await errorOf(response)).code).toBe("invalid_request");
@@ -712,10 +710,17 @@ describe("the approve service", () => {
   });
 });
 
+/** The bytes of a `BufferSource` the page handed the browser. */
+function bytesOf(source: BufferSource): Buffer {
+  return ArrayBuffer.isView(source)
+    ? Buffer.from(source.buffer, source.byteOffset, source.byteLength)
+    : Buffer.from(source);
+}
+
 describe("the page's passkey code", () => {
   it("encodes the browser's assertion into exactly the JSON the signer verifies", async () => {
     const view = viewOf();
-    const userId = newId("usr") as UserId;
+    const userId = UserId.parse(newId("usr"));
     const authenticator = new SoftAuthenticator();
 
     const { credential } = authenticator.register({
@@ -726,13 +731,9 @@ describe("the page's passkey code", () => {
     const credentialId = b64url(credential.id);
     const options = requestOptions({ ...view.webauthn, allowCredentials: [credentialId] });
     // The browser is asked to sign the envelope's digest, with this person's passkey only.
-    expect(Buffer.from(options.challenge as ArrayBuffer)).toEqual(
-      Buffer.from(envelopeChallenge(view.envelope)),
-    );
+    expect(bytesOf(options.challenge)).toEqual(Buffer.from(envelopeChallenge(view.envelope)));
     expect(
-      options.allowCredentials?.map((allowed) =>
-        Buffer.from(allowed.id as ArrayBuffer).toString("base64url"),
-      ),
+      options.allowCredentials?.map((allowed) => bytesOf(allowed.id).toString("base64url")),
     ).toEqual([credentialId]);
     expect(options).toMatchObject({
       rpId: "localhost",
@@ -743,7 +744,7 @@ describe("the page's passkey code", () => {
     // What `navigator.credentials.get` hands the page: the same fields, as bytes.
     const json = authenticator.authenticate({
       credentialId,
-      challenge: Buffer.from(options.challenge as ArrayBuffer).toString("base64url"),
+      challenge: bytesOf(options.challenge).toString("base64url"),
       origin: ORIGIN,
     });
 
@@ -798,7 +799,12 @@ describe("the page's passkey code", () => {
     const workspaceId = newId("ws");
     const wallet = { walletId: newId("wal"), address: `0x${"ab".repeat(20)}` as const };
 
-    const render = (envelope: Record<string, unknown>, wallets: (typeof wallet)[]) =>
+    const render = (
+      envelope:
+        | { type: "retire-wallet"; wallet: typeof wallet }
+        | { type: "delete-workspace"; wallets: (typeof wallet)[] },
+      wallets: (typeof wallet)[],
+    ) =>
       renderConfirmation({
         envelope: Envelope.parse({
           v: 1,

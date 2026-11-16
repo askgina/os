@@ -1,15 +1,24 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { buffer } from "node:stream/consumers";
 import { ApiErrorBody, type MandateDraft, type PolicyDraft, routes } from "@askgina/os-api";
-import type { AgentId, ApprovalId, IntentId, MandateId } from "@askgina/os-protocol";
+import type { AgentId, ApprovalId, IntentId } from "@askgina/os-protocol";
 import { FakeHyperliquid } from "@askgina/os-testkit/fake-hyperliquid";
 import type { Client } from "@modelcontextprotocol/client";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { approvals, intents, venueOrders } from "../../src/db/schema.ts";
 import { engineOf } from "../../src/execution/approvals.ts";
 import { TEST_CHAIN_ID, type TestPerson } from "../support/context.ts";
-import { createFixture, draftFor, type Fixture, type TestAgent, toolJson } from "./fixture.ts";
+import {
+  createFixture,
+  draftFor,
+  type Fixture,
+  intentIdOf,
+  type TestAgent,
+  type ToolArguments,
+  toolJson,
+} from "./fixture.ts";
 
 /**
  * The testkit's fake Hyperliquid, which recovers the signer with its own encoder and keeps the
@@ -46,13 +55,10 @@ let trader: TestAgent;
 
 let client: Client;
 
-const read = async (request: IncomingMessage) => {
-  const chunks: Buffer[] = [];
+const read = async (request: IncomingMessage) => (await buffer(request)).toString("utf8");
 
-  for await (const chunk of request) chunks.push(chunk as Buffer);
-
-  return Buffer.concat(chunks).toString("utf8");
-};
+/** What `server.address()` is for a server listening on a TCP port. */
+const ListeningAddress = z.object({ port: z.number() });
 
 async function startVenue(): Promise<string> {
   server = createServer(async (request, response) => {
@@ -75,7 +81,7 @@ async function startVenue(): Promise<string> {
   server.listen(0, "127.0.0.1", resolve);
   await promise;
 
-  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return `http://127.0.0.1:${ListeningAddress.parse(server.address()).port}`;
 }
 
 /** The fixture's EVM policy plus Hyperliquid testnet rules: BTC, ETH, a renamed and a delisted market. */
@@ -100,7 +106,7 @@ function venueDraft(agentId: AgentId): PolicyDraft {
 }
 
 /** A GTC buy below the book's ask, which rests. */
-const order = (overrides: Record<string, unknown> = {}) => ({
+const order = (overrides: ToolArguments = {}) => ({
   network: "hyperliquid:testnet",
   coin: "BTC",
   side: "buy",
@@ -111,15 +117,12 @@ const order = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-async function call(name: string, args: Record<string, unknown>, as: Client = client) {
+async function call(name: string, args: ToolArguments, as: Client = client) {
   return toolJson(await as.callTool({ name, arguments: args }));
 }
 
-async function intentRow(intentId: unknown) {
-  const [row] = await f.t.ctx.db
-    .select()
-    .from(intents)
-    .where(eq(intents.id, intentId as IntentId));
+async function intentRow(intentId: IntentId) {
+  const [row] = await f.t.ctx.db.select().from(intents).where(eq(intents.id, intentId));
 
   if (!row?.approvalId) throw new Error("an intent without its approval");
 
@@ -127,14 +130,14 @@ async function intentRow(intentId: unknown) {
 }
 
 /** Propose an order, approve it on the signer's confirmation page; the request is signed, not posted. */
-async function approvedOrder(args: Record<string, unknown> = {}) {
+async function approvedOrder(args: ToolArguments = {}) {
   const answer = await call("propose_order", order(args));
   expect(answer).toMatchObject({
     authorizedBy: "person",
     mandateId: null,
     status: "pending_approval",
   });
-  const row = await intentRow(answer.intentId);
+  const row = await intentRow(intentIdOf(answer));
   const approved = await f.t.approve(row.approvalId, [f.t.owner]);
   expect(approved.status).toBe("executed");
 
@@ -143,7 +146,7 @@ async function approvedOrder(args: Record<string, unknown> = {}) {
 
 const followUp = (approvalId: ApprovalId) => engineOf(f.t.ctx).steps().followUp(approvalId);
 
-async function status(intentId: string) {
+async function status(intentId: IntentId) {
   return (await intentRow(intentId)).status;
 }
 
@@ -177,7 +180,7 @@ describe("proposing an order", () => {
   it("refuses, before any approval opens, what the policy or the venue's metadata does not allow", async () => {
     const before = await f.t.ctx.db.select({ id: approvals.id }).from(approvals);
 
-    const refused = async (args: Record<string, unknown>) => {
+    const refused = async (args: ToolArguments) => {
       const result = await client.callTool({ name: "propose_order", arguments: order(args) });
       expect(result.isError).toBe(true);
 
@@ -217,7 +220,7 @@ describe("proposing an order", () => {
       agentId: trader.id,
       assets: [
         {
-          chainId: TEST_CHAIN_ID as MandateDraft["assets"][number]["chainId"],
+          chainId: TEST_CHAIN_ID,
           asset: "native",
           maxPerAction: "1000000000000000000",
           maxPerWindow: "2000000000000000000",
@@ -237,9 +240,9 @@ describe("proposing an order", () => {
       body: draft,
     });
 
-    const granted = await f.t.approve(opened.id as ApprovalId, [bob]);
+    const granted = await f.t.approve(opened.id, [bob]);
     expect(granted.status).toBe("executed");
-    expect(granted.subjectId as MandateId).toMatch(/^mnd_/);
+    expect(granted.subjectId).toMatch(/^mnd_/);
 
     const answer = await call("propose_order", order());
     expect(answer).toMatchObject({
@@ -248,7 +251,7 @@ describe("proposing an order", () => {
       status: "pending_approval",
     });
     expect(answer.approvalUrl).toEqual(expect.any(String));
-    const row = await intentRow(answer.intentId);
+    const row = await intentRow(intentIdOf(answer));
 
     const detail = await f.t.owner.browser.api.call("getApproval", {
       params: { approvalId: row.approvalId },
@@ -469,7 +472,7 @@ describe("withdrawing from the venue", () => {
     });
 
     expect(answer).toMatchObject({ authorizedBy: "person", status: "pending_approval" });
-    const row = await intentRow(answer.intentId);
+    const row = await intentRow(intentIdOf(answer));
     expect((await f.t.approve(row.approvalId, [f.t.owner])).status).toBe("executed");
     const sent = posted("withdraw3").length;
     expect(await followUp(row.approvalId)).toEqual({ done: true, waitSeconds: 0 });
@@ -492,7 +495,7 @@ describe("withdrawing from the venue", () => {
       memo: "rebalance",
     });
 
-    const row = await intentRow(answer.intentId);
+    const row = await intentRow(intentIdOf(answer));
     expect((await f.t.approve(row.approvalId, [f.t.owner])).status).toBe("executed");
 
     return row;

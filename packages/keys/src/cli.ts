@@ -37,7 +37,21 @@ class UsageError extends Error {
   override readonly name = "UsageError";
 }
 
-function emit(line: Record<string, unknown>): void {
+/** The one JSON line a command prints: identifiers and counts, never key material. */
+type OutputLine =
+  | { event: "keys.cli.usage_error" | "keys.cli.keyring_error"; message: string }
+  | { event: "keys.cli.provider_error"; error: string; message: string }
+  | {
+      event: "keys.rewrap";
+      activeKek: string;
+      rewrapped: number;
+      failedCount: number;
+      failed: string[];
+    }
+  | { event: "keys.shred"; scope: KeyScope; id: string; shredded: boolean }
+  | { event: "keys.shred_tenant"; scope: KeyScope; tenantId: string; shredded: number };
+
+function emit(line: OutputLine): void {
   process.stdout.write(`${JSON.stringify(line)}\n`);
 }
 
@@ -53,7 +67,13 @@ function parseBatch(args: string[]): number {
   return batch;
 }
 
-function parseShred(args: string[]): { scope: KeyScope; id: string } {
+/** What `shred` and `shred-tenant` act on. */
+interface ShredTarget {
+  scope: KeyScope;
+  id: string;
+}
+
+function parseShred(args: string[]): ShredTarget {
   const [scope, id, ...rest] = args;
 
   if ((scope !== "run" && scope !== "workspace") || !id || rest.length > 0) {
@@ -91,10 +111,12 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
     provider = keyProviderFromEnv(env, { keyringFileVariable: "KEYRING_FILE" });
   } catch (error) {
     // Both kinds carry fixed messages that name variables or fields, never values.
+    if (!(error instanceof Error)) throw error;
+
     const event =
       error instanceof KeyProviderConfigError ? "keys.cli.usage_error" : "keys.cli.keyring_error";
 
-    emit({ event, message: (error as Error).message });
+    emit({ event, message: error.message });
 
     return 1;
   }

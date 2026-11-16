@@ -1,25 +1,29 @@
-import type {
-  ApprovalSubject,
-  IntentDetail,
-  IntentDisplay,
-  IntentStatus,
-  IntentSummary,
+import {
+  type ApprovalSubject,
+  type IntentDetail,
+  type IntentDisplay,
+  type IntentStatus,
+  type IntentSummary,
+  OrderDisplay,
   Simulation,
-  VenueOrderView,
-  WalletSummary,
+  TransferDisplay,
+  type VenueOrderView,
+  type WalletSummary,
 } from "@askgina/os-api";
 import {
+  Address,
   type AgentId,
   type ApprovalId,
+  AssetRef,
   type Authorization,
   type ChainId,
-  type Cloid,
+  Cloid,
   type Digest,
   EvmIntent,
   evaluateIntent,
-  type Hex,
+  Hex,
   Intent,
-  type IntentId,
+  IntentId,
   intentHash,
   intentSpend,
   isVenueIntent,
@@ -42,24 +46,28 @@ import {
 } from "@askgina/os-protocol/signer";
 import { and, count, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import { encodeFunctionData, erc20Abi, formatUnits, type Hex as ViemHex } from "viem";
+import { z } from "zod";
 import {
   ApprovalFailure,
   type ApprovalKindHandler,
   type ApprovalRow,
   type MandateUseHandler,
 } from "../approvals/kinds.ts";
-import { appendAudit } from "../audit.ts";
+import { type AuditInput, appendAudit } from "../audit.ts";
 import type { AppContext, Executor } from "../context.ts";
 import { agents, intents, venueOrders, wallets, workspaces } from "../db/schema.ts";
+import type { JsonValue } from "../db/sealed.ts";
 import { walletLifecycle } from "../directory/views.ts";
 import { HttpError } from "../http/errors.ts";
 import { approvalLink } from "../notify/content.ts";
 import { engineOf } from "./approvals.ts";
 import { ChainError, chainAccess } from "./chains.ts";
 import { findCoveringMandate } from "./mandates.ts";
+import type { RepriceOutcome } from "./repricing.ts";
 import {
   type ExecutionOptions,
   FALLBACK_GAS,
+  type FollowUpHooks,
   followUpTransaction,
   GAS_MARGIN_PERCENT,
   releaseNonce,
@@ -82,9 +90,25 @@ export interface Presentation {
 }
 
 /** What `approve-intent` and `mandate-use` keep sealed in their approval's detail. */
-interface IntentApprovalDetail {
-  intentId: IntentId;
-}
+const IntentApprovalDetail = z.object({ intentId: IntentId });
+
+type IntentApprovalDetail = z.infer<typeof IntentApprovalDetail>;
+
+/**
+ * A display as {@link recordProposal} sealed it. A token may declare any uint8 of decimals, more
+ * than the API's display admits, so reading one back admits them all; an API answer still
+ * checks the display it shows.
+ */
+const StoredDisplay = z.discriminatedUnion("kind", [
+  TransferDisplay.extend({ assetDecimals: z.number().int().min(0).max(255) }),
+  OrderDisplay,
+]);
+
+/** What {@link recordProposal} seals as an intent's presentation, its display as stored. */
+const SealedPresentation = z.object({
+  display: z.record(z.string(), z.json()),
+  simulation: Simulation.nullable(),
+});
 
 const PAGE_SIZE = 50;
 
@@ -108,11 +132,14 @@ export async function readIntent(
     ctx.sealer.open(row.workspaceId, presentationLocation(row.id), row.presentation),
   ]);
 
-  const presentation = opened as Presentation;
+  const sealed = SealedPresentation.parse(opened);
   // Displays stored before venue intents existed were all transfers and carry no `kind`.
-  const display = { kind: "transfer", ...(presentation.display as object) } as IntentDisplay;
+  const display = StoredDisplay.parse({ kind: "transfer", ...sealed.display });
 
-  return { intent: Intent.parse(intent), presentation: { ...presentation, display } };
+  return {
+    intent: Intent.parse(intent),
+    presentation: { display, simulation: sealed.simulation },
+  };
 }
 
 /** An intent that can only be an EVM one here (a transaction's, a reprice's). */
@@ -125,10 +152,12 @@ export async function readEvmIntent(ctx: AppContext, row: IntentRow): Promise<Ev
 }
 
 async function intentRow(ctx: AppContext, id: string, executor: Executor = ctx.db) {
-  const [row] = await executor
-    .select()
-    .from(intents)
-    .where(eq(intents.id, id as IntentId));
+  // A string that is no intent id names no intent, and is refused as one that does not exist.
+  const intentId = IntentId.safeParse(id);
+
+  if (!intentId.success) throw new HttpError("not_found", "no such intent");
+
+  const [row] = await executor.select().from(intents).where(eq(intents.id, intentId.data));
 
   if (!row) throw new HttpError("not_found", "no such intent");
 
@@ -150,7 +179,8 @@ async function venueOrderView(
   if (!order || order.cloid === null || order.expiresAfter === null) return null;
 
   return {
-    cloid: order.cloid as Cloid,
+    // Stored from the signer's answer, which its client parsed as a Cloid.
+    cloid: Cloid.parse(order.cloid),
     venueOrderId: order.venueOrderId,
     filledSize: order.filledSize,
     averagePrice: order.averagePrice,
@@ -241,6 +271,8 @@ export async function listIntentRows(
 
     if (!id || !Number.isSafeInteger(time)) throw new HttpError("invalid_request", "bad cursor");
 
+    // SAFETY: the cursor's id is only compared with `<` against intents.id to order the page;
+    // any string orders, and one that names no intent still starts the page there.
     const before = or(
       lt(intents.createdAt, new Date(time)),
       and(eq(intents.createdAt, new Date(time)), lt(intents.id, id as IntentId)),
@@ -276,31 +308,31 @@ export async function moveIntent(
   row: Pick<IntentRow, "id" | "workspaceId">,
   from: readonly IntentRow["status"][],
   to: IntentRow["status"],
-  extra: { failureCode?: string; executor?: Executor } = {},
+  extra: { failureCode?: string | undefined; executor?: Executor } = {},
 ): Promise<boolean> {
   const write = async (executor: Executor) => {
+    const changes: Partial<IntentRow> = { status: to, updatedAt: new Date(ctx.now() * 1000) };
+
+    const event: AuditInput = {
+      workspaceId: row.workspaceId,
+      actor: { type: "system", id: null },
+      action: `intent.${to}`,
+      subject: { type: "intent", id: row.id },
+    };
+
+    if (extra.failureCode !== undefined) {
+      changes.failureCode = extra.failureCode;
+      event.detail = { code: extra.failureCode };
+    }
+
     const [updated] = await executor
       .update(intents)
-      .set({
-        status: to,
-        updatedAt: new Date(ctx.now() * 1000),
-        ...(extra.failureCode === undefined ? {} : { failureCode: extra.failureCode }),
-      })
+      .set(changes)
       .where(and(eq(intents.id, row.id), inArray(intents.status, [...from])))
       .returning({ id: intents.id });
 
     if (!updated) return false;
-    await appendAudit(
-      ctx,
-      {
-        workspaceId: row.workspaceId,
-        actor: { type: "system", id: null },
-        action: `intent.${to}`,
-        subject: { type: "intent", id: row.id },
-        ...(extra.failureCode === undefined ? {} : { detail: { code: extra.failureCode } }),
-      },
-      executor,
-    );
+    await appendAudit(ctx, event, executor);
 
     return true;
   };
@@ -402,11 +434,11 @@ export async function proposalBasis(
     throw new HttpError("conflict", "this workspace is paused", "workspace_paused");
   }
 
-  const state = await ctx.signer.getWallet(wallet.id).catch((error: unknown) => {
+  const state = await ctx.signer.getWallet(wallet.id).catch((cause: unknown) => {
     throw new HttpError(
       "internal",
       "the signer could not be reached",
-      error instanceof SignerError ? error.code : undefined,
+      cause instanceof SignerError ? cause.code : undefined,
     );
   });
 
@@ -636,12 +668,12 @@ async function propose(
     return { ...built, simulated, fees: await chains.fees(chainId) };
   };
 
-  const { operation, display, simulated, fees } = await read().catch((error: unknown) => {
-    if (error instanceof ChainError) {
-      throw new HttpError("internal", "the chain could not be read", error.code);
+  const { operation, display, simulated, fees } = await read().catch((cause: unknown) => {
+    if (cause instanceof ChainError) {
+      throw new HttpError("internal", "the chain could not be read", cause.code);
     }
 
-    throw error;
+    throw cause;
   });
 
   const gas = ((simulated.gasEstimate ?? FALLBACK_GAS) * GAS_MARGIN_PERCENT) / 100n;
@@ -694,8 +726,8 @@ export function proposeTransfer(
     mandateId?: MandateId | undefined;
   },
 ): Promise<ProposalResult> {
-  const to = input.to.toLowerCase() as `0x${string}`;
-  const asset = (input.asset ?? "native").toLowerCase() as "native" | `0x${string}`;
+  const to = Address.parse(input.to.toLowerCase());
+  const asset = AssetRef.parse((input.asset ?? "native").toLowerCase());
 
   return propose(ctx, agent, {
     chainId: input.chainId,
@@ -767,8 +799,8 @@ export function proposeContractCall(
     walletId?: WalletId | undefined;
   },
 ): Promise<ProposalResult> {
-  const to = input.to.toLowerCase() as `0x${string}`;
-  const data = input.data.toLowerCase() as `0x${string}`;
+  const to = Address.parse(input.to.toLowerCase());
+  const data = Hex.parse(input.data.toLowerCase());
   const value = BigInt(input.valueWei ?? "0");
 
   return propose(ctx, agent, {
@@ -875,7 +907,7 @@ async function executeIntent(
 }
 
 /** Asks for a reprice of an approval's transaction when one is due (`repricing.ts`). */
-export type Reprice = (ctx: AppContext, approvalId: ApprovalId) => Promise<unknown>;
+export type Reprice = (ctx: AppContext, approvalId: ApprovalId) => Promise<RepriceOutcome>;
 
 /** The approval page's section for a venue intent. */
 export type VenueSubject = Extract<ApprovalSubject, { kind: "approve-intent" }>["venue"];
@@ -926,51 +958,70 @@ async function followUpIntent(
   const intent = await intentRow(ctx, transaction.intentId);
   const sent: IntentRow["status"][] = ["broadcast", "stuck", "signed"];
 
-  return followUpTransaction(ctx, approval, transaction, options, {
-    ...(ctx.config.reprice.auto ? { reprice: () => reprice(ctx, approval.id) } : {}),
+  const hooks: FollowUpHooks = {
     async moved(status, tx, { cancelAttempted }) {
       switch (status) {
         case "rejected":
           // Never accepted and no longer offered: its nonce is free again for this wallet.
-          return moveIntent(ctx, intent, ["signed"], "failed", {
+          await moveIntent(ctx, intent, ["signed"], "failed", {
             failureCode: "broadcast_rejected",
             executor: tx,
           });
+
+          return;
         case "broadcast":
-          return moveIntent(ctx, intent, ["signed"], "broadcast", { executor: tx });
+          await moveIntent(ctx, intent, ["signed"], "broadcast", { executor: tx });
+
+          return;
         case "stuck":
-          return moveIntent(ctx, intent, ["broadcast"], "stuck", { executor: tx });
+          await moveIntent(ctx, intent, ["broadcast"], "stuck", { executor: tx });
+
+          return;
         case "confirmed":
         case "reverted":
-          return moveIntent(ctx, intent, sent, status, {
+          await moveIntent(ctx, intent, sent, status, {
             executor: tx,
-            ...(cancelAttempted ? { failureCode: "cancel_too_late" } : {}),
+            failureCode: cancelAttempted ? "cancel_too_late" : undefined,
           });
+
+          return;
         case "cancelled":
-          return moveIntent(ctx, intent, sent, "voided", {
+          await moveIntent(ctx, intent, sent, "voided", {
             failureCode: "transaction_cancelled",
             executor: tx,
           });
+
+          return;
         case "superseded":
-          return moveIntent(ctx, intent, sent, "failed", {
+          await moveIntent(ctx, intent, sent, "failed", {
             failureCode: "nonce_used_elsewhere",
             executor: tx,
           });
+
+          return;
         case "signed":
-          return false;
+          return;
       }
     },
-  });
+  };
+
+  if (ctx.config.reprice.auto) {
+    hooks.reprice = async () => {
+      await reprice(ctx, approval.id);
+    };
+  }
+
+  return followUpTransaction(ctx, approval, transaction, options, hooks);
 }
 
 export function approveIntentKind(venue: VenueHooks): ApprovalKindHandler<"approve-intent"> {
   return {
     kind: "approve-intent",
     async title(ctx, _approval, detail) {
-      return intentTitle(ctx, await intentRow(ctx, (detail as IntentApprovalDetail).intentId));
+      return intentTitle(ctx, await intentRow(ctx, IntentApprovalDetail.parse(detail).intentId));
     },
     async describe(ctx, _approval, detail) {
-      const row = await intentRow(ctx, (detail as IntentApprovalDetail).intentId);
+      const row = await intentRow(ctx, IntentApprovalDetail.parse(detail).intentId);
 
       const [intent, wallet] = await Promise.all([
         intentDetail(ctx, row),
@@ -1007,13 +1058,14 @@ export function approveIntentKind(venue: VenueHooks): ApprovalKindHandler<"appro
       return { kind: "approve-intent", intent, wallet, limits, venue: null };
     },
     async confirmationSubject(ctx, _approval, detail) {
-      const row = await intentRow(ctx, (detail as IntentApprovalDetail).intentId);
+      const row = await intentRow(ctx, IntentApprovalDetail.parse(detail).intentId);
       const { intent } = await readIntent(ctx, row);
 
       return { kind: "approve-intent", intent };
     },
     async execute(ctx, approval, authorization, detail) {
-      const row = await intentRow(ctx, (detail as IntentApprovalDetail).intentId);
+      const parsed = IntentApprovalDetail.parse(detail);
+      const row = await intentRow(ctx, parsed.intentId);
       const { intent } = await readIntent(ctx, row);
 
       if (isVenueIntent(intent)) {
@@ -1022,7 +1074,7 @@ export function approveIntentKind(venue: VenueHooks): ApprovalKindHandler<"appro
         return;
       }
 
-      await executeIntent(ctx, approval, detail as IntentApprovalDetail, (evm, transaction) =>
+      await executeIntent(ctx, approval, parsed, (evm, transaction) =>
         ctx.signer.sign({ intent: evm, authorization, transaction }),
       );
     },
@@ -1043,7 +1095,7 @@ export function mandateUseKind(): MandateUseHandler {
       const { mandateId } = use;
 
       if (mandateId === null) throw new Error("a mandate use without its mandate");
-      await executeIntent(ctx, use, detail as IntentApprovalDetail, (intent, transaction) =>
+      await executeIntent(ctx, use, IntentApprovalDetail.parse(detail), (intent, transaction) =>
         ctx.signer.signUnderMandate(mandateId, { approvalId: use.id, intent, transaction }),
       );
     },
@@ -1056,11 +1108,11 @@ async function abandonIntent(
   ctx: AppContext,
   approval: ApprovalRow,
   status: "rejected" | "expired" | "cancelled" | "failed",
-  detail: unknown,
+  detail: JsonValue,
 ): Promise<void> {
   // Ended without a signature we stored: a reserved nonce goes back to the wallet.
   await releaseNonce(ctx, approval.id);
-  const row = await intentRow(ctx, (detail as IntentApprovalDetail).intentId);
+  const row = await intentRow(ctx, IntentApprovalDetail.parse(detail).intentId);
 
   if (status === "failed") {
     const code = approval.failureCode ?? "failed";
@@ -1069,8 +1121,8 @@ async function abandonIntent(
     // `policy_denied` and `mandate_denied`, means it was refused, not that something broke.
     const refused =
       code === "policy_denied" ||
-      (POLICY_DENY_CODES as readonly string[]).includes(code) ||
-      (MANDATE_DENY_CODES as readonly string[]).includes(code);
+      POLICY_DENY_CODES.some((denied) => denied === code) ||
+      MANDATE_DENY_CODES.some((denied) => denied === code);
 
     await moveIntent(ctx, row, ["pending_approval", "approved"], refused ? "denied" : "failed", {
       failureCode: code,

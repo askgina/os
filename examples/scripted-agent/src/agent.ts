@@ -43,8 +43,13 @@ const IntentState = z.object({
   failureCode: z.string().nullish(),
 });
 
+/** A JSON value, as the gateway's tools answer. */
+const Json = z.json();
+
+type Json = z.infer<typeof Json>;
+
 /** Statuses after which nothing more will happen to an intent. */
-const FINAL: Record<string, true> = {
+const FINAL = {
   confirmed: true,
   reverted: true,
   stuck: true,
@@ -53,7 +58,7 @@ const FINAL: Record<string, true> = {
   cancelled: true,
   denied: true,
   failed: true,
-};
+} satisfies Record<string, true>;
 
 function say(line: string): void {
   process.stdout.write(`${line}\n`);
@@ -69,14 +74,13 @@ async function main(): Promise<number> {
   );
 
   // Tools answer with JSON, both as structured content and as text.
-  const call = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
+  const call = async (name: string, args: { [arg: string]: string | number }): Promise<Json> => {
     const result = await client.callTool({ name, arguments: args });
-    const content = result.content as { type: string; text?: string }[] | undefined;
-    const text = content?.find((part) => part.type === "text")?.text ?? "";
+    const text = result.content.find((part) => part.type === "text")?.text ?? "";
 
     if (result.isError) throw new Error(`${name} was refused: ${text}`);
 
-    return result.structuredContent ?? JSON.parse(text);
+    return Json.parse(result.structuredContent ?? JSON.parse(text));
   };
 
   try {

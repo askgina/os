@@ -3,15 +3,10 @@ import type {
   PushSubscriptionSummary,
   WorkspaceNotifications,
 } from "@askgina/os-api";
-import {
-  newId,
-  type PushSubscriptionId,
-  type UserId,
-  type WorkspaceId,
-} from "@askgina/os-protocol";
+import { newId, PushSubscriptionId, type UserId } from "@askgina/os-protocol";
 import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Hono } from "hono";
-import { requireMember } from "../access.ts";
+import { requireMember, workspaceIdFromPath } from "../access.ts";
 import { appendAudit } from "../audit.ts";
 import type { AppContext } from "../context.ts";
 import {
@@ -176,11 +171,16 @@ export function registerNotify(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "removePushSubscription", async ({ session, params }) => {
+    const subscriptionId = PushSubscriptionId.safeParse(params.subscriptionId);
+
+    // A segment that is no subscription id names no device.
+    if (!subscriptionId.success) throw new HttpError("not_found", "no such device");
+
     const removed = await ctx.db
       .delete(pushSubscriptions)
       .where(
         and(
-          eq(pushSubscriptions.id, params.subscriptionId as PushSubscriptionId),
+          eq(pushSubscriptions.id, subscriptionId.data),
           eq(pushSubscriptions.userId, session.user.id),
         ),
       )
@@ -197,7 +197,7 @@ export function registerNotify(app: Hono, ctx: AppContext): void {
 
   handle(app, ctx, "setNotificationPreferences", async ({ session, body }) => {
     const userId = session.user.id;
-    const ids = body.workspaces.map((item) => item.workspaceId as WorkspaceId);
+    const ids = body.workspaces.map((item) => item.workspaceId);
 
     if (ids.length > 0) {
       const member = await ctx.db
@@ -215,7 +215,7 @@ export function registerNotify(app: Hono, ctx: AppContext): void {
         const values = { webPush: item.webPush, reminders: item.reminders };
         await tx
           .insert(notificationPreferences)
-          .values({ userId, workspaceId: item.workspaceId as WorkspaceId, ...values })
+          .values({ userId, workspaceId: item.workspaceId, ...values })
           .onConflictDoUpdate({
             target: [notificationPreferences.userId, notificationPreferences.workspaceId],
             set: values,
@@ -227,7 +227,7 @@ export function registerNotify(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "setNotificationDetail", async ({ session, params, body }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     // Only an owner: `summary` puts names on lock screens and in push services' hands.
     const role = await requireMember(ctx, session, workspaceId, "owner");
     await ctx.db.transaction(async (tx) => {

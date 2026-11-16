@@ -1,5 +1,9 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { z } from "zod";
+import { JsonObject, type JsonValue } from "./json.ts";
+
+/** A tool's arguments: JSON values; an undefined one is not sent, as `JSON.stringify` drops it. */
+export type ToolArguments = { readonly [name: string]: JsonValue | undefined };
 
 /** What `propose_transfer` takes. `mandateId` names the one mandate to use, or refuse. */
 export interface TransferProposal {
@@ -31,7 +35,7 @@ export type Proposal = z.infer<typeof Proposal>;
 export interface AgentConnection {
   tools(): Promise<string[]>;
   /** Call a tool and return its JSON result; throws with the tool's message when it refuses. */
-  call(name: string, args?: Record<string, unknown>): Promise<Record<string, unknown>>;
+  call(name: string, args?: ToolArguments): Promise<JsonObject>;
   /** Propose a transfer and return the answer, checked; throws {@link ToolRefused} when refused. */
   proposeTransfer(input: TransferProposal): Promise<Proposal>;
   close(): Promise<void>;
@@ -49,7 +53,7 @@ export class ToolRefused extends Error {
 
   constructor(text: string) {
     super(text);
-    let parsed: unknown = null;
+    let parsed: unknown;
 
     try {
       parsed = JSON.parse(text);
@@ -69,14 +73,13 @@ export async function connectAgent(mcpUrl: string, token: string): Promise<Agent
     }),
   );
 
-  const call = async (name: string, args: Record<string, unknown> = {}) => {
+  const call = async (name: string, args: ToolArguments = {}) => {
     const result = await client.callTool({ name, arguments: args });
-    const content = result.content as { type: string; text?: string }[] | undefined;
-    const text = content?.find((part) => part.type === "text")?.text ?? "";
+    const text = result.content.find((part) => part.type === "text")?.text ?? "";
 
     if (result.isError) throw new ToolRefused(text);
 
-    return (result.structuredContent ?? JSON.parse(text)) as Record<string, unknown>;
+    return JsonObject.parse(result.structuredContent ?? JSON.parse(text));
   };
 
   return {

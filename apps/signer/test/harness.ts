@@ -43,7 +43,13 @@ import {
   SoftAuthenticator,
 } from "@askgina/os-protocol/testing";
 import { expect } from "vitest";
-import { createSigner, createTestVault, type Signer, type Vault } from "../src/index.ts";
+import {
+  createSigner,
+  createTestVault,
+  type Signer,
+  type SignerOptions,
+  type Vault,
+} from "../src/index.ts";
 
 /** The RP ID passkeys are registered under. */
 export const RP_ID = "localhost";
@@ -81,10 +87,7 @@ export const CONFIRMATION_SETTINGS = {
  * Write a signer process's confirmation files into `dir` and return the environment that names
  * them, with the test origins.
  */
-export function confirmationEnvironment(
-  dir: string,
-  confirmSecret: Uint8Array = randomBytes(32),
-): Record<string, string> {
+export function confirmationEnvironment(dir: string, confirmSecret: Uint8Array = randomBytes(32)) {
   const files = {
     SIGNER_CONFIRM_SECRET_FILE: join(dir, "confirm-secret"),
     SIGNER_CHAINS_FILE: join(dir, "chains.json"),
@@ -216,7 +219,7 @@ export function startSigner(
   const vault = input.vault ?? createTestVault();
   const tokenKey = input.tokenKey ?? new Uint8Array(randomBytes(32));
 
-  const signer = createSigner({
+  const options: SignerOptions = {
     sqlitePath: input.sqlitePath ?? ":memory:",
     vault,
     rpId: RP_ID,
@@ -226,18 +229,24 @@ export function startSigner(
     tokenKey,
     maxIntentTtlSeconds: 3600,
     maxAdminTtlSeconds: 86_400,
-    ...(input.maxLiveMandatesPerWallet === undefined
-      ? {}
-      : { maxLiveMandatesPerWallet: input.maxLiveMandatesPerWallet }),
-    ...(input.maxTxAttempts === undefined ? {} : { maxTxAttempts: input.maxTxAttempts }),
-    ...(input.repriceWindowSeconds === undefined
-      ? {}
-      : { repriceWindowSeconds: input.repriceWindowSeconds }),
-    ...(input.minDestroyDelaySeconds === undefined
-      ? {}
-      : { minDestroyDelaySeconds: input.minDestroyDelaySeconds }),
     now: clock.now,
-  });
+  };
+
+  if (input.maxLiveMandatesPerWallet !== undefined) {
+    options.maxLiveMandatesPerWallet = input.maxLiveMandatesPerWallet;
+  }
+
+  if (input.maxTxAttempts !== undefined) options.maxTxAttempts = input.maxTxAttempts;
+
+  if (input.repriceWindowSeconds !== undefined) {
+    options.repriceWindowSeconds = input.repriceWindowSeconds;
+  }
+
+  if (input.minDestroyDelaySeconds !== undefined) {
+    options.minDestroyDelaySeconds = input.minDestroyDelaySeconds;
+  }
+
+  const signer = createSigner(options);
 
   const fetch: typeof globalThis.fetch = (url, init) =>
     Promise.resolve(signer.app.request(String(url), init));
@@ -323,8 +332,30 @@ export interface World {
   walletId: WalletId;
   agentId: AgentId;
   people: Person[];
-  address: string;
+  address: Address;
   policy: WalletPolicy;
+}
+
+function isEip1559(serialized: string): serialized is `0x02${string}` {
+  return serialized.startsWith("0x02");
+}
+
+/** A signed transaction the signer serialised, which is EIP-1559 (type 2); throws on any other. */
+export function eip1559Serialized(serialized: string): `0x02${string}` {
+  if (!isEip1559(serialized)) {
+    throw new Error(`not an EIP-1559 transaction: ${serialized.slice(0, 4)}`);
+  }
+
+  return serialized;
+}
+
+/** The world's person at `index`, of the `people` that `setUpWorld` made. */
+export function personAt(world: Pick<World, "people">, index: number): Person {
+  const person = world.people[index];
+
+  if (person === undefined) throw new Error(`the world has no person at ${index}`);
+
+  return person;
 }
 
 export async function setUpWorld(
@@ -547,11 +578,14 @@ ALTER TABLE workspaces DROP COLUMN state;
 export async function refused(call: Promise<unknown>, code: string, detail?: string) {
   const error = await call.then(
     () => null,
-    (failure: unknown) => failure,
+    (cause: unknown) => cause,
   );
 
   expect(error, `expected refusal ${code}`).toBeInstanceOf(SignerError);
-  expect((error as SignerError).code).toBe(code);
 
-  if (detail !== undefined) expect((error as SignerError).detail).toBe(detail);
+  if (!(error instanceof SignerError)) throw new Error("not a SignerError");
+
+  expect(error.code).toBe(code);
+
+  if (detail !== undefined) expect(error.detail).toBe(detail);
 }

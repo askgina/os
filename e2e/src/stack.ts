@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import { z } from "zod";
 
 const run = promisify(execFile);
 
@@ -60,6 +61,10 @@ export function signerProject(): string {
   return SPLIT ? `${stack.project}-signer` : stack.project;
 }
 
+const OPENBAO_SERVICES = OPENBAO ? ["openbao"] : [];
+
+const VENUE_SERVICES = VENUE ? ["fake-hyperliquid", "fake-hyperliquid-mainnet"] : [];
+
 /** The services `up` starts. `init` runs once and exits; the others depend on it. */
 export const SERVICES = [
   "postgres",
@@ -69,8 +74,8 @@ export const SERVICES = [
   "caddy",
   "agent-gateway",
   "anvil",
-  ...(OPENBAO ? ["openbao"] : []),
-  ...(VENUE ? ["fake-hyperliquid", "fake-hyperliquid-mainnet"] : []),
+  ...OPENBAO_SERVICES,
+  ...VENUE_SERVICES,
 ];
 
 type Side = "control" | "signer";
@@ -103,6 +108,9 @@ const SERVICE_NAMES = new Set([
 /** The state volumes of {@link VOLUMES} that live in the signer project of a split stack. */
 const SIGNER_VOLUMES = ["signer-data", "signer-secrets"];
 
+/** OpenBao's storage and the unseal key that opens it: a restored copy must find both. */
+const OPENBAO_VOLUMES = OPENBAO ? ["openbao-data", "openbao-init"] : [];
+
 /**
  * Every volume that holds state, by its name in `compose.yaml`. `approve-secrets` is not one: it
  * holds a copy of a signer secret, which `init` writes again from `signer-secrets`.
@@ -113,8 +121,7 @@ export const VOLUMES = [
   "server-secrets",
   "signer-secrets",
   "db-secrets",
-  // OpenBao's storage and the unseal key that opens it: a restored copy must find both.
-  ...(OPENBAO ? ["openbao-data", "openbao-init"] : []),
+  ...OPENBAO_VOLUMES,
 ];
 
 /**
@@ -278,19 +285,36 @@ export function execWithInput(
   return promise;
 }
 
+/** The line `cli.ts setup-token` prints last. */
+const SetupTokenAnswer = z.object({ setupToken: z.string() });
+
 /**
  * A new setup token from the operator's command, run in a server container as the README says.
  * Every call replaces the token before it.
  */
 export async function setupToken(): Promise<string> {
   const printed = await exec("server", "node", "apps/server/src/cli.ts", "setup-token");
-  const answer: unknown = JSON.parse(printed.trim().split("\n").at(-1) ?? "null");
-  const token = (answer as { setupToken?: unknown } | null)?.setupToken;
 
-  if (typeof token !== "string") throw new Error(`setup-token answered ${printed.trim()}`);
+  const answer = SetupTokenAnswer.safeParse(
+    JSON.parse(printed.trim().split("\n").at(-1) ?? "null"),
+  );
 
-  return token;
+  if (!answer.success) throw new Error(`setup-token answered ${printed.trim()}`);
+
+  return answer.data.setupToken;
 }
+
+/**
+ * What a failed `execFile` leaves on its error: the command's exit code (null when it has none,
+ * as when the command never started or was killed) and what it printed on stdout and stderr.
+ */
+export const ExecFailure = z
+  .object({
+    code: z.number().nullable().catch(null),
+    stdout: z.string().catch(""),
+    stderr: z.string().catch(""),
+  })
+  .catch({ code: null, stdout: "", stderr: "" });
 
 /**
  * The containers of one service of the stack's project, running or stopped, by name, in order:
@@ -359,13 +383,9 @@ export async function fromAgentsNetwork(
 
     return { exitCode: 0, output: stdout, diagnostics: stderr };
   } catch (error) {
-    const failure = error as { code?: number; stdout?: string; stderr?: string };
+    const failure = ExecFailure.parse(error);
 
-    return {
-      exitCode: typeof failure.code === "number" ? failure.code : 1,
-      output: failure.stdout ?? "",
-      diagnostics: failure.stderr ?? "",
-    };
+    return { exitCode: failure.code ?? 1, output: failure.stdout, diagnostics: failure.stderr };
   }
 }
 
@@ -423,6 +443,12 @@ export async function backUpInto(project: string): Promise<void> {
   await waitUntilHealthy();
 }
 
+/** The line `admin.ts fence` prints last: the fence it set, or its refusal. */
+const FenceAnswer = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), fenceAt: z.number() }),
+  z.object({ ok: z.literal(false) }),
+]);
+
 /**
  * Restore a backup made by {@link backUpInto} the way an operator restores onto a fresh machine:
  * remove the running stack, fence the restored signer before it serves (`admin.ts fence`, as the
@@ -435,10 +461,7 @@ export async function restoreFrom(project: string): Promise<number> {
   stack.project = project;
   const output = await compose("run", "--rm", "signer", "node", "src/admin.ts", "fence");
 
-  const line = JSON.parse(output.trim().split("\n").at(-1) ?? "") as {
-    ok: boolean;
-    fenceAt: number;
-  };
+  const line = FenceAnswer.parse(JSON.parse(output.trim().split("\n").at(-1) ?? ""));
 
   if (!line.ok) throw new Error("the restored signer could not be fenced");
 

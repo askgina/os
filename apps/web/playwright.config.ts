@@ -20,7 +20,7 @@ const phone = {
 
 const desktop = { viewport: { width: 1280, height: 800 } };
 
-export default defineConfig<LayoutOptions>({
+const config = defineConfig<LayoutOptions>({
   testDir: "test",
   testMatch: "**/*.e2e.ts",
   fullyParallel: false,
@@ -45,22 +45,23 @@ export default defineConfig<LayoutOptions>({
     // screen that fits only with narrow fonts fails on this machine too, not first in CI.
     { name: "phone-wide-font", use: { ...phone, colorScheme: "light", widerText: true } },
   ],
-  ...(external
-    ? {}
-    : {
-        webServer: [
-          {
-            command: "node dev/fixture-server.ts",
-            url: "http://127.0.0.1:55731/api/v1/session",
-            reuseExistingServer: false,
-            stdout: "ignore",
-          },
-          {
-            command: "bunx vite --strictPort",
-            url: `${baseURL}/`,
-            reuseExistingServer: false,
-            stdout: "ignore",
-          },
-        ],
-      }),
 });
+
+if (!external) {
+  config.webServer = [
+    {
+      command: "node dev/fixture-server.ts",
+      url: "http://127.0.0.1:55731/api/v1/session",
+      reuseExistingServer: false,
+      stdout: "ignore",
+    },
+    {
+      command: "bunx vite --strictPort",
+      url: `${baseURL}/`,
+      reuseExistingServer: false,
+      stdout: "ignore",
+    },
+  ];
+}
+
+export default config;

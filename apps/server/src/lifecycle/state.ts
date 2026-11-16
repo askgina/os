@@ -1,6 +1,7 @@
 import type { ApprovalId, WalletId, WorkspaceId } from "@askgina/os-protocol";
 import { SignerError, type WalletState, type WorkspaceState } from "@askgina/os-protocol/signer";
 import { and, eq, inArray, ne, notInArray, or, type SQL, sql } from "drizzle-orm";
+import type { ApprovalRow } from "../approvals/kinds.ts";
 import type { AppContext, Executor } from "../context.ts";
 import { approvals, mandates, transactions, wallets, workspaces } from "../db/schema.ts";
 
@@ -96,7 +97,7 @@ function aboutSubject(subject: Subject): SQL | undefined {
 export async function waitingRequests(
   ctx: Pick<AppContext, "db">,
   subject: Subject,
-  options: { except?: ApprovalId; keep?: readonly string[] } = {},
+  options: { except?: ApprovalId; keep?: readonly ApprovalRow["kind"][] } = {},
 ): Promise<{ id: ApprovalId; workspaceId: WorkspaceId }[]> {
   return ctx.db
     .select({ id: approvals.id, workspaceId: approvals.workspaceId })
@@ -108,7 +109,7 @@ export async function waitingRequests(
         options.except === undefined ? undefined : ne(approvals.id, options.except),
         options.keep === undefined || options.keep.length === 0
           ? undefined
-          : notInArray(approvals.kind, [...options.keep] as never[]),
+          : notInArray(approvals.kind, [...options.keep]),
       ),
     );
 }
@@ -128,10 +129,10 @@ export async function cancelRequests(
   for (const row of rows) {
     if (!(await ctx.approvals.cancel(row.id))) continue;
     cancelled += 1;
-    await ctx.signer.revokeApproval(row.id, row.workspaceId).catch((error: unknown) => {
+    await ctx.signer.revokeApproval(row.id, row.workspaceId).catch((cause: unknown) => {
       ctx.log.warn("revoking a cancelled approval failed", {
         approvalId: row.id,
-        code: error instanceof SignerError ? error.code : "unreachable",
+        code: cause instanceof SignerError ? cause.code : "unreachable",
       });
     });
   }

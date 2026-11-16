@@ -1,24 +1,29 @@
 import type { DatabaseSync } from "node:sqlite";
-import { DomainTag, digestHex, type WorkspaceId } from "@askgina/os-protocol";
+import { type ApprovalId, DomainTag, digestHex, type WorkspaceId } from "@askgina/os-protocol";
 import type { SignerDecision } from "@askgina/os-protocol/signer";
 import { transaction } from "./db.ts";
 
 export interface DecisionInput {
-  workspaceId: WorkspaceId;
-  approvalId: string | null;
+  /** A workspace that exists: `appendDecision` throws for any other id. */
+  workspaceId: string;
+  approvalId: ApprovalId | null;
   action: string;
-  outcome: "allowed" | "denied";
+  outcome: SignerDecision["outcome"];
   code: string | null;
   at: number;
 }
 
+/**
+ * A `decisions` row. `appendDecision` is the only statement that inserts one, and it writes
+ * `approval_id` and `outcome` from a `DecisionInput`, so they have its types.
+ */
 type DecisionRow = {
   workspace_id: string;
   seq: number;
   at: number;
-  approval_id: string | null;
+  approval_id: ApprovalId | null;
   action: string;
-  outcome: string;
+  outcome: SignerDecision["outcome"];
   code: string | null;
   previous_hash: string | null;
   hash: string;
@@ -43,6 +48,8 @@ function entryHash(entry: Omit<DecisionRow, "hash">): string {
 type Head = { decision_seq: number; decision_hash: string | null };
 
 function readHead(db: DatabaseSync, workspaceId: string): Head | undefined {
+  // SAFETY: `workspaces` is STRICT with `decision_seq INTEGER NOT NULL` and a nullable TEXT
+  // `decision_hash` (db.ts, version 1), the two columns selected here; a missing row is undefined.
   return db
     .prepare("SELECT decision_seq, decision_hash FROM workspaces WHERE workspace_id = ?")
     .get(workspaceId) as Head | undefined;
@@ -101,21 +108,30 @@ export function listDecisions(
   after: number,
   limit: number,
 ): SignerDecision[] {
+  // SAFETY: `SELECT *` of the STRICT `decisions` table returns exactly DecisionRow's columns
+  // (db.ts, version 1), with the types its comment derives from `appendDecision`.
   const rows = db
     .prepare("SELECT * FROM decisions WHERE workspace_id = ? AND seq > ? ORDER BY seq LIMIT ?")
     .all(workspaceId, after, limit) as DecisionRow[];
 
+  // Each row's `workspace_id` equals `workspaceId`: the query selected it by that value.
   return rows.map((row) => ({
     seq: row.seq,
     at: row.at,
-    workspaceId: row.workspace_id as WorkspaceId,
-    approvalId: row.approval_id as SignerDecision["approvalId"],
+    workspaceId,
+    approvalId: row.approval_id,
     action: row.action,
-    outcome: row.outcome as SignerDecision["outcome"],
+    outcome: row.outcome,
     code: row.code,
     previousHash: row.previous_hash,
     hash: row.hash,
   }));
+}
+
+export interface DecisionLogCheck {
+  ok: boolean;
+  /** The first sequence number whose row does not verify or is missing; null when `ok`. */
+  brokenAt: number | null;
 }
 
 /**
@@ -124,10 +140,9 @@ export function listDecisions(
  * detects damage and partial edits, not someone with write access who rewrites the rows and the
  * head together.
  */
-export function verifyDecisions(
-  db: DatabaseSync,
-  workspaceId: WorkspaceId,
-): { ok: boolean; brokenAt: number | null } {
+export function verifyDecisions(db: DatabaseSync, workspaceId: WorkspaceId): DecisionLogCheck {
+  // SAFETY: `SELECT *` of the STRICT `decisions` table returns exactly DecisionRow's columns
+  // (db.ts, version 1), with the types its comment derives from `appendDecision`.
   const rows = db
     .prepare("SELECT * FROM decisions WHERE workspace_id = ? ORDER BY seq")
     .all(workspaceId) as DecisionRow[];

@@ -8,8 +8,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import { expect, test } from "@playwright/test";
 import pg from "pg";
 import { formatEther } from "viem";
+import { z } from "zod";
 import { chain } from "../src/chain.ts";
 import { intentSettles, type PayingAgent, payingAgent, propose } from "../src/installation.ts";
+import { type JsonObject, JsonValue, jsonObjectLines } from "../src/json.ts";
 import { Person } from "../src/person.ts";
 import {
   compose,
@@ -38,21 +40,12 @@ let ada: Person;
 
 let payer: PayingAgent;
 
+/** The line `cli.ts setup-token` prints last; a replica that lost the race may name none. */
+const SetupTokenLine = z.object({ setupToken: z.string().optional() });
+
 /** The JSON objects one container logged, every start of it included, oldest first. */
-async function logLines(container: string): Promise<Record<string, unknown>[]> {
-  const lines: Record<string, unknown>[] = [];
-
-  for (const line of (await containerLogs(container)).split("\n")) {
-    try {
-      const parsed: unknown = JSON.parse(line);
-
-      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-        lines.push(parsed as Record<string, unknown>);
-      }
-    } catch {}
-  }
-
-  return lines;
+async function logLines(container: string): Promise<JsonObject[]> {
+  return jsonObjectLines(await containerLogs(container));
 }
 
 async function eventCount(container: string, event: string): Promise<number> {
@@ -123,7 +116,7 @@ async function mcpThroughEdge(token: string): Promise<Response> {
  * `count` agent requests, one after another, to one replica on its own port from inside its
  * container, with the Host header the edge presents. Returns each answer's status.
  */
-async function mcpInside(container: string, token: string, count: number): Promise<unknown[]> {
+async function mcpInside(container: string, token: string, count: number): Promise<JsonValue[]> {
   const script = `
     const http = require("node:http");
     const body = ${JSON.stringify(MCP_BODY)};
@@ -161,7 +154,7 @@ async function mcpInside(container: string, token: string, count: number): Promi
     script,
   );
 
-  return JSON.parse(output.trim().split("\n").at(-1) ?? "[]") as unknown[];
+  return z.array(JsonValue).parse(JSON.parse(output.trim().split("\n").at(-1) ?? "[]"));
 }
 
 test.beforeAll(async () => {
@@ -184,9 +177,7 @@ test("two replicas boot before setup and log no token; of two setup-token comman
     replicas.map(async (container) => {
       const printed = await execIn(container, "node", "apps/server/src/cli.ts", "setup-token");
 
-      const answer = JSON.parse(printed.trim().split("\n").at(-1) ?? "{}") as {
-        setupToken?: string;
-      };
+      const answer = SetupTokenLine.parse(JSON.parse(printed.trim().split("\n").at(-1) ?? "{}"));
 
       return answer.setupToken ?? "";
     }),

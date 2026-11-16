@@ -37,6 +37,8 @@ describe("readiness", () => {
 
     try {
       expect(await ready()).toEqual({ status: 200, body: { ok: true } });
+      // SAFETY: deliberately not a whole Database; `/readyz` reads the database only through
+      // `ctx.db.execute` (src/http/app.ts), which this stand-in rejects as an outage would.
       const down = { ...t.ctx, db: { execute: () => Promise.reject(new Error("down")) } as never };
       expect(await ready(down)).toEqual({ status: 503, body: { ok: false } });
     } finally {
@@ -65,13 +67,13 @@ describe("the public app never serves the Workflow delivery routes", () => {
 
     for (const path of paths) {
       for (const method of ["POST", "GET"]) {
-        const response = await app.fetch(
-          new Request(new URL(path, TEST_ORIGIN), {
-            method,
-            headers: { origin: TEST_ORIGIN, "content-type": "application/json" },
-            ...(method === "POST" ? { body: "{}" } : {}),
-          }),
-        );
+        const init: RequestInit = {
+          method,
+          headers: { origin: TEST_ORIGIN, "content-type": "application/json" },
+        };
+
+        if (method === "POST") init.body = "{}";
+        const response = await app.fetch(new Request(new URL(path, TEST_ORIGIN), init));
 
         expect(response.status, `${method} ${path}`).toBe(404);
         const body = ApiErrorBody.parse(await response.json());

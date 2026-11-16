@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type {
   Address,
+  ApprovalId,
   Authorization,
   DeleteWorkspaceEnvelope,
   Envelope,
@@ -72,7 +73,7 @@ export interface LifecycleInternals {
   maxDestroyDelaySeconds: number;
   decide<T>(
     workspaceId: string,
-    approvalId: string | null,
+    approvalId: ApprovalId | null,
     action: string,
     work: (allow: () => void) => T | Promise<T>,
   ): Promise<T>;
@@ -112,6 +113,8 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
 
   /** The wallets a deletion must name: every wallet of the workspace not destroyed, by id. */
   function walletsToDelete(workspaceId: string): WalletRow[] {
+    // SAFETY: `SELECT *` of the STRICT `wallets` table returns exactly WalletRow's columns (db.ts,
+    // versions 1 and 7), typed as WalletRow's comment (signer.ts) says.
     return db
       .prepare(
         "SELECT * FROM wallets WHERE workspace_id = ? AND state <> 'destroyed' ORDER BY wallet_id",
@@ -204,7 +207,7 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
    */
   function destroyKey(wallet: WalletRow, destroyAfter: number): void {
     try {
-      internals.vault.destroyWallet(wallet.wallet_id as WalletId);
+      internals.vault.destroyWallet(wallet.wallet_id);
     } catch (error) {
       log.error("vault destroy failed", {
         walletId: wallet.wallet_id,
@@ -235,6 +238,8 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
    * emptied values do not stay readable in the log.
    */
   function checkpoint(): void {
+    // SAFETY: `PRAGMA wal_checkpoint` returns one row of three integer columns, `busy` first, read
+    // as numbers because the statement does not set `readBigInts`.
     const result = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as
       | { busy: number }
       | undefined;
@@ -430,7 +435,7 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
         for (const wallet of walletsToDelete(workspaceId)) {
           destroyKey(wallet, workspace.destroy_after);
           appendDecision(db, {
-            workspaceId: workspaceId as WorkspaceId,
+            workspaceId,
             approvalId: null,
             action: LIFECYCLE_ACTIONS.destroy,
             outcome: "allowed",
@@ -500,7 +505,7 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
 
         allow();
 
-        return { address: wallet.address as Address, secret };
+        return { address: wallet.address, secret };
       }),
     );
   }

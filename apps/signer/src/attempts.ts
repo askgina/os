@@ -1,6 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
-  type Address,
   type ApprovalId,
   type Authorization,
   type CancelTarget,
@@ -34,7 +33,7 @@ import { transaction } from "./db.ts";
 import { SignerFailure } from "./errors.ts";
 import { readFence } from "./fence.ts";
 import type { Logger } from "./log.ts";
-import type { ApprovalRow, WalletRow, WorkspaceRow } from "./signer.ts";
+import type { ApprovalRow, SignedTransaction, WalletRow, WorkspaceRow } from "./signer.ts";
 import type { EvmTransaction } from "./vault.ts";
 
 /**
@@ -65,18 +64,28 @@ export const ATTEMPT_ACTIONS = { reprice: "reprice", cancel: "cancel-transaction
 /** What a cancel costs: a plain transfer, the same on every EVM chain. */
 const CANCEL_GAS = 21_000n;
 
+/**
+ * A `signatures` row (STRICT, db.ts). `signAndRecord` (signer.ts) writes it from an ApprovalId,
+ * the wallet's WalletId, the intent's or sweep's ChainId, the vault's checked Hex and its
+ * keccak256; `destroyKey` (lifecycle.ts) empties `signed_transaction` to "".
+ */
 export type SignatureRow = {
-  approval_id: string;
-  wallet_id: string;
-  chain_id: string;
+  approval_id: ApprovalId;
+  wallet_id: WalletId;
+  chain_id: ChainId;
   tx_nonce: number;
-  signed_transaction: string;
-  transaction_hash: string;
+  signed_transaction: Hex | "";
+  transaction_hash: Hex;
   signed_at: number;
 };
 
+/**
+ * A `signature_attempts` row (STRICT, db.ts). `signAttempt` writes it from the SignatureRow's
+ * ApprovalId, the vault's checked Hex and its keccak256, and a cancel envelope's ApprovalId; the
+ * CHECK on `kind` admits only these two; `destroyKey` empties `signed_transaction` to "".
+ */
 type AttemptRow = {
-  approval_id: string;
+  approval_id: ApprovalId;
   attempt: number;
   kind: "reprice" | "cancel";
   tx_nonce: number;
@@ -84,19 +93,23 @@ type AttemptRow = {
   max_fee_per_gas: string;
   max_priority_fee_per_gas: string;
   fee_ceiling_wei: string;
-  cancel_approval_id: string | null;
-  signed_transaction: string;
-  transaction_hash: string;
+  cancel_approval_id: ApprovalId | null;
+  signed_transaction: Hex | "";
+  transaction_hash: Hex;
   signed_at: number;
 };
+
+/** The attempts part of an ApprovalState. */
+type ApprovalAttempts = { transactionHash: Hex | null; attempts: TransactionAttempt[] };
 
 /** One attempt with what the signer keeps beside it. */
 type AttemptRecord = {
   attempt: TransactionAttempt;
-  signedTransaction: Hex;
+  /** "" once the wallet's key was destroyed. */
+  signedTransaction: Hex | "";
   /** The ceiling a later cancel attempt is held to; null for the first signature and reprices. */
   cancelCeilingWei: string | null;
-  cancelApprovalId: string | null;
+  cancelApprovalId: ApprovalId | null;
 };
 
 /** What the attempt operations need from the signer core (`signer.ts`). */
@@ -109,7 +122,7 @@ export interface AttemptInternals {
   maxIntentTtlSeconds: number;
   decide<T>(
     workspaceId: string,
-    approvalId: string | null,
+    approvalId: ApprovalId | null,
     action: string,
     work: (allow: () => void) => T | Promise<T>,
   ): Promise<T>;
@@ -138,7 +151,7 @@ export interface AttemptInternals {
   envelopeDigest(envelope: Envelope): string;
   buildTransaction(intent: EvmIntent, params: TransactionParams): EvmTransaction;
   /** Sign with the wallet's key and check the signature; records nothing. */
-  signWith(wallet: WalletRow, unsigned: EvmTransaction): { signed: Hex; transactionHash: Hex };
+  signWith(wallet: WalletRow, unsigned: EvmTransaction): SignedTransaction;
 }
 
 /** A transaction the signer signed, without its signature: every fee field is present. */
@@ -148,16 +161,27 @@ type SignedFields = EvmTransaction & {
   maxPriorityFeePerGas: bigint;
 };
 
-function parseSigned(signed: string) {
+/** Null for bytes that are no transaction, and for "", what is left once the key is destroyed. */
+function parseSigned(signed: Hex | "") {
+  if (signed === "") return null;
+
   try {
-    return parseTransaction(signed as Hex);
+    return parseTransaction(signed);
   } catch {
     return null;
   }
 }
 
+/**
+ * `value` in lowercase. Only the part after the prefix is lowercased: the prefix is `0x` already,
+ * so this is `value.toLowerCase()`, and the result keeps the `0x…` type.
+ */
+function lowercaseHex(value: `0x${string}`): `0x${string}` {
+  return `0x${value.slice(2).toLowerCase()}`;
+}
+
 /** The transaction a stored signed one is, without its signature. */
-function unsignedOf(signed: string): SignedFields {
+function unsignedOf(signed: Hex | ""): SignedFields {
   const parsed = parseSigned(signed);
 
   if (parsed?.type !== "eip1559") throw new SignerFailure("internal");
@@ -180,11 +204,11 @@ function unsignedOf(signed: string): SignedFields {
  * What a signed transaction does, read back from its `to`, `value` and `data`: a coin transfer,
  * a token `transfer(to, amount)` that encodes back to exactly its calldata, or any other call.
  */
-export function operationOf(signed: string): Operation {
+export function operationOf(signed: Hex | ""): Operation {
   const transaction = unsignedOf(signed);
-  const to = (transaction.to ?? "0x").toLowerCase() as Address;
+  const to = lowercaseHex(transaction.to ?? "0x");
   const value = transaction.value ?? 0n;
-  const data = (transaction.data ?? "0x").toLowerCase() as Hex;
+  const data = lowercaseHex(transaction.data ?? "0x");
 
   if (data === "0x") return { type: "evm.transfer", to, valueWei: value.toString() };
 
@@ -205,7 +229,7 @@ export function operationOf(signed: string): Operation {
           return {
             type: "evm.erc20.transfer",
             token: to,
-            to: recipient.toLowerCase() as Address,
+            to: lowercaseHex(recipient),
             amount: amount.toString(),
           };
         }
@@ -222,6 +246,8 @@ export function createAttemptOperations(internals: AttemptInternals) {
   const { db, now, log } = internals;
 
   function signatureOf(approvalId: string): SignatureRow | undefined {
+    // SAFETY: `SELECT *` of the STRICT `signatures` table returns exactly SignatureRow's columns
+    // (db.ts, version 1), typed as its comment says; no row is undefined.
     return db.prepare("SELECT * FROM signatures WHERE approval_id = ?").get(approvalId) as
       | SignatureRow
       | undefined;
@@ -231,30 +257,28 @@ export function createAttemptOperations(internals: AttemptInternals) {
   function recordsOf(signature: SignatureRow): AttemptRecord[] {
     const first = unsignedOf(signature.signed_transaction);
 
-    const records: AttemptRecord[] = [
-      {
-        attempt: {
-          attempt: 0,
-          kind: "original",
-          transactionHash: signature.transaction_hash as Hex,
-          gas: String(first.gas),
-          maxFeePerGas: String(first.maxFeePerGas),
-          maxPriorityFeePerGas: String(first.maxPriorityFeePerGas),
-          signedAt: signature.signed_at,
-        },
-        signedTransaction: signature.signed_transaction as Hex,
-        cancelCeilingWei: null,
-        cancelApprovalId: null,
+    const original: AttemptRecord = {
+      attempt: {
+        attempt: 0,
+        kind: "original",
+        transactionHash: signature.transaction_hash,
+        gas: String(first.gas),
+        maxFeePerGas: String(first.maxFeePerGas),
+        maxPriorityFeePerGas: String(first.maxPriorityFeePerGas),
+        signedAt: signature.signed_at,
       },
-    ];
+      signedTransaction: signature.signed_transaction,
+      cancelCeilingWei: null,
+      cancelApprovalId: null,
+    };
 
+    // SAFETY: `SELECT *` of the STRICT `signature_attempts` table returns exactly AttemptRow's
+    // columns (db.ts, version 6), typed as its comment says.
     const rows = db
       .prepare("SELECT * FROM signature_attempts WHERE approval_id = ? ORDER BY attempt")
       .all(signature.approval_id) as AttemptRow[];
 
-    for (const row of rows) records.push(recordOf(row));
-
-    return records;
+    return [original, ...rows.map(recordOf)];
   }
 
   function recordOf(row: AttemptRow): AttemptRecord {
@@ -262,13 +286,13 @@ export function createAttemptOperations(internals: AttemptInternals) {
       attempt: {
         attempt: row.attempt,
         kind: row.kind,
-        transactionHash: row.transaction_hash as Hex,
+        transactionHash: row.transaction_hash,
         gas: row.gas,
         maxFeePerGas: row.max_fee_per_gas,
         maxPriorityFeePerGas: row.max_priority_fee_per_gas,
         signedAt: row.signed_at,
       },
-      signedTransaction: row.signed_transaction as Hex,
+      signedTransaction: row.signed_transaction,
       cancelCeilingWei: row.kind === "cancel" ? row.fee_ceiling_wei : null,
       cancelApprovalId: row.cancel_approval_id,
     };
@@ -294,6 +318,8 @@ export function createAttemptOperations(internals: AttemptInternals) {
     signature: SignatureRow;
     record: AttemptRecord;
   } | null {
+    // SAFETY: `SELECT *` of the STRICT `signature_attempts` table returns exactly AttemptRow's
+    // columns (db.ts, version 6), typed as its comment says; no row is undefined.
     const row = db
       .prepare(
         "SELECT * FROM signature_attempts WHERE cancel_approval_id = ? ORDER BY attempt LIMIT 1",
@@ -317,10 +343,13 @@ export function createAttemptOperations(internals: AttemptInternals) {
   }
 
   function responseOf(signature: SignatureRow, record: AttemptRecord): AttemptResponse {
+    // Emptied when the wallet's key was destroyed; every caller refuses a destroyed wallet first.
+    if (record.signedTransaction === "") throw new SignerFailure("wallet_retired");
+
     return {
-      approvalId: signature.approval_id as ApprovalId,
-      walletId: signature.wallet_id as WalletId,
-      from: walletOf(signature).address as Address,
+      approvalId: signature.approval_id,
+      walletId: signature.wallet_id,
+      from: walletOf(signature).address,
       attempt: record.attempt,
       signedTransaction: record.signedTransaction,
     };
@@ -366,9 +395,9 @@ export function createAttemptOperations(internals: AttemptInternals) {
     fees: { maxFeePerGas: string; maxPriorityFeePerGas: string },
   ): EvmTransaction {
     return {
-      chainId: evmChainNumber(signature.chain_id as ChainId),
+      chainId: evmChainNumber(signature.chain_id),
       nonce: signature.tx_nonce,
-      to: wallet.address as Address,
+      to: wallet.address,
       value: 0n,
       gas: CANCEL_GAS,
       maxFeePerGas: BigInt(fees.maxFeePerGas),
@@ -390,7 +419,7 @@ export function createAttemptOperations(internals: AttemptInternals) {
     kind: "reprice" | "cancel";
     unsigned: EvmTransaction;
     feeCeilingWei: string;
-    cancelApprovalId: string | null;
+    cancelApprovalId: ApprovalId | null;
   }): AttemptRecord {
     const { signature, unsigned } = input;
     const { signed, transactionHash } = internals.signWith(input.wallet, unsigned);
@@ -470,6 +499,8 @@ export function createAttemptOperations(internals: AttemptInternals) {
 
       if (hash !== request.envelope.intentHash) throw new SignerFailure("intent_mismatch");
     } else {
+      // SAFETY: `mandate_id` is a TEXT NOT NULL column of the STRICT `mandate_uses` table (db.ts,
+      // version 5), the one selected; no row is undefined.
       const use = db
         .prepare("SELECT mandate_id FROM mandate_uses WHERE approval_id = ?")
         .get(approvalId) as { mandate_id: string } | undefined;
@@ -537,6 +568,8 @@ export function createAttemptOperations(internals: AttemptInternals) {
         }
 
         if ("mandateId" in request) {
+          // SAFETY: `revoked_at` is a nullable INTEGER column of the STRICT `mandates` table
+          // (db.ts, version 5), the one selected; no row is undefined.
           const mandate = db
             .prepare("SELECT revoked_at FROM mandates WHERE mandate_id = ?")
             .get(request.mandateId) as { revoked_at: number | null } | undefined;
@@ -686,7 +719,7 @@ export function createAttemptOperations(internals: AttemptInternals) {
     };
   }
 
-  function replayedCancel(cancelApprovalId: string): AttemptResponse {
+  function replayedCancel(cancelApprovalId: ApprovalId): AttemptResponse {
     const produced = producedBy(cancelApprovalId);
 
     if (!produced) throw new SignerFailure("internal");
@@ -797,15 +830,12 @@ export function createAttemptOperations(internals: AttemptInternals) {
    * The attempts part of `GET /v1/approvals/:id`: every attempt of a signed approval, or the one
    * attempt a `cancel-transaction` approval produced with its hash.
    */
-  function approvalAttempts(approval: ApprovalRow): {
-    transactionHash: Hex | null;
-    attempts: TransactionAttempt[];
-  } {
+  function approvalAttempts(approval: ApprovalRow): ApprovalAttempts {
     if (approval.state === "signed") {
       const signature = signatureOf(approval.approval_id);
 
       return {
-        transactionHash: (signature?.transaction_hash as Hex | undefined) ?? null,
+        transactionHash: signature?.transaction_hash ?? null,
         // The signed bytes of a destroyed wallet were emptied; the first attempt's fees were
         // only in them, so no attempt is reported.
         attempts: signature?.signed_transaction === "" ? [] : attemptsOf(approval.approval_id),

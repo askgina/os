@@ -1,6 +1,5 @@
 import { statSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import type { WorkspaceId } from "@askgina/os-protocol";
 import { appendDecision } from "./decisions.ts";
 import { revokeMandatesOnFence } from "./mandates.ts";
 
@@ -31,6 +30,8 @@ const FENCE_KEY = "fence_at";
 const FILE_KEY = "database_file";
 
 function readMeta(db: DatabaseSync, key: string): string | null {
+  // SAFETY: `signer_meta` is STRICT with `value TEXT NOT NULL` (db.ts, version 2), the one column
+  // selected; no row for the key is undefined.
   const row = db.prepare("SELECT value FROM signer_meta WHERE key = ?").get(key) as
     | { value: string }
     | undefined;
@@ -62,13 +63,15 @@ export function raiseFence(db: DatabaseSync, at: number, action: string): number
   if (current !== null && current >= at) return current;
   writeMeta(db, FENCE_KEY, String(at));
 
+  // SAFETY: `workspace_id`, the one column selected, is TEXT in the STRICT `workspaces` table
+  // (db.ts, version 1), and its only INSERT (`createWorkspace`) writes the request's WorkspaceId.
   const workspaces = db
     .prepare("SELECT workspace_id FROM workspaces ORDER BY workspace_id")
     .all() as { workspace_id: string }[];
 
   for (const { workspace_id } of workspaces) {
     appendDecision(db, {
-      workspaceId: workspace_id as WorkspaceId,
+      workspaceId: workspace_id,
       approvalId: null,
       action,
       outcome: "allowed",

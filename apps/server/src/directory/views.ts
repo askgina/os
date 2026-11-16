@@ -8,7 +8,7 @@ import type {
   WorkspaceDetail,
   WorkspaceLifecycle,
 } from "@askgina/os-api";
-import { VenueNetwork, type WorkspaceId } from "@askgina/os-protocol";
+import { VenueNetwork, WalletId, type WorkspaceId } from "@askgina/os-protocol";
 import { and, asc, count, eq, ne } from "drizzle-orm";
 import type { AppContext } from "../context.ts";
 import {
@@ -74,13 +74,20 @@ export function walletSummary(
   };
 }
 
-/** A wallet of the workspace with the agent it belongs to, or `not_found`. */
+/**
+ * A wallet of the workspace with the agent it belongs to, or `not_found`. A `walletId` that is
+ * not a wallet id (a request path segment, say) names no wallet.
+ */
 export async function loadWallet(ctx: AppContext, workspaceId: WorkspaceId, walletId: string) {
+  const id = WalletId.safeParse(walletId);
+
+  if (!id.success) throw new HttpError("not_found", "no such wallet");
+
   const [row] = await ctx.db
     .select({ wallet: wallets, agentId: agents.id })
     .from(wallets)
     .leftJoin(agents, eq(agents.walletId, wallets.id))
-    .where(and(eq(wallets.id, walletId as never), eq(wallets.workspaceId, workspaceId)));
+    .where(and(eq(wallets.id, id.data), eq(wallets.workspaceId, workspaceId)));
 
   if (!row) throw new HttpError("not_found", "no such wallet");
 
@@ -184,7 +191,7 @@ export async function workspaceDetail(
     .where(eq(wallets.workspaceId, workspaceId))
     .orderBy(asc(wallets.createdAt));
 
-  return {
+  const detail: WorkspaceDetail = {
     id: workspace.id,
     name: workspace.name,
     role,
@@ -194,8 +201,6 @@ export async function workspaceDetail(
     adminThreshold: workspace.adminThreshold,
     notificationDetail: workspace.notificationDetail,
     members: await listMembers(ctx, workspaceId, role),
-    // Only owners see the passkeys that wait to approve, and the command that enrolls them.
-    ...(role === "owner" ? { signerAdminCommand: ctx.config.signerAdminCommand } : {}),
     agents: agentRows.map(agentSummary),
     wallets: walletRows.map((wallet) =>
       walletSummary(wallet, agentRows.find((agent) => agent.walletId === wallet.id)?.id ?? null),
@@ -205,4 +210,9 @@ export async function workspaceDetail(
       ctx.config.venues.some((venue) => venue.network === network),
     ),
   };
+
+  // Only owners see the passkeys that wait to approve, and the command that enrolls them.
+  if (role === "owner") detail.signerAdminCommand = ctx.config.signerAdminCommand;
+
+  return detail;
 }

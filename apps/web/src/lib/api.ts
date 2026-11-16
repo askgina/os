@@ -38,7 +38,7 @@ export const queryClient = new QueryClient({
 });
 
 /** The API's own message for a refusal; a fixed sentence for anything that never reached it. */
-export function errorMessage(error: unknown): string {
+export function errorMessage(error: Error | null): string {
   if (error instanceof ApiError) return error.message;
 
   if (error instanceof Error && error.name === "NotAllowedError") {
@@ -226,6 +226,8 @@ export const useMandates = (
 ) =>
   useInfiniteQuery({
     queryKey: keys.mandateList(workspaceId, filter, status),
+    // SAFETY: widening only: `undefined` is a `string | undefined`, the cursor type
+    // `getNextPageParam` returns (`nextCursor`) for the pages after the first.
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) =>
       api.call("listMandates", {
@@ -294,6 +296,8 @@ export const useIntents = (workspaceId: string) =>
 export const useAudit = (workspaceId: string) =>
   useInfiniteQuery({
     queryKey: keys.audit(workspaceId),
+    // SAFETY: widening only: `undefined` is a `string | undefined`, the cursor type
+    // `getNextPageParam` returns (`nextCursor`) for the pages after the first.
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) =>
       api.call("listAudit", { params: { workspaceId }, query: { cursor: pageParam } }),

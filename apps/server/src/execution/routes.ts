@@ -1,4 +1,4 @@
-import type { MandateId, WorkspaceId } from "@askgina/os-protocol";
+import { WorkspaceId } from "@askgina/os-protocol";
 import type { Hono } from "hono";
 import { requireMember } from "../access.ts";
 import type { AppContext } from "../context.ts";
@@ -18,12 +18,24 @@ import { cancelVenueOrder } from "./orders.ts";
 import { speedUpIntent } from "./repricing.ts";
 import { requestSweep } from "./sweeps.ts";
 
+/**
+ * The workspace a path names. A segment that is no workspace id names no workspace, so it is
+ * refused exactly as `requireMember` refuses a workspace the caller is not a member of.
+ */
+function workspaceParam(value: string): WorkspaceId {
+  const parsed = WorkspaceId.safeParse(value);
+
+  if (!parsed.success) throw new HttpError("not_found", "no such workspace");
+
+  return parsed.data;
+}
+
 /** The approval, intent, sweep and mandate endpoints of the contract in `@askgina/os-api`. */
 export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): void {
   const engine = engineOf(ctx);
 
   handle(app, ctx, "proposeMandate", async ({ params, body, session }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceParam(params.workspaceId);
     // Adding standing authority is an owner's call, as a policy change is; approving it takes
     // the workspace's admin threshold.
     await requireMember(ctx, session, workspaceId, "owner");
@@ -37,14 +49,14 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
   });
 
   handle(app, ctx, "listMandates", async ({ params, query, session }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceParam(params.workspaceId);
     await requireMember(ctx, session, workspaceId);
 
     return listMandates(ctx, workspaceId, query);
   });
 
   handle(app, ctx, "getMandate", async ({ params, session }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceParam(params.workspaceId);
     await requireMember(ctx, session, workspaceId);
     const { row, state } = await loadMandate(ctx, workspaceId, params.mandateId);
     const { rows, nextCursor } = await listIntentRows(ctx, { workspaceId, mandateId: row.id });
@@ -58,7 +70,7 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
 
   // Stopping a mandate only removes authority, so anyone who may approve may do it, at once.
   handle(app, ctx, "revokeMandate", async ({ params, session }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceParam(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "approver");
     const { row } = await loadMandate(ctx, workspaceId, params.mandateId);
     await revokeMandate(ctx, {
@@ -73,7 +85,7 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
   });
 
   handle(app, ctx, "requestSweep", async ({ params, body, session }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceParam(params.workspaceId);
     // Moving funds without an agent or a cap is an owner's call; approving it takes the
     // workspace's admin threshold.
     await requireMember(ctx, session, workspaceId, "owner");
@@ -87,9 +99,10 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
   });
 
   handle(app, ctx, "listApprovals", async ({ params, query, session }) => {
-    await requireMember(ctx, session, params.workspaceId as never);
+    const workspaceId = workspaceParam(params.workspaceId);
+    await requireMember(ctx, session, workspaceId);
 
-    return engine.list(params.workspaceId as never, query);
+    return engine.list(workspaceId, query);
   });
 
   // Reading a waiting request also counts the approvals made on the signer's confirmation page,
@@ -135,11 +148,12 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
   });
 
   handle(app, ctx, "listIntents", async ({ params, query, session }) => {
-    await requireMember(ctx, session, params.workspaceId as never);
+    const workspaceId = workspaceParam(params.workspaceId);
+    await requireMember(ctx, session, workspaceId);
 
     const { rows, nextCursor } = await listIntentRows(ctx, {
-      workspaceId: params.workspaceId as never,
-      mandateId: query.mandateId as MandateId | undefined,
+      workspaceId,
+      mandateId: query.mandateId,
       cursor: query.cursor,
     });
 

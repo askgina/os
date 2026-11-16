@@ -8,8 +8,11 @@ import {
 } from "@askgina/os-protocol/signer-transport";
 import { z } from "zod";
 
-/** Compose passes an unset variable as "": that is unset, not a value. */
-const blankIsUnset = (value: unknown) => (value === "" ? undefined : value);
+/** An optional variable. Compose passes an unset variable as "": that is unset, not a value. */
+const OptionalSetting = z
+  .string()
+  .optional()
+  .transform((value) => (value === "" ? undefined : value));
 
 const TLS_VARIABLES: Record<SignerTlsFile, string> = {
   cert: "APPROVE_TLS_CERT_FILE",
@@ -29,9 +32,9 @@ const Environment = z.object({
    * Mutual TLS to a signer at an `https:` SIGNER_URL: this service's certificate and key, and
    * the one certificate it accepts from the signer (PEM, `deploy/split/make-peer-certs.sh`).
    */
-  APPROVE_TLS_CERT_FILE: z.preprocess(blankIsUnset, z.string().optional()),
-  APPROVE_TLS_KEY_FILE: z.preprocess(blankIsUnset, z.string().optional()),
-  APPROVE_TLS_PEER_CERT_FILE: z.preprocess(blankIsUnset, z.string().optional()),
+  APPROVE_TLS_CERT_FILE: OptionalSetting,
+  APPROVE_TLS_KEY_FILE: OptionalSetting,
+  APPROVE_TLS_PEER_CERT_FILE: OptionalSetting,
 });
 
 export interface ApproveConfig {

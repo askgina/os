@@ -1,10 +1,10 @@
-import type {
-  ApprovalSummary,
-  InviteSummary,
-  Member,
-  PendingPasskey,
+import {
+  type ApprovalSummary,
+  type InviteSummary,
+  type Member,
+  type PendingPasskey,
   Role,
-  WorkspaceDetail,
+  type WorkspaceDetail,
 } from "@askgina/os-api";
 import { useMutation } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -171,7 +171,7 @@ function MemberRow({
             className="w-auto"
             value={member.role}
             disabled={setRole.isPending}
-            onChange={(event) => setRole.mutate(event.target.value as Role)}
+            onChange={(event) => setRole.mutate(Role.parse(event.target.value))}
           >
             {(["owner", "approver", "viewer"] as const).map((role) => (
               <option key={role} value={role}>
@@ -398,7 +398,7 @@ function InviteCard({ workspaceId, revoked }: { workspaceId: string; revoked: st
             <Select
               id="invite-role"
               value={role}
-              onChange={(event) => setRole(event.target.value as Role)}
+              onChange={(event) => setRole(Role.parse(event.target.value))}
             >
               {(["approver", "viewer", "owner"] as const).map((item) => (
                 <option key={item} value={item}>

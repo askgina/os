@@ -1,12 +1,12 @@
-import type { ApprovalKind } from "@askgina/os-api";
+import { ApprovalKind } from "@askgina/os-api";
 import {
-  type AgentId,
+  AgentId,
   type ApprovalId,
   Intent,
   isVenueNetwork,
   newId,
-  type PushSubscriptionId,
-  type UserId,
+  PushSubscriptionId,
+  UserId,
   type WorkspaceId,
 } from "@askgina/os-protocol";
 import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
@@ -384,12 +384,15 @@ async function deliverPush(
     return finish(ctx, row, lease, "dropped", { lastCode: "channel_off" });
   }
 
-  const subscriptionId = row.target.slice(PUSH_TARGET.length);
+  // A target that names no subscription id names no device.
+  const subscriptionId = PushSubscriptionId.safeParse(row.target.slice(PUSH_TARGET.length));
 
-  const [subscription] = await ctx.db
-    .select()
-    .from(pushSubscriptions)
-    .where(eq(pushSubscriptions.id, subscriptionId as PushSubscriptionId));
+  const [subscription] = subscriptionId.success
+    ? await ctx.db
+        .select()
+        .from(pushSubscriptions)
+        .where(eq(pushSubscriptions.id, subscriptionId.data))
+    : [];
 
   // Removed by its person, gone at its push service, or moved to someone else's account.
   if (!subscription || row.userId === null || subscription.userId !== row.userId) {
@@ -455,7 +458,7 @@ async function deliverPush(
           approvalId: approval.id,
           pendingCount,
           // Only kinds people decide on have push rows: a mandate's use never does.
-          kind: approval.kind as ApprovalKind,
+          kind: ApprovalKind.parse(approval.kind),
           operation: await operationOf(ctx, approval),
           workspaceName: workspace.name,
           requesterName: await requesterName(ctx, approval),
@@ -538,19 +541,28 @@ async function operationOf(
 
 /** The name of whoever asked: the agent's or the person's, as stored. */
 async function requesterName(ctx: AppContext, approval: ApprovalRow): Promise<string> {
+  // An id of the wrong form names nobody, so it has no name.
   if (approval.requestedByType === "agent") {
+    const agentId = AgentId.safeParse(approval.requestedById);
+
+    if (!agentId.success) return "";
+
     const [agent] = await ctx.db
       .select({ name: agents.name })
       .from(agents)
-      .where(eq(agents.id, approval.requestedById as AgentId));
+      .where(eq(agents.id, agentId.data));
 
     return agent?.name ?? "";
   }
 
+  const userId = UserId.safeParse(approval.requestedById);
+
+  if (!userId.success) return "";
+
   const [person] = await ctx.db
     .select({ name: users.displayName })
     .from(users)
-    .where(eq(users.id, approval.requestedById as UserId));
+    .where(eq(users.id, userId.data));
 
   return person?.name ?? "";
 }

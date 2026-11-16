@@ -1,7 +1,7 @@
-import { WalletPolicy, type WorkspaceId } from "@askgina/os-protocol";
+import type { WorkspaceId } from "@askgina/os-protocol";
 import type { MandateState } from "@askgina/os-protocol/signer";
 import { and, asc, eq } from "drizzle-orm";
-import { z } from "zod";
+import type { z } from "zod";
 import { appendAudit, openAuditSealed } from "../audit.ts";
 import type { AppContext, Session } from "../context.ts";
 import {
@@ -13,6 +13,7 @@ import {
   transactions,
   wallets,
 } from "../db/schema.ts";
+import { SetPolicyDetail } from "../directory/kinds.ts";
 import { engineOf } from "../execution/approvals.ts";
 import { readIntent } from "../execution/intents.ts";
 import { openMandate } from "../execution/mandates.ts";
@@ -27,9 +28,6 @@ import {
   type SignerDecisionLine,
   type TransactionLine,
 } from "./verify-record.ts";
-
-/** What a `set-policy` request applies: the policy people approved. */
-const SetPolicyDetail = z.object({ policy: WalletPolicy });
 
 const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
 

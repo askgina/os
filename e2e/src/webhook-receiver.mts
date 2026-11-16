@@ -46,6 +46,8 @@ async function readBody(request: IncomingMessage): Promise<string | null> {
   let size = 0;
 
   for await (const chunk of request) {
+    // SAFETY: an IncomingMessage with no encoding set yields Buffer chunks, and nothing in this
+    // file calls `setEncoding` on a request.
     const bytes = chunk as Buffer;
     size += bytes.length;
 
@@ -56,7 +58,7 @@ async function readBody(request: IncomingMessage): Promise<string | null> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function headersOf(request: IncomingMessage): Record<string, string> {
+function headersOf(request: IncomingMessage) {
   const headers: Record<string, string> = {};
 
   for (const [name, value] of Object.entries(request.headers)) {
@@ -89,7 +91,7 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === "PUT" && path === "/mode") {
-    let mode: unknown = null;
+    let mode: unknown;
 
     try {
       mode = JSON.parse(body);

@@ -1,5 +1,5 @@
 import { ApiError, ApiErrorBody, routes } from "@askgina/os-api";
-import type { AssertionResponse } from "@askgina/os-protocol";
+import { AssertionResponse } from "@askgina/os-protocol";
 import { createTestDatabase } from "@askgina/os-testkit";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -10,7 +10,14 @@ import { migrateDatabase } from "../../src/db/migrate.ts";
 import * as schema from "../../src/db/schema.ts";
 import { credentials, installation, sessions } from "../../src/db/schema.ts";
 import { checkSetupToken, prepareSetup } from "../../src/identity/setup.ts";
-import { createTestContext, TEST_ORIGIN, type TestContext } from "../support/context.ts";
+import type { LogFields } from "../../src/log.ts";
+import {
+  challengeOf,
+  createTestContext,
+  firstApproval,
+  TEST_ORIGIN,
+  type TestContext,
+} from "../support/context.ts";
 
 let t: TestContext;
 
@@ -23,14 +30,13 @@ afterAll(async () => {
 });
 
 async function refusal(promise: Promise<unknown>): Promise<string> {
-  const error = await promise.then(
-    () => null,
-    (caught: unknown) => caught,
-  );
+  try {
+    await promise;
+  } catch (caught) {
+    if (caught instanceof ApiError) return caught.code;
+  }
 
-  if (!(error instanceof ApiError)) throw new Error("expected the API to refuse");
-
-  return error.code;
+  throw new Error("expected the API to refuse");
 }
 
 describe("first-run setup", () => {
@@ -74,11 +80,14 @@ describe("first-run setup", () => {
     const pools = [0, 1].map(() => new pg.Pool({ connectionString: database.url, max: 2 }));
 
     try {
-      await migrateDatabase(pools[0] as pg.Pool);
+      const [firstPool] = pools;
+
+      if (!firstPool) throw new Error("no pool");
+      await migrateDatabase(firstPool);
       const lines: string[] = [];
 
       const log = {
-        info: (message: string, fields: object = {}) =>
+        info: (message: string, fields: LogFields = {}) =>
           lines.push(JSON.stringify({ message, ...fields })),
         warn: () => {},
         error: () => {},
@@ -151,7 +160,7 @@ describe("sessions", () => {
 
     const response = t.authenticator.authenticate({
       credentialId: t.owner.credentialId,
-      challenge: options.challenge as string,
+      challenge: challengeOf(options),
       origin: TEST_ORIGIN,
     });
 
@@ -196,11 +205,13 @@ describe("sessions", () => {
     const browser = t.browser();
     const first = await browser.api.call("startLogin", { body: {} });
 
-    const response = t.authenticator.authenticate({
-      credentialId: t.owner.credentialId,
-      challenge: first.options.challenge as string,
-      origin: TEST_ORIGIN,
-    }) as AssertionResponse;
+    const response = AssertionResponse.parse(
+      t.authenticator.authenticate({
+        credentialId: t.owner.credentialId,
+        challenge: challengeOf(first.options),
+        origin: TEST_ORIGIN,
+      }),
+    );
 
     await browser.api.call("finishLogin", { body: { ceremonyId: first.ceremonyId, response } });
     expect(
@@ -212,11 +223,13 @@ describe("sessions", () => {
     const late = await browser.api.call("startLogin", { body: {} });
     t.clock.advance(301);
 
-    const lateResponse = t.authenticator.authenticate({
-      credentialId: t.owner.credentialId,
-      challenge: late.options.challenge as string,
-      origin: TEST_ORIGIN,
-    }) as AssertionResponse;
+    const lateResponse = AssertionResponse.parse(
+      t.authenticator.authenticate({
+        credentialId: t.owner.credentialId,
+        challenge: challengeOf(late.options),
+        origin: TEST_ORIGIN,
+      }),
+    );
 
     expect(
       await refusal(
@@ -231,11 +244,13 @@ describe("sessions", () => {
     const browser = t.browser();
     const start = await browser.api.call("startLogin", { body: {} });
 
-    const response = t.authenticator.authenticate({
-      credentialId: t.owner.credentialId,
-      challenge: start.options.challenge as string,
-      origin: "https://evil.example",
-    }) as AssertionResponse;
+    const response = AssertionResponse.parse(
+      t.authenticator.authenticate({
+        credentialId: t.owner.credentialId,
+        challenge: challengeOf(start.options),
+        origin: "https://evil.example",
+      }),
+    );
 
     expect(
       await refusal(
@@ -252,7 +267,7 @@ describe("passkeys", () => {
     const added = t.register(start.options);
 
     const result = await api.call("finishAddPasskey", {
-      body: { ceremonyId: start.ceremonyId, response: added.response as never, label: "Laptop" },
+      body: { ceremonyId: start.ceremonyId, response: added.response, label: "Laptop" },
     });
 
     expect(result.passkey.label).toBe("Laptop");
@@ -290,7 +305,7 @@ describe("passkeys", () => {
     const phone = t.register(start.options);
 
     const added = await api.call("finishAddPasskey", {
-      body: { ceremonyId: start.ceremonyId, response: phone.response as never, label: "Phone" },
+      body: { ceremonyId: start.ceremonyId, response: phone.response, label: "Phone" },
     });
 
     expect(added.approvals).toHaveLength(1);
@@ -301,7 +316,7 @@ describe("passkeys", () => {
       await refusal(api.call("removePasskey", { params: { credentialId: t.owner.credentialId } })),
     ).toBe("conflict");
 
-    expect((await t.approve(added.approvals[0]?.id as never, [t.owner])).status).toBe("executed");
+    expect((await t.approve(firstApproval(added.approvals), [t.owner])).status).toBe("executed");
 
     const removal = await api.call("removePasskey", {
       params: { credentialId: t.owner.credentialId },
@@ -312,9 +327,7 @@ describe("passkeys", () => {
     await t.signIn(t.owner.credentialId);
 
     const viaPhone = { ...t.owner, credentialId: phone.credentialId };
-    expect((await t.approve(removal.approvals[0]?.id as never, [viaPhone])).status).toBe(
-      "executed",
-    );
+    expect((await t.approve(firstApproval(removal.approvals), [viaPhone])).status).toBe("executed");
     expect(await refusal(t.signIn(t.owner.credentialId))).toBe("unauthenticated");
     const atSigner = await t.ctx.signer.getWorkspace(workspace.id);
     expect(atSigner.approvers.map((a) => a.credentialId)).toEqual([phone.credentialId]);
@@ -351,11 +364,12 @@ describe("origin check", () => {
   it.each(writes)("%s refuses a write without a same-site Origin", async (_name, route) => {
     const path = route.path.replace(/:[A-Za-z]+/g, "x");
 
-    const init = {
+    const init: RequestInit = {
       method: route.method,
       headers: { "content-type": "application/json" },
-      ...(route.method === "DELETE" ? {} : { body: "{}" }),
     };
+
+    if (route.method !== "DELETE") init.body = "{}";
 
     const missing = await t.owner.browser.fetch(path, { ...init, origin: null });
     const foreign = await t.owner.browser.fetch(path, { ...init, origin: "https://evil.example" });

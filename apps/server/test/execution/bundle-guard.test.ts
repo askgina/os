@@ -83,10 +83,11 @@ describe("the workflow bundle guard", () => {
   });
 
   it("two bundles starting at once do not both get in", async () => {
-    const files = [bundle("a", "a"), bundle("b", "b")];
+    const a = bundle("a", "a");
+    const b = bundle("b", "b");
 
     const results = await Promise.allSettled(
-      Array.from({ length: 6 }, (_, i) => holdBundleLock(pool(), files[i % 2] as string, never)),
+      Array.from({ length: 6 }, (_, i) => holdBundleLock(pool(), i % 2 === 0 ? a : b, never)),
     );
 
     const held = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));

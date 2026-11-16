@@ -41,7 +41,7 @@ const RULES: HyperliquidRules = HyperliquidRules.parse({
 });
 
 function policy(venues: WalletPolicy["venues"]): WalletPolicy {
-  return {
+  const built: WalletPolicy = {
     v: 1,
     workspaceId: `ws_${ULID}1`,
     walletId: `wal_${ULID}2`,
@@ -54,8 +54,11 @@ function policy(venues: WalletPolicy["venues"]): WalletPolicy {
     contractCalls: { mode: "deny" },
     fees: { maxPerTxWei: "1000000000000000" },
     approvals: { threshold: 1, ttlSeconds: 600 },
-    ...(venues ? { venues } : {}),
   };
+
+  if (venues) built.venues = venues;
+
+  return built;
 }
 
 function order(

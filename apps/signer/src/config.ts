@@ -5,6 +5,7 @@ import { AssetLabels, ChainLabels, MANDATE_MAX_SECONDS } from "@askgina/os-proto
 import { MIN_SECRET_BYTES } from "@askgina/os-protocol/signer";
 import { z } from "zod";
 import { DEFAULT_MAX_TX_ATTEMPTS, DEFAULT_REPRICE_WINDOW_SECONDS } from "./attempts.ts";
+import type { JsonValue } from "./json.ts";
 import {
   DEFAULT_MAX_DESTROY_DELAY_SECONDS,
   DEFAULT_MIN_DESTROY_DELAY_SECONDS,
@@ -12,7 +13,9 @@ import {
 import { DEFAULT_MAX_LIVE_MANDATES_PER_WALLET, DEFAULT_MAX_MANDATE_SECONDS } from "./mandates.ts";
 
 /** Compose passes an unset variable as "": that is unset, not a value. */
-const blankIsUnset = (value: unknown) => (value === "" ? undefined : value);
+function blankIsUnset<T>(value: T): T | undefined {
+  return value === "" ? undefined : value;
+}
 
 const Environment = z.object({
   SIGNER_PORT: z.coerce.number().int().min(1).max(65_535).default(8787),
@@ -153,7 +156,13 @@ function readPem(variable: string, path: string): Buffer {
   }
 }
 
-function readCertificate(variable: string, path: string): { pem: Buffer; der: Buffer } {
+/** A certificate file as read, and its DER, for telling certificates apart. */
+interface CertificateFile {
+  pem: Buffer;
+  der: Buffer;
+}
+
+function readCertificate(variable: string, path: string): CertificateFile {
   const pem = readPem(variable, path);
 
   try {
@@ -226,7 +235,7 @@ export function certificateExpiry(tls: SignerTlsConfig, nowMs: number): Certific
   });
 }
 
-function readJson(variable: string, path: string): unknown {
+function readJson(variable: string, path: string): JsonValue {
   let text: string;
 
   try {

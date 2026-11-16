@@ -19,23 +19,58 @@ interface Shown {
   badge: number | null;
 }
 
-interface WorkerHelpers {
-  notificationFor(message: unknown, origin: string): Shown;
-  pagePath(link: unknown, origin: string): string | null;
-  clickPath(data: unknown, origin: string): string;
+/**
+ * What the tests hand the worker as a message, a link or a notification's data: anything JSON or
+ * a structured clone can hold, well-formed or not, and `undefined` for a missing field.
+ */
+type Untrusted =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | readonly Untrusted[]
+  | UntrustedObject;
+
+interface UntrustedObject {
+  readonly [key: string]: Untrusted;
 }
 
-type Listener = (event: unknown) => void;
+interface WorkerHelpers {
+  notificationFor(message: Untrusted, origin: string): Shown;
+  pagePath(link: Untrusted, origin: string): string | null;
+  clickPath(data: Untrusted, origin: string): string;
+}
+
+/** What `fire` hands the worker besides `waitUntil`: a push's data, or a pressed notification. */
+interface FiredEvent {
+  data?: { json(): Untrusted } | null;
+  notification?: { data: Untrusted; close(): void };
+}
+
+type WorkerEvent = FiredEvent & { waitUntil(promise: Promise<unknown>): void };
+
+type Listener = (event: WorkerEvent) => void;
+
+/** The options the worker shows a notification with (`ShowOptions` in the worker). */
+interface ShowOptions {
+  body: string;
+  tag: string;
+  lang: string;
+  renotify: boolean;
+  icon: string;
+  data: { path: string };
+}
 
 /** What the worker finds as `self`: the parts of a service worker's scope it uses. */
 interface WorkerStandIn {
   location: { origin: string };
   registration: {
-    showNotification: Mock<(title: string, options: unknown) => Promise<void>>;
+    showNotification: Mock<(title: string, options: ShowOptions) => Promise<void>>;
     getNotifications: Mock<() => Promise<unknown[]>>;
   };
   clients: {
-    matchAll: Mock<(options: unknown) => Promise<unknown[]>>;
+    matchAll: Mock<(options: { type: "window" }) => Promise<unknown[]>>;
     openWindow: Mock<(url: string) => Promise<null>>;
   };
   navigator: {
@@ -50,9 +85,9 @@ interface LoadedWorker {
   listeners: Map<string, Listener>;
   helpers: WorkerHelpers;
   /** Fires an event at the worker and waits for everything it handed to `waitUntil`. */
-  fire(type: string, event: Record<string, unknown>): Promise<void>;
+  fire(type: string, event: FiredEvent): Promise<void>;
   /** Presses a notification shown with `data`; returns its `close`. */
-  click(data: unknown): Promise<Mock<() => void>>;
+  click(data: Untrusted): Promise<Mock<() => void>>;
 }
 
 function loadWorker(): LoadedWorker {
@@ -62,7 +97,7 @@ function loadWorker(): LoadedWorker {
   const scope: WorkerStandIn = {
     location: { origin: ORIGIN },
     registration: {
-      showNotification: vi.fn<(title: string, options: unknown) => Promise<void>>(
+      showNotification: vi.fn<(title: string, options: ShowOptions) => Promise<void>>(
         async (title, options) => {
           notifications.push({ title, options });
         },
@@ -70,7 +105,7 @@ function loadWorker(): LoadedWorker {
       getNotifications: vi.fn<() => Promise<unknown[]>>(async () => notifications),
     },
     clients: {
-      matchAll: vi.fn<(options: unknown) => Promise<unknown[]>>(async () => []),
+      matchAll: vi.fn<(options: { type: "window" }) => Promise<unknown[]>>(async () => []),
       openWindow: vi.fn<(url: string) => Promise<null>>(async () => null),
     },
     navigator: {
@@ -82,9 +117,16 @@ function loadWorker(): LoadedWorker {
 
   const context = createContext({ self: scope, URL });
   runInContext(readFileSync(new URL("../public/sw.js", import.meta.url), "utf8"), context);
-  const helpers = context as unknown as WorkerHelpers;
 
-  async function fire(type: string, event: Record<string, unknown>): Promise<void> {
+  // The worker's top-level functions are properties of its global object, the context; node:vm
+  // types the context's properties as `any`, so naming them here gives them their types.
+  const helpers: WorkerHelpers = {
+    notificationFor: context.notificationFor,
+    pagePath: context.pagePath,
+    clickPath: context.clickPath,
+  };
+
+  async function fire(type: string, event: FiredEvent): Promise<void> {
     const pending: Promise<unknown>[] = [];
     const listener = listeners.get(type);
 
@@ -93,7 +135,7 @@ function loadWorker(): LoadedWorker {
     await Promise.all(pending);
   }
 
-  async function click(data: unknown): Promise<Mock<() => void>> {
+  async function click(data: Untrusted): Promise<Mock<() => void>> {
     const close = vi.fn<() => void>();
     await fire("notificationclick", { notification: { data, close } });
 
@@ -104,7 +146,7 @@ function loadWorker(): LoadedWorker {
 }
 
 /** The message the server sends at the `count` level (`pushMessage` in the server). */
-function declarative(fields: Record<string, unknown> = {}) {
+function declarative(fields: UntrustedObject = {}) {
   return {
     web_push: 8030,
     notification: {
@@ -223,7 +265,7 @@ describe("the worker's handlers", () => {
 });
 
 describe("notificationFor", () => {
-  const show = (message: unknown) => worker.helpers.notificationFor(message, ORIGIN);
+  const show = (message: Untrusted) => worker.helpers.notificationFor(message, ORIGIN);
 
   it("keeps a summary message's text and the reminder's shared tag", () => {
     expect(

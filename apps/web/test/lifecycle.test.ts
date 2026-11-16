@@ -126,14 +126,23 @@ describe("a waiting retirement or deletion, linked from its wallet or workspace"
   });
 
   it("finds the waiting retirement of this wallet among requests read in full", () => {
-    const wallet = (id: string) => ({ id }) as WalletSummary;
+    const wallet = (id: WalletSummary["id"]): WalletSummary => ({
+      id,
+      kind: "agent",
+      label: "Agent wallet",
+      address: "0x0000000000000000000000000000000000000001",
+      agentId: null,
+      policy: null,
+      policyHash: null,
+      lifecycle: { state: "active", destroyAfter: null },
+    });
 
     const detail = (
-      id: string,
-      walletId: string,
+      id: ApprovalDetail["id"],
+      walletId: WalletSummary["id"],
       status: ApprovalDetail["status"] = "pending",
     ): Pick<ApprovalDetail, "id" | "status" | "subject"> => ({
-      id: id as ApprovalDetail["id"],
+      id,
       status,
       subject: { kind: "retire-wallet", wallet: wallet(walletId), destroyAfter: 1 },
     });

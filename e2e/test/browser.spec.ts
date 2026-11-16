@@ -17,12 +17,27 @@ import { ApprovalDetail } from "@askgina/os-api";
 import { envelopeChallenge } from "@askgina/os-protocol";
 import { SignerErrorBody } from "@askgina/os-protocol/signer";
 import { type BrowserContext, expect, type Page, test } from "@playwright/test";
-import { createPublicClient, createTestClient, formatEther, http, parseEther } from "viem";
+import {
+  createPublicClient,
+  createTestClient,
+  formatEther,
+  http,
+  isAddress,
+  parseEther,
+} from "viem";
 import { foundry } from "viem/chains";
 import { connectAgent } from "../src/agent.ts";
 import { setupToken, stack, waitUntilHealthy } from "../src/stack.ts";
 
 test.describe.configure({ mode: "serial" });
+
+/** The fields of a WebAuthn assertion as a page script sends them, base64url-encoded. */
+interface AssertionFields {
+  clientDataJSON: string;
+  authenticatorData: string;
+  signature: string;
+  userHandle?: string;
+}
 
 const RECIPIENT = "0x00000000000000000000000000000000000b0b0b";
 
@@ -143,7 +158,12 @@ test("setup, an agent with limits, and one payment approved with a passkey in th
   // From here the agent acts, over MCP, exactly as any agent would.
   const agent = await connectAgent(`${stack.origin}/mcp`, agentToken);
   const me = await agent.call("whoami");
-  const address = /0x[0-9a-fA-F]{40}/.exec(JSON.stringify(me))?.[0] as `0x${string}`;
+  const address = /0x[0-9a-fA-F]{40}/.exec(JSON.stringify(me))?.[0];
+
+  if (address === undefined || !isAddress(address, { strict: false })) {
+    throw new Error(`whoami named no wallet address: ${JSON.stringify(me)}`);
+  }
+
   await chainAdmin.setBalance({ address, value: parseEther("1") });
   const before = await chain.getBalance({ address: RECIPIENT });
 
@@ -307,27 +327,33 @@ test("a script on the control plane's page cannot get an approval", async () => 
         .replace(/\//g, "_")
         .replace(/=+$/, "");
 
-    const credential = (await navigator.credentials.get({
+    const credential = await navigator.credentials.get({
       publicKey: {
         challenge: fromBase64Url(digest),
         rpId: location.hostname,
         userVerification: "required",
         timeout: 60_000,
       },
-    })) as PublicKeyCredential;
+    });
 
-    const answer = credential.response as AuthenticatorAssertionResponse;
+    if (!(credential instanceof PublicKeyCredential)) throw new Error("no passkey credential");
+    const answer = credential.response;
+
+    if (!(answer instanceof AuthenticatorAssertionResponse)) throw new Error("no assertion");
+
+    const signed: AssertionFields = {
+      clientDataJSON: toBase64Url(answer.clientDataJSON),
+      authenticatorData: toBase64Url(answer.authenticatorData),
+      signature: toBase64Url(answer.signature),
+    };
+
+    if (answer.userHandle) signed.userHandle = toBase64Url(answer.userHandle);
 
     return {
       id: credential.id,
       rawId: toBase64Url(credential.rawId),
       type: credential.type,
-      response: {
-        clientDataJSON: toBase64Url(answer.clientDataJSON),
-        authenticatorData: toBase64Url(answer.authenticatorData),
-        signature: toBase64Url(answer.signature),
-        ...(answer.userHandle ? { userHandle: toBase64Url(answer.userHandle) } : {}),
-      },
+      response: signed,
       clientExtensionResults: credential.getClientExtensionResults(),
     };
   }, challenge);
@@ -590,7 +616,7 @@ test("the built app serves its manifest and its service worker, and the worker a
   const manifest = await page.request.get("/manifest.webmanifest");
   expect(manifest.status()).toBe(200);
   expect(manifest.headers()["content-type"]).toContain("application/manifest+json");
-  expect((await manifest.json()) as { start_url?: string }).toMatchObject({ start_url: "/" });
+  expect(await manifest.json()).toMatchObject({ start_url: "/" });
 
   const worker = await page.request.get("/sw.js");
   expect(worker.status()).toBe(200);

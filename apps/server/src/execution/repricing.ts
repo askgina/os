@@ -2,7 +2,6 @@ import type {
   ApprovalId,
   ApproveIntentEnvelope,
   Authorization,
-  ChainId,
   EvmIntent,
   MandateId,
   UserId,
@@ -35,6 +34,7 @@ import {
   type Attempt,
   attemptsOf,
   broadcastNewest,
+  chainIdOf,
   lockAttempts,
   REPRICE_STOPPED,
   RETRYABLE_SIGNER_CODES,
@@ -405,13 +405,11 @@ async function reprice(
 
       /** Record that it asked (or found it could not), and why nothing changed if so. */
       const note = async (reason?: StuckReason) => {
-        await tx
-          .update(transactions)
-          .set({
-            repriceTriedAt: new Date(now * 1000),
-            ...(reason === undefined ? {} : { stuckReason: reason }),
-          })
-          .where(eq(transactions.approvalId, approvalId));
+        const changes: Partial<TransactionRow> = { repriceTriedAt: new Date(now * 1000) };
+
+        if (reason !== undefined) changes.stuckReason = reason;
+
+        await tx.update(transactions).set(changes).where(eq(transactions.approvalId, approvalId));
       };
 
       const [workspace] = await tx
@@ -425,7 +423,7 @@ async function reprice(
         return answer("workspace_paused");
       }
 
-      const chainId = transaction.chainId as ChainId;
+      const chainId = chainIdOf(transaction);
 
       const [wallet] = await tx
         .select({ address: wallets.address, policy: wallets.policy })
@@ -523,10 +521,10 @@ async function reprice(
         ctx.log.info("transaction repriced", { approvalId, attempt: attempt.attempt, trigger });
       };
 
-      const unavailable = async (error: unknown) => {
+      const unavailable = async (cause: unknown) => {
         ctx.log.warn("reprice failed at the signer", {
           approvalId,
-          code: error instanceof SignerError ? error.code : "unreachable",
+          code: cause instanceof SignerError ? cause.code : "unreachable",
         });
         await note();
 

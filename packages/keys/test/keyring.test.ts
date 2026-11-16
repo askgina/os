@@ -70,13 +70,14 @@ describe("LocalKeyring wrap and unwrap", () => {
     ]) {
       const error = await attempt.then(
         () => undefined,
-        (failure: unknown) => failure,
+        (cause: unknown) => cause,
       );
 
       expect(error).toBeInstanceOf(KeyProviderRefusedError);
-      expect((error as KeyProviderRefusedError).kekId).toMatch(/^k[19]$/);
-      expect((error as Error).message).not.toContain(dataKey.toString("base64"));
-      expect((error as Error).message).not.toContain("scope:id");
+      const refusal = error instanceof KeyProviderRefusedError ? error : undefined;
+      expect(refusal?.kekId).toMatch(/^k[19]$/);
+      expect(refusal?.message).not.toContain(dataKey.toString("base64"));
+      expect(refusal?.message).not.toContain("scope:id");
     }
   });
 
@@ -130,7 +131,7 @@ describe("LocalKeyring configuration", () => {
     try {
       LocalKeyring.fromFile(path);
     } catch (error) {
-      message = (error as Error).message;
+      if (error instanceof Error) message = error.message;
     }
 
     expect(message).toBe("keyring: the keyring file is not valid JSON");

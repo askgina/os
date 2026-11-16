@@ -1,4 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import type { JsonValue } from "./json.ts";
+
+export type { JsonValue } from "./json.ts";
 
 const VERSION = 1;
 
@@ -40,10 +43,11 @@ export function open(key: Uint8Array, sealed: Uint8Array, context: string): Buff
   ]);
 }
 
-export function sealJson(key: Uint8Array, value: unknown, context: string): Buffer {
+/** {@link seal} the UTF-8 bytes of `JSON.stringify(value)`. */
+export function sealJson<T>(key: Uint8Array, value: T, context: string): Buffer {
   return seal(key, Buffer.from(JSON.stringify(value), "utf8"), context);
 }
 
-export function openJson(key: Uint8Array, sealed: Uint8Array, context: string): unknown {
+export function openJson(key: Uint8Array, sealed: Uint8Array, context: string): JsonValue {
   return JSON.parse(open(key, sealed, context).toString("utf8"));
 }

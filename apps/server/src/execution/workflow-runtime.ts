@@ -7,8 +7,9 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { makeWorkerUtils } from "graphile-worker";
 import type { Pool } from "pg";
-import { resumeHook, start } from "workflow/api";
+import { resumeHook, type StartOptions, start } from "workflow/api";
 import { setWorld } from "workflow/runtime";
+import { z } from "zod";
 import type { AppContext } from "../context.ts";
 
 /**
@@ -20,6 +21,20 @@ export const GENERATED_DIR = fileURLToPath(
 );
 
 type DeliveryHandler = (request: Request) => Promise<Response>;
+
+/** The part of the bundle's `manifest.json` this server reads: the approval workflow's id. */
+const BundleManifest = z.object({
+  workflows: z.object({
+    "workflows/approval.ts": z
+      .object({ approval: z.object({ workflowId: z.string() }).optional() })
+      .optional(),
+  }),
+});
+
+/** A run's start options, with the tenant the encrypted World binds the run's key to. */
+type TenantStartOptions = Extract<StartOptions, { deploymentId?: undefined }> & {
+  [TENANT_START_OPTION]: WorkspaceId;
+};
 
 interface Generated {
   flow: DeliveryHandler;
@@ -42,15 +57,17 @@ export function loadGenerated(): Promise<Generated> {
       );
     }
 
-    const manifest = JSON.parse(manifestText) as {
-      workflows: Record<string, Record<string, { workflowId: string }>>;
-    };
-
+    const manifest = BundleManifest.parse(JSON.parse(manifestText));
     const entry = manifest.workflows["workflows/approval.ts"]?.approval;
 
     if (entry === undefined) throw new Error("the workflow bundle has no approval workflow");
+    // Imported at run time: the bundle is generated and not committed. SAFETY: flow.mjs is a
+    // route module `workflow build` writes next to the manifest read above; it exports the
+    // delivery handler `POST(request): Promise<Response>`.
     const flow = (await import(join(GENERATED_DIR, "flow.mjs"))) as { POST: DeliveryHandler };
 
+    // SAFETY: webhook.mjs is written by the same `workflow build` and exports its `POST` handler
+    // the same way flow.mjs does.
     const webhook = (await import(join(GENERATED_DIR, "webhook.mjs"))) as {
       POST: DeliveryHandler;
     };
@@ -150,10 +167,12 @@ export function workflowRuntime(ctx: AppContext): WorkflowRuntime {
     async startRun(input) {
       const { approvalWorkflowId } = await loadGenerated();
 
+      const options: TenantStartOptions = { [TENANT_START_OPTION]: input.workspaceId };
+
       const run = await start(
-        { workflowId: approvalWorkflowId } as never,
+        { workflowId: approvalWorkflowId },
         [{ approvalId: input.approvalId, expiresAt: input.expiresAt }],
-        { [TENANT_START_OPTION]: input.workspaceId } as never,
+        options,
       );
 
       return run.runId;

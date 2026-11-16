@@ -1,12 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { ApiError, type MandateDraft } from "@askgina/os-api";
-import type {
-  ApprovalId,
-  IntentId,
-  MandateId,
-  PushSubscriptionId,
-  WorkspaceId,
-} from "@askgina/os-protocol";
+import { ApiError, type MandateDraft, type PushSubscriptionInput } from "@askgina/os-api";
+import type { ApprovalId, PushSubscriptionId, WorkspaceId } from "@askgina/os-protocol";
 import type { Client } from "@modelcontextprotocol/client";
 import { asc, eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -15,8 +9,17 @@ import { PUSH_PAYLOAD_MAX_BYTES } from "../../src/notify/content.ts";
 import { deliverDueNotifications } from "../../src/notify/outbox.ts";
 import { reminderDueAt } from "../../src/notify/schedule.ts";
 import { pushTopic } from "../../src/notify/webpush/send.ts";
-import { createFixture, draftFor, type Fixture, fund, toolJson } from "../execution/fixture.ts";
 import {
+  createFixture,
+  draftFor,
+  type Fixture,
+  fund,
+  intentIdOf,
+  type ToolArguments,
+  toolJson,
+} from "../execution/fixture.ts";
+import {
+  loggedLines,
   TEST_CHAIN_ID,
   TEST_ORIGIN,
   type TestBrowser,
@@ -60,6 +63,15 @@ const devices = new Map<string, BrowserKeys>();
 /** Subscription ids by device name. */
 const ids = new Map<string, PushSubscriptionId>();
 
+/** The id of the subscription {@link subscribe} added as device `name`. */
+function subscriptionId(name: string): PushSubscriptionId {
+  const id = ids.get(name);
+
+  if (id === undefined) throw new Error(`no subscription for device ${name}`);
+
+  return id;
+}
+
 /** Join `workspaceId` through an invite with a new passkey; an approver's passkey is not added. */
 async function join(workspaceId: WorkspaceId, displayName: string, role: "viewer" | "approver") {
   const invite = await f.t.owner.browser.api.call("createInvite", {
@@ -79,7 +91,7 @@ async function join(workspaceId: WorkspaceId, displayName: string, role: "viewer
 
   const session = await browser.api.call("finishInviteRegistration", {
     params: { token },
-    body: { ceremonyId: start.ceremonyId, response: passkey.response as never },
+    body: { ceremonyId: start.ceremonyId, response: passkey.response },
   });
 
   if (session.user === null) throw new Error("invite registration did not sign in");
@@ -116,14 +128,15 @@ beforeEach(async () => {
 });
 
 async function refusal(promise: Promise<unknown>) {
-  const error = await promise.then(
-    () => null,
-    (caught: unknown) => caught,
-  );
+  try {
+    await promise;
+  } catch (caught) {
+    if (caught instanceof ApiError) {
+      return { code: caught.code, status: caught.status, detail: caught.detail };
+    }
+  }
 
-  if (!(error instanceof ApiError)) throw new Error("expected the API to refuse");
-
-  return { code: error.code, status: error.status, detail: error.detail };
+  throw new Error("expected the API to refuse");
 }
 
 /** Turn notifications on for this browser as device `name`, keeping its keys to read pushes. */
@@ -131,15 +144,15 @@ async function subscribe(browser: TestBrowser, name: string, label?: string) {
   const { ua, keys } = await browserSubscription(`${service.origin}/push/${name}`);
   devices.set(`/push/${name}`, ua);
 
-  const added = await browser.api.call("addPushSubscription", {
-    body: {
-      endpoint: keys.endpoint,
-      keys: { p256dh: keys.p256dh, auth: keys.auth },
-      ...(label === undefined ? {} : { label }),
-    },
-  });
+  const body: PushSubscriptionInput = {
+    endpoint: keys.endpoint,
+    keys: { p256dh: keys.p256dh, auth: keys.auth },
+  };
 
-  ids.set(name, added.id as PushSubscriptionId);
+  if (label !== undefined) body.label = label;
+  const added = await browser.api.call("addPushSubscription", { body });
+
+  ids.set(name, added.id);
 
   return added;
 }
@@ -151,7 +164,7 @@ async function openAdmin(workspaceId: WorkspaceId, adminThreshold = 1): Promise<
     body: { adminThreshold },
   });
 
-  return opened.id as ApprovalId;
+  return opened.id;
 }
 
 const rowsOf = (approvalId: ApprovalId) =>
@@ -195,22 +208,20 @@ async function agentWith(name: string, ttlSeconds = 3_600) {
   return { agent, client: await f.mcp(agent.token) };
 }
 
-async function propose(client: Client, args: Record<string, unknown>) {
+async function propose(client: Client, args: ToolArguments) {
   const answer = toolJson(await client.callTool({ name: "propose_transfer", arguments: args }));
-
-  if (typeof answer.intentId !== "string") throw new Error(JSON.stringify(answer));
 
   const [row] = await f.t.ctx.db
     .select()
     .from(intents)
-    .where(eq(intents.id, answer.intentId as IntentId));
+    .where(eq(intents.id, intentIdOf(answer)));
 
   if (!row?.approvalId) throw new Error("an intent without its approval or use");
 
   return { answer, approvalId: row.approvalId };
 }
 
-const randomAddress = () => `0x${randomBytes(20).toString("hex")}` as `0x${string}`;
+const randomAddress = (): `0x${string}` => `0x${randomBytes(20).toString("hex")}`;
 
 /** A payment proposal whose amount, recipient and memo are markers no notification may carry. */
 async function markedPayment(client: Client) {
@@ -435,7 +446,7 @@ describe("devices that get notifications", () => {
       agentId: agent.id,
       assets: [
         {
-          chainId: TEST_CHAIN_ID as MandateDraft["assets"][number]["chainId"],
+          chainId: TEST_CHAIN_ID,
           asset: "native",
           maxPerAction: ETH.toString(),
           maxPerWindow: (2n * ETH).toString(),
@@ -456,10 +467,8 @@ describe("devices that get notifications", () => {
     });
 
     // A grant is decided by people, so their devices hear about it.
-    expect(await targetsOf(grant.id as ApprovalId)).toContain(
-      `approval.opened ${pushTarget("bob-phone")}`,
-    );
-    const granted = await f.t.approve(grant.id as ApprovalId, [bob]);
+    expect(await targetsOf(grant.id)).toContain(`approval.opened ${pushTarget("bob-phone")}`);
+    const granted = await f.t.approve(grant.id, [bob]);
     expect(granted.status).toBe("executed");
 
     const { answer, approvalId: useId } = await propose(client, {
@@ -469,7 +478,7 @@ describe("devices that get notifications", () => {
       memo: "covered",
     });
 
-    expect(answer).toMatchObject({ mandateId: granted.subjectId as MandateId, approvalUrl: null });
+    expect(answer).toMatchObject({ mandateId: granted.subjectId, approvalUrl: null });
     expect(await targetsOf(useId)).toEqual(["mandate.used webhook"]);
     await deliverDueNotifications(f.t.ctx);
     expect(await pushesFor(useId)).toEqual([]);
@@ -518,7 +527,7 @@ describe("a push notification", () => {
     const [phone] = await f.t.ctx.db
       .select()
       .from(pushSubscriptions)
-      .where(eq(pushSubscriptions.id, ids.get("owner-phone") as PushSubscriptionId));
+      .where(eq(pushSubscriptions.id, subscriptionId("owner-phone")));
 
     expect(phone?.lastSuccessAt).toEqual(new Date(f.t.clock.now() * 1000));
     expect(phone?.failureCount).toBe(0);
@@ -585,7 +594,7 @@ describe("a push notification", () => {
 
   it("logs identifiers and codes only: never where a device is reached or its keys", async () => {
     const stored = await f.t.ctx.db.select().from(pushSubscriptions);
-    const lines = f.t.log.lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    const lines = loggedLines(f.t.log);
 
     const pushLines = lines.filter(
       (line) => String(line.message).startsWith("notification ") && line.target === "push",
@@ -694,7 +703,7 @@ describe("one device's notifications", () => {
     const [failing] = await f.t.ctx.db
       .select()
       .from(pushSubscriptions)
-      .where(eq(pushSubscriptions.id, ids.get("dana-phone") as PushSubscriptionId));
+      .where(eq(pushSubscriptions.id, subscriptionId("dana-phone")));
 
     expect(failing?.failureCount).toBe(1);
     f.t.clock.advance(10);
@@ -704,7 +713,7 @@ describe("one device's notifications", () => {
     const [recovered] = await f.t.ctx.db
       .select()
       .from(pushSubscriptions)
-      .where(eq(pushSubscriptions.id, ids.get("dana-phone") as PushSubscriptionId));
+      .where(eq(pushSubscriptions.id, subscriptionId("dana-phone")));
 
     expect(recovered?.failureCount).toBe(0);
     expect(recovered?.lastSuccessAt).toEqual(new Date(f.t.clock.now() * 1000));

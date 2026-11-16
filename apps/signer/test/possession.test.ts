@@ -22,6 +22,7 @@ import {
   newPerson,
   ORIGIN,
   type Person,
+  personAt,
   RP_ID,
   refused,
   setUpWorld,
@@ -69,7 +70,7 @@ describe("proof of possession of a new approver's passkey", () => {
   it("an approver change is refused until possession is proven", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
-    const [alice] = world.people as [Person];
+    const alice = personAt(world, 0);
     const carol = newPerson();
     const envelope = addApprover(world, carol.credential);
     const id = envelope.approvalId;
@@ -152,7 +153,7 @@ describe("proof of possession of a new approver's passkey", () => {
   it("a passkey other than the envelope's cannot prove possession", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
-    const [alice] = world.people as [Person];
+    const alice = personAt(world, 0);
     const carol = newPerson();
     const mallory = newPerson();
     const envelope = addApprover(world, carol.credential);
@@ -255,7 +256,7 @@ describe("proof of possession of a new approver's passkey", () => {
     for (const [where, overrides] of elsewhere) {
       const code = await attempt(overrides).then(
         () => "accepted",
-        (error: unknown) => (error instanceof SignerError ? error.code : String(error)),
+        (cause: unknown) => (cause instanceof SignerError ? cause.code : String(cause)),
       );
 
       outcomes.push([where, code]);
@@ -302,7 +303,7 @@ describe("proof of possession of a new approver's passkey", () => {
       t.confirm.submitPossession(
         payment.approvalId,
         paymentToken,
-        approvalOf(world.people[0] as Person, payment),
+        approvalOf(personAt(world, 0), payment),
       ),
       "not_found",
     );

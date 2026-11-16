@@ -1,5 +1,5 @@
 import { MandateDraft, type MandateEndedReason, type MandateStatus } from "@askgina/os-api";
-import { MANDATE_MAX_SECONDS } from "@askgina/os-protocol";
+import { Address, MANDATE_MAX_SECONDS } from "@askgina/os-protocol";
 import { parseUnits, UnitsError } from "./format.ts";
 
 /**
@@ -282,8 +282,6 @@ export class MandateFormError extends Error {
   override readonly name = "MandateFormError";
 }
 
-const ADDRESS = /^0x[0-9a-f]{40}$/;
-
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 const NATIVE_DECIMALS = 18;
@@ -300,16 +298,15 @@ function parseRecipients(text: string): `0x${string}`[] {
   const addresses = new Set<`0x${string}`>();
 
   for (const word of words) {
-    const lower = word.toLowerCase();
+    const address = Address.safeParse(word.toLowerCase());
 
-    if (!ADDRESS.test(lower))
-      throw new MandateFormError(`Recipients: "${word}" is not an address.`);
+    if (!address.success) throw new MandateFormError(`Recipients: "${word}" is not an address.`);
 
-    if (lower === ZERO_ADDRESS) {
+    if (address.data === ZERO_ADDRESS) {
       throw new MandateFormError("Recipients: the zero address cannot receive a payment.");
     }
 
-    addresses.add(lower as `0x${string}`);
+    addresses.add(address.data);
   }
 
   if (addresses.size > 64) throw new MandateFormError("Recipients: at most 64 addresses.");

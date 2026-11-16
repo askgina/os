@@ -32,8 +32,10 @@ import { expect, test } from "@playwright/test";
 import pg from "pg";
 import { type Hash, parseEther } from "viem";
 import { mnemonicToAccount } from "viem/accounts";
+import { z } from "zod";
 import { type AgentConnection, connectAgent, type Proposal, ToolRefused } from "../src/agent.ts";
 import { chain, chainAdmin, receiptOf, withMiningHeld } from "../src/chain.ts";
+import { JsonObject, jsonObjectIn } from "../src/json.ts";
 import { ConfirmationRefused, Person } from "../src/person.ts";
 import {
   compose,
@@ -368,8 +370,11 @@ function getMandate(workspaceId: string, mandateId: string) {
 async function agentMandates(agent: AgentConnection): Promise<string[]> {
   const { mandates } = await agent.call("whoami");
 
-  return (mandates as { mandateId: string }[]).map((mandate) => mandate.mandateId);
+  return MandateIds.parse(mandates).map((mandate) => mandate.mandateId);
 }
+
+/** The part of `whoami`'s `mandates` a gate reads. */
+const MandateIds = z.array(z.object({ mandateId: z.string() }));
 
 function propose(space: Space, to: string, amount: string, memo: string): Promise<Proposal> {
   return space.agent.proposeTransfer({ chainId: CHAIN, to, amount, memo });
@@ -455,7 +460,7 @@ async function apiRefusal(
 ): Promise<{ code: string; detail: string | undefined }> {
   const outcome = await attempt.then(
     () => null,
-    (error: unknown) => error,
+    (cause: unknown) => cause,
   );
 
   if (!(outcome instanceof ApiError)) {
@@ -471,7 +476,7 @@ async function toolRefusal(
 ): Promise<{ code: string | null; detail: string | null }> {
   const outcome = await attempt.then(
     () => null,
-    (error: unknown) => error,
+    (cause: unknown) => cause,
   );
 
   if (!(outcome instanceof ToolRefused)) {
@@ -485,7 +490,7 @@ async function toolRefusal(
 async function refusalCode(attempt: Promise<unknown>): Promise<string> {
   const outcome = await attempt.then(
     () => null,
-    (error: unknown) => error,
+    (cause: unknown) => cause,
   );
 
   if (!(outcome instanceof ConfirmationRefused)) {
@@ -545,19 +550,26 @@ async function auditActions(workspaceId: string): Promise<string[]> {
 
 // --- the stack, as an operator reads it ----------------------------------------------------------
 
+/** A value of a column as `pg` reads it: text, a number, a timestamp, bytes, or parsed JSON. */
+type PgValue = string | number | boolean | null | Date | Buffer | PgValue[] | PgObject;
+
+interface PgObject {
+  [key: string]: PgValue;
+}
+
 /** Rows of `sql` in one of the stack's databases, through the port the overlay publishes. */
 async function query(
   sql: string,
   params: unknown[] = [],
   database = "postgres",
-): Promise<Record<string, unknown>[]> {
+): Promise<PgObject[]> {
   const url = new URL(await databaseUrl());
   url.pathname = `/${database}`;
   const db = new pg.Client({ connectionString: url.toString() });
   await db.connect();
 
   try {
-    return (await db.query(sql, params)).rows;
+    return (await db.query<PgObject>(sql, params)).rows;
   } finally {
     await db.end();
   }
@@ -587,7 +599,7 @@ const SIGNER_QUERY_SCRIPT = [
 ].join("\n");
 
 /** Rows of `sql` in the signer's SQLite file. Select lengths of blobs, not the blobs. */
-async function signerQuery(sql: string, ...params: unknown[]): Promise<Record<string, unknown>[]> {
+async function signerQuery(sql: string, ...params: unknown[]): Promise<JsonObject[]> {
   const output = await inContainer(
     "signer",
     { SIGNER_DATABASE, QUERY: sql, PARAMS: JSON.stringify(params) },
@@ -596,7 +608,7 @@ async function signerQuery(sql: string, ...params: unknown[]): Promise<Record<st
     SIGNER_QUERY_SCRIPT,
   );
 
-  return JSON.parse(output) as Record<string, unknown>[];
+  return z.array(JsonObject).parse(JSON.parse(output));
 }
 
 /** Searches the bytes of the signer's database file and its WAL for each marker. */
@@ -632,7 +644,9 @@ async function signerFileHits(
     SIGNER_FILE_SCAN_SCRIPT,
   );
 
-  return JSON.parse(output) as { file: string; marker: string; encoding: string }[];
+  return z
+    .array(z.object({ file: z.string(), marker: z.string(), encoding: z.string() }))
+    .parse(JSON.parse(output));
 }
 
 /** Counts, per name, the files anywhere in the signer's OWS vault whose content names it. */
@@ -668,7 +682,7 @@ async function vaultFilesNaming(walletIds: string[]): Promise<Record<string, num
     VAULT_SCAN_SCRIPT,
   );
 
-  return JSON.parse(output) as Record<string, number>;
+  return z.record(z.string(), z.number()).parse(JSON.parse(output));
 }
 
 /**
@@ -711,12 +725,15 @@ const OPEN_SEALED_SCRIPT = [
   "}",
 ].join("\n");
 
-interface OpenAttempt {
-  outcome: "opened" | "refused" | "missing";
-  containsMarker?: boolean;
-  error?: string;
-  message?: string;
-}
+/** What {@link OPEN_SEALED_SCRIPT} printed. */
+const OpenAttempt = z.object({
+  outcome: z.enum(["opened", "refused", "missing"]),
+  containsMarker: z.boolean().optional(),
+  error: z.string().optional(),
+  message: z.string().optional(),
+});
+
+type OpenAttempt = z.infer<typeof OpenAttempt>;
 
 /** Try to open an intent's sealed payload in `database` with the keyring file `keyring`. */
 async function openSealedIntent(input: {
@@ -739,25 +756,20 @@ async function openSealedIntent(input: {
     OPEN_SEALED_SCRIPT,
   );
 
-  return JSON.parse(output) as OpenAttempt;
+  return OpenAttempt.parse(JSON.parse(output));
 }
 
 /** The server's structured log lines whose `event` is `event`. */
-async function serverEvents(event: string): Promise<Record<string, unknown>[]> {
+async function serverEvents(event: string): Promise<JsonObject[]> {
   const logs = await compose("logs", "--no-color", "server");
 
   return logs.split("\n").flatMap((line) => {
     const start = line.indexOf("{");
 
     if (start < 0) return [];
+    const parsed = jsonObjectIn(line.slice(start));
 
-    try {
-      const parsed = JSON.parse(line.slice(start)) as Record<string, unknown>;
-
-      return parsed.event === event ? [parsed] : [];
-    } catch {
-      return [];
-    }
+    return parsed !== null && parsed.event === event ? [parsed] : [];
   });
 }
 
@@ -781,10 +793,10 @@ async function waitForDeleted(workspaceId: string, timeoutMs = 200_000): Promise
 }
 
 /** Run one of the signer's operator commands on its host, as the deploy guide does. */
-async function signerAdmin(...args: string[]): Promise<Record<string, unknown>> {
+async function signerAdmin(...args: string[]): Promise<JsonObject> {
   const output = await exec("signer", "node", "src/admin.ts", ...args);
 
-  return JSON.parse(output.trim().split("\n").at(-1) ?? "") as Record<string, unknown>;
+  return JsonObject.parse(JSON.parse(output.trim().split("\n").at(-1) ?? ""));
 }
 
 /** The code one of the signer's operator commands refused with; fails when it did not. */
@@ -795,24 +807,34 @@ async function signerAdminRefusal(...args: string[]): Promise<string> {
   );
 
   if (output === null) throw new Error(`expected admin.ts ${args[0]} to refuse`);
-  const line = JSON.parse(output.trim().split("\n").at(-1) ?? "{}") as { code?: string };
+  const line = AdminRefusal.parse(JSON.parse(output.trim().split("\n").at(-1) ?? "{}"));
 
   return line.code ?? "unreadable";
 }
 
+/** The line `admin.ts` prints last when it refuses. */
+const AdminRefusal = z.object({ code: z.string().optional() });
+
 /** The last JSON line a command printed. */
-function lastLine(output: string): Record<string, unknown> {
-  return JSON.parse(output.trim().split("\n").at(-1) ?? "") as Record<string, unknown>;
+function lastLine(output: string): JsonObject {
+  return JsonObject.parse(JSON.parse(output.trim().split("\n").at(-1) ?? ""));
+}
+
+/** How an operator's command exited, and the last JSON line it printed. */
+interface OperatorAnswer {
+  exitCode: number;
+  result: JsonObject;
 }
 
 /**
  * The exit code and last JSON line of an operator's command run with {@link execWithInput};
  * fails with what Docker and the command printed when there is no such line.
  */
-function operatorAnswer(ran: { exitCode: number; output: string; diagnostics: string }): {
+function operatorAnswer(ran: {
   exitCode: number;
-  result: Record<string, unknown>;
-} {
+  output: string;
+  diagnostics: string;
+}): OperatorAnswer {
   try {
     return { exitCode: ran.exitCode, result: lastLine(ran.output) };
   } catch {
@@ -829,9 +851,7 @@ const WRITE_STDIN_SCRIPT =
  * `node apps/server/src/lifecycle/verify-record.ts <file>`, here in the server's container,
  * which runs the same source as a checkout of the repository.
  */
-async function verifyRecordFile(
-  record: string,
-): Promise<{ exitCode: number; result: Record<string, unknown> }> {
+async function verifyRecordFile(record: string): Promise<OperatorAnswer> {
   const written = await execWithInput(
     "server",
     record,
@@ -855,9 +875,7 @@ async function verifyRecordFile(
 }
 
 /** The operator erases a person, as the deploy guide gives it, on the server's host. */
-async function eraseByOperator(
-  userId: string,
-): Promise<{ exitCode: number; result: Record<string, unknown> }> {
+async function eraseByOperator(userId: string): Promise<OperatorAnswer> {
   return operatorAnswer(
     await execWithInput(
       "server",
@@ -880,12 +898,12 @@ function recordLines(record: string): string[] {
 }
 
 /** A record's lines, parsed. */
-function parseRecord(record: string): Record<string, unknown>[] {
-  return recordLines(record).map((line) => JSON.parse(line) as Record<string, unknown>);
+function parseRecord(record: string): JsonObject[] {
+  return recordLines(record).map((line) => JsonObject.parse(JSON.parse(line)));
 }
 
 /** The lines of one section of a parsed record. */
-function sectionOf(lines: Record<string, unknown>[], type: string): Record<string, unknown>[] {
+function sectionOf(lines: JsonObject[], type: string): JsonObject[] {
   return lines.filter((line) => line.type === type);
 }
 
@@ -901,7 +919,7 @@ async function signedInLongAgo(userId: string): Promise<void> {
 }
 
 /** How many rows of each kind that belong to a person the control plane holds. */
-async function personRows(userId: string): Promise<Record<string, unknown>> {
+async function personRows(userId: string): Promise<PgObject> {
   const [row] = await query(
     `SELECT
        (SELECT count(*) FROM os.sessions WHERE user_id = $1)::int AS sessions,
@@ -1415,7 +1433,7 @@ test("a deletion waits while a transaction of the workspace could still be mined
 
   const before = await chain.getBalance({ address: RECIPIENT });
   const nonceBefore = await chain.getTransactionCount({ address: wallet.address });
-  let cancelHash = "";
+  let cancelHash: Hash = "0x";
   await withMiningHeld(async (mining) => {
     const proposal = await propose(archive, RECIPIENT, "0.002", MEMO_MARKER);
     archiveIntentId = proposal.intentId;
@@ -1506,7 +1524,7 @@ test("a deletion waits while a transaction of the workspace could still be mined
 
   // The cancel is mined in the payment's place; then the deletion finishes.
   await expect
-    .poll(async () => (await receiptOf(cancelHash as Hash))?.status, { timeout: 60_000 })
+    .poll(async () => (await receiptOf(cancelHash))?.status, { timeout: 60_000 })
     .toBe("success");
   await waitForDeleted(workspaceId);
   expect(await chain.getBalance({ address: RECIPIENT })).toBe(before);
@@ -1751,7 +1769,7 @@ test("after a deletion and a keyring rotation, a database copy from before the d
     );
 
     expect(pruned).toMatchObject({ event: "keyring.pruned", active: added.active });
-    expect((pruned.removed as string[]).length).toBeGreaterThan(0);
+    expect(z.array(z.string()).parse(pruned.removed).length).toBeGreaterThan(0);
     await compose("restart", "server");
     await waitUntilHealthy();
 
@@ -1994,7 +2012,7 @@ test("an owner signed in with a passkey in the last five minutes exports the rec
   const intent = await ada.api.call("getIntent", { params: { intentId: atelierPaidIntentId } });
 
   if (!intent.transaction) throw new Error("the atelier's payment has no transaction");
-  const signed = await chain.getTransaction({ hash: intent.transaction.hash as Hash });
+  const signed = await chain.getTransaction({ hash: intent.transaction.hash });
 
   const sessions = await query("SELECT id_hash FROM os.sessions WHERE user_id = ANY($1)", [
     [adaId, cydId],
@@ -2284,10 +2302,10 @@ test("a template imported on this installation reproduces the workspace's config
     ),
   };
 
-  const withKeys = {
-    ...atelierTemplate,
-    keys: { [atelier.wallet.id]: "a key a template never carries" },
-  } as unknown as WorkspaceTemplate;
+  // Every field of the template plus `keys`, which the format does not have: the type of the
+  // request takes it, as TypeScript checks extra fields only in a literal, and the server refuses.
+  const keys = { [atelier.wallet.id]: "a key a template never carries" };
+  const withKeys = { ...atelierTemplate, keys };
 
   const treasuryRequester: WorkspaceTemplate = {
     ...atelierTemplate,

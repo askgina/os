@@ -13,6 +13,7 @@
  * - The upstream Postgres World's own tuning variables keep their meaning.
  */
 import { DataKeyStore, keyProviderFromEnv } from "@askgina/os-keys";
+import type { PostgresWorldConfig } from "@workflow/world-postgres";
 import pg from "pg";
 import { createEncryptedWorld, type EncryptedWorld } from "./index.ts";
 
@@ -51,15 +52,17 @@ export function createWorld(): EncryptedWorld {
   const jobPrefix = process.env.WORKFLOW_POSTGRES_JOB_PREFIX;
   const pollInterval = optionalNumber("WORKFLOW_POSTGRES_POLL_INTERVAL_MS");
   const jobLockStaleSeconds = optionalNumber("WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS");
+  // A tuning variable that is not set leaves its option out, so upstream's default applies.
+  const postgres: PostgresWorldConfig = { pool, queueConcurrency };
+
+  if (jobPrefix) postgres.jobPrefix = jobPrefix;
+
+  if (pollInterval !== undefined) postgres.pollInterval = pollInterval;
+
+  if (jobLockStaleSeconds !== undefined) postgres.jobLockStaleSeconds = jobLockStaleSeconds;
 
   return createEncryptedWorld({
-    postgres: {
-      pool,
-      queueConcurrency,
-      ...(jobPrefix ? { jobPrefix } : {}),
-      ...(pollInterval === undefined ? {} : { pollInterval }),
-      ...(jobLockStaleSeconds === undefined ? {} : { jobLockStaleSeconds }),
-    },
+    postgres,
     dataKeys: new DataKeyStore({ pool, provider }),
     readableAttributeKeys,
   });

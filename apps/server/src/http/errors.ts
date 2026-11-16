@@ -18,13 +18,16 @@ export class HttpError extends Error {
   }
 }
 
-/** What to tell the caller when the signer refuses or cannot be reached. */
-export function fromSignerError(error: unknown): HttpError {
-  if (error instanceof SignerError && error.code !== "internal" && error.code !== "vault_error") {
+/**
+ * What to tell the caller when the signer refuses or cannot be reached. `cause` is whatever the
+ * signer call threw.
+ */
+export function fromSignerError(cause: unknown): HttpError {
+  if (cause instanceof SignerError && cause.code !== "internal" && cause.code !== "vault_error") {
     return new HttpError(
-      error.code === "policy_denied" ? "policy_denied" : "signer_refused",
-      error.message,
-      error.code === "policy_denied" ? error.detail : error.code,
+      cause.code === "policy_denied" ? "policy_denied" : "signer_refused",
+      cause.message,
+      cause.code === "policy_denied" ? cause.detail : cause.code,
     );
   }
 

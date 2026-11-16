@@ -73,7 +73,7 @@ describe("sweeping a wallet whose agent is gone", () => {
     });
 
     expect(request).toMatchObject({ kind: "sweep-wallet", status: "pending", threshold: 1 });
-    const approvalId = request.id as ApprovalId;
+    const approvalId = request.id;
     const sweep = await sweepOf(approvalId);
     const nonceBefore = await anvil.getTransactionCount({ address: agent.address });
 
@@ -117,7 +117,7 @@ describe("sweeping a wallet whose agent is gone", () => {
       to: treasury.address,
     });
 
-    const approvalId = request.id as ApprovalId;
+    const approvalId = request.id;
     expect((await sweepOf(approvalId)).amount).toBe("123456789");
 
     expect((await f.t.approve(approvalId, [f.t.owner])).status).toBe("executed");
@@ -146,7 +146,7 @@ describe("sweeping a wallet whose agent is gone", () => {
       to: stranger,
     });
 
-    const approvalId = request.id as ApprovalId;
+    const approvalId = request.id;
     const before = await api().call("getApproval", { params: { approvalId } });
     expect(before.subject).toMatchObject({ kind: "sweep-wallet", destination: null });
 

@@ -30,6 +30,7 @@ import {
   newPerson,
   ORIGIN,
   type Person,
+  personAt,
   RECIPIENT,
   refused,
   replacePolicy,
@@ -64,7 +65,11 @@ const tokenOf = (path: string) => path.slice(path.indexOf("#") + 1);
 function paymentRequest(world: World, intent: EvmIntent = intentFor(world)) {
   const { envelope } = approveIntent(world, intent, { people: [] });
 
-  return { envelope, subject: { kind: "approve-intent", intent } as ConfirmationSubject, intent };
+  return {
+    envelope,
+    subject: { kind: "approve-intent", intent } satisfies ConfirmationSubject,
+    intent,
+  };
 }
 
 /** Open the confirmation for `envelope` and return its token. */
@@ -156,7 +161,7 @@ describe("opening a confirmation", () => {
       t.confirm.submitConfirmation(
         envelope.approvalId,
         first,
-        assertAt(world.people[0] as Person, envelope, APPROVAL_ORIGIN),
+        assertAt(personAt(world, 0), envelope, APPROVAL_ORIGIN),
       ),
       "not_found",
     );
@@ -240,7 +245,10 @@ describe("opening a confirmation", () => {
         mandateHash: mandateHash(mandate),
       };
 
-      return { envelope, subject: { kind: "grant-mandate", mandate } as ConfirmationSubject };
+      return {
+        envelope,
+        subject: { kind: "grant-mandate", mandate } satisfies ConfirmationSubject,
+      };
     };
 
     const own = grant(world, world.walletId);
@@ -270,7 +278,7 @@ describe("the view", () => {
   it("the confirmation page shows the payment exactly as in the intent the signer holds", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
-    const [alice] = world.people as [Person];
+    const alice = personAt(world, 0);
 
     // Half an ether already signed today counts against the 1.5 ether daily cap.
     const earlier = intentFor(world, {
@@ -321,7 +329,7 @@ describe("the view", () => {
     const t = startSigner();
     // Payments need one approval, everything else two.
     const world = await setUpWorld(t, { people: 3, adminThreshold: 2, policyThreshold: 1 });
-    const [alice] = world.people as [Person];
+    const alice = personAt(world, 0);
 
     const treasury = await t.client.createWallet({
       workspaceId: world.workspaceId,
@@ -443,7 +451,7 @@ describe("a deletion's confirmation", () => {
     const envelope: Envelope = {
       ...header(t.clock, newId("apr"), world.workspaceId),
       type: "delete-workspace",
-      wallets: [{ walletId: world.walletId, address: world.address as Sweep["to"] }],
+      wallets: [{ walletId: world.walletId, address: world.address }],
       destroyAfter: t.clock.value + 604_800,
     };
 
@@ -511,7 +519,7 @@ describe("a cancel's confirmation", () => {
     const t = startSigner();
     // Workspace changes need two approvals, this wallet's payments one: a cancel needs one.
     const world = await setUpWorld(t, { people: 2, adminThreshold: 2, policyThreshold: 1 });
-    const [alice] = world.people as [Person];
+    const alice = personAt(world, 0);
     const { approvalId, params, cancel } = await signedPayment(world, t);
     const envelopeOnly: ConfirmationSubject = { kind: "envelope-only" };
 
@@ -602,7 +610,7 @@ describe("submitting an assertion", () => {
   it("an assertion made at the approval origin is stored", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
-    const [alice] = world.people as [Person];
+    const alice = personAt(world, 0);
     const { envelope, intent, token } = await payment(world, t);
 
     expect(
@@ -641,7 +649,7 @@ describe("submitting an assertion", () => {
   it("an assertion made at another origin is refused with assertion_invalid", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
-    const [alice] = world.people as [Person];
+    const alice = personAt(world, 0);
     const { envelope, token } = await payment(world, t);
 
     const submit = (response: AssertionResponse) =>
@@ -674,7 +682,7 @@ describe("submitting an assertion", () => {
     const elsewhere = await setUpWorld(t);
     const { envelope, token } = await payment(world, t);
 
-    for (const person of [newPerson(), elsewhere.people[0] as Person]) {
+    for (const person of [newPerson(), personAt(elsewhere, 0)]) {
       await refused(
         t.confirm.submitConfirmation(
           envelope.approvalId,
@@ -691,7 +699,8 @@ describe("submitting an assertion", () => {
   it("a revoked, signed or expired approval refuses new assertions with confirmation_closed", async () => {
     const t = startSigner();
     const world = await setUpWorld(t, { people: 2 });
-    const [alice, bob] = world.people as [Person, Person];
+    const alice = personAt(world, 0);
+    const bob = personAt(world, 1);
 
     const revoked = await payment(world, t);
     await t.client.revokeApproval(revoked.envelope.approvalId, world.workspaceId);
@@ -748,7 +757,7 @@ describe("submitting an assertion", () => {
     // Proposed under a policy that has since been replaced.
     const underOldPolicy = await payment(world, t);
     await replacePolicy(world, { recipients: { mode: "allowlist", addresses: [RECIPIENT] } });
-    await superseded(underOldPolicy, world.people[0] as Person);
+    await superseded(underOldPolicy, personAt(world, 0));
 
     // A grant whose mandate the wallet's policy no longer admits: no approval could apply it.
     const granting = await setUpWorld(t);
@@ -762,7 +771,7 @@ describe("submitting an assertion", () => {
         { chainId: CHAIN, asset: "native", maxPerTx: String(ETH), maxPerDay: String(ETH) },
       ],
     });
-    await superseded(pendingGrant, granting.people[0] as Person);
+    await superseded(pendingGrant, personAt(granting, 0));
     await refused(
       t.client.openConfirmation(grant.approvalId, { envelope: grant, subject: grantSubject }),
       "mandate_invalid",
@@ -773,13 +782,15 @@ describe("submitting an assertion", () => {
     const beforeFence = await payment(other, t);
     t.clock.value += 1;
     t.signer.fence();
-    await superseded(beforeFence, other.people[0] as Person);
+    await superseded(beforeFence, personAt(other, 0));
   });
 
   it("each person approves once, and only current approvers count", async () => {
     const t = startSigner();
     const world = await setUpWorld(t, { people: 3, adminThreshold: 2, policyThreshold: 2 });
-    const [alice, bob, carol] = world.people as [Person, Person, Person];
+    const alice = personAt(world, 0);
+    const bob = personAt(world, 1);
+    const carol = personAt(world, 2);
     const { envelope, intent, token } = await payment(world, t);
 
     const submit = (person: Person) =>
@@ -830,7 +841,7 @@ describe("submitting an assertion", () => {
   it("after 64 submissions for one request, every further one is refused with rate_limited", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
-    const [alice] = world.people as [Person];
+    const alice = personAt(world, 0);
     const { envelope, subject, token } = await payment(world, t);
     const wrong = assertAt(alice, envelope, ORIGIN);
 
@@ -866,7 +877,7 @@ describe("request secrets", () => {
   it("the confirm secret cannot call the sign route and the control secret cannot call the confirm routes", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
-    const [alice] = world.people as [Person];
+    const alice = personAt(world, 0);
     const { envelope, subject, intent, token } = await payment(world, t);
 
     const fetch: typeof globalThis.fetch = (url, init) =>

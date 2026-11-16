@@ -2,7 +2,13 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ApiClient, type ApprovalDetail, createApiClient } from "@askgina/os-api";
+import {
+  type ApiClient,
+  type ApprovalDetail,
+  createApiClient,
+  RegistrationResponse,
+  type WebAuthnOptions,
+} from "@askgina/os-api";
 import { DataKeyStore, LocalKeyring } from "@askgina/os-keys";
 import {
   type AddApproverEnvelope,
@@ -25,7 +31,8 @@ import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Hono } from "hono";
 import pg from "pg";
-import type { ApprovalRow } from "../../src/approvals/kinds.ts";
+import { z } from "zod";
+import type { ApprovalEngine, ApprovalRow } from "../../src/approvals/kinds.ts";
 import { type Config, loadConfig } from "../../src/config.ts";
 import type { AppContext } from "../../src/context.ts";
 import { migrateDatabase } from "../../src/db/migrate.ts";
@@ -61,6 +68,33 @@ export interface TestClock {
 /** Everything a test logged, so tests can assert what never reaches a log line. */
 export interface RecordingLogger extends Logger {
   lines: string[];
+}
+
+/** The one field of WebAuthn ceremony options the soft authenticator needs. */
+const CeremonyChallenge = z.looseObject({ challenge: z.string() });
+
+/** The challenge of ceremony options as `@simplewebauthn/server` generated them. */
+export function challengeOf(options: WebAuthnOptions): string {
+  return CeremonyChallenge.parse(options).challenge;
+}
+
+/** The one approval a change opened, from its response's `approvals`; throws when it opened none. */
+export function firstApproval(opened: readonly { id: ApprovalId }[]): ApprovalId {
+  const [first] = opened;
+
+  if (first === undefined) throw new Error("the change opened no approval");
+
+  return first.id;
+}
+
+/** A JSON object as a test reads it back: a logged line, a webhook body. */
+export const JsonObject = z.record(z.string(), z.json());
+
+export type JsonObject = z.infer<typeof JsonObject>;
+
+/** Every line `log` recorded, each decoded from the JSON object the logger wrote. */
+export function loggedLines(log: RecordingLogger): JsonObject[] {
+  return log.lines.map((line) => JsonObject.parse(JSON.parse(line)));
 }
 
 function recordingLogger(): RecordingLogger {
@@ -106,7 +140,7 @@ export interface TestContext {
   /** A fresh browser with no cookie. */
   browser(): TestBrowser;
   /** Register a passkey in the soft authenticator for a registration ceremony's options. */
-  register(options: Record<string, unknown>): { response: unknown; credentialId: string };
+  register(options: WebAuthnOptions): { response: RegistrationResponse; credentialId: string };
   /** Sign in with an existing passkey of the soft authenticator. */
   signIn(credentialId: string, browser?: TestBrowser): Promise<TestBrowser>;
   /**
@@ -153,10 +187,7 @@ export interface TestContextOptions {
   beforeOwner?: (setup: { token: string; browser: TestBrowser }) => Promise<void>;
 }
 
-function testConfig(
-  databaseUrl: string,
-  overrides: Partial<Config>,
-): { config: Config; keyringFile: string } {
+function testConfig(databaseUrl: string, overrides: Partial<Config>) {
   const dir = mkdtempSync(join(tmpdir(), "os-server-test-"));
   const keyringFile = join(dir, "keyring.json");
   writeFileSync(keyringFile, JSON.stringify(LocalKeyring.generate()));
@@ -170,7 +201,7 @@ function testConfig(
     ]),
   );
 
-  const config = {
+  const config: Config = {
     ...loadConfig({
       PUBLIC_ORIGIN: TEST_ORIGIN,
       APPROVE_ORIGIN: TEST_APPROVAL_ORIGIN,
@@ -234,6 +265,8 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
   const db = drizzle(pool, { schema });
   const log = recordingLogger();
 
+  let approvalEngine: ApprovalEngine | null = null;
+
   const ctx: AppContext = {
     config,
     pool,
@@ -248,12 +281,17 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
     }),
     sessions: createSessions({ db, config, now: clock.now }),
     chains: createChains(config),
-    approvals: undefined as unknown as AppContext["approvals"],
+    // The engine keeps this object and reads `approvals` lazily; it is created right below.
+    get approvals(): ApprovalEngine {
+      if (approvalEngine === null) throw new Error("the approval engine is not created yet");
+
+      return approvalEngine;
+    },
     log,
     now: clock.now,
   };
 
-  ctx.approvals = createApprovalEngine(ctx);
+  approvalEngine = createApprovalEngine(ctx);
 
   const app = new Hono();
   installErrorHandler(app, ctx);
@@ -301,29 +339,29 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
     };
   };
 
-  const register = (options: Record<string, unknown>) => {
+  const register = (options: WebAuthnOptions) => {
     const { response } = authenticator.register({
       rpId: config.relyingParty.id,
-      challenge: options.challenge as string,
+      challenge: challengeOf(options),
       origin: TEST_ORIGIN,
     });
 
-    return { response, credentialId: response.id };
+    return { response: RegistrationResponse.parse(response), credentialId: response.id };
   };
 
   const signIn = async (credentialId: string, existing?: TestBrowser) => {
     const target = existing ?? browser();
     const { ceremonyId, options } = await target.api.call("startLogin", { body: {} });
 
-    const response = authenticator.authenticate({
-      credentialId,
-      challenge: options.challenge as string,
-      origin: TEST_ORIGIN,
-    });
+    const response = AssertionResponse.parse(
+      authenticator.authenticate({
+        credentialId,
+        challenge: challengeOf(options),
+        origin: TEST_ORIGIN,
+      }),
+    );
 
-    await target.api.call("finishLogin", {
-      body: { ceremonyId, response: response as AssertionResponse },
-    });
+    await target.api.call("finishLogin", { body: { ceremonyId, response } });
 
     return target;
   };
@@ -343,7 +381,7 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
   const ownerPasskey = register(setup.options);
 
   const session = await ownerBrowser.api.call("finishSetup", {
-    body: { ceremonyId: setup.ceremonyId, response: ownerPasskey.response as never },
+    body: { ceremonyId: setup.ceremonyId, response: ownerPasskey.response },
   });
 
   if (session.user === null) throw new Error("setup did not sign the owner in");

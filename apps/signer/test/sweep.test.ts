@@ -14,6 +14,7 @@ import {
   authorize,
   CHAIN,
   ETH,
+  eip1559Serialized,
   header,
   intentFor,
   type Person,
@@ -107,7 +108,7 @@ describe("sweeping a wallet", () => {
     expect(tx.data).toBeUndefined();
 
     const from = await recoverTransactionAddress({
-      serializedTransaction: first.signedTransaction as `0x02${string}`,
+      serializedTransaction: eip1559Serialized(first.signedTransaction),
     });
 
     expect(from.toLowerCase()).toBe(world.address);
@@ -152,10 +153,10 @@ describe("sweeping a wallet", () => {
     expect(tx.value ?? 0n).toBe(0n);
     const call = decodeFunctionData({ abi: erc20Abi, data: tx.data ?? "0x" });
     expect(call.functionName).toBe("transfer");
-    expect(call.args.map((arg) => (typeof arg === "string" ? arg.toLowerCase() : arg))).toEqual([
-      treasury,
-      7000000n,
-    ]);
+
+    if (call.functionName !== "transfer") throw new Error("not a transfer");
+
+    expect([call.args[0].toLowerCase(), call.args[1]]).toEqual([treasury, 7000000n]);
   });
 
   it("refuses a destination that is neither on the wallet's allowlist nor its workspace's treasury", async () => {
@@ -163,7 +164,7 @@ describe("sweeping a wallet", () => {
     const elsewhere = await setUpWorld(world.t);
     const otherTreasury = await treasuryOf(elsewhere);
 
-    for (const to of [STRANGER, otherTreasury, world.address as Address]) {
+    for (const to of [STRANGER, otherTreasury, world.address]) {
       const sweep = sweepOf(world, { to });
       await refused(
         world.t.client.sweep(world.walletId, {
@@ -216,15 +217,16 @@ describe("sweeping a wallet", () => {
     }
 
     // Changing the envelope instead breaks the passkey assertion over it.
+    const { envelope } = authorization;
+
+    if (envelope.type !== "sweep-wallet") throw new Error("not a sweep approval");
+
     await refused(
       world.t.client.sweep(world.walletId, {
         sweep: { ...sweep, amount: "1" },
         authorization: {
           ...authorization,
-          envelope: {
-            ...authorization.envelope,
-            sweepHash: sweepHash({ ...sweep, amount: "1" }),
-          } as Authorization["envelope"],
+          envelope: { ...envelope, sweepHash: sweepHash({ ...sweep, amount: "1" }) },
         },
         transaction: txParams(),
       }),

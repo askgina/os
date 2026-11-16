@@ -33,7 +33,7 @@ describe("the server's configuration for a signer on its own host", () => {
     ]),
   );
 
-  const base: Record<string, string> = {
+  const base: NodeJS.ProcessEnv = {
     PUBLIC_ORIGIN: "https://os.example.com",
     APPROVE_ORIGIN: "https://approve.os.example.com",
     DATABASE_URL: "postgres://localhost/none",
@@ -48,14 +48,14 @@ describe("the server's configuration for a signer on its own host", () => {
     SIGNER_TLS_PEER_CERT_FILE: cert("signer.crt"),
   };
 
-  const split: Record<string, string> = {
+  const split: NodeJS.ProcessEnv = {
     ...base,
     SIGNER_URL: "https://signer.example.internal:8787",
     ...tlsFiles,
   };
 
   /** The messages of a refused configuration: a schema refusal or a file that cannot be used. */
-  const refusal = (environment: Record<string, string>): string[] | null => {
+  const refusal = (environment: NodeJS.ProcessEnv): string[] | null => {
     try {
       loadConfig(environment);
     } catch (error) {

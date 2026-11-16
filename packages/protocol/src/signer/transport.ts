@@ -1,6 +1,7 @@
 import { createPrivateKey, X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { Agent, type RequestInfo, type RequestInit, fetch as undiciFetch } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
+import type { SignerFetch } from "./client.ts";
 
 /**
  * A client's side of the mutual TLS to a signer on another host: its own certificate and key,
@@ -75,10 +76,10 @@ export function readSignerTls(paths: { cert: string; key: string; peerCert: stri
  * signer, issued for `servername`. No certificate authority is trusted. It fails as `fetch`
  * fails: a refused handshake rejects the promise, as an unreachable signer does.
  *
- * The dispatcher and the `fetch` come from one `undici`, so pass a URL string or a `URL`, as
- * the signer clients do: a `Request` built by the runtime's own `fetch` is another class.
+ * The dispatcher and the `fetch` come from one `undici`; it takes the URL as a string, as the
+ * signer clients pass it.
  */
-export function createSignerFetch(tls: SignerTls, servername: string): typeof fetch {
+export function createSignerFetch(tls: SignerTls, servername: string): SignerFetch {
   const dispatcher = new Agent({
     connect: {
       cert: tls.cert,
@@ -89,11 +90,5 @@ export function createSignerFetch(tls: SignerTls, servername: string): typeof fe
     },
   });
 
-  const signerFetch = (input: RequestInfo, init?: RequestInit) =>
-    undiciFetch(input, { ...init, dispatcher });
-
-  // Each consumer's lib (Node's or the DOM's) declares its own `Request` and `Response`, which
-  // undici's types do not match exactly; for a URL and an init, as the clients call it, the
-  // function behaves as `fetch` and returns a standard `Response`.
-  return signerFetch as unknown as typeof fetch;
+  return (url, init) => undiciFetch(url, { ...init, dispatcher });
 }

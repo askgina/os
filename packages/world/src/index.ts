@@ -4,6 +4,7 @@ import {
   createWorld as createPostgresWorld,
   type PostgresWorldConfig,
 } from "@workflow/world-postgres";
+import { z } from "zod";
 import { withholdRunAttributes } from "./attributes.ts";
 
 export { ALWAYS_READABLE_ATTRIBUTE_KEYS, WITHHELD_ATTRIBUTE_VALUE } from "./attributes.ts";
@@ -15,6 +16,24 @@ export { ALWAYS_READABLE_ATTRIBUTE_KEYS, WITHHELD_ATTRIBUTE_VALUE } from "./attr
  * key can be bound to a tenant.
  */
 export const TENANT_START_OPTION = "osTenantId";
+
+/**
+ * What the Workflow SDK passes with a run id when it asks for that run's key, as its World
+ * interface types it: the start options when a run is created, other world-specific data or
+ * nothing otherwise.
+ */
+export type KeyRequestContext = Parameters<NonNullable<World["getEncryptionKeyForRun"]>>[1];
+
+/** The run id of a key request, which names the run itself or only its id. */
+const KeyRequestRunId = z.union([
+  z.string(),
+  z.object({ runId: z.string() }).transform((run) => run.runId),
+]);
+
+/** The tenant a key request's context names, when it names one as a string. */
+const KeyRequestTenant = z
+  .object({ [TENANT_START_OPTION]: z.string() })
+  .transform((context) => context[TENANT_START_OPTION]);
 
 export type EncryptedWorld = World &
   Required<Pick<Queue, "registerHandler" | "registerRoute">> & {
@@ -33,7 +52,7 @@ export interface EncryptedWorldConfig {
    */
   readableAttributeKeys?: readonly string[];
   /** Called on every key request, for measurement and tests. */
-  onKeyRequest?: (runId: string, context: Record<string, unknown> | undefined) => void;
+  onKeyRequest?: (runId: string, context: KeyRequestContext) => void;
 }
 
 /**
@@ -54,24 +73,26 @@ export function createEncryptedWorld(config: EncryptedWorldConfig): EncryptedWor
 
   async function getEncryptionKeyForRun(
     run: WorkflowRun | string,
-    context?: Record<string, unknown>,
+    context?: KeyRequestContext,
   ): Promise<Uint8Array> {
-    const runId = typeof run === "string" ? run : run.runId;
+    const runId = KeyRequestRunId.safeParse(run).data;
 
-    if (typeof runId !== "string" || !runId.startsWith("wrun_")) {
+    if (runId === undefined || !runId.startsWith("wrun_")) {
       throw new Error(`refusing a key request for an invalid run id: ${String(runId)}`);
     }
 
     config.onKeyRequest?.(runId, context);
-    const tenant = context?.[TENANT_START_OPTION];
+    const tenant = KeyRequestTenant.safeParse(context).data;
 
-    return config.dataKeys.getOrCreate("run", runId, typeof tenant === "string" ? tenant : null);
+    return config.dataKeys.getOrCreate("run", runId, tenant ?? null);
   }
 
+  // One function answers both of the SDK's overloads: a run, or a run id with its context.
+  const keyForRun: NonNullable<World["getEncryptionKeyForRun"]> = getEncryptionKeyForRun;
   const startBase = base.start.bind(base);
 
   return Object.assign(base, {
-    getEncryptionKeyForRun: getEncryptionKeyForRun as NonNullable<World["getEncryptionKeyForRun"]>,
+    getEncryptionKeyForRun: keyForRun,
     async start() {
       await config.dataKeys.ensureMigrated();
       await startBase();

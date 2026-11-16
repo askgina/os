@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { LocalKeyring } from "@askgina/os-keys";
 import { createTestDatabase, type TestDatabase } from "@askgina/os-testkit";
 import { afterAll, beforeAll, expect, test } from "vitest";
+import { z } from "zod";
 import { bootstrapWorkflowSchema } from "./harness/host.ts";
 
 const execFileAsync = promisify(execFile);
@@ -21,11 +22,16 @@ const dir = mkdtempSync(join(tmpdir(), "os-world-conformance-"));
 
 let db: TestDatabase;
 
-interface Assertion {
-  title: string;
-  status: string;
-  failureMessages: string[];
-}
+/** The parts of vitest's JSON report this test reads: each test's title, status and failures. */
+const VitestReport = z.object({
+  testResults: z.array(
+    z.object({
+      assertionResults: z.array(
+        z.object({ title: z.string(), status: z.string(), failureMessages: z.array(z.string()) }),
+      ),
+    }),
+  ),
+});
 
 beforeAll(async () => {
   db = await createTestDatabase("world_conformance");
@@ -60,15 +66,13 @@ test("upstream conformance fails only where the suite itself cannot decrypt", {
     env: { ...process.env, WORKFLOW_POSTGRES_URL: db.url, HARNESS_KEYRING_FILE: keyringFile },
     maxBuffer: 64 * 1024 * 1024,
     timeout: 540_000,
-  }).catch((error: unknown) => {
+  }).catch((cause: unknown) => {
     // The child exits non-zero whenever any upstream test fails, which is expected; the report
     // decides. A missing report is a real failure and surfaces when it is read below.
-    return error;
+    return cause;
   });
 
-  const report = JSON.parse(readFileSync(reportFile, "utf8")) as {
-    testResults: { assertionResults: Assertion[] }[];
-  };
+  const report = VitestReport.parse(JSON.parse(readFileSync(reportFile, "utf8")));
 
   const all = report.testResults.flatMap((file) => file.assertionResults);
   const count = (status: string) => all.filter((assertion) => assertion.status === status).length;

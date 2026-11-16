@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { ApiError, type MandateDraft } from "@askgina/os-api";
-import type { ApprovalId, IntentId, MandateId } from "@askgina/os-protocol";
+import { type ApprovalId, MandateId } from "@askgina/os-protocol";
 import type { SignResponse, SignUnderMandateRequest } from "@askgina/os-protocol/signer";
 import { scanForMarkers } from "@askgina/os-testkit";
 import type { Client } from "@modelcontextprotocol/client";
@@ -16,7 +16,9 @@ import {
   draftFor,
   type Fixture,
   fund,
+  intentIdOf,
   type TestAgent,
+  type ToolArguments,
   toolJson,
 } from "./fixture.ts";
 
@@ -30,7 +32,7 @@ let stranger: TestPerson;
 
 const ETH = 10n ** 18n;
 
-const randomAddress = () => `0x${randomBytes(20).toString("hex")}` as `0x${string}`;
+const randomAddress = (): `0x${string}` => `0x${randomBytes(20).toString("hex")}`;
 
 async function joinAsViewer(name: string): Promise<TestBrowser> {
   const invite = await f.t.owner.browser.api.call("createInvite", {
@@ -49,7 +51,7 @@ async function joinAsViewer(name: string): Promise<TestBrowser> {
   const passkey = f.t.register(start.options);
   await browser.api.call("finishInviteRegistration", {
     params: { token },
-    body: { ceremonyId: start.ceremonyId, response: passkey.response as never },
+    body: { ceremonyId: start.ceremonyId, response: passkey.response },
   });
 
   return browser;
@@ -97,7 +99,7 @@ function draftOf(agent: TestAgent, recipients: `0x${string}`[]): MandateDraft {
     agentId: agent.id,
     assets: [
       {
-        chainId: TEST_CHAIN_ID as MandateDraft["assets"][number]["chainId"],
+        chainId: TEST_CHAIN_ID,
         asset: "native",
         maxPerAction: (1n * ETH).toString(),
         maxPerWindow: (2n * ETH).toString(),
@@ -125,21 +127,17 @@ async function grant(
   });
 
   expect(opened).toMatchObject({ kind: "grant-mandate", status: "pending", threshold: 1 });
-  const row = await f.t.approve(opened.id as ApprovalId, [bob]);
+  const row = await f.t.approve(opened.id, [bob]);
   expect(row.status).toBe("executed");
 
-  return row.subjectId as MandateId;
+  return MandateId.parse(row.subjectId);
 }
 
-async function propose(client: Client, args: Record<string, unknown>) {
+async function propose(client: Client, args: ToolArguments) {
   const answer = toolJson(await client.callTool({ name: "propose_transfer", arguments: args }));
+  const intentId = intentIdOf(answer);
 
-  if (typeof answer.intentId !== "string") throw new Error(JSON.stringify(answer));
-
-  const [row] = await f.t.ctx.db
-    .select()
-    .from(intents)
-    .where(eq(intents.id, answer.intentId as IntentId));
+  const [row] = await f.t.ctx.db.select().from(intents).where(eq(intents.id, intentId));
 
   if (!row?.approvalId) throw new Error("an intent without its approval or use");
 
@@ -277,14 +275,13 @@ describe("granting a mandate", () => {
       await refusal(
         call({
           ...draft,
-          assets: [
-            {
-              ...(draft.assets[0] as MandateDraft["assets"][number]),
-              maxPerAction: (6n * ETH).toString(),
-              maxPerWindow: (6n * ETH).toString(),
-              maxTotal: (6n * ETH).toString(),
-            },
-          ],
+          // draftOf gives one asset; this raises its caps.
+          assets: draft.assets.map((asset) => ({
+            ...asset,
+            maxPerAction: (6n * ETH).toString(),
+            maxPerWindow: (6n * ETH).toString(),
+            maxTotal: (6n * ETH).toString(),
+          })),
         }),
       ),
     ).toEqual({ code: "invalid_request", detail: "over_per_tx_cap" });
@@ -432,7 +429,7 @@ describe("a proposal a mandate covers", () => {
       { to: randomAddress(), amount: "0.1" },
       { to: listed, amount: "1.5" },
     ]) {
-      const { answer, row } = await propose(client, {
+      const { answer, row, approvalId } = await propose(client, {
         chainId: TEST_CHAIN_ID,
         memo: "not covered",
         ...args,
@@ -449,7 +446,7 @@ describe("a proposal a mandate covers", () => {
       const [request] = await f.t.ctx.db
         .select({ kind: approvals.kind })
         .from(approvals)
-        .where(eq(approvals.id, row.approvalId as ApprovalId));
+        .where(eq(approvals.id, approvalId));
 
       expect(request?.kind).toBe("approve-intent");
     }
@@ -565,7 +562,7 @@ describe("a proposal a mandate covers", () => {
     const mandateId = await grant(agent, [recipient], {
       assets: [
         {
-          chainId: TEST_CHAIN_ID as MandateDraft["assets"][number]["chainId"],
+          chainId: TEST_CHAIN_ID,
           asset: "native",
           maxPerAction: (1n * ETH).toString(),
           maxPerWindow: (1n * ETH).toString(),
@@ -685,12 +682,10 @@ describe("a proposal a mandate covers", () => {
 
     expect(stored).toHaveLength(1);
     expect(stored[0]?.hash).toBe(signedFirst.transactionHash);
-    expect(stored[0]?.nonce).toBe(
-      parseTransaction(signedFirst.signedTransaction as `0x${string}`).nonce,
-    );
+    expect(stored[0]?.nonce).toBe(parseTransaction(signedFirst.signedTransaction).nonce);
     expect(await anvil.getTransactionCount({ address: agent.address })).toBe(nonceBefore + 1);
     expect((await getIntent(row.id)).status).toBe("confirmed");
-    expect((await f.t.ctx.signer.getMandate(row.mandateId as MandateId)).usage.uses).toBe(1);
+    expect((await f.t.ctx.signer.getMandate(MandateId.parse(row.mandateId))).usage.uses).toBe(1);
   });
 });
 
@@ -761,7 +756,7 @@ describe("ending a mandate", () => {
     const [grantRequest] = await f.t.ctx.db
       .select({ status: approvals.status })
       .from(approvals)
-      .where(eq(approvals.id, waiting.id as ApprovalId));
+      .where(eq(approvals.id, waiting.id));
 
     expect(grantRequest?.status).toBe("cancelled");
   });

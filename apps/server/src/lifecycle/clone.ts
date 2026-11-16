@@ -50,16 +50,13 @@ export async function cloneWorkspace(
 
   const configured = new Set<string>(ctx.chains.list().map((chain) => chain.chainId));
 
-  for (const wallet of created) {
-    const chains = [
-      ...(wallet.policy?.chains ?? []),
-      ...(wallet.policy?.assets.map((limit) => limit.chainId) ?? []),
-    ];
+  for (const { policy, ref } of created) {
+    const chains = policy ? [...policy.chains, ...policy.assets.map((limit) => limit.chainId)] : [];
 
     if (chains.some((chainId) => !configured.has(chainId))) {
       throw new HttpError(
         "invalid_request",
-        `template.wallets: the policy of ${wallet.ref} names a chain that is not configured here`,
+        `template.wallets: the policy of ${ref} names a chain that is not configured here`,
       );
     }
   }

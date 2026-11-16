@@ -73,7 +73,7 @@ import {
   WS,
 } from "./fixtures.ts";
 
-const ok = (schema: { safeParse(v: unknown): { success: boolean } }, value: unknown) =>
+const ok = <Value>(schema: { safeParse(value: Value): { success: boolean } }, value: Value) =>
   schema.safeParse(value).success;
 
 describe("identifiers", () => {
@@ -216,9 +216,8 @@ describe("intent", () => {
 
   it("refuses unknown keys at every level", () => {
     expect(ok(Intent, { ...intent(), extra: 1 })).toBe(false);
-    expect(ok(Intent, intent({ operation: { ...intent().operation, gas: "1" } as never }))).toBe(
-      false,
-    );
+    const operationWithGas = { ...intent().operation, gas: "1" };
+    expect(ok(Intent, intent({ operation: operationWithGas }))).toBe(false);
   });
 
   it("refuses zero transfers, short calldata, zero fee ceilings and other versions", () => {
@@ -327,6 +326,7 @@ describe("venue intent", () => {
     expect(ok(Intent, venueIntent({ operation: { ...order, asset: 10_000 } }))).toBe(false);
     expect(ok(Intent, venueIntent({ operation: { ...order, asset: -1 } }))).toBe(false);
     expect(ok(Intent, venueIntent({ operation: { ...order, asset: 1.5 } }))).toBe(false);
+    // SAFETY: deliberately not a valid HyperliquidTimeInForce; the test checks the refusal.
     expect(ok(Intent, venueIntent({ operation: { ...order, tif: "Fok" as never } }))).toBe(false);
     expect(ok(Intent, venueIntent({ operation: { ...order, size: "0" } }))).toBe(false);
     expect(ok(Intent, venueIntent({ operation: { ...order, limitPx: "1.0" } }))).toBe(false);

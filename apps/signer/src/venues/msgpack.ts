@@ -8,8 +8,34 @@
  * `@msgpack/msgpack`.
  */
 
+import { z } from "zod";
+import type { JsonObject, JsonValue } from "../json.ts";
+
 /** A value `encodeMsgpack` accepts. Objects must be `MsgpackMap`s, so key order is explicit. */
 export type MsgpackValue = string | boolean | null | number | readonly MsgpackValue[] | MsgpackMap;
+
+const Text = z.string();
+
+/** Every JavaScript number, NaN and the infinities included, so each is then judged by its value. */
+const AnyNumber = z.union([
+  z.number(),
+  z.nan(),
+  z.literal([Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]),
+]);
+
+/** A JSON leaf: everything a JSON value is besides an array or an object. */
+const JsonScalar = z.union([Text, z.boolean(), z.null(), AnyNumber]);
+
+/** Any object that is neither null nor an array; it checks no key. */
+const AnyObject = z.looseObject({});
+
+function isList(value: MsgpackValue): value is readonly MsgpackValue[] {
+  return Array.isArray(value);
+}
+
+function isJsonObject(value: JsonValue): value is JsonObject {
+  return AnyObject.safeParse(value).success;
+}
 
 /** A msgpack map whose keys are encoded in the order given. Duplicate keys are refused. */
 export class MsgpackMap {
@@ -19,7 +45,9 @@ export class MsgpackMap {
     const seen = new Set<string>();
 
     for (const entry of entries) {
-      if (typeof entry[0] !== "string") throw new TypeError("msgpack map keys must be strings");
+      if (!Text.safeParse(entry[0]).success) {
+        throw new TypeError("msgpack map keys must be strings");
+      }
 
       if (seen.has(entry[0])) throw new TypeError(`duplicate msgpack map key ${entry[0]}`);
       seen.add(entry[0]);
@@ -86,42 +114,65 @@ function writeLength(
   }
 }
 
-function writeValue(writer: Writer, value: unknown): void {
+function writeNumber(writer: Writer, value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0 || Object.is(value, -0)) {
+    throw new TypeError(`msgpack numbers must be non-negative safe integers, got ${value}`);
+  }
+
+  if (value <= 0x7f) {
+    writer.byte(value);
+  } else if (value <= 0xff) {
+    writer.byte(0xcc);
+    writer.uint(value, 1);
+  } else if (value <= 0xffff) {
+    writer.byte(0xcd);
+    writer.uint(value, 2);
+  } else if (value <= 0xffff_ffff) {
+    writer.byte(0xce);
+    writer.uint(value, 4);
+  } else {
+    writer.byte(0xcf);
+    writer.uint(value, 8);
+  }
+}
+
+function writeString(writer: Writer, value: string): void {
+  if (!value.isWellFormed()) throw new TypeError("msgpack strings must be well-formed UTF-16");
+  const bytes = utf8.encode(value);
+  writeLength(writer, bytes.length, 0xa0, 31, [0xd9, 0xda, 0xdb]);
+  writer.bytes(bytes);
+}
+
+/**
+ * A number or a string. Decoded again, because a caller can still hand over something its type
+ * does not admit (a plain object inside a map, a bigint), and that must throw, never encode.
+ */
+function writeScalar(writer: Writer, value: string | number): void {
+  const number = AnyNumber.safeParse(value);
+
+  if (number.success) {
+    writeNumber(writer, number.data);
+
+    return;
+  }
+
+  const text = Text.safeParse(value);
+
+  if (!text.success) throw new TypeError("msgpack cannot encode a value outside MsgpackValue");
+  writeString(writer, text.data);
+}
+
+function writeValue(writer: Writer, value: MsgpackValue): void {
   if (value === null) {
     writer.byte(0xc0);
   } else if (value === false) {
     writer.byte(0xc2);
   } else if (value === true) {
     writer.byte(0xc3);
-  } else if (typeof value === "number") {
-    if (!Number.isSafeInteger(value) || value < 0 || Object.is(value, -0)) {
-      throw new TypeError(`msgpack numbers must be non-negative safe integers, got ${value}`);
-    }
-
-    if (value <= 0x7f) {
-      writer.byte(value);
-    } else if (value <= 0xff) {
-      writer.byte(0xcc);
-      writer.uint(value, 1);
-    } else if (value <= 0xffff) {
-      writer.byte(0xcd);
-      writer.uint(value, 2);
-    } else if (value <= 0xffff_ffff) {
-      writer.byte(0xce);
-      writer.uint(value, 4);
-    } else {
-      writer.byte(0xcf);
-      writer.uint(value, 8);
-    }
-  } else if (typeof value === "string") {
-    if (!value.isWellFormed()) throw new TypeError("msgpack strings must be well-formed UTF-16");
-    const bytes = utf8.encode(value);
-    writeLength(writer, bytes.length, 0xa0, 31, [0xd9, 0xda, 0xdb]);
-    writer.bytes(bytes);
-  } else if (Array.isArray(value)) {
+  } else if (isList(value)) {
     writeLength(writer, value.length, 0x90, 15, [undefined, 0xdc, 0xdd]);
 
-    for (let index = 0; index < value.length; index++) writeValue(writer, value[index]);
+    for (const entry of value) writeValue(writer, entry);
   } else if (value instanceof MsgpackMap) {
     writeLength(writer, value.entries.length, 0x80, 15, [undefined, 0xde, 0xdf]);
 
@@ -130,24 +181,9 @@ function writeValue(writer: Writer, value: unknown): void {
       writeValue(writer, entry);
     }
   } else {
-    throw new TypeError(`msgpack cannot encode a value of type ${describe(value)}`);
+    writeScalar(writer, value);
   }
 }
-
-function describe(value: unknown): string {
-  if (typeof value !== "object") return typeof value;
-
-  return value?.constructor?.name ?? "object";
-}
-
-/** A JSON value as a request body carries it: objects keep their keys in insertion order. */
-export type JsonValue =
-  | string
-  | boolean
-  | null
-  | number
-  | JsonValue[]
-  | { [key: string]: JsonValue };
 
 /**
  * A JavaScript object puts keys that look like array indices first, whatever order they were
@@ -168,34 +204,29 @@ export function msgpackToJson(value: MsgpackValue): JsonValue {
     return object;
   }
 
-  if (Array.isArray(value)) return value.map(msgpackToJson);
+  if (isList(value)) return value.map(msgpackToJson);
 
-  return value as string | boolean | null | number;
+  return value;
 }
 
 /**
  * The map form of a parsed JSON value, each object a `MsgpackMap` with its keys in the object's
  * order: what the venue hashes when it reads a body. Throws for anything `encodeMsgpack` would.
  */
-export function jsonToMsgpack(value: unknown): MsgpackValue {
+export function jsonToMsgpack(value: JsonValue): MsgpackValue {
   if (Array.isArray(value)) return value.map(jsonToMsgpack);
 
-  if (value !== null && typeof value === "object") {
+  if (isJsonObject(value)) {
     return new MsgpackMap(
       Object.entries(value).map(([key, entry]) => [key, jsonToMsgpack(entry)] as const),
     );
   }
 
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean" ||
-    typeof value === "number"
-  ) {
-    return value;
-  }
+  const scalar = JsonScalar.safeParse(value);
 
-  throw new TypeError(`cannot encode ${describe(value)}`);
+  if (!scalar.success) throw new TypeError("cannot encode a value outside JSON");
+
+  return scalar.data;
 }
 
 /** The msgpack bytes of `value`. Throws a `TypeError` or `RangeError` for anything unsupported. */

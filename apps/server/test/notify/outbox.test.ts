@@ -5,7 +5,7 @@ import { approvals, notificationDeliveries } from "../../src/db/schema.ts";
 import { engineOf } from "../../src/execution/approvals.ts";
 import { registerExecution, sweep } from "../../src/execution/index.ts";
 import { deliverDueNotifications, enqueueApprovalNotifications } from "../../src/notify/outbox.ts";
-import { createTestContext, type TestContext } from "../support/context.ts";
+import { createTestContext, loggedLines, type TestContext } from "../support/context.ts";
 import {
   expectedSignature,
   type Received,
@@ -32,7 +32,7 @@ beforeAll(async () => {
     routes: (app, ctx) => registerExecution(app, ctx),
   });
   const created = await t.owner.browser.api.call("createWorkspace", { body: { name: "Notified" } });
-  workspaceId = created.id as WorkspaceId;
+  workspaceId = created.id;
 });
 
 afterAll(async () => {
@@ -55,7 +55,7 @@ async function openApproval(): Promise<ApprovalId> {
     body: { adminThreshold: 1 },
   });
 
-  return opened.id as ApprovalId;
+  return opened.id;
 }
 
 const deliveriesOf = (approvalId: ApprovalId) =>
@@ -331,9 +331,9 @@ describe("the notification outbox", () => {
   });
 
   it("logs identifiers and codes only, and keeps nothing a receiver answered", async () => {
-    const lines = t.log.lines
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-      .filter((line) => String(line.message).startsWith("notification "));
+    const lines = loggedLines(t.log).filter((line) =>
+      String(line.message).startsWith("notification "),
+    );
 
     expect(new Set(lines.map((line) => line.message))).toEqual(
       new Set([

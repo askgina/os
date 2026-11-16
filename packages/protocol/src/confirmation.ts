@@ -143,6 +143,10 @@ type Matched =
   | { kind: "grant-mandate"; envelope: GrantMandateEnvelope; mandate: Mandate }
   | { kind: "envelope-only"; envelope: EnvelopeOnly };
 
+function isSubjectMismatch(matched: Matched | SubjectMismatch): matched is SubjectMismatch {
+  return matched === "envelope_mismatch" || matched === "intent_mismatch";
+}
+
 // The fields are compared before the hash, in the same order as the signer's own checks, so a
 // subject refused here is refused with the code the signer would give when signing it.
 function matchSubject(envelope: Envelope, subject: ConfirmationSubject): Matched | SubjectMismatch {
@@ -250,7 +254,7 @@ export function checkSubject(
 ): SubjectMismatch | null {
   const matched = matchSubject(envelope, subject);
 
-  return typeof matched === "string" ? matched : null;
+  return isSubjectMismatch(matched) ? matched : null;
 }
 
 // --- the rendered view ------------------------------------------------------------------------
@@ -339,7 +343,7 @@ export const ConfirmationView = z
     v: z.literal(PROTOCOL_VERSION),
     approvalId: ApprovalId,
     workspaceId: WorkspaceId,
-    kind: z.custom<EnvelopeType>((value) => typeof value === "string"),
+    kind: z.custom<EnvelopeType>((value) => z.string().safeParse(value).success),
     state: ConfirmationState,
     expiresAt: EpochSeconds,
     title: z.string(),
@@ -446,7 +450,7 @@ type Output = {
 export function renderConfirmation(input: RenderInput): RenderedConfirmation {
   const matched = matchSubject(input.envelope, input.subject);
 
-  if (typeof matched === "string") {
+  if (isSubjectMismatch(matched)) {
     throw new TypeError(`the subject is not what the envelope names (${matched})`);
   }
 

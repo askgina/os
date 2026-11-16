@@ -242,7 +242,7 @@ describe("pinned digest vectors", () => {
 });
 
 describe("every sweep field is bound", () => {
-  const changes: { [K in keyof Sweep]?: Sweep[K] } = {
+  const changes: Partial<Sweep> = {
     workspaceId: `ws_01jd000000000000000000000b`,
     walletId: `wal_01jd000000000000000000000c`,
     chainId: MAINNET,
@@ -265,7 +265,7 @@ describe("every sweep field is bound", () => {
 });
 
 describe("every mandate field is bound", () => {
-  const changes: { [K in keyof Mandate]?: Mandate[K] } = {
+  const changes: Partial<Mandate> = {
     id: `mnd_01jd000000000000000000000z`,
     workspaceId: `ws_01jd000000000000000000000b`,
     walletId: `wal_01jd000000000000000000000c`,
@@ -308,13 +308,17 @@ describe("every mandate field is bound", () => {
 
 describe("canonical form", () => {
   it("does not depend on key insertion order", () => {
+    // SAFETY: the entries are exactly intent()'s own, only in reverse order, so the rebuilt object
+    // has an EvmIntent's keys and values.
     const reordered = Object.fromEntries(Object.entries(intent()).reverse()) as EvmIntent;
     expect(intentHash(reordered)).toBe(INTENT_HASH);
   });
 
   it("refuses to hash values that are not valid intents or policies", () => {
-    expect(() => intentHash({ ...intent(), extra: 1 } as EvmIntent)).toThrow();
-    expect(() => intentHash({ ...venueIntent(), maxFeeWei: "1" } as never)).toThrow();
+    const withExtraKey = { ...intent(), extra: 1 };
+    const venueWithFee = { ...venueIntent(), maxFeeWei: "1" };
+    expect(() => intentHash(withExtraKey)).toThrow();
+    expect(() => intentHash(venueWithFee)).toThrow();
     expect(() => policyHash({ ...policy(), chains: [MAINNET, MAINNET] })).toThrow();
     expect(() => envelopeChallenge(approveIntent({ expiresAt: T0 }))).toThrow();
   });

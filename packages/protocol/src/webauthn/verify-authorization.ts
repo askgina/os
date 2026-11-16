@@ -1,7 +1,5 @@
-import {
-  type AuthenticationResponseJSON,
-  verifyAuthenticationResponse,
-} from "@simplewebauthn/server";
+import { verifyAuthenticationResponse } from "@simplewebauthn/server";
+import { z } from "zod";
 import { type PossessionChallengeInput, possessionChallenge } from "../confirmation.ts";
 import {
   type ApproverCredential,
@@ -55,6 +53,16 @@ export interface VerifyAuthorizationInput {
 export const CLOCK_SKEW_SECONDS = 30;
 
 /**
+ * The two client data members that tell whether an assertion was made in a frame, each of any
+ * value or absent. `JSON.parse` never yields `undefined`, so a member is present exactly when its
+ * value is not `undefined`.
+ */
+const FrameClientData = z.object({
+  topOrigin: z.unknown().optional(),
+  crossOrigin: z.unknown().optional(),
+});
+
+/**
  * True when the browser says the assertion was made in a frame of another page (`crossOrigin`
  * true, or a `topOrigin` at all), or when its client data cannot be read. A page that frames the
  * confirmation page could otherwise obtain an assertion stamped with the confirmation page's
@@ -62,15 +70,15 @@ export const CLOCK_SKEW_SECONDS = 30;
  */
 function madeInFrame(response: AssertionResponse): boolean {
   try {
-    const clientData: unknown = JSON.parse(
-      Buffer.from(response.response.clientDataJSON, "base64url").toString("utf8"),
+    const clientData = FrameClientData.safeParse(
+      JSON.parse(Buffer.from(response.response.clientDataJSON, "base64url").toString("utf8")),
     );
 
-    if (typeof clientData !== "object" || clientData === null) return true;
+    if (!clientData.success) return true;
 
-    if ("topOrigin" in clientData) return true;
+    if (clientData.data.topOrigin !== undefined) return true;
 
-    return "crossOrigin" in clientData && clientData.crossOrigin === true;
+    return clientData.data.crossOrigin === true;
   } catch {
     return true;
   }
@@ -92,7 +100,7 @@ async function assertionProblem(input: {
   try {
     const { verified } = await verifyAuthenticationResponse({
       // Shape-checked by the `AssertionResponse` schema; the library validates the contents.
-      response: input.response as unknown as AuthenticationResponseJSON,
+      response: input.response,
       expectedChallenge: Buffer.from(input.challenge).toString("base64url"),
       expectedType: "webauthn.get",
       expectedOrigin: [...input.relyingParty.origins],

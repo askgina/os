@@ -163,6 +163,7 @@
       "version": "0.2.0",
       "dependencies": {
         "pg": "8.23.1",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@askgina/os-testkit": "workspace:*",
@@ -189,6 +190,7 @@
         "cbor-x": "1.6.9",
         "pg": "8.23.1",
         "viem": "2.57.19",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@types/pg": "8.23.1",
@@ -202,6 +204,7 @@
         "@workflow/world": "5.2.0",
         "@workflow/world-postgres": "5.2.0",
         "pg": "8.23.1",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@askgina/os-testkit": "workspace:*",

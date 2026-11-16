@@ -27,8 +27,6 @@ const facts: PushFacts = {
   requesterName: "Invoice payer",
 };
 
-const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8");
-
 describe("what a push notification says", () => {
   it("at `count`, only how many requests wait: no kind, no names", () => {
     const one = pushMessage({ level: "count", facts, link, reminder: false });
@@ -150,7 +148,9 @@ describe("what a push notification says", () => {
     for (const level of ["count", "summary"] as const) {
       for (const reminder of [false, true]) {
         const message = pushMessage({ level, facts: wide, link: longLink, reminder });
-        expect(bytes(message)).toBeLessThanOrEqual(PUSH_PAYLOAD_MAX_BYTES);
+        expect(Buffer.byteLength(JSON.stringify(message), "utf8")).toBeLessThanOrEqual(
+          PUSH_PAYLOAD_MAX_BYTES,
+        );
         expect(message.notification.navigate).toBe(longLink);
         expect(message.notification.title.length).toBeGreaterThan(0);
       }

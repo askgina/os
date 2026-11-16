@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { DataKeyStore, keyProviderFromEnv, LocalKeyring } from "@askgina/os-keys";
+import { DataKeyStore, type JsonValue, keyProviderFromEnv, LocalKeyring } from "@askgina/os-keys";
 import {
   createTestDatabase,
   type MarkerScan,
@@ -33,6 +33,7 @@ import {
 } from "@askgina/os-testkit/openbao";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { z } from "zod";
 import {
   bootstrapWorkflowSchema,
   type Host,
@@ -84,7 +85,36 @@ function markersFound(scan: MarkerScan): string[] {
   return [...new Set(scan.hits.map((hit) => hit.marker.split("_")[0] ?? ""))].sort();
 }
 
-function report(line: Record<string, unknown>): void {
+// What the proof host (harness/server.ts) answers. A failed call answers `{ error, chain }`.
+
+const FailureChain = z.array(z.object({ name: z.string(), message: z.string() }));
+
+/** `/start`, `/start-body-attribute` and `/resume`: the run's id, or why the call failed. */
+const RunAnswer = z.object({
+  runId: z.string().optional(),
+  error: z.string().optional(),
+  chain: FailureChain.optional(),
+});
+
+/** `/stream/:runId`: the stream's first chunk, null when it has none. */
+const StreamAnswer = z.object({
+  chunk: z.string().nullable().optional(),
+  error: z.string().optional(),
+});
+
+/** `/hook/:token`: the hook's metadata. */
+const HookAnswer = z.object({ metadata: z.unknown().optional(), error: z.string().optional() });
+
+/** `/result/:runId`: the run's return value. */
+const ResultAnswer = z.object({ value: z.unknown().optional(), error: z.string().optional() });
+
+/** `/probe`: the health check's verdict and the run's public key. */
+const ProbeAnswer = z.object({ healthy: z.boolean(), publicKey: z.string().nullable() });
+
+/** `/keylog`: every key request the host's World has seen. */
+const KeyLogAnswer = z.object({ requests: z.array(z.object({ runId: z.string() })) });
+
+function report(line: { [field: string]: JsonValue | undefined }): void {
   process.stdout.write(`[ciphertext-at-rest] ${JSON.stringify(line)}\n`);
 }
 
@@ -109,9 +139,9 @@ interface Scenario {
   finalHost: Host;
   suspendedScan: MarkerScan;
   finalScan: MarkerScan;
-  stream: { status: number; json: { chunk?: string } };
-  hook: { status: number; json: { metadata?: unknown } };
-  result: { status: number; json: { value?: unknown } };
+  stream: { status: number; json: z.infer<typeof StreamAnswer> };
+  hook: { status: number; json: z.infer<typeof HookAnswer> };
+  result: { status: number; json: z.infer<typeof ResultAnswer> };
 }
 
 /** The run's return value the markers workflow produces for `nonce`. */
@@ -136,29 +166,20 @@ async function runScenario(
   const token = `tok-${nonce}`;
   const first = await startHost({ port: ports[0], databaseUrl, env });
 
-  const started = await first.call<{ runId?: string; error?: string }>("/start", {
-    nonce,
-    tenant: "ws_proof",
-  });
-
+  const started = await first.call("/start", RunAnswer, { nonce, tenant: "ws_proof" });
   expect(started.status, started.json.error).toBe(200);
   const runId = started.json.runId ?? "";
   await waitForHook(databaseUrl, token);
-  const stream = await first.call<{ chunk?: string }>(`/stream/${runId}`);
+  const stream = await first.call(`/stream/${runId}`, StreamAnswer);
   const suspendedScan = await scanForMarkers(databaseUrl, markers(nonce));
   await first.kill();
 
   const second = await startHost({ port: ports[1], databaseUrl, env });
-  const hook = await second.call<{ metadata?: unknown }>(`/hook/${token}`);
-
-  const resumed = await second.call<{ error?: string }>("/resume", {
-    token,
-    m5: `OSMARK5_${nonce}`,
-  });
-
+  const hook = await second.call(`/hook/${token}`, HookAnswer);
+  const resumed = await second.call("/resume", RunAnswer, { token, m5: `OSMARK5_${nonce}` });
   expect(resumed.status, resumed.json.error).toBe(200);
   // returnValue waits for the run to finish.
-  const result = await second.call<{ value?: unknown }>(`/result/${runId}`);
+  const result = await second.call(`/result/${runId}`, ResultAnswer);
   const finalScan = await scanForMarkers(databaseUrl, markers(nonce));
 
   return {
@@ -193,6 +214,11 @@ async function runCount(databaseUrl: string): Promise<number> {
   return row?.n ?? 0;
 }
 
+/** The database the encrypting World's tests on one key provider run in. */
+interface ProviderWorld {
+  db(): TestDatabase;
+}
+
 /**
  * The encrypting World's scenario and shredding on one key provider, in a database of its own.
  * `provider` is read when the tests run, after the enclosing `beforeAll` has prepared it.
@@ -200,7 +226,7 @@ async function runCount(databaseUrl: string): Promise<number> {
 function encryptingWorld(
   provider: () => ProviderSetup,
   ports: { a: number; b: number; c: number },
-): { db(): TestDatabase } {
+): ProviderWorld {
   let db: TestDatabase | undefined;
   let enc: Scenario;
 
@@ -287,8 +313,8 @@ function encryptingWorld(
 
     // A fresh process, so no key is left in any cache.
     const reader = await startHost({ port: ports.c, databaseUrl: database().url, env });
-    const result = await reader.call<{ value?: unknown; error?: string }>(`/result/${enc.runId}`);
-    const stream = await reader.call<{ chunk?: string; error?: string }>(`/stream/${enc.runId}`);
+    const result = await reader.call(`/result/${enc.runId}`, ResultAnswer);
+    const stream = await reader.call(`/stream/${enc.runId}`, StreamAnswer);
     expect(result.status).toBe(500);
     expect(result.json.value).toBeUndefined();
     expect(stream.status).toBe(500);
@@ -357,9 +383,7 @@ describe("encrypting World on the keyring file", () => {
       env: fileProvider.env,
     });
 
-    const started = await host.call<{ runId?: string; error?: string }>("/start-body-attribute", {
-      marker,
-    });
+    const started = await host.call("/start-body-attribute", RunAnswer, { marker });
 
     expect(started.status, started.json.error).toBe(200);
     await expect
@@ -382,7 +406,7 @@ describe("encrypting World on the keyring file", () => {
       env: { ...fileProvider.env, HARNESS_KEY_FAIL: "1" },
     });
 
-    const started = await host.call<{ runId?: string; error?: string }>("/start", {
+    const started = await host.call("/start", RunAnswer, {
       nonce: randomBytes(8).toString("hex"),
     });
 
@@ -400,16 +424,12 @@ describe("encrypting World on the keyring file", () => {
     const host = await startHost({ port: PORTS.probe, databaseUrl: url, env: fileProvider.env });
     const runId = `wrun_PROBE${randomBytes(8).toString("hex").toUpperCase()}`;
 
-    const probe = await host.call<{ healthy: boolean; publicKey: string | null }>("/probe", {
-      runId,
-    });
+    const probe = await host.call("/probe", ProbeAnswer, { runId });
 
     expect(probe.json.healthy).toBe(true);
     expect(probe.json.publicKey).toEqual(expect.any(String));
 
-    const keyRequests = (
-      await host.call<{ requests: { runId: string; context: unknown }[] }>("/keylog")
-    ).json.requests;
+    const keyRequests = (await host.call("/keylog", KeyLogAnswer)).json.requests;
 
     expect(keyRequests.filter((request) => request.runId === runId)).toHaveLength(1);
 
@@ -509,11 +529,7 @@ describe.skipIf(!openBaoUp && process.env.CI !== "true")(
         const token = `tok-${nonce}`;
         const first = await startHost({ port: PORTS.outageA, databaseUrl: url, env });
 
-        const started = await first.call<{ runId?: string; error?: string }>("/start", {
-          nonce,
-          tenant: "ws_proof",
-        });
-
+        const started = await first.call("/start", RunAnswer, { nonce, tenant: "ws_proof" });
         expect(started.status, started.json.error).toBe(200);
         const runId = started.json.runId ?? "";
         await waitForHook(url, token);
@@ -532,10 +548,7 @@ describe.skipIf(!openBaoUp && process.env.CI !== "true")(
         const runsBefore = await runCount(url);
         const refusedNonce = randomBytes(8).toString("hex");
 
-        type Answer = {
-          status: number;
-          json: { runId?: string; error?: string; chain?: { name: string; message: string }[] };
-        };
+        type Answer = { status: number; json: z.infer<typeof RunAnswer> };
 
         let refusedStart: Answer | undefined;
         let refusedStartMs = 0;
@@ -550,12 +563,18 @@ describe.skipIf(!openBaoUp && process.env.CI !== "true")(
 
         try {
           let at = performance.now();
-          refusedStart = await host.call("/start", { nonce: refusedNonce, tenant: "ws_proof" });
+          refusedStart = await host.call("/start", RunAnswer, {
+            nonce: refusedNonce,
+            tenant: "ws_proof",
+          });
           refusedStartMs = performance.now() - at;
           // The run published a public key at start, so the SDK may seal the hook payload to it
           // without the run's key; the run itself cannot go on until its key unwraps.
           at = performance.now();
-          resumeDuringOutage = await host.call("/resume", { token, m5: `OSMARK5_${nonce}` });
+          resumeDuringOutage = await host.call("/resume", RunAnswer, {
+            token,
+            m5: `OSMARK5_${nonce}`,
+          });
           resumeDuringOutageMs = performance.now() - at;
           await delay(Math.max(0, OUTAGE_MS - 1_000 - (performance.now() - pausedAt)));
           statusAtUnpause = await runStatus(url, runId);
@@ -587,7 +606,8 @@ describe.skipIf(!openBaoUp && process.env.CI !== "true")(
         if (resumeDuringOutage?.status !== 200) {
           await expect
             .poll(
-              async () => (await host.call("/resume", { token, m5: `OSMARK5_${nonce}` })).status,
+              async () =>
+                (await host.call("/resume", RunAnswer, { token, m5: `OSMARK5_${nonce}` })).status,
               { timeout: RESUME_CEILING_MS, interval: 500 },
             )
             .toBe(200);
@@ -601,16 +621,13 @@ describe.skipIf(!openBaoUp && process.env.CI !== "true")(
           })
           .toBe("completed");
         const completedAfterMs = performance.now() - unpausedAt;
-        const result = await host.call<{ value?: unknown; error?: string }>(`/result/${runId}`);
+        const result = await host.call(`/result/${runId}`, ResultAnswer);
         expect(result.status, result.json.error).toBe(200);
         expect(result.json.value).toEqual(expectedValue(nonce));
         const nextNonce = randomBytes(8).toString("hex");
         let at = performance.now();
 
-        const next = await host.call<{ runId?: string; error?: string }>("/start", {
-          nonce: nextNonce,
-          tenant: "ws_proof",
-        });
+        const next = await host.call("/start", RunAnswer, { nonce: nextNonce, tenant: "ws_proof" });
 
         const nextStartMs = performance.now() - at;
         expect(next.status, next.json.error).toBe(200);

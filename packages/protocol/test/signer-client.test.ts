@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mandateHash } from "../src/index.ts";
+import { type JsonValue, mandateHash } from "../src/index.ts";
 import {
   CONFIRM_TOKEN_HEADER,
   createConfirmClient,
@@ -98,15 +98,27 @@ type Recorded = { url: string; init: RequestInit };
 function fakeFetch(respond: (url: string) => { status: number; body: unknown; raw?: string }) {
   const calls: Recorded[] = [];
 
-  const fetch = (async (input: string | URL | Request, init: RequestInit = {}) => {
+  const fetch: typeof globalThis.fetch = async (
+    input: string | URL | Request,
+    init: RequestInit = {},
+  ) => {
     const url = String(input);
     calls.push({ url, init });
     const { status, body, raw } = respond(url);
 
     return new Response(raw ?? JSON.stringify(body), { status });
-  }) as typeof globalThis.fetch;
+  };
 
   return { fetch, calls };
+}
+
+/** The JSON a recorded call sent: the signer clients send every body as UTF-8 bytes. */
+function sentJson(call: Recorded | undefined): JsonValue {
+  const body = call?.init.body;
+
+  if (!(body instanceof Uint8Array)) throw new Error("the call sent no body bytes");
+
+  return JSON.parse(new TextDecoder().decode(body));
 }
 
 const workspaceState = {
@@ -172,6 +184,8 @@ describe("signer client", () => {
 
   it("a parameter cannot escape its path segment", async () => {
     const { signer, calls } = client(() => ({ status: 200, body: approvalState }));
+    // SAFETY: deliberately not a valid ApprovalId; the test checks that the client still keeps
+    // it inside one path segment.
     await signer.getApproval("apr_../../v1/sign?x=1" as typeof APPROVAL);
     expect(new URL(calls[0]?.url ?? "").pathname).toBe(
       "/v1/approvals/apr_..%2F..%2Fv1%2Fsign%3Fx%3D1",
@@ -201,9 +215,8 @@ describe("signer client", () => {
   it("sends the request body as JSON", async () => {
     const { signer, calls } = client(() => ({ status: 200, body: workspaceState }));
     const authorization = { envelope: approveIntent(), assertions: [] };
-    await signer.resumeWorkspace(WS, authorization as never);
-    const body = calls[0]?.init.body;
-    expect(JSON.parse(new TextDecoder().decode(body as Uint8Array))).toEqual({ authorization });
+    await signer.resumeWorkspace(WS, authorization);
+    expect(sentJson(calls[0])).toEqual({ authorization });
   });
 
   it("uses each route's method and path", async () => {
@@ -223,8 +236,7 @@ describe("signer client", () => {
       `POST /v1/approvals/${APPROVAL}/revoke`,
     ]);
     // The workspace travels in the body so the signer can record the revocation in its log.
-    const body = calls[1]?.init.body as Uint8Array;
-    expect(JSON.parse(new TextDecoder().decode(body))).toEqual({ workspaceId: WS });
+    expect(sentJson(calls[1])).toEqual({ workspaceId: WS });
   });
 
   it("sends a sweep to its wallet's path, with the sweep and its authorization in the body", async () => {
@@ -249,8 +261,10 @@ describe("signer client", () => {
     expect(`${call?.init.method} ${new URL(call?.url ?? "").pathname}`).toBe(
       `POST /v1/wallets/${WALLET}/sweep`,
     );
-    expect(JSON.parse(new TextDecoder().decode(call?.init.body as Uint8Array))).toEqual(request);
-    expect(verifyRecorded(call as Recorded)).toBe(true);
+    expect(sentJson(call)).toEqual(request);
+
+    if (!call) throw new Error("no call");
+    expect(verifyRecorded(call)).toBe(true);
   });
 
   it("sends each mandate call to its route, signed, with its body, and parses the answer", async () => {
@@ -297,7 +311,7 @@ describe("signer client", () => {
       transaction: { nonce: 0, gas: "21000", maxFeePerGas: "1", maxPriorityFeePerGas: "1" },
     };
 
-    expect(await signer.grantMandate(MANDATE, grant as never)).toEqual(state);
+    expect(await signer.grantMandate(MANDATE, grant)).toEqual(state);
     expect(await signer.getMandate(MANDATE)).toEqual(state);
     expect(await signer.listMandates(WALLET)).toEqual({ mandates: [state] });
     expect(await signer.revokeMandate(MANDATE, WS)).toEqual(state);
@@ -324,9 +338,7 @@ describe("signer client", () => {
     for (const call of calls) expect(verifyRecorded(call)).toBe(true);
 
     const body = (call: Recorded | undefined) =>
-      call?.init.body === undefined
-        ? undefined
-        : JSON.parse(new TextDecoder().decode(call.init.body as Uint8Array));
+      call?.init.body === undefined ? undefined : sentJson(call);
 
     expect(calls.map(body)).toEqual([grant, undefined, undefined, { workspaceId: WS }, use]);
   });
@@ -372,9 +384,7 @@ describe("signer client", () => {
     ]);
 
     for (const call of calls) expect(verifyRecorded(call)).toBe(true);
-    expect(
-      calls.map((call) => JSON.parse(new TextDecoder().decode(call.init.body as Uint8Array))),
-    ).toEqual([reprice, byMandate, cancel]);
+    expect(calls.map(sentJson)).toEqual([reprice, byMandate, cancel]);
 
     // A refusal keeps its code; an answer that is not an attempt is not passed on.
     const refusing = client(() => ({
@@ -454,7 +464,7 @@ describe("signer client", () => {
       authorization: { envelope: approveIntent(), assertions: [] },
     };
 
-    const signed = await signer.signVenue(request as never);
+    const signed = await signer.signVenue(request);
     expect(JSON.stringify(signed.request)).toBe(
       JSON.stringify({
         action: {
@@ -489,9 +499,7 @@ describe("signer client", () => {
     ]);
 
     for (const call of calls) expect(verifyRecorded(call)).toBe(true);
-    expect(
-      calls.map((call) => JSON.parse(new TextDecoder().decode(call.init.body as Uint8Array))),
-    ).toEqual([request, { workspaceId: WS }]);
+    expect(calls.map(sentJson)).toEqual([request, { workspaceId: WS }]);
 
     // An answer the contract does not allow is not passed on: an order with another cloid, an
     // extra key in the action, or a cancel of another order.
@@ -501,7 +509,7 @@ describe("signer client", () => {
       { ...order, request: { ...order.request, expiresAfter: null } },
     ]) {
       const odd = client(() => ({ status: 200, body }));
-      await expect(odd.signer.signVenue(request as never)).rejects.not.toBeInstanceOf(SignerError);
+      await expect(odd.signer.signVenue(request)).rejects.not.toBeInstanceOf(SignerError);
     }
 
     const otherCancel = client(() => ({
@@ -541,10 +549,10 @@ describe("signer client", () => {
     const retire = { envelope: retireWallet(), assertions: [] };
     const remove = { envelope: deleteWorkspace(), assertions: [] };
 
-    expect(await signer.retireWallet(WALLET, retire as never)).toEqual(retiring);
+    expect(await signer.retireWallet(WALLET, retire)).toEqual(retiring);
     expect(await signer.cancelRetireWallet(WALLET, WS)).toEqual(retiring);
     expect(await signer.finalizeRetireWallet(WALLET, WS)).toEqual(retiring);
-    expect(await signer.deleteWorkspace(WS, remove as never)).toEqual(deleting);
+    expect(await signer.deleteWorkspace(WS, remove)).toEqual(deleting);
     expect(await signer.cancelDeleteWorkspace(WS)).toEqual(deleting);
     expect(await signer.finalizeDeleteWorkspace(WS)).toEqual(deleting);
 
@@ -558,9 +566,7 @@ describe("signer client", () => {
     ]);
 
     for (const call of calls) expect(verifyRecorded(call)).toBe(true);
-    expect(
-      calls.map((call) => JSON.parse(new TextDecoder().decode(call.init.body as Uint8Array))),
-    ).toEqual([
+    expect(calls.map(sentJson)).toEqual([
       { authorization: retire },
       { workspaceId: WS },
       { workspaceId: WS },
@@ -581,9 +587,7 @@ describe("signer client", () => {
       status: 409,
     });
     const odd = client(() => ({ status: 200, body: { ...retiring, destroyAfter: null } }));
-    await expect(odd.signer.retireWallet(WALLET, retire as never)).rejects.not.toBeInstanceOf(
-      SignerError,
-    );
+    await expect(odd.signer.retireWallet(WALLET, retire)).rejects.not.toBeInstanceOf(SignerError);
   });
 
   it("passes a mandate refusal on with its code and detail, and refuses a state with another hash", async () => {
@@ -622,7 +626,7 @@ describe("signer client", () => {
       },
     }));
 
-    const error = await forged.signer.getMandate(MANDATE).catch((e: unknown) => e);
+    const error = await forged.signer.getMandate(MANDATE).catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(SignerError);
   });
@@ -630,7 +634,10 @@ describe("signer client", () => {
   it("gives up on a signer that never answers", async () => {
     let aborted = false;
 
-    const hang = ((_input: string | URL | Request, init: RequestInit = {}) => {
+    const hang: typeof globalThis.fetch = (
+      _input: string | URL | Request,
+      init: RequestInit = {},
+    ) => {
       const { promise, reject } = Promise.withResolvers<Response>();
       init.signal?.addEventListener("abort", () => {
         aborted = true;
@@ -638,7 +645,7 @@ describe("signer client", () => {
       });
 
       return promise;
-    }) as typeof globalThis.fetch;
+    };
 
     const signer = createSignerClient({
       baseUrl: "http://signer:8787",
@@ -658,7 +665,7 @@ describe("signer client", () => {
       body: { error: { code: "policy_denied", message: "denied", detail: "over_daily_cap" } },
     }));
 
-    const error = await signer.getWallet(WALLET).catch((e: unknown) => e);
+    const error = await signer.getWallet(WALLET).catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(SignerError);
     expect(error).toMatchObject({
       code: "policy_denied",
@@ -751,12 +758,7 @@ describe("signer client", () => {
       required: 2,
     });
 
-    const [opened, listed, viewed, submitted] = fake.calls as [
-      Recorded,
-      Recorded,
-      Recorded,
-      Recorded,
-    ];
+    const [opened, listed, viewed, submitted] = fake.calls;
 
     expect(fake.calls.map((call) => `${call.init.method} ${new URL(call.url).pathname}`)).toEqual([
       `POST /v1/approvals/${APPROVAL}/confirmation`,
@@ -764,6 +766,8 @@ describe("signer client", () => {
       `GET ${view}`,
       `POST ${view}/assertions`,
     ]);
+
+    if (!opened || !listed || !viewed || !submitted) throw new Error("expected four calls");
 
     for (const call of [opened, listed]) {
       expect(verifyRecorded(call, SECRET)).toBe(true);
@@ -779,11 +783,8 @@ describe("signer client", () => {
       expect(call.url).not.toContain(TOKEN);
     }
 
-    const body = (call: Recorded) =>
-      JSON.parse(new TextDecoder().decode(call.init.body as Uint8Array));
-
-    expect(body(opened)).toEqual(request);
-    expect(body(submitted)).toEqual({ response });
+    expect(sentJson(opened)).toEqual(request);
+    expect(sentJson(submitted)).toEqual({ response });
   });
 
   it("sends the possession step to its routes, the token only in its header, signed with the confirm secret", async () => {
@@ -839,9 +840,7 @@ describe("signer client", () => {
       expect(call.url).not.toContain(TOKEN);
     }
 
-    expect(JSON.parse(new TextDecoder().decode(fake.calls[1]?.init.body as Uint8Array))).toEqual({
-      response,
-    });
+    expect(sentJson(fake.calls[1])).toEqual({ response });
 
     // A fingerprint that is not one is not passed on.
     const odd = fakeFetch(() => ({ status: 200, body: { fingerprint: "0123-4567-89AB-CDEU" } }));

@@ -16,6 +16,7 @@ import {
   type WalletRef,
 } from "@askgina/os-protocol";
 import { afterAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { createTestVault, SCHEMA_VERSION, type Vault, VaultError } from "../src/index.ts";
 import {
   approveIntent,
@@ -43,6 +44,12 @@ import {
 
 const WEEK = 604_800;
 
+/** A `SELECT COUNT(*) AS n` row. */
+const CountRow = z.object({ n: z.number() });
+
+/** The row `PRAGMA user_version` returns. */
+const UserVersion = z.object({ user_version: z.number() });
+
 function retireEnvelope(
   world: World,
   changes: Partial<RetireWalletEnvelope> = {},
@@ -50,7 +57,7 @@ function retireEnvelope(
   return {
     ...header(world.t.clock, newId("apr"), world.workspaceId),
     type: "retire-wallet",
-    wallet: { walletId: world.walletId, address: world.address as Address },
+    wallet: { walletId: world.walletId, address: world.address },
     destroyAfter: world.t.clock.value + WEEK,
     ...changes,
   };
@@ -531,7 +538,7 @@ describe("deleting a workspace", () => {
     t.signer.close();
 
     const db = new DatabaseSync(sqlitePath);
-    const count = (sql: string) => (db.prepare(sql).get(world.workspaceId) as { n: number }).n;
+    const count = (sql: string) => CountRow.parse(db.prepare(sql).get(world.workspaceId)).n;
     expect(count("SELECT COUNT(*) AS n FROM confirmations WHERE workspace_id = ?")).toBe(0);
     expect(count("SELECT COUNT(*) AS n FROM approvers WHERE workspace_id = ?")).toBe(0);
     expect(
@@ -602,7 +609,7 @@ describe("the database's schema version 7", () => {
     t.signer.close();
 
     const db = new DatabaseSync(sqlitePath);
-    const { user_version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
+    const { user_version } = UserVersion.parse(db.prepare("PRAGMA user_version").get());
     db.close();
     expect([SCHEMA_VERSION, user_version]).toEqual([8, 8]);
   });

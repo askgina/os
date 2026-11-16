@@ -37,7 +37,7 @@ import {
   WS,
 } from "./fixtures.ts";
 
-const ok = (schema: { safeParse(v: unknown): { success: boolean } }, value: unknown) =>
+const ok = <Value>(schema: { safeParse(value: Value): { success: boolean } }, value: Value) =>
   schema.safeParse(value).success;
 
 const walletRef = { walletId: WALLET, address: WALLET_ADDRESS } as const;

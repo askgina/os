@@ -1,5 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { z } from "zod";
+import type { JsonValue } from "./json.ts";
 
 /**
  * Wraps and unwraps per-run data keys under a key-encryption key (KEK) that lives outside
@@ -84,34 +86,51 @@ export interface KeyringFile {
 /** File KEK ids; never `:` or `@`, so a file id cannot be mistaken for a `bao:` id. */
 const FILE_KEK_ID = /^[A-Za-z0-9_-]+$/;
 
+/**
+ * The keyring file is a JSON object; its two fields are decoded one at a time below, in the
+ * order they are reported, so each failure keeps its own message.
+ */
+const KeyringFileFields = z.object({
+  active: z.unknown().optional(),
+  keys: z.unknown().optional(),
+});
+
+const ActiveKekId = z.string().min(1);
+
+/** `keys`: an object whose entries are checked one by one, in file order. */
+const KeyringEntries = z.record(z.string(), z.unknown());
+
+const KekBase64 = z.string();
+
 /** Check the shape of a parsed keyring file. Messages name fields, never values. */
-function parseKeyringFile(value: unknown): KeyringFile {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("keyring: the keyring file must be a JSON object");
-  }
+function parseKeyringFile(value: JsonValue): KeyringFile {
+  const fields = KeyringFileFields.safeParse(value);
 
-  const { active, keys } = value as Record<string, unknown>;
+  if (!fields.success) throw new Error("keyring: the keyring file must be a JSON object");
+  const active = ActiveKekId.safeParse(fields.data.active);
 
-  if (typeof active !== "string" || active === "") {
-    throw new Error("keyring: `active` must be a non-empty string");
-  }
+  if (!active.success) throw new Error("keyring: `active` must be a non-empty string");
+  const entries = KeyringEntries.safeParse(fields.data.keys);
 
-  if (typeof keys !== "object" || keys === null || Array.isArray(keys)) {
+  if (!entries.success) {
     throw new Error("keyring: `keys` must be an object of KEK id to base64 key");
   }
 
-  const out: Record<string, string> = {};
+  const keys = Object.fromEntries(
+    Object.entries(entries.data).map(([id, key]): [string, string] => {
+      if (!FILE_KEK_ID.test(id)) {
+        throw new Error("keyring: every KEK id must match [A-Za-z0-9_-]+");
+      }
 
-  for (const [id, key] of Object.entries(keys)) {
-    if (!FILE_KEK_ID.test(id)) {
-      throw new Error("keyring: every KEK id must match [A-Za-z0-9_-]+");
-    }
+      const base64 = KekBase64.safeParse(key);
 
-    if (typeof key !== "string") throw new Error(`keyring: KEK ${id} is not a base64 string`);
-    out[id] = key;
-  }
+      if (!base64.success) throw new Error(`keyring: KEK ${id} is not a base64 string`);
 
-  return { active, keys: out };
+      return [id, base64.data];
+    }),
+  );
+
+  return { active: active.data, keys };
 }
 
 const IV_BYTES = 12;
@@ -145,7 +164,7 @@ export class LocalKeyring implements KeyProvider {
   }
 
   static fromFile(path: string): LocalKeyring {
-    let parsed: unknown;
+    let parsed: JsonValue;
 
     try {
       parsed = JSON.parse(readFileSync(path, "utf8"));

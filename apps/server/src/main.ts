@@ -4,7 +4,7 @@ import { createSignerFetch } from "@askgina/os-protocol/signer-transport";
 import { serve } from "@hono/node-server";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
-import { ZodError } from "zod";
+import { ZodError, z } from "zod";
 import type { ApprovalEngine } from "./approvals/kinds.ts";
 import { ConfigError, loadConfig } from "./config.ts";
 import type { AppContext } from "./context.ts";
@@ -15,6 +15,9 @@ import { createApprovalEngine, createChains, startBackground } from "./execution
 import { createInternalApp, createPublicApp } from "./http/app.ts";
 import { createSessions, prepareSetup } from "./identity/index.ts";
 import { createLogger } from "./log.ts";
+
+/** The `code` some errors carry, such as Node's system errors and pg's SQLSTATE. */
+const CodedError = z.object({ code: z.union([z.string(), z.number()]) });
 
 async function main(): Promise<void> {
   const log = createLogger("server");
@@ -52,6 +55,7 @@ async function main(): Promise<void> {
 
   const db = drizzle(pool, { schema });
   const now = () => Math.floor(Date.now() / 1000);
+  let approvals: ApprovalEngine | null = null;
 
   const ctx: AppContext = {
     config,
@@ -71,13 +75,17 @@ async function main(): Promise<void> {
     }),
     sessions: createSessions({ db, config, now }),
     chains: createChains(config),
-    // Assigned right below: the engine keeps this object and reads `approvals` lazily.
-    approvals: undefined as unknown as ApprovalEngine,
+    // The engine keeps this object and reads `approvals` lazily; it is created right below.
+    get approvals(): ApprovalEngine {
+      if (approvals === null) throw new Error("the approval engine is not created yet");
+
+      return approvals;
+    },
     log,
     now,
   };
 
-  ctx.approvals = createApprovalEngine(ctx);
+  approvals = createApprovalEngine(ctx);
 
   // The encrypted World is created and installed with `setWorld()` by the execution module
   // (`workflowRuntime(ctx)`) and started by `startBackground`, so there is exactly one.
@@ -135,18 +143,20 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => void stop("SIGINT"));
 }
 
-main().catch((error: unknown) => {
+main().catch((cause: unknown) => {
+  const coded = CodedError.safeParse(cause);
+
   // Boot errors can quote configuration values; log only their kind, and for a rejected
   // setting, which one it was and why in a word.
   createLogger("server").error("failed to start", {
-    name: error instanceof Error ? error.name : "unknown",
-    code: (error as { code?: string } | null)?.code,
+    name: cause instanceof Error ? cause.name : "unknown",
+    code: coded.success ? coded.data.code : undefined,
     invalid:
-      error instanceof ZodError
-        ? error.issues.map((issue) => `${issue.path.join(".")}: ${issue.code}`).join("; ")
+      cause instanceof ZodError
+        ? cause.issues.map((issue) => `${issue.path.join(".")}: ${issue.code}`).join("; ")
         : undefined,
     // Names the variable and what is wrong with its file, never the file's content.
-    reason: error instanceof ConfigError ? error.message : undefined,
+    reason: cause instanceof ConfigError ? cause.message : undefined,
   });
   process.exit(1);
 });

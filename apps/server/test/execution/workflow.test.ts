@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import type { ApprovalId, IntentId, MandateId } from "@askgina/os-protocol";
+import { type ApprovalId, MandateId } from "@askgina/os-protocol";
 import { scanForMarkers } from "@askgina/os-testkit";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -9,7 +9,7 @@ import { engineOf } from "../../src/execution/approvals.ts";
 import { startBackground, sweep } from "../../src/execution/index.ts";
 import { workflowRuntime } from "../../src/execution/workflow-runtime.ts";
 import { TEST_CHAIN_ID } from "../support/context.ts";
-import { anvil, createFixture, type Fixture, toolJson } from "./fixture.ts";
+import { anvil, createFixture, type Fixture, intentIdOf, toolJson } from "./fixture.ts";
 
 let f: Fixture;
 
@@ -26,7 +26,7 @@ afterAll(async () => {
   await f?.close();
 });
 
-const randomAddress = () => `0x${randomBytes(20).toString("hex")}` as `0x${string}`;
+const randomAddress = (): `0x${string}` => `0x${randomBytes(20).toString("hex")}`;
 
 async function proposeOverMcp(memo: string, to = randomAddress()) {
   const client = await f.mcp(f.agent.token);
@@ -38,10 +38,9 @@ async function proposeOverMcp(memo: string, to = randomAddress()) {
     }),
   );
 
-  const [row] = await f.t.ctx.db
-    .select()
-    .from(intents)
-    .where(eq(intents.id, proposed.intentId as IntentId));
+  const intentId = intentIdOf(proposed);
+
+  const [row] = await f.t.ctx.db.select().from(intents).where(eq(intents.id, intentId));
 
   if (!row?.approvalId) throw new Error(JSON.stringify(proposed));
 
@@ -236,7 +235,7 @@ describe("the approval workflow", () => {
         agentId: f.agent.id,
         assets: [
           {
-            chainId: TEST_CHAIN_ID as `eip155:${number}`,
+            chainId: TEST_CHAIN_ID,
             asset: "native",
             maxPerAction: (10n ** 17n).toString(),
             maxPerWindow: (10n ** 17n).toString(),
@@ -253,12 +252,12 @@ describe("the approval workflow", () => {
     });
 
     await until(
-      () => approvalRow(grant.id as ApprovalId),
+      () => approvalRow(grant.id),
       (row) => row.runId !== null,
     );
-    await f.t.approveOnPage(f.t.owner, grant.id as ApprovalId);
+    await f.t.approveOnPage(f.t.owner, grant.id);
     await until(
-      () => approvalRow(grant.id as ApprovalId),
+      () => approvalRow(grant.id),
       (row) => row.status === "executed",
     );
 
@@ -288,7 +287,7 @@ describe("the approval workflow", () => {
     expect(rows).toHaveLength(1);
     expect((await approvalRow(approvalId)).status).toBe("executed");
     expect(await anvil.getBalance({ address: to })).toBe(10n ** 16n);
-    const mandate = await f.t.ctx.signer.getMandate(use.mandateId as MandateId);
+    const mandate = await f.t.ctx.signer.getMandate(MandateId.parse(use.mandateId));
     expect(mandate.usage.uses).toBe(1);
   });
 });

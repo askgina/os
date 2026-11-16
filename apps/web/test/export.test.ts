@@ -126,7 +126,29 @@ describe("the result of a copy, shown once", () => {
 
   it("is handed to the next page through memory and gone after it read it", () => {
     vi.useFakeTimers();
-    const result = { workspace: { id: "ws_new" } } as unknown as CloneResult;
+
+    const result: CloneResult = {
+      workspace: {
+        id: "ws_new",
+        name: "Research team (copy)",
+        role: "owner",
+        paused: false,
+        pendingApprovals: 0,
+        lifecycle: { state: "active", destroyAfter: null, deletedAt: null },
+        adminThreshold: 1,
+        notificationDetail: "count",
+        members: [],
+        agents: [],
+        wallets: [],
+        chains: [],
+        venueNetworks: [],
+      },
+      approvals: [],
+      agents: [],
+      invites: [],
+      templateAdminThreshold: 2,
+    };
+
     revealCloneResult(result);
     expect(takeCloneResult("ws_new")).toBe(result);
     // A second render in the same task sees the same value.

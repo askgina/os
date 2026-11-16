@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
-  type Envelope,
   type HyperliquidOrderOperation,
   type HyperliquidRules,
   intentHash,
@@ -22,6 +21,7 @@ import {
   recoverTypedDataAddress,
 } from "viem";
 import { afterAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { createTestVault, SCHEMA_VERSION, SchemaTooNewError, type Vault } from "../src/index.ts";
 import { cloidFor } from "../src/venues/hyperliquid.ts";
 import {
@@ -30,6 +30,7 @@ import {
   Clock,
   header,
   intentFor,
+  personAt,
   refused,
   replacePolicy,
   setUpWorld,
@@ -90,6 +91,9 @@ async function venueWorld(
   return { ...world, policy };
 }
 
+/** The row `PRAGMA user_version` returns. */
+const UserVersion = z.object({ user_version: z.number() });
+
 /** Buy 0.01 BTC perpetual at 65,000 USD, immediate or cancel: 650 USD notional. */
 function orderIntent(world: World, changes: Partial<HyperliquidOrderOperation> = {}): VenueIntent {
   return {
@@ -121,8 +125,8 @@ function withdrawIntent(world: World, amount = "25"): VenueIntent {
 const signVenue = (world: World, intent: VenueIntent = orderIntent(world)) =>
   world.t.client.signVenue({ intent, authorization: approveIntent(world, intent) });
 
-const signatureHex = ({ r, s, v }: HyperliquidRequest["signature"]) =>
-  `${r}${s.slice(2)}${v.toString(16)}` as Hex;
+const signatureHex = ({ r, s, v }: HyperliquidRequest["signature"]): Hex =>
+  `${r}${s.slice(2)}${v.toString(16)}`;
 
 /**
  * Who signed an order or cancel request, recovered with an independent encoder: the reference
@@ -244,7 +248,9 @@ describe("signing an approved venue order", () => {
     const world = await venueWorld();
     const intent = orderIntent(world);
     const authorization = approveIntent(world, intent);
-    const order = intent.operation as HyperliquidOrderOperation;
+    const order = intent.operation;
+
+    if (order.type !== "hyperliquid.order") throw new Error("not an order");
 
     const changed: [VenueIntent, string][] = [
       [{ ...intent, operation: { ...order, asset: 4 } }, "intent_mismatch"],
@@ -284,11 +290,15 @@ describe("signing an approved venue order", () => {
     await world.t.client.signVenue({ intent: first, authorization: used });
     const second = orderIntent(world);
 
+    const usedEnvelope = used.envelope;
+
+    if (usedEnvelope.type !== "approve-intent") throw new Error("not an intent approval");
+
     const envelope = {
-      ...used.envelope,
+      ...usedEnvelope,
       approvalId: newId("apr"),
       intentHash: intentHash(second),
-    } as Envelope;
+    };
 
     await refused(
       world.t.client.signVenue({
@@ -383,7 +393,8 @@ describe("signing an approved venue order", () => {
 
   it("refuses an expired envelope, a revoked approval, a removed approver, a paused workspace and a changed policy", async () => {
     const world = await venueWorld(startSigner(), { people: 2 });
-    const [alice, bob] = world.people as [World["people"][0], World["people"][0]];
+    const alice = personAt(world, 0);
+    const bob = personAt(world, 1);
 
     const expiring = orderIntent(world);
     const expired = approveIntent(world, expiring, { ttlSeconds: 60 });
@@ -518,12 +529,10 @@ describe("signing an approved venue order", () => {
     expect(recovered.toLowerCase()).toBe(world.address);
     expect((await world.t.client.getWallet(world.walletId)).venueSpent).toEqual([]);
 
-    // There is no field to name another destination.
-    const elsewhere = {
-      ...intent,
-      id: newId("int"),
-      operation: { ...intent.operation, destination: ZERO },
-    } as unknown as VenueIntent;
+    // There is no field to name another destination: the operation carries one anyway, which
+    // the VenueIntent type admits only because `operation` is not a fresh object literal.
+    const operation = { ...intent.operation, destination: ZERO };
+    const elsewhere: VenueIntent = { ...intent, id: newId("int"), operation };
 
     await refused(
       world.t.client.signVenue({ intent: elsewhere, authorization: approveIntent(world, intent) }),
@@ -656,7 +665,7 @@ describe("schema version 8", () => {
     expect((await signVenue(upgraded)).network).toBe(NETWORK);
     t.signer.close();
     const db = new DatabaseSync(sqlitePath);
-    const { user_version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
+    const { user_version } = UserVersion.parse(db.prepare("PRAGMA user_version").get());
     expect(user_version).toBe(SCHEMA_VERSION);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`);
     db.close();

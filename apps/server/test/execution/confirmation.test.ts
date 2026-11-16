@@ -21,7 +21,7 @@ import {
   TEST_ORIGIN,
   type TestPerson,
 } from "../support/context.ts";
-import { createFixture, draftFor, type Fixture, fund, toolJson } from "./fixture.ts";
+import { createFixture, draftFor, type Fixture, fund, intentIdOf, toolJson } from "./fixture.ts";
 
 let f: Fixture;
 
@@ -36,7 +36,7 @@ afterAll(async () => {
   await f?.close();
 });
 
-const randomAddress = () => `0x${randomBytes(20).toString("hex")}` as `0x${string}`;
+const randomAddress = (): `0x${string}` => `0x${randomBytes(20).toString("hex")}`;
 
 /** An agent's payment, waiting for approval. */
 async function proposePayment(): Promise<{ intentId: IntentId; approvalId: ApprovalId }> {
@@ -49,12 +49,9 @@ async function proposePayment(): Promise<{ intentId: IntentId; approvalId: Appro
     }),
   );
 
-  if (typeof proposed.intentId !== "string") throw new Error(JSON.stringify(proposed));
+  const intentId = intentIdOf(proposed);
 
-  const [row] = await f.t.ctx.db
-    .select()
-    .from(intents)
-    .where(eq(intents.id, proposed.intentId as IntentId));
+  const [row] = await f.t.ctx.db.select().from(intents).where(eq(intents.id, intentId));
 
   if (!row?.approvalId) throw new Error("intent without approval");
 
@@ -90,7 +87,8 @@ async function withSigner<M extends keyof SignerClient>(
 ): Promise<void> {
   const signer = f.t.ctx.signer;
   const real = signer[method];
-  signer[method] = replacement(real.bind(signer) as SignerClient[M]);
+  // The client's methods are closures over its transport (createSignerClient), not `this`.
+  signer[method] = replacement(real);
 
   try {
     await run();
@@ -241,7 +239,7 @@ describe("the confirmation page's link", () => {
       params: { token },
       body: {
         ceremonyId: start.ceremonyId,
-        response: f.t.register(start.options).response as never,
+        response: f.t.register(start.options).response,
       },
     });
 
@@ -380,7 +378,7 @@ describe("an approver change", () => {
     const passkey = f.t.register(start.options);
     await dana.api.call("finishInviteRegistration", {
       params: { token },
-      body: { ceremonyId: start.ceremonyId, response: passkey.response as never },
+      body: { ceremonyId: start.ceremonyId, response: passkey.response },
     });
 
     const pending = await api.call("listApprovals", {

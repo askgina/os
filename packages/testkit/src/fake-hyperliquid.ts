@@ -60,6 +60,7 @@ import {
   keccak256,
   recoverAddress,
 } from "viem";
+import { z } from "zod";
 import { referenceMsgpackEncode } from "./msgpack.ts";
 
 export type FakeNetwork = "testnet" | "mainnet";
@@ -219,7 +220,10 @@ export interface WithdrawAction {
   destination: Address;
 }
 
-/** A request body as the venue reads it. `action` is the received object itself. */
+/**
+ * A request body as the venue reads it. `action` holds the received fields; an order's or a
+ * cancel's keys are in the order received, the order the venue hashes.
+ */
 export interface ExchangeBody {
   action: ExchangeAction;
   nonce: number;
@@ -287,8 +291,8 @@ function u64(value: number): Uint8Array {
  * The L1 action hash (the phantom agent's `connectionId`), over the action exactly as given:
  * keccak256(msgpack(action) ‖ nonce ‖ 0x00, or 0x01 ‖ vault address ‖ [0x00 ‖ expiresAfter]).
  */
-export function l1ActionHash(
-  action: unknown,
+export function l1ActionHash<Action>(
+  action: Action,
   nonce: number,
   vaultAddress: Address | null,
   expiresAfter: number | null,
@@ -343,6 +347,11 @@ function withdrawSigningHash(action: WithdrawAction): Hex {
   });
 }
 
+/** Hex in lower case. Every hex text here starts with a lower-case `0x`; only digits change. */
+function lowerHex(value: Hex): Hex {
+  return `0x${value.slice(2).toLowerCase()}`;
+}
+
 /**
  * The address that signed a request, lower-case, as the venue of `network` recovers it. A
  * `withdraw3` is checked as user-signed, every other action as L1. Throws when the signature
@@ -353,15 +362,13 @@ export async function recoverExchangeSigner(
   network: FakeNetwork,
 ): Promise<Address> {
   let hash: Hex;
-  const { action } = request;
+  const action = ReceivedObject.safeParse(request.action);
 
-  if (isRecord(action) && action.type === "withdraw3") {
-    const problem = withdrawProblem(action);
+  if (action.success && action.data.fields.get("type") === "withdraw3") {
+    const withdrawal = readWithdraw(action.data);
 
-    if (problem !== null) throw new TypeError(`not a withdrawal: ${problem}`);
-    // withdrawProblem checked every field of WithdrawAction.
-    const withdrawal = action as unknown as WithdrawAction;
-    hash = withdrawSigningHash(withdrawal);
+    if (!withdrawal.ok) throw new TypeError(`not a withdrawal: ${withdrawal.problem}`);
+    hash = withdrawSigningHash(withdrawal.value);
   } else {
     const connectionId = l1ActionHash(
       request.action,
@@ -376,31 +383,78 @@ export async function recoverExchangeSigner(
   const { r, s, v } = request.signature;
   const signer = await recoverAddress({ hash, signature: { r, s, v: BigInt(v) } });
 
-  return signer.toLowerCase() as Address;
+  return lowerHex(signer);
 }
 
 // --- reading a request body ------------------------------------------------------------------
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+/** A JSON object's keys in the order received, and its fields by key. */
+interface Received {
+  keys: string[];
+  fields: ReadonlyMap<string, unknown>;
 }
 
-function isUint(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+/**
+ * A JSON object, read from the object itself: a decoded copy would list the declared keys first
+ * and drop a `__proto__` key, and the venue's rules here depend on the keys as received.
+ */
+const ReceivedObject = z
+  .instanceof(Object)
+  .refine((value) => !Array.isArray(value) && !(value instanceof Function))
+  .transform((value): Received => {
+    const entries = Object.entries(value);
+
+    return { keys: entries.map(([key]) => key), fields: new Map(entries) };
+  });
+
+/** A non-empty JSON array; its items are read one by one. */
+const NonEmptyList = z.array(z.unknown()).min(1);
+
+/** A safe integer of at least 0: an asset index or milliseconds. */
+const Uint = z.number().refine((value) => Number.isSafeInteger(value) && value >= 0);
+
+const Decimal = z.string().regex(CANONICAL_DECIMAL);
+
+/** `0x` text that matches `pattern`; every pattern here starts with `0x`. */
+function hexText(pattern: RegExp) {
+  return z.templateLiteral(["0x", z.string()]).refine((value) => pattern.test(value));
 }
 
-function isDecimal(value: unknown): value is string {
-  return typeof value === "string" && CANONICAL_DECIMAL.test(value);
+const AddressText = hexText(ADDRESS);
+
+const LowerAddressText = hexText(LOWER_ADDRESS);
+
+const CloidText = hexText(CLOID);
+
+const SignatureWord = hexText(SIGNATURE_WORD);
+
+const ChainIdText = hexText(HEX_NUMBER);
+
+const Tif = z.enum(["Gtc", "Ioc", "Alo"]);
+
+const HyperliquidChain = z.enum(["Mainnet", "Testnet"]);
+
+const RecoveryId = z.union([z.literal(27), z.literal(28)]);
+
+/** A value read from a request, or why it cannot be read. */
+type Read<T> = { ok: true; value: T } | { ok: false; problem: string };
+
+function accept<T>(value: T): Read<T> {
+  return { ok: true, value };
+}
+
+function refuse<T>(problem: string): Read<T> {
+  return { ok: false, problem };
 }
 
 /** Null when `value` has exactly `fields` in that order; `optional` fields may be missing. */
 function fieldsProblem(
-  value: Record<string, unknown>,
+  value: Received,
   fields: readonly string[],
   optional: readonly string[] = [],
 ): string | null {
-  const keys = Object.keys(value);
-  const expected = fields.filter((field) => !optional.includes(field) || field in value);
+  const { keys } = value;
+  const expected = fields.filter((field) => !optional.includes(field) || value.fields.has(field));
 
   if (keys.length === expected.length && keys.every((key, index) => key === expected[index])) {
     return null;
@@ -409,87 +463,115 @@ function fieldsProblem(
   return `expected the fields ${expected.join(", ")} in that order, got ${keys.join(", ")}`;
 }
 
-function orderProblem(action: Record<string, unknown>): string | null {
-  const fields = fieldsProblem(action, ["type", "orders", "grouping"]);
+/** One order, rebuilt from the checked fields in the order they were received. */
+function readOrderWire(order: Received, where: string): Read<OrderWire> {
+  const orderFields = fieldsProblem(order, ["a", "b", "p", "s", "r", "t", "c"], ["c"]);
 
-  if (fields !== null) return fields;
+  if (orderFields !== null) return refuse(`${where}: ${orderFields}`);
+  const a = Uint.safeParse(order.fields.get("a"));
 
-  if (action.grouping !== "na") return 'grouping: only "na" exists here';
+  if (!a.success) return refuse(`${where}.a: expected an asset index`);
+  const b = z.boolean().safeParse(order.fields.get("b"));
+  const r = z.boolean().safeParse(order.fields.get("r"));
 
-  if (!Array.isArray(action.orders) || action.orders.length === 0) {
-    return "orders: expected a non-empty array";
+  if (!b.success || !r.success) return refuse(`${where}: b and r must be booleans`);
+  const p = Decimal.safeParse(order.fields.get("p"));
+  const s = Decimal.safeParse(order.fields.get("s"));
+
+  if (!p.success || !s.success) {
+    return refuse(`${where}: p and s must be decimals with trailing zeros removed`);
   }
 
-  for (const [index, order] of action.orders.entries()) {
-    const where = `orders[${index}]`;
+  const type = ReceivedObject.safeParse(order.fields.get("t"));
 
-    if (!isRecord(order)) return `${where}: expected an object`;
-    const orderFields = fieldsProblem(order, ["a", "b", "p", "s", "r", "t", "c"], ["c"]);
-
-    if (orderFields !== null) return `${where}: ${orderFields}`;
-
-    if (!isUint(order.a)) return `${where}.a: expected an asset index`;
-
-    if (typeof order.b !== "boolean" || typeof order.r !== "boolean") {
-      return `${where}: b and r must be booleans`;
-    }
-
-    if (!isDecimal(order.p) || !isDecimal(order.s)) {
-      return `${where}: p and s must be decimals with trailing zeros removed`;
-    }
-
-    const type = order.t;
-
-    if (!isRecord(type) || fieldsProblem(type, ["limit"]) !== null || !isRecord(type.limit)) {
-      return `${where}.t: only limit orders exist here`;
-    }
-
-    const tif = type.limit.tif;
-
-    if (
-      fieldsProblem(type.limit, ["tif"]) !== null ||
-      (tif !== "Gtc" && tif !== "Ioc" && tif !== "Alo")
-    ) {
-      return `${where}.t.limit: expected tif Gtc, Ioc or Alo`;
-    }
-
-    if ("c" in order && (typeof order.c !== "string" || !CLOID.test(order.c))) {
-      return `${where}.c: expected 16 bytes of hex`;
-    }
+  if (!type.success || fieldsProblem(type.data, ["limit"]) !== null) {
+    return refuse(`${where}.t: only limit orders exist here`);
   }
 
-  return null;
+  const limit = ReceivedObject.safeParse(type.data.fields.get("limit"));
+
+  if (!limit.success) return refuse(`${where}.t: only limit orders exist here`);
+  const tif = Tif.safeParse(limit.data.fields.get("tif"));
+
+  if (fieldsProblem(limit.data, ["tif"]) !== null || !tif.success) {
+    return refuse(`${where}.t.limit: expected tif Gtc, Ioc or Alo`);
+  }
+
+  const wire: OrderWire = {
+    a: a.data,
+    b: b.data,
+    p: p.data,
+    s: s.data,
+    r: r.data,
+    t: { limit: { tif: tif.data } },
+  };
+
+  if (order.fields.has("c")) {
+    const cloid = CloidText.safeParse(order.fields.get("c"));
+
+    if (!cloid.success) return refuse(`${where}.c: expected 16 bytes of hex`);
+    wire.c = cloid.data;
+  }
+
+  return accept(wire);
 }
 
-function cancelProblem(action: Record<string, unknown>): string | null {
+function readOrderAction(action: Received): Read<ExchangeAction> {
+  const fields = fieldsProblem(action, ["type", "orders", "grouping"]);
+
+  if (fields !== null) return refuse(fields);
+
+  if (action.fields.get("grouping") !== "na") return refuse('grouping: only "na" exists here');
+  const list = NonEmptyList.safeParse(action.fields.get("orders"));
+
+  if (!list.success) return refuse("orders: expected a non-empty array");
+  const orders: OrderWire[] = [];
+
+  for (const [index, item] of list.data.entries()) {
+    const where = `orders[${index}]`;
+    const order = ReceivedObject.safeParse(item);
+
+    if (!order.success) return refuse(`${where}: expected an object`);
+    const wire = readOrderWire(order.data, where);
+
+    if (!wire.ok) return wire;
+    orders.push(wire.value);
+  }
+
+  return accept({ type: "order", orders, grouping: "na" });
+}
+
+function readCancelAction(action: Received): Read<ExchangeAction> {
   const fields = fieldsProblem(action, ["type", "cancels"]);
 
-  if (fields !== null) return fields;
+  if (fields !== null) return refuse(fields);
+  const list = NonEmptyList.safeParse(action.fields.get("cancels"));
 
-  if (!Array.isArray(action.cancels) || action.cancels.length === 0) {
-    return "cancels: expected a non-empty array";
+  if (!list.success) return refuse("cancels: expected a non-empty array");
+  const cancels: { asset: number; cloid: Hex }[] = [];
+
+  for (const [index, item] of list.data.entries()) {
+    const cancel = ReceivedObject.safeParse(item);
+
+    if (!cancel.success) return refuse(`cancels[${index}]: expected an object`);
+    const cancelFields = fieldsProblem(cancel.data, ["asset", "cloid"]);
+
+    if (cancelFields !== null) return refuse(`cancels[${index}]: ${cancelFields}`);
+    const asset = Uint.safeParse(cancel.data.fields.get("asset"));
+
+    if (!asset.success) return refuse(`cancels[${index}].asset: expected an asset index`);
+    const cloid = CloidText.safeParse(cancel.data.fields.get("cloid"));
+
+    if (!cloid.success) return refuse(`cancels[${index}].cloid: expected 16 bytes of hex`);
+    cancels.push({ asset: asset.data, cloid: cloid.data });
   }
 
-  for (const [index, cancel] of action.cancels.entries()) {
-    if (!isRecord(cancel)) return `cancels[${index}]: expected an object`;
-    const cancelFields = fieldsProblem(cancel, ["asset", "cloid"]);
-
-    if (cancelFields !== null) return `cancels[${index}]: ${cancelFields}`;
-
-    if (!isUint(cancel.asset)) return `cancels[${index}].asset: expected an asset index`;
-
-    if (typeof cancel.cloid !== "string" || !CLOID.test(cancel.cloid)) {
-      return `cancels[${index}].cloid: expected 16 bytes of hex`;
-    }
-  }
-
-  return null;
+  return accept({ type: "cancelByCloid", cancels });
 }
 
 /** The fields are named in the typed data, so their order does not matter. */
-function withdrawProblem(action: unknown): string | null {
-  if (!isRecord(action)) return "expected an object";
-  const keys = Object.keys(action).sort();
+function readWithdraw(action: Received): Read<WithdrawAction> {
+  const keys = [...action.keys].sort();
 
   const expected = [
     "amount",
@@ -500,99 +582,126 @@ function withdrawProblem(action: unknown): string | null {
     "type",
   ];
 
-  if (keys.join() !== expected.join()) return `expected the fields ${expected.join(", ")}`;
+  if (keys.join() !== expected.join()) return refuse(`expected the fields ${expected.join(", ")}`);
 
-  if (action.type !== "withdraw3") return "type: expected withdraw3";
+  if (action.fields.get("type") !== "withdraw3") return refuse("type: expected withdraw3");
+  const hyperliquidChain = HyperliquidChain.safeParse(action.fields.get("hyperliquidChain"));
 
-  if (action.hyperliquidChain !== "Mainnet" && action.hyperliquidChain !== "Testnet") {
-    return "hyperliquidChain: expected Mainnet or Testnet";
-  }
+  if (!hyperliquidChain.success) return refuse("hyperliquidChain: expected Mainnet or Testnet");
+  const signatureChainId = ChainIdText.safeParse(action.fields.get("signatureChainId"));
 
-  if (typeof action.signatureChainId !== "string" || !HEX_NUMBER.test(action.signatureChainId)) {
-    return "signatureChainId: expected a hex chain id";
-  }
+  if (!signatureChainId.success) return refuse("signatureChainId: expected a hex chain id");
+  const amount = Decimal.safeParse(action.fields.get("amount"));
 
-  if (!isDecimal(action.amount)) return "amount: expected a decimal with trailing zeros removed";
+  if (!amount.success) return refuse("amount: expected a decimal with trailing zeros removed");
+  const time = Uint.safeParse(action.fields.get("time"));
 
-  if (!isUint(action.time)) return "time: expected milliseconds";
+  if (!time.success) return refuse("time: expected milliseconds");
+  const destination = LowerAddressText.safeParse(action.fields.get("destination"));
 
-  if (typeof action.destination !== "string" || !LOWER_ADDRESS.test(action.destination)) {
-    return "destination: expected a lower-case address";
-  }
+  if (!destination.success) return refuse("destination: expected a lower-case address");
 
-  return null;
+  return accept({
+    type: "withdraw3",
+    hyperliquidChain: hyperliquidChain.data,
+    signatureChainId: signatureChainId.data,
+    amount: amount.data,
+    time: time.data,
+    destination: destination.data,
+  });
 }
 
-/**
- * Reads an `/exchange` body as the venue would, or says why it cannot (the venue answers that
- * with HTTP 422). The returned `action` is the parsed object itself, keys in received order.
- */
-export function parseExchangeBody(text: string): ExchangeBody | string {
+/** The action of a body, by its `type`, with the body's own rules for a withdrawal. */
+function readAction(
+  action: Received,
+  nonce: number,
+  expiresAfter: number | null,
+): Read<ExchangeAction> {
+  const type = action.fields.get("type");
+
+  if (type === "order") return readOrderAction(action);
+
+  if (type === "cancelByCloid") return readCancelAction(action);
+
+  if (type !== "withdraw3") return refuse(`unknown variant \`${String(type)}\``);
+  const withdrawal = readWithdraw(action);
+
+  if (!withdrawal.ok) return withdrawal;
+
+  if (expiresAfter !== null) return refuse("expiresAfter: a user-signed action has none");
+
+  if (withdrawal.value.time !== nonce) return refuse("nonce: must equal action.time");
+
+  return withdrawal;
+}
+
+/** `parseExchangeBody`, with the refusal kept apart from the body. */
+function readExchangeBody(text: string): Read<ExchangeBody> {
   let value: unknown;
 
   try {
     value = JSON.parse(text);
   } catch {
-    return "expected a JSON object";
+    return refuse("expected a JSON object");
   }
 
-  if (!isRecord(value)) return "expected a JSON object";
+  const body = ReceivedObject.safeParse(value);
+
+  if (!body.success) return refuse("expected a JSON object");
   const known = ["action", "nonce", "signature", "vaultAddress", "expiresAfter"];
-  const unknown = Object.keys(value).find((key) => !known.includes(key));
+  const unknown = body.data.keys.find((key) => !known.includes(key));
 
-  if (unknown !== undefined) return `unknown field \`${unknown}\``;
+  if (unknown !== undefined) return refuse(`unknown field \`${unknown}\``);
+  const { fields } = body.data;
+  const nonce = Uint.safeParse(fields.get("nonce"));
 
-  const { action, nonce, signature } = value;
-  const vaultAddress = value.vaultAddress ?? null;
-  const expiresAfter = value.expiresAfter ?? null;
+  if (!nonce.success) return refuse("nonce: expected milliseconds");
+  const vaultAddress = AddressText.nullable().safeParse(fields.get("vaultAddress") ?? null);
 
-  if (!isUint(nonce)) return "nonce: expected milliseconds";
+  if (!vaultAddress.success) return refuse("vaultAddress: expected an address or null");
+  const expiresAfter = Uint.nullable().safeParse(fields.get("expiresAfter") ?? null);
 
-  if (vaultAddress !== null && (typeof vaultAddress !== "string" || !ADDRESS.test(vaultAddress))) {
-    return "vaultAddress: expected an address or null";
+  if (!expiresAfter.success) return refuse("expiresAfter: expected milliseconds or null");
+  const signature = ReceivedObject.safeParse(fields.get("signature"));
+
+  if (!signature.success || [...signature.data.keys].sort().join() !== "r,s,v") {
+    return refuse("signature: expected r, s and v");
   }
 
-  if (expiresAfter !== null && !isUint(expiresAfter)) {
-    return "expiresAfter: expected milliseconds or null";
-  }
+  const r = SignatureWord.safeParse(signature.data.fields.get("r"));
 
-  if (!isRecord(signature) || Object.keys(signature).sort().join() !== "r,s,v") {
-    return "signature: expected r, s and v";
-  }
+  if (!r.success) return refuse("signature.r: expected hex");
+  const s = SignatureWord.safeParse(signature.data.fields.get("s"));
 
-  const { r, s, v } = signature;
+  if (!s.success) return refuse("signature.s: expected hex");
+  const v = RecoveryId.safeParse(signature.data.fields.get("v"));
 
-  if (typeof r !== "string" || !SIGNATURE_WORD.test(r)) return "signature.r: expected hex";
+  if (!v.success) return refuse("signature.v: expected 27 or 28");
+  const received = ReceivedObject.safeParse(fields.get("action"));
 
-  if (typeof s !== "string" || !SIGNATURE_WORD.test(s)) return "signature.s: expected hex";
+  if (!received.success) return refuse("action: expected an object");
+  const action = readAction(received.data, nonce.data, expiresAfter.data);
 
-  if (v !== 27 && v !== 28) return "signature.v: expected 27 or 28";
+  if (!action.ok) return refuse(`action: ${action.problem}`);
 
-  if (!isRecord(action)) return "action: expected an object";
+  return accept({
+    action: action.value,
+    nonce: nonce.data,
+    signature: { r: r.data, s: s.data, v: v.data },
+    vaultAddress: vaultAddress.data,
+    expiresAfter: expiresAfter.data,
+  });
+}
 
-  let problem: string | null;
+/**
+ * Reads an `/exchange` body as the venue would, or says why it cannot (the venue answers that
+ * with HTTP 422). The returned `action` is rebuilt from its checked fields, keys in the order
+ * the fake requires (for an order or a cancel, the order received).
+ */
+export function parseExchangeBody(text: string): ExchangeBody | string {
+  const read = readExchangeBody(text);
 
-  if (action.type === "order") problem = orderProblem(action);
-  else if (action.type === "cancelByCloid") problem = cancelProblem(action);
-  else if (action.type === "withdraw3") {
-    problem = withdrawProblem(action);
-
-    if (problem === null && expiresAfter !== null) {
-      problem = "expiresAfter: a user-signed action has none";
-    }
-
-    if (problem === null && action.time !== nonce) problem = "nonce: must equal action.time";
-  } else return `action: unknown variant \`${String(action.type)}\``;
-
-  if (problem !== null) return `action: ${problem}`;
-
-  return {
-    action: action as unknown as ExchangeAction,
-    nonce,
-    signature: { r: r as Hex, s: s as Hex, v },
-    vaultAddress: vaultAddress as Address | null,
-    expiresAfter,
-  };
+  return read.ok ? read.value : read.problem;
 }
 
 // --- numbers ---------------------------------------------------------------------------------
@@ -676,11 +785,117 @@ interface Book {
 
 type QueuedFailure = FakeFailure & { remaining: number };
 
+/** An order's ids in the venue's answer, `cloid` as the order sent it. */
+interface PlacedIds {
+  oid: number;
+  cloid?: Hex;
+}
+
+/** One order's status in the venue's answer to `order`. */
+type OrderResult =
+  | { error: string }
+  | { resting: PlacedIds }
+  | { filled: PlacedIds & { totalSz: string; avgPx: string } };
+
+/** One cancel's status in the venue's answer to `cancelByCloid`. */
+type CancelResult = "success" | { error: string };
+
+/** An entry of `meta.universe` as the venue answers it: `isDelisted` only when it is. */
+interface MetaEntry {
+  name: string;
+  szDecimals: number;
+  maxLeverage: number;
+  isDelisted?: true;
+}
+
+/** A universe entry before `readAsset` checks it: a caller's, or one posted to `/control/meta`. */
+interface AssetFields {
+  name?: unknown;
+  szDecimals?: unknown;
+  maxLeverage?: unknown;
+  isDelisted?: unknown;
+}
+
+const AssetName = z.string().min(1);
+
+const SzDecimals = z
+  .number()
+  .refine((value) => Number.isInteger(value) && value >= 0 && value <= 6);
+
+const MaxLeverage = z.number().refine((value) => Number.isInteger(value) && value >= 1);
+
+/** A checked copy of a universe entry; throws, naming the first field that is wrong. */
+function readAsset(fields: AssetFields): FakeAsset {
+  const name = AssetName.safeParse(fields.name);
+
+  if (!name.success) throw new TypeError("name");
+  const szDecimals = SzDecimals.safeParse(fields.szDecimals);
+
+  if (!szDecimals.success) throw new TypeError("szDecimals: expected 0 to 6");
+  const maxLeverage = MaxLeverage.safeParse(fields.maxLeverage);
+
+  if (!maxLeverage.success) throw new TypeError("maxLeverage: expected a positive integer");
+  const isDelisted = z.boolean().optional().safeParse(fields.isDelisted);
+
+  if (!isDelisted.success) throw new TypeError("isDelisted: expected a boolean");
+
+  const asset: FakeAsset = {
+    name: name.data,
+    szDecimals: szDecimals.data,
+    maxLeverage: maxLeverage.data,
+  };
+
+  if (isDelisted.data !== undefined) asset.isDelisted = isDelisted.data;
+
+  return asset;
+}
+
+/** An `/info` request: the fields any request type reads. */
+const InfoRequest = z.object({
+  type: z.unknown().optional(),
+  user: z.unknown().optional(),
+  oid: z.unknown().optional(),
+  startTime: z.unknown().optional(),
+  endTime: z.unknown().optional(),
+});
+
+/** The fields a `/control/*` request reads; a body that is not a JSON object has none. */
+const ControlFields = z
+  .object({
+    address: z.unknown().optional(),
+    usdc: z.unknown().optional(),
+    universe: z.unknown().optional(),
+    asset: z.unknown().optional(),
+    bid: z.unknown().optional(),
+    ask: z.unknown().optional(),
+    user: z.unknown().optional(),
+    cloid: z.unknown().optional(),
+    offsetMs: z.unknown().optional(),
+    endpoint: z.unknown().optional(),
+    mode: z.unknown().optional(),
+    response: z.unknown().optional(),
+    status: z.unknown().optional(),
+    count: z.unknown().optional(),
+  })
+  .catch({});
+
+type ControlFields = z.infer<typeof ControlFields>;
+
+/** `/control/meta`'s universe: an array of objects, each checked by `readAsset`. */
+const ControlUniverse = z.array(
+  z.object({
+    name: z.unknown().optional(),
+    szDecimals: z.unknown().optional(),
+    maxLeverage: z.unknown().optional(),
+    isDelisted: z.unknown().optional(),
+  }),
+);
+
 function text(status: number, body: string): FakeHttpAnswer {
   return { kind: "answer", status, contentType: "text/plain; charset=utf-8", body };
 }
 
-function json(status: number, body: unknown): FakeHttpAnswer {
+function json<Body>(status: number, body: Body): FakeHttpAnswer {
   return { kind: "answer", status, contentType: "application/json", body: JSON.stringify(body) };
 }
 
@@ -704,7 +919,8 @@ export class FakeHyperliquid {
   readonly #initialUniverse: readonly FakeAsset[];
   #offsetMs = 0;
   #universe: FakeAsset[] = [];
-  #accounts = new Map<Address, Account>();
+  /** Keyed by lower-case address; `/info` and control requests look accounts up by any text. */
+  #accounts = new Map<string, Account>();
   #books = new Map<number, Book>();
   #orders: OrderState[] = [];
   #cancels: FakeCancel[] = [];
@@ -770,11 +986,13 @@ export class FakeHyperliquid {
 
   /** Creates the account, or sets its USDC balance (the testnet faucet's mock USDC). */
   seedAccount(address: string, usdc: string): void {
-    if (!ADDRESS.test(address)) throw new TypeError("address: expected an address");
+    const checked = AddressText.safeParse(address);
+
+    if (!checked.success) throw new TypeError("address: expected an address");
     const amount = toFixed(usdc);
 
     if (amount === null) throw new TypeError("usdc: expected a decimal");
-    const key = address.toLowerCase() as Address;
+    const key = lowerHex(checked.data);
     const account = this.#accounts.get(key);
 
     if (account) account.usdc = amount;
@@ -782,28 +1000,12 @@ export class FakeHyperliquid {
   }
 
   setUniverse(universe: readonly FakeAsset[]): void {
-    for (const asset of universe) {
-      if (typeof asset.name !== "string" || asset.name === "") throw new TypeError("name");
-
-      if (!Number.isInteger(asset.szDecimals) || asset.szDecimals < 0 || asset.szDecimals > 6) {
-        throw new TypeError("szDecimals: expected 0 to 6");
-      }
-
-      if (!Number.isInteger(asset.maxLeverage) || asset.maxLeverage < 1) {
-        throw new TypeError("maxLeverage: expected a positive integer");
-      }
-
-      if (asset.isDelisted !== undefined && typeof asset.isDelisted !== "boolean") {
-        throw new TypeError("isDelisted: expected a boolean");
-      }
-    }
-
-    this.#universe = universe.map((asset) => ({ ...asset }));
+    this.#universe = universe.map(readAsset);
   }
 
   /** The best bid and ask of an asset; null for an empty side. Orders that cross fill. */
   setBook(asset: number, book: { bid: string | null; ask: string | null }): void {
-    if (!isUint(asset)) throw new TypeError("asset: expected an asset index");
+    if (!Uint.safeParse(asset).success) throw new TypeError("asset: expected an asset index");
 
     const side = (value: string | null, name: string): bigint | null => {
       if (value === null) return null;
@@ -820,7 +1022,7 @@ export class FakeHyperliquid {
   /** Fills a resting order completely at its limit price. Null when no such open order exists. */
   fillOrder(user: string, cloid: string): FakeOrder | null {
     const order = this.#findOrder(user.toLowerCase(), cloid.toLowerCase());
-    const account = this.#accounts.get(user.toLowerCase() as Address);
+    const account = this.#accounts.get(user.toLowerCase());
 
     if (order === undefined || order.status !== "open" || account === undefined) return null;
     order.reservedMargin = 0n;
@@ -845,7 +1047,7 @@ export class FakeHyperliquid {
       throw new TypeError("status: expected an HTTP error status");
     }
 
-    if (failure.mode === "error" && typeof failure.response !== "string") {
+    if (failure.mode === "error" && !z.string().safeParse(failure.response).success) {
       throw new TypeError("response: expected the venue's error text");
     }
 
@@ -953,9 +1155,10 @@ export class FakeHyperliquid {
   }
 
   async #apply(text: string, record: ExchangeRecord): Promise<FakeHttpAnswer> {
-    const body = parseExchangeBody(text);
+    const read = readExchangeBody(text);
 
-    if (typeof body === "string") return unreadable(body);
+    if (!read.ok) return unreadable(read.problem);
+    const body = read.value;
     record.actionType = body.action.type;
     record.nonce = body.nonce;
 
@@ -1062,7 +1265,7 @@ export class FakeHyperliquid {
     nonce: number,
     expiresAfter: number | null,
     now: number,
-  ): unknown {
+  ): OrderResult {
     const suffix = ` asset=${wire.a}`;
     const asset = this.#universe[wire.a];
 
@@ -1078,7 +1281,7 @@ export class FakeHyperliquid {
     const priceFx = toFixed(wire.p);
 
     if (priceFx === null || priceFx === 0n) return { error: "Order has invalid price." };
-    const cloid = wire.c === undefined ? null : (wire.c.toLowerCase() as Hex);
+    const cloid = wire.c === undefined ? null : lowerHex(wire.c);
 
     if (cloid !== null && this.#findOrder(account.address, cloid) !== undefined) {
       return { error: `Duplicate cloid.${suffix}` };
@@ -1215,7 +1418,7 @@ export class FakeHyperliquid {
     nonce: number,
     expiresAfter: number | null,
     now: number,
-  ): unknown {
+  ): CancelResult {
     const order = this.#findOrder(account.address, cloid.toLowerCase());
     let result = "success";
 
@@ -1230,7 +1433,7 @@ export class FakeHyperliquid {
     this.#cancels.push({
       user: account.address,
       asset,
-      cloid: cloid.toLowerCase() as Hex,
+      cloid: lowerHex(cloid),
       nonce,
       expiresAfter,
       receivedAt: now,
@@ -1279,26 +1482,26 @@ export class FakeHyperliquid {
       return unreadable("expected a JSON object");
     }
 
-    if (!isRecord(request)) return unreadable("expected a JSON object");
+    const read = InfoRequest.safeParse(request);
 
-    if (request.type === "meta") return json(200, { universe: this.#universe.map(metaEntry) });
+    if (!read.success) return unreadable("expected a JSON object");
+    const fields = read.data;
 
-    if (request.type === "orderStatus") {
-      const { user, oid } = request;
+    if (fields.type === "meta") return json(200, { universe: this.#universe.map(metaEntry) });
 
-      if (typeof user !== "string" || !ADDRESS.test(user))
-        return unreadable("user: expected an address");
+    if (fields.type === "orderStatus") {
+      const user = AddressText.safeParse(fields.user);
 
-      if (!isUint(oid) && !(typeof oid === "string" && CLOID.test(oid))) {
-        return unreadable("oid: expected an order id or a cloid");
-      }
+      if (!user.success) return unreadable("user: expected an address");
+      const byOid = Uint.safeParse(fields.oid);
+      const byCloid = CloidText.safeParse(fields.oid);
+      const owner = user.data.toLowerCase();
+      let order: OrderState | undefined;
 
-      const owner = user.toLowerCase();
-
-      const order =
-        typeof oid === "number"
-          ? this.#orders.find((entry) => entry.user === owner && entry.oid === oid)
-          : this.#findOrder(owner, oid.toLowerCase());
+      if (byOid.success) {
+        order = this.#orders.find((entry) => entry.user === owner && entry.oid === byOid.data);
+      } else if (byCloid.success) order = this.#findOrder(owner, byCloid.data.toLowerCase());
+      else return unreadable("oid: expected an order id or a cloid");
 
       if (order === undefined) return json(200, { status: "unknownOid" });
 
@@ -1329,21 +1532,19 @@ export class FakeHyperliquid {
       });
     }
 
-    if (request.type === "clearinghouseState") {
-      const { user } = request;
+    if (fields.type === "clearinghouseState") {
+      const user = AddressText.safeParse(fields.user);
 
-      if (typeof user !== "string" || !ADDRESS.test(user))
-        return unreadable("user: expected an address");
+      if (!user.success) return unreadable("user: expected an address");
 
-      return json(200, this.#clearinghouseState(user.toLowerCase() as Address));
+      return json(200, this.#clearinghouseState(user.data.toLowerCase()));
     }
 
-    if (request.type === "openOrders") {
-      const { user } = request;
+    if (fields.type === "openOrders") {
+      const user = AddressText.safeParse(fields.user);
 
-      if (typeof user !== "string" || !ADDRESS.test(user))
-        return unreadable("user: expected an address");
-      const owner = user.toLowerCase();
+      if (!user.success) return unreadable("user: expected an address");
+      const owner = user.data.toLowerCase();
 
       return json(
         200,
@@ -1360,20 +1561,20 @@ export class FakeHyperliquid {
       );
     }
 
-    if (request.type === "userNonFundingLedgerUpdates") {
+    if (fields.type === "userNonFundingLedgerUpdates") {
       // Only withdrawals move this fake's ledger.
-      const { user, startTime, endTime } = request;
+      const user = AddressText.safeParse(fields.user);
 
-      if (typeof user !== "string" || !ADDRESS.test(user))
-        return unreadable("user: expected an address");
+      if (!user.success) return unreadable("user: expected an address");
+      const start = Uint.safeParse(fields.startTime);
 
-      if (!isUint(startTime)) return unreadable("startTime: expected milliseconds");
+      if (!start.success) return unreadable("startTime: expected milliseconds");
+      const end = Uint.nullish().safeParse(fields.endTime);
 
-      if (endTime !== undefined && endTime !== null && !isUint(endTime)) {
-        return unreadable("endTime: expected milliseconds");
-      }
-
-      const owner = user.toLowerCase();
+      if (!end.success) return unreadable("endTime: expected milliseconds");
+      const startTime = start.data;
+      const endTime = end.data ?? null;
+      const owner = user.data.toLowerCase();
 
       return json(
         200,
@@ -1382,7 +1583,7 @@ export class FakeHyperliquid {
             (entry) =>
               entry.user === owner &&
               entry.receivedAt >= startTime &&
-              (typeof endTime !== "number" || entry.receivedAt <= endTime),
+              (endTime === null || entry.receivedAt <= endTime),
           )
           .map((entry) => ({
             time: entry.receivedAt,
@@ -1397,16 +1598,17 @@ export class FakeHyperliquid {
       );
     }
 
-    return unreadable(`unknown variant \`${String(request.type)}\``);
+    return unreadable(`unknown variant \`${String(fields.type)}\``);
   }
 
-  #clearinghouseState(user: Address): unknown {
+  /** `user` is a lower-case address. */
+  #clearinghouseState(user: string) {
     const account = this.#accounts.get(user);
     let notional = 0n;
     let marginUsed = 0n;
     let rawUsd = account?.usdc ?? 0n;
 
-    const assetPositions = [...(account?.positions ?? [])].map(([index, position]) => {
+    const assetPositions = Array.from(account?.positions ?? []).map(([index, position]) => {
       const asset = this.#universe[index];
       const leverage = leverageOf(asset);
       const value = (abs(position.szi) * position.entryPx) / SCALE;
@@ -1465,17 +1667,15 @@ export class FakeHyperliquid {
       return text(404, "not found");
     }
 
-    let input: unknown = null;
+    let input: unknown;
 
-    if (body !== "") {
-      try {
-        input = JSON.parse(body);
-      } catch {
-        return text(400, "expected JSON");
-      }
+    try {
+      input = body === "" ? null : JSON.parse(body);
+    } catch {
+      return text(400, "expected JSON");
     }
 
-    const fields = isRecord(input) ? input : {};
+    const fields = ControlFields.parse(input);
 
     try {
       if (method === "POST" && path === "/control/accounts") {
@@ -1485,20 +1685,23 @@ export class FakeHyperliquid {
       }
 
       if (method === "PUT" && path === "/control/meta") {
-        if (!Array.isArray(fields.universe) || !fields.universe.every(isRecord)) {
-          return text(400, "universe: expected an array of assets");
-        }
+        const universe = ControlUniverse.safeParse(fields.universe);
 
-        this.setUniverse(fields.universe as unknown as FakeAsset[]);
+        if (!universe.success) return text(400, "universe: expected an array of assets");
+
+        this.setUniverse(universe.data.map(readAsset));
 
         return text(204, "");
       }
 
       if (method === "PUT" && path === "/control/book") {
-        const side = (value: unknown) =>
-          value === null || value === undefined ? null : String(value);
+        const bid = fields.bid ?? null;
+        const ask = fields.ask ?? null;
 
-        this.setBook(Number(fields.asset), { bid: side(fields.bid), ask: side(fields.ask) });
+        this.setBook(Number(fields.asset), {
+          bid: bid === null ? null : String(bid),
+          ask: ask === null ? null : String(ask),
+        });
 
         return text(204, "");
       }
@@ -1537,8 +1740,8 @@ export class FakeHyperliquid {
   }
 }
 
-function metaEntry(asset: FakeAsset): Record<string, unknown> {
-  const entry: Record<string, unknown> = {
+function metaEntry(asset: FakeAsset): MetaEntry {
+  const entry: MetaEntry = {
     name: asset.name,
     szDecimals: asset.szDecimals,
     maxLeverage: asset.maxLeverage,
@@ -1549,14 +1752,15 @@ function metaEntry(asset: FakeAsset): Record<string, unknown> {
   return entry;
 }
 
-function controlFailure(fields: Record<string, unknown>): FakeFailure | null {
+function controlFailure(fields: ControlFields): FakeFailure | null {
   const endpoint = fields.endpoint ?? "exchange";
 
   if (endpoint !== "exchange" && endpoint !== "info") return null;
   const count = fields.count === undefined ? 1 : Number(fields.count);
+  const response = z.string().safeParse(fields.response);
 
-  if (fields.mode === "error" && endpoint === "exchange" && typeof fields.response === "string") {
-    return { endpoint, mode: "error", response: fields.response, count };
+  if (fields.mode === "error" && endpoint === "exchange" && response.success) {
+    return { endpoint, mode: "error", response: response.data, count };
   }
 
   if (fields.mode === "http")

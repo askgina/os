@@ -51,6 +51,7 @@
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { buffer } from "node:stream/consumers";
 import {
   type ApprovalDetail,
   type ApprovalSubject,
@@ -61,10 +62,10 @@ import {
   type CloneOptions,
   type CloneResult,
   CONTENT_SECURITY_POLICY,
+  type DeletionPreflight,
   type IntentDetail,
   type InviteSummary,
   type MandateAssetView,
-  type MandateDraft,
   type MandateEndedReason,
   type MandateStatus,
   type MandateSummary,
@@ -77,18 +78,26 @@ import {
   type QuietHours,
   type Role,
   type RouteName,
+  type RouteOutput,
+  type Routes,
   routes,
   type SessionInfo,
   type TransactionInfo,
   type VenueAccount,
+  type WalletDetail,
   type WalletSummary,
   type WorkspaceDetail,
   type WorkspaceTemplate,
 } from "@askgina/os-api";
 import {
+  Address,
+  type AgentId,
+  type ApprovalId,
   AssertionResponse,
+  AssetRef,
+  ChainId,
   checkMandateAgainstPolicy,
-  type Envelope,
+  Envelope,
   type EvmIntent,
   envelopeChallenge,
   evaluateMandate,
@@ -109,10 +118,12 @@ import {
   type SignerDecision,
   type Sweep,
   sweepHash,
+  type UserId,
   VENUE_NETWORK_NAMES,
   type VenueIntent,
   type VenueNetwork,
   type WalletPolicy,
+  type WorkspaceId,
 } from "@askgina/os-protocol";
 import { z } from "zod";
 
@@ -140,7 +151,7 @@ const CHAINS: ChainInfo[] = [
   },
 ];
 
-const TEST_USDC = "0x036cbd53842c5426634e7929541ec2318f3dcf7e";
+const TEST_USDC = "0x036cbd53842c5426634e7929541ec2318f3dcf7e" as const;
 
 /** The push services a subscription's endpoint must be under, as the server's default. */
 const PUSH_ENDPOINT_HOSTS = [
@@ -184,6 +195,34 @@ class Refusal extends Error {
   }
 }
 
+/** The error body both servers of the fixture answer a refusal with. */
+interface RefusalBody {
+  code: RefusalCode;
+  message: string;
+  detail?: string;
+}
+
+/** What `JSON.parse` gives: a request body before its schema decodes it. */
+type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
+
+interface JsonObject {
+  [key: string]: JsonValue;
+}
+
+/** Decodes a request body as the server does: one its schema refuses is `invalid_request`. */
+function decodeRequest<S extends z.ZodType>(schema: S, raw: JsonValue): z.output<S> {
+  const parsed = schema.safeParse(raw);
+
+  if (!parsed.success)
+    throw new Refusal(
+      "invalid_request",
+      "The request is not valid.",
+      parsed.error.issues[0]?.message,
+    );
+
+  return parsed.data;
+}
+
 const status: Record<RefusalCode, number> = {
   invalid_request: 400,
   unauthenticated: 401,
@@ -197,14 +236,14 @@ const status: Record<RefusalCode, number> = {
 // --- state ------------------------------------------------------------------------------------
 
 interface Credential {
-  userId: string;
+  userId: UserId;
   /** Stands in for the COSE public key; the fixture never verifies a signature. */
   publicKey: string;
   summary: PasskeySummary;
 }
 
 interface Workspace {
-  id: string;
+  id: WorkspaceId;
   name: string;
   paused: boolean;
   adminThreshold: number;
@@ -224,8 +263,8 @@ interface Approval {
   envelope: Envelope;
   /** The envelope's digest, base64url: the challenge the confirmation page asks a passkey for. */
   challenge: string;
-  approvedBy: { id: string; displayName: string }[];
-  rejectedBy: { id: string; displayName: string } | null;
+  approvedBy: Member["user"][];
+  rejectedBy: Member["user"] | null;
   subject: ApprovalSubject;
   /**
    * The token of the request's confirmation link, issued when the request is first read, as the
@@ -233,7 +272,7 @@ interface Approval {
    */
   confirmToken: string | null;
   /** The people whose approval the confirmation page holds, counted here by `collect`. */
-  atSigner: string[];
+  atSigner: UserId[];
   /** The challenge of an approver change's possession step, kept until an answer uses it. */
   possessionChallenge: string | null;
   /** Whether the person an approver change adds answered there with the new passkey. */
@@ -246,10 +285,10 @@ interface State {
   setupDone: boolean;
   users: Map<string, string>;
   credentials: Map<string, Credential>;
-  sessions: Map<string, string>;
+  sessions: Map<string, UserId>;
   /** When each session's passkey sign-in happened, by session token. */
   signedInAt: Map<string, number>;
-  ceremonies: Map<string, { challenge: string; kind: string; data: Record<string, string> }>;
+  ceremonies: Map<string, Ceremony>;
   workspaces: Map<string, Workspace>;
   approvals: Map<string, Approval>;
   intents: Map<string, IntentDetail & { workspaceId: string }>;
@@ -262,7 +301,7 @@ interface State {
       id: string;
       workspaceId: string;
       role: Role;
-      invitedBy: string;
+      invitedBy: UserId;
       createdAt: number;
       expiresAt: number;
     }
@@ -274,7 +313,7 @@ interface State {
    */
   sentAt: Map<string, number>;
   /** The approval id a mandate's use signed under, per intent; such an intent shows none. */
-  useIds: Map<string, string>;
+  useIds: Map<string, ApprovalId>;
   /** Push subscriptions by id, with their person and endpoint. */
   pushSubscriptions: Map<
     string,
@@ -285,6 +324,13 @@ interface State {
   quietHours: Map<string, QuietHours>;
   /** Whether the "operator" turned Web Push on (`/__fixture/web-push`). */
   webPush: boolean;
+}
+
+/** A passkey ceremony in progress; one that registers a new person names who it makes. */
+interface Ceremony {
+  challenge: string;
+  kind: string;
+  person: { userId: UserId; displayName: string } | null;
 }
 
 function freshState(): State {
@@ -366,7 +412,7 @@ function audit(
 
 function decide(
   workspace: Workspace,
-  approvalId: string | null,
+  approvalId: ApprovalId | null,
   action: string,
   code: string | null,
 ) {
@@ -375,8 +421,8 @@ function decide(
   const entry = {
     seq: workspace.decisions.length + 1,
     at: now(),
-    workspaceId: workspace.id as SignerDecision["workspaceId"],
-    approvalId: approvalId as SignerDecision["approvalId"],
+    workspaceId: workspace.id,
+    approvalId,
     action,
     outcome: code === null ? ("allowed" as const) : ("denied" as const),
     code,
@@ -386,8 +432,8 @@ function decide(
   workspace.decisions.push({ ...entry, hash: sha256(JSON.stringify(entry)) });
 }
 
-const userSummary = (id: string) => ({
-  id: id as Member["user"]["id"],
+const userSummary = (id: UserId): Member["user"] => ({
+  id,
   displayName: state.users.get(id) ?? "",
 });
 
@@ -420,7 +466,7 @@ function expireApprovals(): void {
 
 const GWEI = 1_000_000_000n;
 
-const randomHash = () => `0x${randomBytes(32).toString("hex")}` as `0x${string}`;
+const randomHash = (): `0x${string}` => `0x${randomBytes(32).toString("hex")}`;
 
 const isSent = (transaction: TransactionInfo) =>
   transaction.status === "broadcast" || transaction.status === "stuck";
@@ -470,7 +516,7 @@ function withAttempt(
   transaction: TransactionInfo,
   chainId: string,
   kind: "reprice" | "cancel",
-  cancelApprovalId: string | null,
+  cancelApprovalId: ApprovalId | null,
 ): TransactionInfo {
   const latest = transaction.attempts[transaction.attempts.length - 1];
 
@@ -494,9 +540,7 @@ function withAttempt(
         maxFeePerGas: raised(latest.maxFeePerGas),
         maxPriorityFeePerGas: raised(latest.maxPriorityFeePerGas),
         signedAt: now(),
-        cancelApprovalId: (kind === "cancel"
-          ? cancelApprovalId
-          : latest.cancelApprovalId) as TransactionInfo["pendingCancelApprovalId"],
+        cancelApprovalId: kind === "cancel" ? cancelApprovalId : latest.cancelApprovalId,
         status: "pending",
         explorerUrl: explorerOf(chainId, hash),
       },
@@ -524,7 +568,7 @@ function minedTransaction(transaction: TransactionInfo): TransactionInfo {
 }
 
 /** The approval whose transaction an intent sent: its request's, or its mandate use's. */
-function targetOf(intent: { id: string; approvalId: string | null }): string | null {
+function targetOf(intent: { id: string; approvalId: ApprovalId | null }): ApprovalId | null {
   return intent.approvalId ?? state.useIds.get(intent.id) ?? null;
 }
 
@@ -557,8 +601,7 @@ function liveTransaction(
     stuckReason: sent ? reason : null,
     canSpeedUp: sent && payment && (reason === null || reason === "fee_too_low"),
     canCancel: sent && waiting === undefined && reason !== "attempts_exhausted",
-    pendingCancelApprovalId: (waiting?.summary.id ??
-      null) as TransactionInfo["pendingCancelApprovalId"],
+    pendingCancelApprovalId: waiting?.summary.id ?? null,
   };
 }
 
@@ -598,9 +641,9 @@ function advanceTransactions(): void {
  */
 function openCancel(
   workspace: Workspace,
-  userId: string,
+  userId: UserId,
   input: {
-    target: string;
+    target: ApprovalId;
     walletId: string;
     chainId: string;
     title: string;
@@ -636,7 +679,7 @@ function openCancel(
     title: `${input.intent ? "Cancel payment" : "Cancel sweep"}: ${input.title}`,
     requestedBy: {
       type: "user",
-      id: userId as Member["user"]["id"],
+      id: userId,
       name: state.users.get(userId) ?? "",
     },
     threshold: wallet.policy.approvals.threshold,
@@ -652,9 +695,7 @@ function openCancel(
       kind: "cancel-transaction",
       wallet: { ...wallet },
       intent: input.intent ? stripIntent(input.intent) : null,
-      sweep: input.intent
-        ? null
-        : { approvalId: input.target as ApprovalSummary["id"], title: input.title },
+      sweep: input.intent ? null : { approvalId: input.target, title: input.title },
       transaction: current,
       txNonce: 0,
       maxFeeWei,
@@ -710,14 +751,16 @@ function openApproval(input: {
   requestedBy: ApprovalSummary["requestedBy"];
   threshold: number;
   ttl: number;
-  envelope: Record<string, unknown>;
+  /** The envelope's own fields, after its header and type; decoded with them as an `Envelope`. */
+  envelope: JsonObject;
   subject: ApprovalSubject;
   apply: () => void;
 }): Approval {
   const id = newId("apr");
   const issuedAt = now();
 
-  const envelope = {
+  // `envelopeChallenge` below decodes the envelope the same way, so this refuses nothing more.
+  const envelope = Envelope.parse({
     v: 1,
     approvalId: id,
     workspaceId: input.workspace.id,
@@ -726,12 +769,12 @@ function openApproval(input: {
     expiresAt: issuedAt + input.ttl,
     type: input.kind,
     ...input.envelope,
-  } as Envelope;
+  });
 
   const approval: Approval = {
     summary: {
       id,
-      workspaceId: input.workspace.id as ApprovalSummary["workspaceId"],
+      workspaceId: input.workspace.id,
       kind: input.kind,
       status: "pending",
       title: input.title,
@@ -769,9 +812,9 @@ function openApproval(input: {
 
 function approverApprovals(
   workspace: Workspace,
-  userId: string,
+  userId: UserId,
   kind: "add-approver" | "remove-approver",
-  requester: string,
+  requester: UserId,
 ): ApprovalSummary[] {
   const opened: ApprovalSummary[] = [];
 
@@ -784,7 +827,7 @@ function approverApprovals(
         title: `${kind === "add-approver" ? "Let" : "Stop"} ${state.users.get(userId)}'s passkey "${credential.summary.label}" ${kind === "add-approver" ? "approve" : "approving"}`,
         requestedBy: {
           type: "user",
-          id: requester as Member["user"]["id"],
+          id: requester,
           name: state.users.get(requester) ?? "",
         },
         threshold: workspace.adminThreshold,
@@ -886,36 +929,47 @@ function collect(approval: Approval): void {
   }
 }
 
+/** A request's subject as it reads now: its payment, transaction or mandate as they are. */
+function liveSubjectOf(approval: Approval, workspace: Workspace): ApprovalSubject {
+  const subject = approval.subject;
+
+  switch (subject.kind) {
+    case "approve-intent":
+      return {
+        ...subject,
+        intent: stripIntent(state.intents.get(subject.intent.id) ?? subject.intent),
+      };
+    case "cancel-transaction":
+      return liveCancelSubject(subject, workspace.paused);
+    case "sweep-wallet":
+      return {
+        ...subject,
+        transaction: subject.transaction
+          ? liveTransaction(subject.transaction, approval.summary.id, false, workspace.paused)
+          : null,
+      };
+    case "grant-mandate": {
+      const granted = state.mandates.get(subject.mandate.id);
+
+      return {
+        ...subject,
+        assets: mandateAssets(
+          subject.mandate,
+          workspace.wallets.find((item) => item.id === subject.wallet.id)?.policy ?? null,
+        ),
+        usage: granted ? mandateSummary(granted).usage : null,
+      };
+    }
+
+    default:
+      return subject;
+  }
+}
+
 function approvalDetail(approval: Approval, userId: string): ApprovalDetail {
   const workspace = workspaceOf(approval.summary.workspaceId);
   const member = workspace.members.find((item) => item.user.id === userId);
-  const subject = approval.subject;
-
-  const granted =
-    subject.kind === "grant-mandate" ? state.mandates.get(subject.mandate.id) : undefined;
-
-  const liveSubject: ApprovalSubject =
-    subject.kind === "approve-intent"
-      ? { ...subject, intent: stripIntent(state.intents.get(subject.intent.id) ?? subject.intent) }
-      : subject.kind === "cancel-transaction"
-        ? liveCancelSubject(subject, workspace.paused)
-        : subject.kind === "sweep-wallet"
-          ? {
-              ...subject,
-              transaction: subject.transaction
-                ? liveTransaction(subject.transaction, approval.summary.id, false, workspace.paused)
-                : null,
-            }
-          : subject.kind === "grant-mandate"
-            ? {
-                ...subject,
-                assets: mandateAssets(
-                  subject.mandate,
-                  workspace.wallets.find((item) => item.id === subject.wallet.id)?.policy ?? null,
-                ),
-                usage: granted ? mandateSummary(granted).usage : null,
-              }
-            : subject;
+  const liveSubject = liveSubjectOf(approval, workspace);
 
   return {
     ...approval.summary,
@@ -952,8 +1006,8 @@ function workspaceDetail(workspace: Workspace, userId: string): WorkspaceDetail 
 
   const viewerIsOwner = memberOf(workspace, userId).role === "owner";
 
-  return {
-    id: workspace.id as WorkspaceDetail["id"],
+  const detail: WorkspaceDetail = {
+    id: workspace.id,
     name: workspace.name,
     role: memberOf(workspace, userId).role,
     paused: workspace.paused,
@@ -961,22 +1015,22 @@ function workspaceDetail(workspace: Workspace, userId: string): WorkspaceDetail 
     lifecycle: workspace.lifecycle,
     adminThreshold: workspace.adminThreshold,
     notificationDetail: workspace.notificationDetail,
-    // The server's default SIGNER_ADMIN_COMMAND, shown to owners only, as the server does.
-    ...(viewerIsOwner
-      ? { signerAdminCommand: "docker compose exec signer node src/admin.ts" }
-      : {}),
     members: workspace.members.map((member) => ({
       ...member,
       // Owners see the passkeys that wait to approve, so an operator can enroll them by hand.
       pendingPasskeys:
         viewerIsOwner && member.approver === "pending"
-          ? [...state.credentials.entries()]
-              .filter(([, credential]) => credential.userId === member.user.id)
-              .map(([credentialId, credential]) => ({
-                credentialId,
-                publicKey: credential.publicKey,
-                label: credential.summary.label,
-              }))
+          ? [...state.credentials.entries()].flatMap(([credentialId, credential]) =>
+              credential.userId === member.user.id
+                ? [
+                    {
+                      credentialId,
+                      publicKey: credential.publicKey,
+                      label: credential.summary.label,
+                    },
+                  ]
+                : [],
+            )
           : [],
     })),
     agents: workspace.agents,
@@ -984,6 +1038,11 @@ function workspaceDetail(workspace: Workspace, userId: string): WorkspaceDetail 
     chains: CHAINS,
     venueNetworks: VENUE_NETWORKS,
   };
+
+  // The server's default SIGNER_ADMIN_COMMAND, shown to owners only, as the server does.
+  if (viewerIsOwner) detail.signerAdminCommand = "docker compose exec signer node src/admin.ts";
+
+  return detail;
 }
 
 function fakeAddress(): `0x${string}` {
@@ -1045,7 +1104,7 @@ function registrationOptions(userId: string, name: string) {
 }
 
 function registerCredential(
-  userId: string,
+  userId: UserId,
   response: { id: string },
   label: string,
 ): PasskeySummary {
@@ -1063,7 +1122,7 @@ function registerCredential(
   return summary;
 }
 
-function startSession(res: ServerResponse, userId: string): void {
+function startSession(res: ServerResponse, userId: UserId): void {
   const token = randomToken();
   state.sessions.set(token, userId);
   state.signedInAt.set(token, now());
@@ -1081,7 +1140,7 @@ function requireRecentSignIn(signedInAt: number | null): void {
   }
 }
 
-function sessionInfo(userId: string | null): SessionInfo {
+function sessionInfo(userId: UserId | null): SessionInfo {
   return {
     setupRequired: !state.setupDone,
     user: userId ? userSummary(userId) : null,
@@ -1091,7 +1150,25 @@ function sessionInfo(userId: string | null): SessionInfo {
 
 // --- intents (what an agent proposes over MCP on the real server) ------------------------------
 
-function propose(agentToken: string, body: Record<string, string>): IntentDetail {
+/** What a test, acting as an agent, sends to `/__fixture/propose`: every field is optional. */
+const ProposeRequest = z.object({
+  kind: z.string().optional(),
+  to: Address.optional(),
+  amount: z.string().optional(),
+  memo: z.string().optional(),
+  simulate: z.string().optional(),
+  mandateId: z.string().optional(),
+  coin: z.string().optional(),
+  timeInForce: z.string().optional(),
+  side: z.string().optional(),
+  size: z.string().optional(),
+  limitPrice: z.string().optional(),
+  reduceOnly: z.string().optional(),
+});
+
+type ProposeRequest = z.infer<typeof ProposeRequest>;
+
+function propose(agentToken: string, raw: JsonValue): IntentDetail {
   const agentId = state.tokens.get(agentToken);
 
   if (!agentId) throw new Refusal("unauthenticated", "Unknown agent token.");
@@ -1115,31 +1192,33 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
   if (!wallet.policy || !wallet.policyHash)
     throw new Refusal("policy_denied", "This wallet has no policy yet.", "policy_missing");
 
+  const body = decodeRequest(ProposeRequest, raw);
+
   if (body.kind === "order") return proposeOrder(workspace, agent, wallet, body);
   const chainId = wallet.policy.chains[0] ?? "eip155:31337";
-  const to = (body.to ?? fakeAddress()) as `0x${string}`;
+  const to = body.to ?? fakeAddress();
   const amount = body.amount ?? "15000000000000000";
   const kind = body.kind ?? "transfer";
 
-  const operation =
+  const operation: EvmIntent["operation"] =
     kind === "erc20"
-      ? { type: "evm.erc20.transfer" as const, token: TEST_USDC as `0x${string}`, to, amount }
+      ? { type: "evm.erc20.transfer", token: TEST_USDC, to, amount }
       : kind === "call"
         ? {
-            type: "evm.call" as const,
+            type: "evm.call",
             to,
             valueWei: "0",
-            data: "0xa9059cbb0000000000000000000000001111111111111111111111111111111111111111" as `0x${string}`,
+            data: "0xa9059cbb0000000000000000000000001111111111111111111111111111111111111111",
           }
-        : { type: "evm.transfer" as const, to, valueWei: amount };
+        : { type: "evm.transfer", to, valueWei: amount };
 
   const intent: EvmIntent = {
     v: 1,
     id: newId("int"),
-    workspaceId: workspace.id as EvmIntent["workspaceId"],
+    workspaceId: workspace.id,
     agentId: agent.id,
     walletId: wallet.id,
-    chainId: chainId as EvmIntent["chainId"],
+    chainId,
     operation,
     maxFeeWei: "300000000000000",
     memo: body.memo ?? "",
@@ -1174,7 +1253,7 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
       amount: moved,
       amountFormatted: formatted,
       to,
-      token: kind === "erc20" ? (TEST_USDC as `0x${string}`) : null,
+      token: kind === "erc20" ? TEST_USDC : null,
       rawCall: kind === "call",
     },
     memo: intent.memo,
@@ -1322,7 +1401,7 @@ function proposeOrder(
   workspace: Workspace,
   agent: { id: EvmIntent["agentId"]; name: string },
   wallet: WalletSummary,
-  body: Record<string, string>,
+  body: ProposeRequest,
 ): IntentDetail {
   const policy = wallet.policy;
   const rules = policy?.venues?.hyperliquid;
@@ -1381,7 +1460,7 @@ function proposeOrder(
   const intent: VenueIntent = {
     v: 1,
     id: newId("int"),
-    workspaceId: workspace.id as VenueIntent["workspaceId"],
+    workspaceId: workspace.id,
     agentId: agent.id,
     walletId: wallet.id,
     chainId: rules.network,
@@ -1571,15 +1650,22 @@ function venueAccountOf(wallet: WalletSummary): VenueAccount | null {
     reported: {
       accountValueUsd: VENUE_ACCOUNT_VALUE_USD,
       withdrawableUsd: VENUE_ACCOUNT_VALUE_USD,
-      positions: [...held]
-        .filter(([, position]) => position.size !== 0n)
-        .map(([coin, position]) => ({
-          coin,
-          side: position.size > 0n ? "long" : "short",
-          size: formatAmount((position.size > 0n ? position.size : -position.size).toString(), 8),
-          entryPrice: position.entryPrice,
-          unrealizedPnlUsd: "0",
-        })),
+      positions: [...held].flatMap(([coin, position]) =>
+        position.size === 0n
+          ? []
+          : [
+              {
+                coin,
+                side: position.size > 0n ? "long" : "short",
+                size: formatAmount(
+                  (position.size > 0n ? position.size : -position.size).toString(),
+                  8,
+                ),
+                entryPrice: position.entryPrice,
+                unrealizedPnlUsd: "0",
+              },
+            ],
+      ),
       openOrders,
     },
   };
@@ -1602,9 +1688,9 @@ function policyFromDraft(
   wallet: WalletSummary,
   draft: PolicyDraft,
 ): WalletPolicy {
-  return normalizePolicy({
+  const policy: WalletPolicy = {
     v: 1,
-    workspaceId: workspace.id as WalletPolicy["workspaceId"],
+    workspaceId: workspace.id,
     walletId: wallet.id,
     revision: (wallet.policy?.revision ?? 0) + 1,
     previousHash: wallet.policyHash,
@@ -1615,8 +1701,11 @@ function policyFromDraft(
     contractCalls: draft.contractCalls,
     fees: draft.fees,
     approvals: draft.approvals,
-    ...(draft.venues ? { venues: draft.venues } : {}),
-  } as WalletPolicy);
+  };
+
+  if (draft.venues) policy.venues = draft.venues;
+
+  return normalizePolicy(policy);
 }
 
 // --- mandates (as the signer holds and counts them; the server mirrors them) -------------------
@@ -1630,9 +1719,9 @@ interface FixtureMandate {
   workspaceId: string;
   agent: { id: Mandate["agentId"]; name: string };
   mandate: Mandate;
-  grantApprovalId: string;
+  grantApprovalId: ApprovalId;
   grantedAt: number;
-  grantedBy: string[];
+  grantedBy: UserId[];
   revokedAt: number | null;
   /** The reason it was first seen ending, kept as the server's mirror keeps it. */
   endedReason: MandateEndedReason | null;
@@ -1640,7 +1729,10 @@ interface FixtureMandate {
   uses: { at: number; chainId: string; asset: string; amount: bigint }[];
 }
 
-function knownAsset(asset: string): { symbol: string | null; decimals: number | null } {
+/** What the fixture knows of an asset by itself: its symbol and decimals, or neither. */
+type KnownAsset = Pick<MandateAssetView, "symbol" | "decimals">;
+
+function knownAsset(asset: string): KnownAsset {
   if (asset === "native") return { symbol: "ETH", decimals: 18 };
 
   if (asset === TEST_USDC) return { symbol: "USDC", decimals: 6 };
@@ -1720,7 +1812,7 @@ function mandateSummary(record: FixtureMandate): MandateSummary {
     mandateHash: mandateHash(mandate),
     status,
     endedReason: record.endedReason,
-    grantApprovalId: record.grantApprovalId as MandateSummary["grantApprovalId"],
+    grantApprovalId: record.grantApprovalId,
     grantedAt: record.grantedAt,
     grantedBy: record.grantedBy.map(userSummary),
     revokedAt: record.revokedAt,
@@ -2017,18 +2109,33 @@ const ALLOWED_WHILE_DELETING: Partial<Record<RouteName, true>> = {
 
 // --- handlers ---------------------------------------------------------------------------------
 
-type Handler = (input: {
-  params: Record<string, string>;
-  query: Record<string, string>;
-  body: Record<string, unknown>;
-  userId: string | null;
+/** A route's request body as its schema decodes it; a route without one has an empty body. */
+type RouteBody<N extends RouteName> = Routes[N]["body"] extends z.ZodType
+  ? z.infer<Routes[N]["body"]>
+  : Record<never, never>;
+
+/** Who asks, and where the answer goes: the same for every route. */
+interface RequestContext {
+  userId: UserId | null;
   /** When the session's passkey sign-in happened; null without a session. */
   signedInAt: number | null;
   res: ServerResponse;
   origin: string;
-}) => unknown;
+}
 
-function signedIn(userId: string | null): string {
+interface HandlerInput<N extends RouteName> extends RequestContext {
+  params: Record<string, string>;
+  query: Record<string, string>;
+  body: RouteBody<N>;
+}
+
+type Handler<N extends RouteName> = (
+  input: HandlerInput<N>,
+) => RouteOutput<N> | Promise<RouteOutput<N>>;
+
+type Handlers = { [N in RouteName]: Handler<N> };
+
+function signedIn(userId: UserId | null): UserId {
   if (!userId) throw new Refusal("unauthenticated", "Sign in first.");
 
   return userId;
@@ -2036,15 +2143,18 @@ function signedIn(userId: string | null): string {
 
 function notificationPreferences(userId: string): NotificationPreferences {
   return {
-    workspaces: [...state.workspaces.values()]
-      .filter((workspace) => workspace.members.some((member) => member.user.id === userId))
-      .map((workspace) => ({
-        workspaceId: workspace.id as WorkspaceDetail["id"],
-        ...(state.notificationSwitches.get(`${userId} ${workspace.id}`) ?? {
-          webPush: true,
-          reminders: true,
-        }),
-      })),
+    workspaces: [...state.workspaces.values()].flatMap((workspace) => {
+      if (!workspace.members.some((member) => member.user.id === userId)) return [];
+
+      const switches = state.notificationSwitches.get(`${userId} ${workspace.id}`) ?? {
+        webPush: true,
+        reminders: true,
+      };
+
+      return [
+        { workspaceId: workspace.id, webPush: switches.webPush, reminders: switches.reminders },
+      ];
+    }),
     quietHours: state.quietHours.get(userId) ?? null,
   };
 }
@@ -2060,7 +2170,7 @@ function pushEndpointAllowed(endpoint: string): boolean {
   );
 }
 
-const handlers: Record<RouteName, Handler> = {
+const handlers: Handlers = {
   getSession: ({ userId }) => sessionInfo(userId),
   startSetup: ({ body }) => {
     if (state.setupDone) throw new Refusal("conflict", "This server is already set up.");
@@ -2073,16 +2183,18 @@ const handlers: Record<RouteName, Handler> = {
     state.ceremonies.set(ceremonyId, {
       challenge,
       kind: "setup",
-      data: { userId, displayName: String(body.displayName) },
+      person: { userId, displayName: String(body.displayName) },
     });
 
     return { ceremonyId, options };
   },
   finishSetup: ({ body, res }) => {
-    const response = body.response as { id: string; response: { clientDataJSON: string } };
-    const ceremony = finishCeremony(String(body.ceremonyId), "setup", response);
-    const userId = ceremony.data.userId ?? "";
-    state.users.set(userId, ceremony.data.displayName ?? "");
+    const { response } = body;
+    const { person } = finishCeremony(String(body.ceremonyId), "setup", response);
+
+    if (!person) throw new Error("a setup ceremony without the person it makes");
+    const { userId } = person;
+    state.users.set(userId, person.displayName);
     registerCredential(userId, response, "First passkey");
     state.setupDone = true;
     startSession(res, userId);
@@ -2092,7 +2204,7 @@ const handlers: Record<RouteName, Handler> = {
   startLogin: () => {
     const challenge = randomToken(32);
     const ceremonyId = randomToken();
-    state.ceremonies.set(ceremonyId, { challenge, kind: "login", data: {} });
+    state.ceremonies.set(ceremonyId, { challenge, kind: "login", person: null });
 
     return {
       ceremonyId,
@@ -2106,7 +2218,7 @@ const handlers: Record<RouteName, Handler> = {
     };
   },
   finishLogin: ({ body, res }) => {
-    const response = body.response as { id: string; response: { clientDataJSON: string } };
+    const { response } = body;
     finishCeremony(String(body.ceremonyId), "login", response);
     const credential = state.credentials.get(response.id);
 
@@ -2170,15 +2282,14 @@ const handlers: Record<RouteName, Handler> = {
       }
 
       const approvals = approving.flatMap((workspace) => {
-        const waiting = [...state.approvals.values()]
-          .filter(
-            ({ summary, subject }) =>
-              summary.workspaceId === workspace.id &&
-              summary.status === "pending" &&
-              subject.kind === "remove-approver" &&
-              subject.user.id === id,
-          )
-          .map((approval) => approval.summary);
+        const waiting = [...state.approvals.values()].flatMap(({ summary, subject }) =>
+          summary.workspaceId === workspace.id &&
+          summary.status === "pending" &&
+          subject.kind === "remove-approver" &&
+          subject.user.id === id
+            ? [summary]
+            : [],
+        );
 
         return waiting.length > 0
           ? waiting
@@ -2221,22 +2332,22 @@ const handlers: Record<RouteName, Handler> = {
     const id = signedIn(userId);
 
     return {
-      items: [...state.credentials.values()]
-        .filter((item) => item.userId === id)
-        .map((item) => item.summary),
+      items: [...state.credentials.values()].flatMap((item) =>
+        item.userId === id ? [item.summary] : [],
+      ),
     };
   },
   startAddPasskey: ({ userId }) => {
     const id = signedIn(userId);
     const { challenge, options } = registrationOptions(id, state.users.get(id) ?? "");
     const ceremonyId = randomToken();
-    state.ceremonies.set(ceremonyId, { challenge, kind: "add", data: {} });
+    state.ceremonies.set(ceremonyId, { challenge, kind: "add", person: null });
 
     return { ceremonyId, options };
   },
   finishAddPasskey: ({ body, userId }) => {
     const id = signedIn(userId);
-    const response = body.response as { id: string; response: { clientDataJSON: string } };
+    const { response } = body;
     finishCeremony(String(body.ceremonyId), "add", response);
     const passkey = registerCredential(id, response, String(body.label));
     const approvals: ApprovalSummary[] = [];
@@ -2252,7 +2363,7 @@ const handlers: Record<RouteName, Handler> = {
           title: `Let ${state.users.get(id)}'s passkey "${passkey.label}" approve`,
           requestedBy: {
             type: "user",
-            id: id as Member["user"]["id"],
+            id,
             name: state.users.get(id) ?? "",
           },
           threshold: workspace.adminThreshold,
@@ -2289,20 +2400,20 @@ const handlers: Record<RouteName, Handler> = {
     const id = signedIn(userId);
 
     return {
-      items: [...state.workspaces.values()]
-        .filter((workspace) => workspace.members.some((member) => member.user.id === id))
-        .map((workspace) => {
-          const {
-            id: wsId,
-            name,
-            role,
-            paused,
-            pendingApprovals,
-            lifecycle,
-          } = workspaceDetail(workspace, id);
+      items: [...state.workspaces.values()].flatMap((workspace) => {
+        if (!workspace.members.some((member) => member.user.id === id)) return [];
 
-          return { id: wsId, name, role, paused, pendingApprovals, lifecycle };
-        }),
+        const {
+          id: wsId,
+          name,
+          role,
+          paused,
+          pendingApprovals,
+          lifecycle,
+        } = workspaceDetail(workspace, id);
+
+        return [{ id: wsId, name, role, paused, pendingApprovals, lifecycle }];
+      }),
     };
   },
   createWorkspace: ({ body, userId }) => {
@@ -2363,7 +2474,7 @@ const handlers: Record<RouteName, Handler> = {
       title: `Resume ${workspace.name}`,
       requestedBy: {
         type: "user",
-        id: id as Member["user"]["id"],
+        id,
         name: state.users.get(id) ?? "",
       },
       threshold: workspace.adminThreshold,
@@ -2395,7 +2506,7 @@ const handlers: Record<RouteName, Handler> = {
       title: `Require ${proposed} approvals for admin changes`,
       requestedBy: {
         type: "user",
-        id: id as Member["user"]["id"],
+        id,
         name: state.users.get(id) ?? "",
       },
       threshold: workspace.adminThreshold,
@@ -2417,15 +2528,19 @@ const handlers: Record<RouteName, Handler> = {
       ({ summary }) => summary.workspaceId === workspace.id && summary.status === "pending",
     );
 
+    const blockers: DeletionPreflight["blockers"] = [];
+
+    if (pending) blockers.push("pending_approvals");
+
+    if (unmined(workspace)) blockers.push("unmined_transactions");
+
+    if (wallets.length > 0) blockers.push("nonzero_balance");
+
     return {
       workspaceId: workspace.id,
       source: "control-plane",
       wallets: wallets.map((wallet) => ({ wallet, balances: BALANCES })),
-      blockers: [
-        ...(pending ? ["pending_approvals"] : []),
-        ...(unmined(workspace) ? ["unmined_transactions"] : []),
-        ...(wallets.length > 0 ? ["nonzero_balance"] : []),
-      ],
+      blockers,
       minDestroyDelaySeconds: MIN_DESTROY_DELAY_SECONDS,
       earliestDestroyAfter: now() + MIN_DESTROY_DELAY_SECONDS,
     };
@@ -2460,7 +2575,7 @@ const handlers: Record<RouteName, Handler> = {
           : `Delete this workspace and destroy ${wallets.length} wallet keys`,
       requestedBy: {
         type: "user",
-        id: id as Member["user"]["id"],
+        id,
         name: state.users.get(id) ?? "",
       },
       threshold: workspace.adminThreshold,
@@ -2537,7 +2652,7 @@ const handlers: Record<RouteName, Handler> = {
     state.invites.set(token, {
       id: inviteId,
       workspaceId: workspace.id,
-      role: body.role as Role,
+      role: body.role,
       invitedBy: id,
       createdAt: now(),
       expiresAt,
@@ -2598,7 +2713,7 @@ const handlers: Record<RouteName, Handler> = {
     state.ceremonies.set(ceremonyId, {
       challenge,
       kind: "invite",
-      data: { userId, displayName: String(body.displayName) },
+      person: { userId, displayName: String(body.displayName) },
     });
 
     return { ceremonyId, options };
@@ -2607,10 +2722,12 @@ const handlers: Record<RouteName, Handler> = {
     const invite = state.invites.get(params.token ?? "");
 
     if (!invite) throw new Refusal("not_found", "This invite link is not valid.");
-    const response = body.response as { id: string; response: { clientDataJSON: string } };
-    const ceremony = finishCeremony(String(body.ceremonyId), "invite", response);
-    const userId = ceremony.data.userId ?? "";
-    state.users.set(userId, ceremony.data.displayName ?? "");
+    const { response } = body;
+    const { person } = finishCeremony(String(body.ceremonyId), "invite", response);
+
+    if (!person) throw new Error("an invite ceremony without the person it makes");
+    const { userId } = person;
+    state.users.set(userId, person.displayName);
     registerCredential(userId, response, "First passkey");
     joinWorkspace(params.token ?? "", userId);
     startSession(res, userId);
@@ -2625,7 +2742,7 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
     const member = memberOf(workspace, params.userId ?? "");
-    const role = body.role as Role;
+    const { role } = body;
     const wasApprover = member.approver !== "none";
     member.role = role;
     let approvals: ApprovalSummary[] = [];
@@ -2779,20 +2896,29 @@ const handlers: Record<RouteName, Handler> = {
 
     const venue = venueAccountOf(wallet);
 
-    return {
+    const detail: WalletDetail = {
       ...wallet,
       balances: BALANCES,
-      // EVM only, as the signer's `spent`: a venue's count is in `venue`.
-      spent: [...state.spent]
-        .filter(([key]) => key.startsWith(`${wallet.id}|eip155:`))
-        .map(([key, amount]) => {
-          const [, chainId, asset] = key.split("|");
+      // EVM only, as the signer's `spent`: a venue's count is in `venue`. The key's parts are
+      // decoded as the response schema checks them, so this refuses nothing the reply did not.
+      spent: [...state.spent].flatMap(([key, amount]) => {
+        if (!key.startsWith(`${wallet.id}|eip155:`)) return [];
+        const [, chainId, asset] = key.split("|");
 
-          return { chainId, asset, amount: amount.toString() };
-        }),
+        return [
+          {
+            chainId: ChainId.parse(chainId),
+            asset: AssetRef.parse(asset),
+            amount: amount.toString(),
+          },
+        ];
+      }),
       pendingPolicyApprovalId: pending?.summary.id ?? null,
-      ...(venue === null ? {} : { venue }),
     };
+
+    if (venue !== null) detail.venue = venue;
+
+    return detail;
   },
   requestPolicy: ({ params, body, userId }) => {
     const id = signedIn(userId);
@@ -2806,7 +2932,7 @@ const handlers: Record<RouteName, Handler> = {
       throw new Refusal("conflict", "This wallet is retired: its limits cannot change.");
     }
 
-    const draft = body.draft as PolicyDraft;
+    const { draft } = body;
 
     // Mirrors the server: more approvals per payment than for admin changes would be undone by
     // anyone who can change the limits.
@@ -2844,7 +2970,7 @@ const handlers: Record<RouteName, Handler> = {
       title: `Change the limits of ${wallet.label}`,
       requestedBy: {
         type: "user",
-        id: id as Member["user"]["id"],
+        id,
         name: state.users.get(id) ?? "",
       },
       threshold: workspace.adminThreshold,
@@ -2871,8 +2997,7 @@ const handlers: Record<RouteName, Handler> = {
     const wallet = workspace.wallets.find((item) => item.id === params.walletId);
 
     if (!wallet) throw new Refusal("not_found", "This wallet does not exist.");
-    const asset = body.asset as Sweep["asset"];
-    const to = body.to as Sweep["to"];
+    const { asset, to } = body;
     // Mirrors the server, with the balances `getWallet` reports: all of a token, or the native
     // coin less the fee ceiling.
     const maxFeeWei = 1_000_000_000_000_000n;
@@ -2881,9 +3006,9 @@ const handlers: Record<RouteName, Handler> = {
 
     const sweep: Sweep = {
       v: 1,
-      workspaceId: workspace.id as Sweep["workspaceId"],
+      workspaceId: workspace.id,
       walletId: wallet.id,
-      chainId: body.chainId as Sweep["chainId"],
+      chainId: body.chainId,
       asset,
       amount: amount.toString(),
       to,
@@ -2919,7 +3044,7 @@ const handlers: Record<RouteName, Handler> = {
       title: `Empty ${formatAmount(sweep.amount, subject.assetDecimals)} ${subject.assetSymbol} from the wallet to ${short(to)}`,
       requestedBy: {
         type: "user",
-        id: id as Member["user"]["id"],
+        id,
         name: state.users.get(id) ?? "",
       },
       threshold: workspace.adminThreshold,
@@ -2969,7 +3094,7 @@ const handlers: Record<RouteName, Handler> = {
       title: `Retire ${wallet.label} and destroy its key`,
       requestedBy: {
         type: "user",
-        id: id as Member["user"]["id"],
+        id,
         name: state.users.get(id) ?? "",
       },
       threshold: workspace.adminThreshold,
@@ -3017,14 +3142,13 @@ const handlers: Record<RouteName, Handler> = {
 
     return wallet;
   },
-  proposeMandate: ({ params, body, userId }) => {
+  proposeMandate: ({ params, body: draft, userId }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
     const wallet = workspace.wallets.find((item) => item.id === params.walletId);
 
     if (!wallet) throw new Refusal("not_found", "This wallet does not exist.");
-    const draft = body as MandateDraft;
     const agent = workspace.agents.find((item) => item.id === draft.agentId);
 
     if (!agent) throw new Refusal("invalid_request", "agentId: not an agent of this workspace");
@@ -3050,7 +3174,7 @@ const handlers: Record<RouteName, Handler> = {
         ...draft,
         v: 1,
         id: newId("mnd"),
-        workspaceId: workspace.id as Mandate["workspaceId"],
+        workspaceId: workspace.id,
         walletId: wallet.id,
         notBefore: now(),
       });
@@ -3081,7 +3205,7 @@ const handlers: Record<RouteName, Handler> = {
       title: `Let ${agent.name} make up to ${payments} from ${wallet.label} without asking`,
       requestedBy: {
         type: "user",
-        id: id as Member["user"]["id"],
+        id,
         name: state.users.get(id) ?? "",
       },
       threshold: workspace.adminThreshold,
@@ -3158,15 +3282,18 @@ const handlers: Record<RouteName, Handler> = {
     memberOf(workspace, id);
 
     const items = [...state.mandates.values()]
-      .filter((record) => record.workspaceId === workspace.id)
-      .map(mandateSummary)
-      .filter(
-        (item) =>
+      .flatMap((record) => {
+        if (record.workspaceId !== workspace.id) return [];
+        const item = mandateSummary(record);
+
+        const asked =
           (query.walletId === undefined || item.walletId === query.walletId) &&
           (query.agentId === undefined || item.agent.id === query.agentId) &&
           (query.status === undefined ||
-            (query.status === "active") === (item.endedReason === null)),
-      )
+            (query.status === "active") === (item.endedReason === null));
+
+        return asked ? [item] : [];
+      })
       .sort((a, b) => b.grantedAt - a.grantedAt || (a.id < b.id ? 1 : -1));
 
     return { items, nextCursor: null };
@@ -3234,8 +3361,9 @@ const handlers: Record<RouteName, Handler> = {
     for (const item of listed) collect(item);
 
     const items = listed
-      .filter((item) => query.status !== "pending" || item.summary.status === "pending")
-      .map((item) => item.summary)
+      .flatMap(({ summary }) =>
+        query.status !== "pending" || summary.status === "pending" ? [summary] : [],
+      )
       .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
 
     return { items, nextCursor: null };
@@ -3531,9 +3659,9 @@ const handlers: Record<RouteName, Handler> = {
     const id = signedIn(userId);
 
     return {
-      items: [...state.pushSubscriptions.values()]
-        .filter((item) => item.userId === id)
-        .map((item) => item.summary),
+      items: [...state.pushSubscriptions.values()].flatMap((item) =>
+        item.userId === id ? [item.summary] : [],
+      ),
     };
   },
   addPushSubscription: async ({ body, userId }) => {
@@ -3550,8 +3678,7 @@ const handlers: Record<RouteName, Handler> = {
         "endpoint_refused",
       );
     // As the server does: the browser's key must be a point on P-256.
-    const keys = body.keys as { p256dh: string };
-    const p256dh = new Uint8Array(Buffer.from(keys.p256dh.replace(/=+$/, ""), "base64url"));
+    const p256dh = new Uint8Array(Buffer.from(body.keys.p256dh.replace(/=+$/, ""), "base64url"));
 
     try {
       await crypto.subtle.importKey(
@@ -3569,7 +3696,7 @@ const handlers: Record<RouteName, Handler> = {
       );
     }
 
-    const label = typeof body.label === "string" ? body.label : null;
+    const label = body.label ?? null;
 
     for (const [subscriptionId, item] of state.pushSubscriptions) {
       if (item.endpoint !== endpoint) continue;
@@ -3605,9 +3732,8 @@ const handlers: Record<RouteName, Handler> = {
     return {};
   },
   getNotificationPreferences: ({ userId }) => notificationPreferences(signedIn(userId)),
-  setNotificationPreferences: ({ body, userId }) => {
+  setNotificationPreferences: ({ body: input, userId }) => {
     const id = signedIn(userId);
-    const input = body as NotificationPreferences;
 
     for (const item of input.workspaces) memberOf(workspaceOf(item.workspaceId), id);
 
@@ -3627,7 +3753,7 @@ const handlers: Record<RouteName, Handler> = {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
-    const detail = body.detail as NotificationDetail;
+    const { detail } = body;
 
     if (workspace.notificationDetail !== detail) {
       workspace.notificationDetail = detail;
@@ -3690,11 +3816,11 @@ const handlers: Record<RouteName, Handler> = {
     const source = workspaceOf(input.params.workspaceId ?? "");
     requireOwner(source, id);
 
-    return instantiate(toTemplate(source), input.body as CloneOptions, input);
+    return instantiate(toTemplate(source), input.body, input);
   },
   importTemplate: (input) => {
     signedIn(input.userId);
-    const { template, ...options } = input.body as CloneOptions & { template: WorkspaceTemplate };
+    const { template, ...options } = input.body;
 
     const unknown = template.wallets
       .flatMap((wallet) => wallet.policy?.chains ?? [])
@@ -3765,40 +3891,35 @@ function toTemplate(workspace: Workspace): WorkspaceTemplate {
  * A new workspace from a template, through the same steps a person takes: the person is its only
  * member, every wallet is new, and each policy waits in a `set-policy` request.
  */
-function instantiate(
+async function instantiate(
   template: WorkspaceTemplate,
   options: CloneOptions,
-  input: Parameters<Handler>[0],
-): CloneResult {
-  const id = signedIn(input.userId);
+  context: RequestContext,
+): Promise<CloneResult> {
+  const id = signedIn(context.userId);
 
-  const call = (name: RouteName, params: Record<string, string>, body: Record<string, unknown>) =>
-    handlers[name]({ ...input, params, query: {}, body });
+  const call = <N extends RouteName>(name: N, params: Record<string, string>, body: RouteBody<N>) =>
+    handlers[name]({ ...context, params, query: {}, body });
 
-  const workspace = call("createWorkspace", {}, { name: options.name }) as WorkspaceDetail;
+  const workspace = await call("createWorkspace", {}, { name: options.name });
   const created = workspaceOf(workspace.id);
   created.notificationDetail = template.notificationDetail;
   const agents: CloneResult["agents"] = [];
   const walletOfRef = new Map<string, WalletSummary>();
-  const agentOfRef = new Map<string, string>();
+  const agentOfRef = new Map<string, AgentId>();
 
   for (const item of template.wallets) {
     if (item.agent !== null) {
       if (!options.includeAgents) continue;
 
-      const made = call(
+      const made = await call(
         "createAgent",
         { workspaceId: workspace.id },
         { name: item.agent.name },
-      ) as {
-        agent: { id: string };
-        wallet: WalletSummary;
-        token: string;
-        mcpUrl: string;
-      };
+      );
 
       agents.push({
-        agentId: made.agent.id as CloneResult["agents"][number]["agentId"],
+        agentId: made.agent.id,
         walletId: made.wallet.id,
         token: made.token,
         mcpUrl: made.mcpUrl,
@@ -3808,11 +3929,7 @@ function instantiate(
     } else {
       walletOfRef.set(
         item.ref,
-        call(
-          "createTreasury",
-          { workspaceId: workspace.id },
-          { label: item.label },
-        ) as WalletSummary,
+        await call("createTreasury", { workspaceId: workspace.id }, { label: item.label }),
       );
     }
 
@@ -3821,10 +3938,12 @@ function instantiate(
     if (wallet) wallet.label = item.label;
   }
 
-  const approvals = template.wallets.flatMap((item) => {
+  const approvals: ApprovalSummary[] = [];
+
+  for (const item of template.wallets) {
     const wallet = walletOfRef.get(item.ref);
 
-    if (!wallet || !item.policy) return [];
+    if (!wallet || !item.policy) continue;
 
     const draft = {
       ...item.policy,
@@ -3833,36 +3952,26 @@ function instantiate(
       approvals: { ...item.policy.approvals, threshold: 1 },
     };
 
-    return [
-      call(
-        "requestPolicy",
-        { workspaceId: workspace.id, walletId: wallet.id },
-        { draft },
-      ) as ApprovalSummary,
-    ];
-  });
+    approvals.push(
+      await call("requestPolicy", { workspaceId: workspace.id, walletId: wallet.id }, { draft }),
+    );
+  }
 
-  const invites = options.includeMembers
-    ? template.members.flatMap((member) => {
-        if (member.userId === id || !state.users.has(member.userId)) return [];
+  const invites: CloneResult["invites"] = [];
 
-        const invite = call(
-          "createInvite",
-          { workspaceId: workspace.id },
-          { role: member.role },
-        ) as { url: string; expiresAt: number };
+  for (const member of options.includeMembers ? template.members : []) {
+    if (member.userId === id || !state.users.has(member.userId)) continue;
 
-        return [
-          {
-            userId: member.userId,
-            displayName: state.users.get(member.userId) ?? "",
-            role: member.role,
-            url: invite.url,
-            expiresAt: invite.expiresAt,
-          },
-        ];
-      })
-    : [];
+    const invite = await call("createInvite", { workspaceId: workspace.id }, { role: member.role });
+
+    invites.push({
+      userId: member.userId,
+      displayName: state.users.get(member.userId) ?? "",
+      role: member.role,
+      url: invite.url,
+      expiresAt: invite.expiresAt,
+    });
+  }
 
   audit(created, userActor(id), "workspace.cloned", { type: "workspace", id: created.id });
 
@@ -3875,7 +3984,7 @@ function instantiate(
   };
 }
 
-function joinWorkspace(token: string, userId: string): string {
+function joinWorkspace(token: string, userId: UserId): string {
   const invite = state.invites.get(token);
 
   if (!invite || invite.expiresAt < now())
@@ -3901,7 +4010,13 @@ function joinWorkspace(token: string, userId: string): string {
 
 // --- HTTP -------------------------------------------------------------------------------------
 
-const compiled = Object.entries(routes).map(([name, route]) => {
+function isRouteName(name: string): name is RouteName {
+  return Object.hasOwn(routes, name);
+}
+
+const compiled = Object.keys(routes).flatMap((name) => {
+  if (!isRouteName(name)) return [];
+  const route = routes[name];
   const keys: string[] = [];
 
   const pattern = new RegExp(
@@ -3912,19 +4027,72 @@ const compiled = Object.entries(routes).map(([name, route]) => {
     })}$`,
   );
 
-  return { name: name as RouteName, route, pattern, keys };
+  return [{ name, route, pattern, keys }];
 });
 
-async function readBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
+/** `/__fixture/web-push`: turns Web Push on or off. */
+const WebPushSwitch = z.object({ enabled: z.boolean() });
 
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  const text = Buffer.concat(chunks).toString("utf8");
+/** `/__fixture/settle`: the intent whose sent transaction gets an outcome, and which. */
+const SettleRequest = z.object({
+  intentId: z.string().optional(),
+  status: z.string().optional(),
+});
+
+/** `/__fixture/due`: the workspace, and the wallet whose retirement is due (else the deletion). */
+const DueRequest = z.object({
+  workspaceId: z.string().optional(),
+  walletId: z.string().optional(),
+});
+
+async function readBody(req: IncomingMessage): Promise<JsonValue> {
+  const text = (await buffer(req)).toString("utf8");
 
   return text === "" ? {} : JSON.parse(text);
 }
 
-function send(res: ServerResponse, code: number, payload: unknown): void {
+/** The body of a request for route N, decoded with that route's schema before its handler runs. */
+async function routeBody<N extends RouteName>(
+  name: N,
+  req: IncomingMessage,
+): Promise<RouteBody<N>> {
+  const schema: z.ZodType | null = routes[name].body;
+  const body = schema === null ? {} : decodeRequest(schema, await readBody(req));
+
+  // SAFETY: `schema` is `routes[name].body`, so `body` is what route N's own body schema decoded
+  // (z.infer of `Routes[N]["body"]`), or `{}` when that schema is null; TypeScript cannot carry N
+  // through the lookup, so RouteBody<N> is restated here, once for every handler.
+  return body as RouteBody<N>;
+}
+
+/**
+ * Serves one request for route N as the server does: decodes its body, needs a session where the
+ * route does, refuses changes to a workspace being deleted, then runs the route's handler.
+ */
+async function serveRoute<N extends RouteName>(
+  name: N,
+  req: IncomingMessage,
+  input: Omit<HandlerInput<N>, "body" | "userId" | "signedInAt">,
+): Promise<RouteOutput<N>> {
+  const route = routes[name];
+  const body = await routeBody(name, req);
+  const cookie = /fixture_session=([^;]+)/.exec(req.headers.cookie ?? "")?.[1];
+  const userId = cookie ? (state.sessions.get(cookie) ?? null) : null;
+  const signedInAt = cookie ? (state.signedInAt.get(cookie) ?? null) : null;
+
+  if (route.auth === "session" && !userId) throw new Refusal("unauthenticated", "Sign in first.");
+
+  const deleting =
+    state.workspaces.get(input.params.workspaceId ?? "")?.lifecycle.state === "deleting";
+
+  if (deleting && route.method !== "GET" && !ALLOWED_WHILE_DELETING[name]) {
+    throw new Refusal("conflict", "This workspace is being deleted. Cancel the deletion first.");
+  }
+
+  return handlers[name]({ ...input, body, userId, signedInAt });
+}
+
+function send<T>(res: ServerResponse, code: number, payload: T): void {
   res.writeHead(code, {
     "content-type": "application/json",
     "cache-control": "no-store",
@@ -3947,18 +4115,17 @@ const server = createServer(async (req, res) => {
 
     // Lets a test turn Web Push off or on, as the operator does with `WEB_PUSH_ENABLED`.
     if (url.pathname === "/__fixture/web-push" && req.method === "POST") {
-      const input = (await readBody(req)) as { enabled?: unknown };
+      const input = WebPushSwitch.safeParse(await readBody(req));
 
-      if (typeof input.enabled !== "boolean")
-        throw new Refusal("invalid_request", "enabled must be true or false.");
-      state.webPush = input.enabled;
+      if (!input.success) throw new Refusal("invalid_request", "enabled must be true or false.");
+      state.webPush = input.data.enabled;
 
       return send(res, 200, { ok: true });
     }
 
     // Lets a test put a sent payment into a chain outcome the fixture never reaches by itself.
     if (url.pathname === "/__fixture/settle" && req.method === "POST") {
-      const input = (await readBody(req)) as { intentId?: string; status?: string };
+      const input = decodeRequest(SettleRequest, await readBody(req));
       const intent = state.intents.get(input.intentId ?? "");
 
       if (!intent?.transaction)
@@ -4006,7 +4173,7 @@ const server = createServer(async (req, res) => {
     // Lets a test skip a retirement's or deletion's delay: it is due now, and the next request
     // finishes it.
     if (url.pathname === "/__fixture/due" && req.method === "POST") {
-      const input = (await readBody(req)) as { workspaceId?: string; walletId?: string };
+      const input = decodeRequest(DueRequest, await readBody(req));
       const workspace = workspaceOf(input.workspaceId ?? "");
       const wallet = workspace.wallets.find((item) => item.id === input.walletId);
 
@@ -4033,7 +4200,7 @@ const server = createServer(async (req, res) => {
     if (proposeMatch && req.method === "POST") {
       const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
 
-      return send(res, 200, propose(token, (await readBody(req)) as Record<string, string>));
+      return send(res, 200, propose(token, await readBody(req)));
     }
 
     if (!url.pathname.startsWith("/api/"))
@@ -4058,53 +4225,17 @@ const server = createServer(async (req, res) => {
     );
 
     const query = Object.fromEntries(url.searchParams);
-    let body: Record<string, unknown> = {};
-
-    if (match.route.body) {
-      const parsed = match.route.body.safeParse(await readBody(req));
-
-      if (!parsed.success)
-        throw new Refusal(
-          "invalid_request",
-          "The request is not valid.",
-          parsed.error.issues[0]?.message,
-        );
-      body = parsed.data as Record<string, unknown>;
-    }
-
-    const cookie = /fixture_session=([^;]+)/.exec(req.headers.cookie ?? "")?.[1];
-    const userId = cookie ? (state.sessions.get(cookie) ?? null) : null;
-    const signedInAt = cookie ? (state.signedInAt.get(cookie) ?? null) : null;
-
-    if (match.route.auth === "session" && !userId)
-      throw new Refusal("unauthenticated", "Sign in first.");
-    const deleting = state.workspaces.get(params.workspaceId ?? "")?.lifecycle.state === "deleting";
-
-    if (deleting && match.route.method !== "GET" && !ALLOWED_WHILE_DELETING[match.name]) {
-      throw new Refusal("conflict", "This workspace is being deleted. Cancel the deletion first.");
-    }
-
-    const output = await handlers[match.name]({
-      params,
-      query,
-      body,
-      userId,
-      signedInAt,
-      res,
-      origin,
-    });
+    const output = await serveRoute(match.name, req, { params, query, res, origin });
 
     // Fails loudly (500) when the fixture drifts from the contract.
     send(res, 200, match.route.response.parse(output));
   } catch (error) {
     if (error instanceof Refusal) {
-      return send(res, status[error.code], {
-        error: {
-          code: error.code,
-          message: error.message,
-          ...(error.detail ? { detail: error.detail } : {}),
-        },
-      });
+      const refusal: RefusalBody = { code: error.code, message: error.message };
+
+      if (error.detail) refusal.detail = error.detail;
+
+      return send(res, status[error.code], { error: refusal });
     }
 
     process.stderr.write(
@@ -4116,20 +4247,29 @@ const server = createServer(async (req, res) => {
 
 // --- the stand-in confirmation page, on its own origin -----------------------------------------
 
-const confirmFiles: Record<string, { type: string; body: Buffer }> = {
-  "/confirm.js": {
-    type: "text/javascript; charset=utf-8",
-    body: readFileSync(new URL("./confirm/confirm.js", import.meta.url)),
-  },
-  "/confirm.css": {
-    type: "text/css; charset=utf-8",
-    body: readFileSync(new URL("./confirm/confirm.css", import.meta.url)),
-  },
-  "/favicon.svg": {
-    type: "image/svg+xml",
-    body: readFileSync(new URL("../public/favicon.svg", import.meta.url)),
-  },
-};
+const confirmFiles = new Map([
+  [
+    "/confirm.js",
+    {
+      type: "text/javascript; charset=utf-8",
+      body: readFileSync(new URL("./confirm/confirm.js", import.meta.url)),
+    },
+  ],
+  [
+    "/confirm.css",
+    {
+      type: "text/css; charset=utf-8",
+      body: readFileSync(new URL("./confirm/confirm.css", import.meta.url)),
+    },
+  ],
+  [
+    "/favicon.svg",
+    {
+      type: "image/svg+xml",
+      body: readFileSync(new URL("../public/favicon.svg", import.meta.url)),
+    },
+  ],
+]);
 
 const confirmHtml = readFileSync(new URL("./confirm/index.html", import.meta.url));
 
@@ -4145,8 +4285,11 @@ const CONFIRM_CSP = [
   "frame-ancestors 'none'",
 ].join("; ");
 
+/** One line of the confirmation page: what it names, and its value. */
+type ConfirmationLine = { label: string; value: string };
+
 /** The request in words, from the fixture's own records, as the signer's view would show it. */
-function confirmationLines(approval: Approval): { label: string; value: string }[] {
+function confirmationLines(approval: Approval): ConfirmationLine[] {
   const subject = approval.subject;
 
   switch (subject.kind) {
@@ -4226,31 +4369,34 @@ function confirmationLines(approval: Approval): { label: string; value: string }
     case "set-policy": {
       const rules = subject.proposed.venues?.hyperliquid;
 
-      return [
+      const lines: ConfirmationLine[] = [
         { label: "Wallet", value: `${subject.wallet.label} ${subject.wallet.address}` },
         { label: "Policy revision", value: String(subject.proposed.revision) },
         { label: "Approvals per payment", value: String(subject.proposed.approvals.threshold) },
-        ...(rules
-          ? [
-              {
-                label: "Hyperliquid network",
-                value: `${VENUE_NETWORK_NAMES[rules.network]} (${rules.network})`,
-              },
-              ...rules.markets.map((market) => ({
-                label: "Market allowed",
-                value: `${market.coin} (index ${market.asset}): up to ${formatAmount(market.maxNotionalPerOrderUsd6, 6)} USD per order`,
-              })),
-              {
-                label: "Hyperliquid notional per 24 hours",
-                value: `${formatAmount(rules.maxNotionalPerDayUsd6, 6)} USD`,
-              },
-              {
-                label: "Funds at the venue",
-                value: "held by Hyperliquid; these caps limit new orders, not losses",
-              },
-            ]
-          : []),
       ];
+
+      if (rules) {
+        lines.push(
+          {
+            label: "Hyperliquid network",
+            value: `${VENUE_NETWORK_NAMES[rules.network]} (${rules.network})`,
+          },
+          ...rules.markets.map((market) => ({
+            label: "Market allowed",
+            value: `${market.coin} (index ${market.asset}): up to ${formatAmount(market.maxNotionalPerOrderUsd6, 6)} USD per order`,
+          })),
+          {
+            label: "Hyperliquid notional per 24 hours",
+            value: `${formatAmount(rules.maxNotionalPerDayUsd6, 6)} USD`,
+          },
+          {
+            label: "Funds at the venue",
+            value: "held by Hyperliquid; these caps limit new orders, not losses",
+          },
+        );
+      }
+
+      return lines;
     }
 
     case "add-approver": {
@@ -4340,11 +4486,14 @@ function confirmationLines(approval: Approval): { label: string; value: string }
     case "delete-workspace": {
       const wallets = subject.kind === "retire-wallet" ? [subject.wallet] : subject.wallets;
       const after = new Date(subject.destroyAfter * 1000).toISOString();
+      const lines: ConfirmationLine[] = [];
+
+      if (subject.kind === "delete-workspace") {
+        lines.push({ label: "Wallets", value: String(wallets.length) });
+      }
 
       return [
-        ...(subject.kind === "delete-workspace"
-          ? [{ label: "Wallets", value: String(wallets.length) }]
-          : []),
+        ...lines,
         ...wallets.flatMap((wallet) => [
           { label: "Wallet address", value: wallet.address },
           { label: "Wallet name (not checked)", value: wallet.label },
@@ -4423,9 +4572,9 @@ function confirmationView(approval: Approval) {
     webauthn: {
       challenge: approval.challenge,
       rpId: "localhost",
-      allowCredentials: [...state.credentials]
-        .filter(([, credential]) => approverOf(approval, credential.userId))
-        .map(([credentialId]) => credentialId),
+      allowCredentials: [...state.credentials].flatMap(([credentialId, credential]) =>
+        approverOf(approval, credential.userId) ? [credentialId] : [],
+      ),
       userVerification: "required",
       timeoutMs: 60_000,
     },
@@ -4457,7 +4606,7 @@ function madeHere(response: AssertionResponse, challenge: string | null): boolea
   );
 }
 
-function passkeyAnswer(body: unknown): AssertionResponse {
+function passkeyAnswer(body: JsonValue): AssertionResponse {
   const parsed = z.strictObject({ response: AssertionResponse }).safeParse(body);
 
   if (!parsed.success) throw new Refusal("invalid_request", "The passkey response is not valid.");
@@ -4502,7 +4651,7 @@ function possessionRequest(approval: Approval) {
  * level, to the step's challenge, by the envelope's own credential. The fixture checks no
  * signature. Returns the key's fingerprint for that person to read out.
  */
-function provePossession(approval: Approval, body: unknown) {
+function provePossession(approval: Approval, body: JsonValue) {
   const envelope = possessionOf(approval);
   const response = passkeyAnswer(body);
 
@@ -4524,7 +4673,7 @@ function provePossession(approval: Approval, body: unknown) {
  * request's challenge, with a passkey of an active approver who has not approved it yet. An
  * approver change also waits for its possession step.
  */
-function holdApproval(approval: Approval, body: unknown) {
+function holdApproval(approval: Approval, body: JsonValue) {
   const response = passkeyAnswer(body);
   const { threshold } = approval.summary;
 
@@ -4584,7 +4733,7 @@ const confirmServer = createServer(async (req, res) => {
 
   try {
     expireApprovals();
-    const file = confirmFiles[url.pathname];
+    const file = confirmFiles.get(url.pathname);
 
     if (req.method === "GET" && file) return reply(200, file.type, file.body);
 

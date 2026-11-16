@@ -41,11 +41,13 @@ export function standInPushManager(): void {
   const read = (): Stored | null => {
     const raw = localStorage.getItem(storageKey);
 
+    // SAFETY: only `subscribe` below writes `storageKey`, and it stores `JSON.stringify` of a
+    // `Stored`; the page never writes that key.
     return raw === null ? null : (JSON.parse(raw) as Stored);
   };
 
   const asSubscription = (stored: Stored): PushSubscription => {
-    const subscription = {
+    const subscription: PushSubscription = {
       endpoint: stored.endpoint,
       expirationTime: null,
       options: { userVisibleOnly: true, applicationServerKey: decode(stored.serverKey).buffer },
@@ -63,7 +65,7 @@ export function standInPushManager(): void {
       },
     };
 
-    return subscription as unknown as PushSubscription;
+    return subscription;
   };
 
   PushManager.prototype.getSubscription = async function getSubscription() {
@@ -79,7 +81,9 @@ export function standInPushManager(): void {
 
     const key = options?.applicationServerKey;
 
-    if (!key || typeof key === "string") throw new TypeError("the stand-in takes a key's bytes");
+    if (!(key instanceof ArrayBuffer || ArrayBuffer.isView(key))) {
+      throw new TypeError("the stand-in takes a key's bytes");
+    }
 
     const serverKey = encode(
       ArrayBuffer.isView(key)

@@ -233,16 +233,20 @@ export function requestOptions(webauthn) {
 export function encodeAssertion(credential) {
   const { response } = credential;
 
+  /** @type {AssertionResponse["response"]} */
+  const encoded = {
+    clientDataJSON: toBase64Url(response.clientDataJSON),
+    authenticatorData: toBase64Url(response.authenticatorData),
+    signature: toBase64Url(response.signature),
+  };
+
+  if (response.userHandle !== null) encoded.userHandle = toBase64Url(response.userHandle);
+
   return {
     id: credential.id,
     rawId: toBase64Url(credential.rawId),
     type: "public-key",
-    response: {
-      clientDataJSON: toBase64Url(response.clientDataJSON),
-      authenticatorData: toBase64Url(response.authenticatorData),
-      signature: toBase64Url(response.signature),
-      ...(response.userHandle === null ? {} : { userHandle: toBase64Url(response.userHandle) }),
-    },
+    response: encoded,
     clientExtensionResults: { ...credential.getClientExtensionResults() },
   };
 }
@@ -376,17 +380,19 @@ async function call(path, token, body) {
   let response;
 
   try {
-    response = await fetch(path, {
-      ...(body === undefined
-        ? { headers: { [TOKEN_HEADER]: token } }
+    /** @type {RequestInit} */
+    const init =
+      body === undefined
+        ? { headers: { [TOKEN_HEADER]: token }, cache: "no-store", credentials: "omit" }
         : {
             method: "POST",
             headers: { "content-type": "application/json", [TOKEN_HEADER]: token },
             body: JSON.stringify(body),
-          }),
-      cache: "no-store",
-      credentials: "omit",
-    });
+            cache: "no-store",
+            credentials: "omit",
+          };
+
+    response = await fetch(path, init);
   } catch {
     return { ok: false, code: "internal" };
   }

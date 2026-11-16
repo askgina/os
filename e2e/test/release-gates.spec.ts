@@ -26,15 +26,18 @@ import { b64url, coseEc2, SoftAuthenticator } from "@askgina/os-protocol/testing
 import { scanForMarkers } from "@askgina/os-testkit";
 import { expect, test } from "@playwright/test";
 import pg from "pg";
-import { formatEther, type Hash, isAddressEqual, parseEther, type Transaction } from "viem";
+import { type Address, formatEther, isAddressEqual, parseEther, type Transaction } from "viem";
+import { z } from "zod";
 import { type AgentConnection, connectAgent, type Proposal, ToolRefused } from "../src/agent.ts";
 import { chain, chainAdmin, receiptOf, withMiningHeld } from "../src/chain.ts";
+import { JsonObject, JsonValue } from "../src/json.ts";
 import { ConfirmationRefused, Person } from "../src/person.ts";
 import {
   backUpInto,
   compose,
   composeArgs,
   databaseUrl,
+  ExecFailure,
   exec,
   fromAgentsNetwork,
   restoreFrom,
@@ -90,7 +93,7 @@ let workspace: WorkspaceDetail;
 
 let wallet: WalletSummary;
 
-let agentId: string;
+let agentId: PolicyDraft["requesters"][number];
 
 let agentToken: string;
 
@@ -102,7 +105,7 @@ let spentApprovalId: string;
 function policy(extra: Partial<PolicyDraft> = {}): PolicyDraft {
   return {
     chains: [CHAIN],
-    requesters: [agentId as PolicyDraft["requesters"][number]],
+    requesters: [agentId],
     assets: [
       {
         chainId: CHAIN,
@@ -131,7 +134,7 @@ async function setPolicy(draft: PolicyDraft, walletId: string = wallet.id): Prom
   expect((await ada.settled(request.id)).status).toBe("executed");
 }
 
-function approvalIdOf(result: Record<string, unknown>): string {
+function approvalIdOf(result: JsonObject): string {
   return String(result.approvalUrl).split("/").at(-1) ?? "";
 }
 
@@ -150,7 +153,7 @@ async function propose(amount: string, memo: string) {
 async function refusalCode(attempt: Promise<unknown>): Promise<string> {
   const outcome = await attempt.then(
     () => null,
-    (error: unknown) => error,
+    (cause: unknown) => cause,
   );
 
   if (!(outcome instanceof ConfirmationRefused)) {
@@ -539,7 +542,7 @@ test("the confirmation service reaches the signer and nothing else", async () =>
 test("a proposal over the wallet's limit is refused before anyone is asked", async () => {
   const refusal = await propose("1", "far too much").then(
     () => null,
-    (error: unknown) => error,
+    (cause: unknown) => cause,
   );
 
   expect(refusal).toBeInstanceOf(ToolRefused);
@@ -760,10 +763,10 @@ test("a person empties a disabled agent's wallet to the treasury while paused, a
   });
   await ada.api.call("pauseWorkspace", { params: { workspaceId: workspace.id }, body: {} });
 
-  const sweep = (to: string) =>
+  const sweep = (to: Address) =>
     ada.api.call("requestSweep", {
       params: { workspaceId: workspace.id, walletId: retired.wallet.id },
-      body: { chainId: CHAIN, asset: "native", to: to as `0x${string}` },
+      body: { chainId: CHAIN, asset: "native", to },
     });
 
   // A destination the approvers never allowed: approved with a passkey, refused by the signer.
@@ -988,14 +991,17 @@ function getMandate(id: string) {
 async function payerMandates(): Promise<string[]> {
   const { mandates } = await payer.call("whoami");
 
-  return (mandates as { mandateId: string }[]).map((mandate) => mandate.mandateId);
+  return MandateIds.parse(mandates).map((mandate) => mandate.mandateId);
 }
+
+/** The part of `whoami`'s `mandates` a gate reads. */
+const MandateIds = z.array(z.object({ mandateId: z.string() }));
 
 /** How many proposals the payer has made, as it lists them. */
 async function payerIntentCount(): Promise<number> {
   const { intents } = await payer.call("list_intents", { limit: 50 });
 
-  return (intents as unknown[]).length;
+  return z.array(JsonValue).parse(intents).length;
 }
 
 /** The code and reason a tool refused `attempt` with; fails when it was not refused. */
@@ -1004,7 +1010,7 @@ async function toolRefusal(
 ): Promise<{ code: string | null; detail: string | null }> {
   const outcome = await attempt.then(
     () => null,
-    (error: unknown) => error,
+    (cause: unknown) => cause,
   );
 
   if (!(outcome instanceof ToolRefused)) {
@@ -1020,7 +1026,7 @@ async function apiRefusal(
 ): Promise<{ code: string; detail: string | undefined }> {
   const outcome = await attempt.then(
     () => null,
-    (error: unknown) => error,
+    (cause: unknown) => cause,
   );
 
   if (!(outcome instanceof ApiError)) {
@@ -1082,10 +1088,10 @@ async function joinAsApprover(person: Person): Promise<string> {
 }
 
 /** Run one of the signer's operator commands on its host, as the deploy guide does. */
-async function signerAdmin(...args: string[]): Promise<Record<string, unknown>> {
+async function signerAdmin(...args: string[]): Promise<JsonObject> {
   const output = await exec("signer", "node", "src/admin.ts", ...args);
 
-  return JSON.parse(output.trim().split("\n").at(-1) ?? "") as Record<string, unknown>;
+  return JsonObject.parse(JSON.parse(output.trim().split("\n").at(-1) ?? ""));
 }
 
 /** Run the example agent once, in a container on the agents network, to its end. */
@@ -1097,12 +1103,9 @@ async function runExampleAgent(
   try {
     return { exitCode: 0, output: await compose("run", "--rm", ...variables, "scripted-agent") };
   } catch (error) {
-    const failure = error as { code?: number; stdout?: string; stderr?: string };
+    const failure = ExecFailure.parse(error);
 
-    return {
-      exitCode: typeof failure.code === "number" ? failure.code : 1,
-      output: `${failure.stdout ?? ""}${failure.stderr ?? ""}`,
-    };
+    return { exitCode: failure.code ?? 1, output: `${failure.stdout}${failure.stderr}` };
   }
 }
 
@@ -1941,7 +1944,7 @@ function fixedFields(transaction: Transaction) {
 
 /** The attempt the node holds now, checked against what the control plane says it signed. */
 async function offered(attempt: TransactionAttemptView): Promise<Transaction> {
-  const transaction = await chain.getTransaction({ hash: attempt.hash as Hash });
+  const transaction = await chain.getTransaction({ hash: attempt.hash });
   expect(transaction.blockNumber).toBeNull();
   expect(transaction).toMatchObject({
     gas: BigInt(attempt.gas),
@@ -1965,11 +1968,11 @@ async function expectMinedOnce(
   attempts: TransactionAttemptView[],
   mined: TransactionAttemptView,
 ): Promise<void> {
-  expect((await receiptOf(mined.hash as Hash))?.status).toBe("success");
+  expect((await receiptOf(mined.hash))?.status).toBe("success");
 
   for (const attempt of attempts) {
     if (attempt.attempt === mined.attempt) continue;
-    expect(await receiptOf(attempt.hash as Hash), `attempt ${attempt.attempt}`).toBeNull();
+    expect(await receiptOf(attempt.hash), `attempt ${attempt.attempt}`).toBeNull();
   }
 }
 
@@ -2017,10 +2020,10 @@ test("a payment the chain does not mine is signed again with a higher fee by its
     // The node drops it and the chain goes on without it: a block is mined, the payment is not
     // in it, and the wallet's nonce has not moved. Only the server can bring it back.
     const height = await chain.getBlockNumber();
-    await chainAdmin.dropTransaction({ hash: original.hash as Hash });
+    await chainAdmin.dropTransaction({ hash: original.hash });
     await chainAdmin.mine({ blocks: 1 });
     expect(await chain.getBlockNumber()).toBe(height + 1n);
-    expect(await receiptOf(original.hash as Hash)).toBeNull();
+    expect(await receiptOf(original.hash)).toBeNull();
     expect(await chain.getTransactionCount({ address: payerWallet.address })).toBe(nonceBefore);
     // Nothing was repriced yet: the next attempt is due 45 seconds after this one was signed.
     expect((await transactionOf(intentId)).attempts).toHaveLength(1);
@@ -2111,13 +2114,16 @@ test("a payment the chain does not mine is signed again with a higher fee by its
     settled.attempts.map((attempt) => (attempt === mined ? "mined" : "not_mined")),
   );
   await expectMinedOnce(settled.attempts, mined);
-  expect(fixedFields(await chain.getTransaction({ hash: mined.hash as Hash }))).toEqual(
-    fixedFields(first),
-  );
+  expect(fixedFields(await chain.getTransaction({ hash: mined.hash }))).toEqual(fixedFields(first));
   expect(formatEther((await chain.getBalance({ address: STUCK_RECIPIENT })) - before)).toBe(amount);
   expect(await chain.getTransactionCount({ address: payerWallet.address })).toBe(nonceBefore + 1);
   expect(await spentNative(payerWallet.id)).toBe(spentBefore + parseEther(amount));
 });
+
+/** The code of an API refusal, when the answer is one; anything else reads as no code. */
+const RefusalBody = z
+  .object({ error: z.object({ code: z.string().optional() }).optional() })
+  .catch({});
 
 test("an approver speeds up a stuck payment with no passkey, and the agent that proposed it sees every attempt but can neither speed it up nor cancel it", async () => {
   kaiId = await joinAsApprover(kai);
@@ -2169,7 +2175,7 @@ test("an approver speeds up a stuck payment with no passkey, and the agent that 
         redirect: "manual",
       });
 
-      const refusal = (await response.json()) as { error?: { code?: string } };
+      const refusal = RefusalBody.parse(await response.json());
       expect({ status: response.status, code: refusal.error?.code }, action).toEqual({
         status: 401,
         code: "unauthenticated",
@@ -2445,7 +2451,7 @@ test("a cancel a person asks for, approved on the confirmation page at the walle
   expect(await chain.getBalance({ address: STUCK_RECIPIENT })).toBe(before);
   expect(await chain.getTransactionCount({ address: payerWallet.address })).toBe(nonceBefore + 1);
   // The wallet paid the cancel's network fee and nothing else.
-  const receipt = await receiptOf(cancelling.hash as Hash);
+  const receipt = await receiptOf(cancelling.hash);
 
   if (!receipt) throw new Error("the cancel has no receipt");
   expect(walletBefore - (await chain.getBalance({ address: payerWallet.address }))).toBe(

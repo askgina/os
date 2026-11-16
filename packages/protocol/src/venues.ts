@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AssetRef, ChainId } from "./primitives.ts";
+import { AssetRef, ChainId, stringMatching } from "./primitives.ts";
 
 /**
  * A place an order is executed that is not an EVM chain transaction. It takes the place of an
@@ -56,8 +56,8 @@ export const PositiveDecimal = Decimal.refine(
 export type PositiveDecimal = z.infer<typeof PositiveDecimal>;
 
 /** Hyperliquid's client order id: 16 bytes as 0x-prefixed lowercase hex. */
-export const Cloid = z.custom<`0x${string}`>(
-  (value) => typeof value === "string" && /^0x[0-9a-f]{32}$/.test(value),
+export const Cloid = stringMatching<`0x${string}`>(
+  /^0x[0-9a-f]{32}$/,
   "expected 16 bytes of lowercase hex with a 0x prefix",
 );
 

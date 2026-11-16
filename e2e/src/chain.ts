@@ -24,10 +24,12 @@ export const chainAdmin = createTestClient({
 
 /** The receipt of `hash`, or null while no block holds that transaction. */
 export async function receiptOf(hash: Hash) {
-  return chain.getTransactionReceipt({ hash }).catch((error: unknown) => {
+  try {
+    return await chain.getTransactionReceipt({ hash });
+  } catch (error) {
     if (error instanceof TransactionReceiptNotFoundError) return null;
     throw error;
-  });
+  }
 }
 
 /**

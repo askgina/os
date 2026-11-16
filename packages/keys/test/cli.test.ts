@@ -7,9 +7,11 @@ import { promisify } from "node:util";
 import { createTestDatabase, type TestDatabase } from "@askgina/os-testkit";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { z } from "zod";
 import {
   DataKeyStore,
   DataKeyUnavailableError,
+  type JsonValue,
   type KeyringFile,
   LocalKeyring,
   TransitKeyProvider,
@@ -17,6 +19,9 @@ import {
 import { startTransitStub, type TransitStub } from "./support/transit-stub.ts";
 
 const execFileAsync = promisify(execFile);
+
+/** What execFile rejects with on a non-zero exit: the exit code and the output so far. */
+const ExitFailure = z.object({ code: z.number(), stdout: z.string() });
 
 const cli = join(import.meta.dirname, "..", "src", "cli.ts");
 
@@ -51,15 +56,13 @@ async function runCli(args: string[], env: Record<string, string>) {
     }));
   } catch (error) {
     // execFile rejects on a non-zero exit with the exit code and output attached.
-    const failure = error as { code: number; stdout: string };
-    code = failure.code;
-    stdout = failure.stdout;
+    ({ code, stdout } = ExitFailure.parse(error));
   }
 
   const lines = stdout
     .split("\n")
     .filter(Boolean)
-    .map((line) => JSON.parse(line) as Record<string, unknown>);
+    .map((line): JsonValue => JSON.parse(line));
 
   return { code, lines, stdout };
 }
@@ -205,10 +208,19 @@ describe("keys CLI", () => {
   });
 
   describe("with KEY_PROVIDER=openbao", () => {
+    /** The environment the commands run with on OpenBao. */
+    type OpenBaoEnv = {
+      DATABASE_URL: string;
+      KEY_PROVIDER: string;
+      OPENBAO_ADDR: string;
+      OPENBAO_AUTH: string;
+      OPENBAO_TOKEN_FILE: string;
+    };
+
     let stub: TransitStub;
     let baoDb: TestDatabase;
     let baoPool: pg.Pool;
-    let env: Record<string, string>;
+    let env: OpenBaoEnv;
 
     beforeAll(async () => {
       stub = await startTransitStub();

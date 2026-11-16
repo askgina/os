@@ -51,7 +51,7 @@ export const attemptStatusLabel: Record<TransactionAttemptView["status"], string
 export function transactionActions(
   transaction: Pick<TransactionInfo, "canSpeedUp" | "canCancel">,
   role: Role,
-): { speedUp: boolean; cancel: boolean } {
+) {
   const acts = role !== "viewer";
 
   return { speedUp: acts && transaction.canSpeedUp, cancel: acts && transaction.canCancel };

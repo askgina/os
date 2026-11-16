@@ -140,7 +140,7 @@ const lifecycleRefusals: Record<"destroy_delay_out_of_range", string> = {
  * Plain-language meanings for the failure codes the signer, the wallet policy and the chain
  * report. An unknown code is shown as it is, with a generic sentence, never hidden.
  */
-const meanings: Record<string, string> = {
+const meanings = {
   ...mandateDenials,
   ...venueDenials,
   market_metadata_mismatch:
@@ -216,7 +216,7 @@ const meanings: Record<string, string> = {
   attempts_exhausted: cancelRefusals.attempts_exhausted,
   fee_ceiling_reached: cancelRefusals.fee_ceiling_reached,
   internal: "Something went wrong on the server.",
-};
+} satisfies Record<string, string>;
 
 /**
  * Why the server refused this browser as a device (`addPushSubscription`): the refusal's
@@ -247,14 +247,13 @@ const pushSetupFailures: Record<PushSetupFailure, string> = {
  * Plain words for a failed change to notifications, in the browser or refused by the server;
  * null when the failure is not one of these (the API's own message then says what happened).
  */
-export function explainNotificationError(error: unknown): string | null {
+export function explainNotificationError(error: Error): string | null {
   if (error instanceof PushSetupError) return pushSetupFailures[error.failure];
 
   if (!(error instanceof ApiError)) return null;
+  const refused = refusalDetail(error, pushRefusals);
 
-  if (error.detail !== undefined && Object.hasOwn(pushRefusals, error.detail)) {
-    return pushRefusals[error.detail as keyof typeof pushRefusals];
-  }
+  if (refused !== null) return refused;
 
   if (error.code === "forbidden") {
     return "Only an owner of this workspace can change what its notifications say.";
@@ -271,37 +270,40 @@ export function explainNotificationError(error: unknown): string | null {
   return null;
 }
 
+/** The words `words` has for `code` as its own key, or null for a code it does not list. */
+function wordsFor(words: Readonly<Record<string, string>>, code: string): string | null {
+  return Object.hasOwn(words, code) ? (words[code] ?? null) : null;
+}
+
 /** The words for a refusal's `detail` from one of the records above, or null for another. */
-function refusalDetail(error: unknown, words: Record<string, string>): string | null {
+function refusalDetail(error: Error, words: Readonly<Record<string, string>>): string | null {
   if (!(error instanceof ApiError) || error.detail === undefined) return null;
 
-  return Object.hasOwn(words, error.detail) ? (words[error.detail] as string) : null;
+  return wordsFor(words, error.detail);
 }
 
 /** Plain words for a refused speed-up; null leaves it to the API's own message. */
-export function explainSpeedUpError(error: unknown): string | null {
+export function explainSpeedUpError(error: Error): string | null {
   return refusalDetail(error, speedUpRefusals);
 }
 
 /** Plain words for a refused request to cancel; null leaves it to the API's own message. */
-export function explainCancelError(error: unknown): string | null {
+export function explainCancelError(error: Error): string | null {
   return refusalDetail(error, cancelRefusals);
 }
 
 /** Plain words for a refused cancel of an order; null leaves it to the API's own message. */
-export function explainCancelOrderError(error: unknown): string | null {
+export function explainCancelOrderError(error: Error): string | null {
   return refusalDetail(error, cancelOrderRefusals);
 }
 
 /** Plain words for a refused retirement or deletion; null leaves it to the API's own message. */
-export function explainLifecycleError(error: unknown): string | null {
+export function explainLifecycleError(error: Error): string | null {
   return refusalDetail(error, lifecycleRefusals);
 }
 
 export function explainCode(code: string): string {
-  return Object.hasOwn(meanings, code)
-    ? (meanings[code] as string)
-    : "The request could not be completed.";
+  return wordsFor(meanings, code) ?? "The request could not be completed.";
 }
 
 /**
@@ -310,7 +312,5 @@ export function explainCode(code: string): string {
  * expired request) keep their usual meaning.
  */
 export function explainMandateRefusal(code: string): string {
-  return Object.hasOwn(mandateRefusals, code)
-    ? mandateRefusals[code as keyof typeof mandateRefusals]
-    : explainCode(code);
+  return wordsFor(mandateRefusals, code) ?? explainCode(code);
 }

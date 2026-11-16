@@ -1,21 +1,25 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { expect } from "@playwright/test";
 import pg from "pg";
+import { z } from "zod";
+import { type JsonObject, jsonObjectIn } from "./json.ts";
 import { databaseUrl, exec, stack } from "./stack.ts";
 
 /** One request the stack's webhook receiver recorded (see `webhook-receiver.mts`). */
-export interface ReceivedRequest {
+const ReceivedRequest = z.object({
   /** Milliseconds since the Unix epoch, on the receiver's clock. */
-  receivedAt: number;
-  method: string;
-  path: string;
+  receivedAt: z.number(),
+  method: z.string(),
+  path: z.string(),
   /** Lower-cased header names. */
-  headers: Record<string, string>;
+  headers: z.record(z.string(), z.string()),
   /** The body exactly as received. */
-  body: string;
+  body: z.string(),
   /** What the receiver answered. */
-  status: number;
-}
+  status: z.number(),
+});
+
+export type ReceivedRequest = z.infer<typeof ReceivedRequest>;
 
 /** Every request the receiver has recorded, oldest first. */
 export async function receivedRequests(): Promise<ReceivedRequest[]> {
@@ -23,7 +27,7 @@ export async function receivedRequests(): Promise<ReceivedRequest[]> {
 
   if (!response.ok) throw new Error(`the webhook receiver answered ${response.status}`);
 
-  return (await response.json()) as ReceivedRequest[];
+  return z.array(ReceivedRequest).parse(await response.json());
 }
 
 /**
@@ -70,7 +74,7 @@ export function signatureVerifies(
 
 /** The recorded requests whose body `match` selects, once the receiver accepted one of them. */
 export async function acknowledged(
-  match: (body: Record<string, unknown>) => boolean,
+  match: (body: JsonObject) => boolean,
 ): Promise<ReceivedRequest[]> {
   let matching: ReceivedRequest[] = [];
   await expect
@@ -117,7 +121,7 @@ export function expectSignedDelivery(
   request: ReceivedRequest,
   keys: string[],
   secrets: string[],
-): Record<string, unknown> {
+): JsonObject {
   expect(request.method).toBe("POST");
   expect(request.headers["content-type"]).toBe("application/json");
   expect(signatureVerifies(secret, request)).toBe(true);
@@ -140,14 +144,6 @@ export function expectSignedDelivery(
 }
 
 /** The JSON object in a request's body, or an empty object when the body is not one. */
-export function bodyOf(request: Pick<ReceivedRequest, "body">): Record<string, unknown> {
-  try {
-    const parsed: unknown = JSON.parse(request.body);
-
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
-  }
+export function bodyOf(request: Pick<ReceivedRequest, "body">): JsonObject {
+  return jsonObjectIn(request.body) ?? {};
 }

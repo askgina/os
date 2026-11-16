@@ -15,6 +15,9 @@ export async function markers(input: { nonce: string; m1: string }) {
   try {
     await failingStep(nonce);
   } catch (err) {
+    // SAFETY: failingStep throws a FatalError, and the SDK rethrows a failed step's error in the
+    // workflow with its type kept (`hydrateStepError` in @workflow/core's step.js), or as a
+    // FatalError when that fails; either way an Error with a message.
     m8 = (err as Error).message;
   }
 

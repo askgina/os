@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import pg from "pg";
+import { z } from "zod";
 import { TEST_POSTGRES_URL } from "./postgres.ts";
 
 const execFileAsync = promisify(execFile);
@@ -17,20 +18,31 @@ const ROOT_TOKEN = process.env.OPENBAO_TEST_ROOT_TOKEN ?? "test-root";
 
 const CONTAINER = process.env.OPENBAO_TEST_CONTAINER ?? "os-test-openbao-1";
 
-async function bao(method: string, path: string, body?: unknown): Promise<unknown> {
-  const response = await fetch(new URL(`/v1/${path}`, OPENBAO_TEST_ADDR), {
+/** A request body for the OpenBao API, as the setup below sends them. */
+type BaoBody = Record<string, string | number | string[]>;
+
+/** `auth/approle/role/<role>/role-id`'s answer. */
+const RoleIdAnswer = z.object({ data: z.object({ role_id: z.string() }) });
+
+/** `auth/approle/role/<role>/secret-id`'s answer. */
+const SecretIdAnswer = z.object({ data: z.object({ secret_id: z.string() }) });
+
+/** Calls the OpenBao API as root; the answer's text, empty when there is none. */
+async function bao(method: string, path: string, body?: BaoBody): Promise<string> {
+  const init: RequestInit = {
     method,
     headers: { "x-vault-token": ROOT_TOKEN, "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     signal: AbortSignal.timeout(5000),
-  });
+  };
 
+  if (body !== undefined) init.body = JSON.stringify(body);
+  const response = await fetch(new URL(`/v1/${path}`, OPENBAO_TEST_ADDR), init);
   const text = await response.text();
 
   if (!response.ok)
     throw new Error(`openbao test setup: ${method} ${path}: ${response.status} ${text}`);
 
-  return text === "" ? undefined : JSON.parse(text);
+  return text;
 }
 
 /** Whether the test server answers; used to skip outside CI when it is not running. */
@@ -157,18 +169,18 @@ export async function prepareTransit(): Promise<PreparedTransit> {
     await bao("POST", "sys/auth/approle", { type: "approle" });
   } catch (error) {
     // Enabled by an earlier run or file; any other failure surfaces at the role below.
-    if (!/400/.test((error as Error).message)) throw error;
+    if (!(error instanceof Error && /400/.test(error.message))) throw error;
   }
 
   await bao("PUT", `sys/policies/acl/${role}`, { policy: transitPolicy(mount, key) });
   await bao("POST", `auth/approle/role/${role}`, { token_policies: [role], token_ttl: "1h" });
 
-  const roleId = (
-    (await bao("GET", `auth/approle/role/${role}/role-id`)) as { data: { role_id: string } }
+  const roleId = RoleIdAnswer.parse(
+    JSON.parse(await bao("GET", `auth/approle/role/${role}/role-id`)),
   ).data.role_id;
 
-  const secretId = (
-    (await bao("POST", `auth/approle/role/${role}/secret-id`)) as { data: { secret_id: string } }
+  const secretId = SecretIdAnswer.parse(
+    JSON.parse(await bao("POST", `auth/approle/role/${role}/secret-id`)),
   ).data.secret_id;
 
   return {

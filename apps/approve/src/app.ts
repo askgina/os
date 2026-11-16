@@ -35,7 +35,7 @@ export const CONFIRMATION_PAGE_POLICY = [
 ].join("; ");
 
 /** Sent with every response, whatever its status. */
-export const SECURITY_HEADERS: Readonly<Record<string, string>> = {
+export const SECURITY_HEADERS = {
   "content-security-policy": CONFIRMATION_PAGE_POLICY,
   "x-frame-options": "DENY",
   "cross-origin-opener-policy": "same-origin",
@@ -45,7 +45,7 @@ export const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   "x-content-type-options": "nosniff",
   "permissions-policy": "publickey-credentials-get=(self), publickey-credentials-create=()",
   "cache-control": "no-store",
-};
+} as const satisfies Readonly<Record<string, string>>;
 
 /** Far above one passkey assertion (about 1 KiB); the signer would refuse anything larger anyway. */
 export const MAX_BODY_BYTES = 16 * 1024;
@@ -173,14 +173,15 @@ export function createApproveApp(options: ApproveAppOptions): Hono {
 
       log.info("request", { route, status: error.status, code: error.code });
 
-      const body: SignerErrorBody = {
-        error: {
-          code: error.code,
-          message: error.message,
-          ...(error.detail === undefined ? {} : { detail: error.detail }),
-        },
-      };
+      const refusal: SignerErrorBody["error"] = { code: error.code, message: error.message };
 
+      if (error.detail !== undefined) refusal.detail = error.detail;
+
+      const body: SignerErrorBody = { error: refusal };
+
+      // SAFETY: the confirm client throws SignerError only for a response with `!response.ok`,
+      // carrying that response's status, so this is the signer's own non-2xx status, one that
+      // takes a body; Hono's parameter type only lists literal codes.
       return c.json(body, error.status as 400);
     }
   };

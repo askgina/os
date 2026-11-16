@@ -4,7 +4,15 @@ import {
   type WalletDetail,
   type WorkspaceDetail,
 } from "@askgina/os-api";
-import { type HyperliquidRules, VENUE_NETWORK_NAMES, VenueNetwork } from "@askgina/os-protocol";
+import {
+  Address,
+  type AgentId,
+  AssetRef,
+  type ChainId,
+  type HyperliquidRules,
+  VENUE_NETWORK_NAMES,
+  VenueNetwork,
+} from "@askgina/os-protocol";
 import { useMutation } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { Clock, Plus, Trash2, TriangleAlert } from "lucide-react";
@@ -355,8 +363,8 @@ interface AssetRow {
 }
 
 interface EditorState {
-  chains: string[];
-  requesters: string[];
+  chains: ChainId[];
+  requesters: AgentId[];
   assets: AssetRow[];
   recipientsMode: "any" | "allowlist";
   recipients: string;
@@ -436,12 +444,11 @@ function parseAddresses(text: string, what: string): `0x${string}`[] {
   const lines = text.split(/[\s,]+/).filter((line) => line !== "");
 
   return lines.map((line) => {
-    const lower = line.toLowerCase();
+    const address = Address.safeParse(line.toLowerCase());
 
-    if (!/^0x[0-9a-f]{40}$/.test(lower))
-      throw new DraftError(`${what}: "${line}" is not an address.`);
+    if (!address.success) throw new DraftError(`${what}: "${line}" is not an address.`);
 
-    return lower as `0x${string}`;
+    return address.data;
   });
 }
 
@@ -450,9 +457,9 @@ function toDraft(state: EditorState): PolicyDraft {
 
   const assets = state.assets.map((row, index) => {
     const label = `Asset ${index + 1}`;
-    const asset = row.asset.trim().toLowerCase();
+    const asset = AssetRef.safeParse(row.asset.trim().toLowerCase());
 
-    if (asset !== "native" && !/^0x[0-9a-f]{40}$/.test(asset)) {
+    if (!asset.success) {
       throw new DraftError(`${label}: enter "native" or a token contract address.`);
     }
 
@@ -475,13 +482,15 @@ function toDraft(state: EditorState): PolicyDraft {
         );
       }
 
-      if (!state.chains.includes(row.chainId)) {
+      const chainId = state.chains.find((chain) => chain === row.chainId);
+
+      if (chainId === undefined) {
         throw new DraftError(`${label}: its network is not one of the wallet's networks.`);
       }
 
       return {
-        chainId: row.chainId as `eip155:${number}`,
-        asset: asset as "native" | `0x${string}`,
+        chainId,
+        asset: asset.data,
         maxPerTx: maxPerTx.toString(),
         maxPerDay: maxPerDay.toString(),
       };
@@ -521,9 +530,9 @@ function toDraft(state: EditorState): PolicyDraft {
     throw error;
   }
 
-  return {
-    chains: state.chains as `eip155:${number}`[],
-    requesters: state.requesters as PolicyDraft["requesters"],
+  const draft: PolicyDraft = {
+    chains: state.chains,
+    requesters: state.requesters,
     assets,
     recipients:
       state.recipientsMode === "any"
@@ -535,8 +544,11 @@ function toDraft(state: EditorState): PolicyDraft {
         : { mode: "allowlist", targets: parseAddresses(state.targets, "Contracts") },
     fees: { maxPerTxWei: fee.toString() },
     approvals: { threshold, ttlSeconds },
-    ...(hyperliquid ? { venues: { hyperliquid } } : {}),
   };
+
+  if (hyperliquid) draft.venues = { hyperliquid };
+
+  return draft;
 }
 
 function PolicyEditor({ wallet, workspace }: { wallet: WalletDetail; workspace: WorkspaceDetail }) {
@@ -549,7 +561,7 @@ function PolicyEditor({ wallet, workspace }: { wallet: WalletDetail; workspace: 
   const updateRow = (key: number, patch: Partial<AssetRow>) =>
     update({ assets: state.assets.map((row) => (row.key === key ? { ...row, ...patch } : row)) });
 
-  const toggle = (list: string[], value: string) =>
+  const toggle = <Item extends string>(list: Item[], value: Item) =>
     list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
 
   const submit = useMutation({
@@ -701,10 +713,11 @@ function PolicyEditor({ wallet, workspace }: { wallet: WalletDetail; workspace: 
                           wallet.balances,
                         );
 
-                        updateRow(row.key, {
-                          asset,
-                          ...(known.decimals === null ? {} : { decimals: String(known.decimals) }),
-                        });
+                        const patch: Partial<AssetRow> = { asset };
+
+                        if (known.decimals !== null) patch.decimals = String(known.decimals);
+
+                        updateRow(row.key, patch);
                       }}
                     />
                   </Labelled>

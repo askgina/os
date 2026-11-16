@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 // Minimal CBOR encoder (RFC 8949) covering what WebAuthn attestation objects and COSE keys need:
 // unsigned/negative integers, byte strings, text strings and maps (keys emitted in insertion order).
 export type CborValue =
@@ -5,7 +7,14 @@ export type CborValue =
   | string
   | Uint8Array
   | Map<CborValue, CborValue>
-  | Record<string, unknown>;
+  | { [key: string]: CborValue };
+
+const CborText = z.string();
+
+const CborNumber = z.number();
+
+/** A map written as a plain object: its own string keys, in insertion order. */
+const CborObject = z.record(z.string(), z.custom<CborValue>());
 
 function head(major: number, n: number): number[] {
   if (n < 24) return [(major << 5) | n];
@@ -19,35 +28,53 @@ function head(major: number, n: number): number[] {
   throw new Error("cbor: length too large");
 }
 
-function enc(v: unknown, out: number[]): void {
-  if (typeof v === "number") {
-    if (!Number.isSafeInteger(v)) throw new Error("cbor: only safe integers supported");
+function encMap(entries: Iterable<[CborValue, CborValue]>, size: number, out: number[]): void {
+  out.push(...head(5, size));
 
-    if (v >= 0) out.push(...head(0, v));
-    else out.push(...head(1, -1 - v));
-  } else if (typeof v === "string") {
-    const b = new TextEncoder().encode(v);
-    out.push(...head(3, b.length), ...b);
-  } else if (v instanceof Uint8Array) {
-    out.push(...head(2, v.length), ...v);
-  } else if (v instanceof Map) {
-    out.push(...head(5, v.size));
-
-    for (const [k, val] of v) {
-      enc(k, out);
-      enc(val, out);
-    }
-  } else if (v && typeof v === "object") {
-    const entries = Object.entries(v);
-    out.push(...head(5, entries.length));
-
-    for (const [k, val] of entries) {
-      enc(k, out);
-      enc(val, out);
-    }
-  } else {
-    throw new Error(`cbor: unsupported value ${String(v)}`);
+  for (const [k, val] of entries) {
+    enc(k, out);
+    enc(val, out);
   }
+}
+
+function enc(v: CborValue, out: number[]): void {
+  if (v instanceof Uint8Array) {
+    out.push(...head(2, v.length), ...v);
+
+    return;
+  }
+
+  if (v instanceof Map) {
+    encMap(v, v.size, out);
+
+    return;
+  }
+
+  const text = CborText.safeParse(v);
+
+  if (text.success) {
+    const b = new TextEncoder().encode(text.data);
+    out.push(...head(3, b.length), ...b);
+
+    return;
+  }
+
+  const number = CborNumber.safeParse(v);
+
+  if (number.success) {
+    if (!Number.isSafeInteger(number.data)) throw new Error("cbor: only safe integers supported");
+
+    if (number.data >= 0) out.push(...head(0, number.data));
+    else out.push(...head(1, -1 - number.data));
+
+    return;
+  }
+
+  const object = CborObject.safeParse(v);
+
+  if (!object.success) throw new Error(`cbor: unsupported value ${String(v)}`);
+  const entries = Object.entries(object.data);
+  encMap(entries, entries.length, out);
 }
 
 export function cborEncode(v: CborValue): Uint8Array {

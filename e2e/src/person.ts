@@ -8,6 +8,7 @@ import {
   type MandateSummary,
   RegistrationResponse,
   type SessionInfo,
+  type WebAuthnOptions,
 } from "@askgina/os-api";
 import { AssertionResponse, ConfirmationView } from "@askgina/os-protocol";
 import {
@@ -18,6 +19,17 @@ import {
   SubmitPossessionResponse,
 } from "@askgina/os-protocol/signer";
 import { b64url, SoftAuthenticator } from "@askgina/os-protocol/testing";
+import { z } from "zod";
+
+/** The parts of the server's registration options the soft authenticator answers. */
+const RegistrationOptions = z.object({
+  rp: z.object({ id: z.string() }),
+  user: z.object({ id: z.string() }),
+  challenge: z.string(),
+});
+
+/** The part of the server's sign-in options the passkey signs. */
+const LoginOptions = z.object({ challenge: z.string() });
 
 /** The confirmation page refused a request, with the signer's (or the `approve` service's) code. */
 export class ConfirmationRefused extends Error {
@@ -96,13 +108,12 @@ export class Person {
   }
 
   /** Answer a registration ceremony the server started, creating this person's passkey. */
-  #register(options: Record<string, unknown>) {
-    const rp = options.rp as { id: string };
-    const user = options.user as { id: string };
+  #register(options: WebAuthnOptions) {
+    const { rp, user, challenge } = RegistrationOptions.parse(options);
 
     const { response, credential } = this.authenticator.register({
       rpId: rp.id,
-      challenge: options.challenge as string,
+      challenge,
       origin: this.origin,
       userHandle: new Uint8Array(Buffer.from(user.id, "base64url")),
     });
@@ -156,7 +167,10 @@ export class Person {
     const { ceremonyId, options } = await this.api.call("startLogin", { body: {} });
 
     return this.api.call("finishLogin", {
-      body: { ceremonyId, response: this.assertion(options.challenge as string, this.origin) },
+      body: {
+        ceremonyId,
+        response: this.assertion(LoginOptions.parse(options).challenge, this.origin),
+      },
     });
   }
 
@@ -186,7 +200,7 @@ export class Person {
       redirect: "manual",
     });
 
-    return ConfirmationView.parse(await answerOf(response));
+    return answerOf(response, ConfirmationView);
   }
 
   /**
@@ -211,7 +225,7 @@ export class Person {
       redirect: "manual",
     });
 
-    return SubmitConfirmationResponse.parse(await answerOf(answer));
+    return answerOf(answer, SubmitConfirmationResponse);
   }
 
   /**
@@ -225,7 +239,7 @@ export class Person {
       redirect: "manual",
     });
 
-    return GetPossessionResponse.parse(await answerOf(response));
+    return answerOf(response, GetPossessionResponse);
   }
 
   /**
@@ -249,7 +263,7 @@ export class Person {
       redirect: "manual",
     });
 
-    return SubmitPossessionResponse.parse(await answerOf(answer));
+    return answerOf(answer, SubmitPossessionResponse);
   }
 
   /**
@@ -319,11 +333,11 @@ export class Person {
   }
 }
 
-/** The JSON of a successful answer from the confirmation page, or its refusal as an error. */
-async function answerOf(response: Response): Promise<unknown> {
+/** A successful answer from the confirmation page, read as `schema`, or its refusal as an error. */
+async function answerOf<Answer>(response: Response, schema: z.ZodType<Answer>): Promise<Answer> {
   const body: unknown = await response.json().catch(() => null);
 
-  if (response.ok) return body;
+  if (response.ok) return schema.parse(body);
   const refusal = SignerErrorBody.safeParse(body);
   throw new ConfirmationRefused(
     refusal.success ? refusal.data.error.code : "unreadable",

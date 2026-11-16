@@ -10,7 +10,6 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +22,7 @@ import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
+import type { GatewayArguments } from "../lib/gateway.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -63,7 +63,13 @@ function agentEnvironment(extra: Record<string, string>): NodeJS.ProcessEnv {
   return { ...env, NODE_ENV: "production", EVE_TELEMETRY_DISABLED: "1", ...extra };
 }
 
-type Call = { tool: string; args: Record<string, unknown> };
+type Call = { tool: string; args: GatewayArguments };
+
+/** What a TCP server listening on a host and port reports as its address. */
+const ListeningAddress = z.object({ port: z.number() });
+
+/** The answer eve gives when it opens a session. */
+const CreatedSession = z.object({ sessionId: z.string() });
 
 /** The two gateway tools the agent calls, answering as the real gateway does. */
 async function startFakeGateway() {
@@ -73,7 +79,7 @@ async function startFakeGateway() {
     async () => {
       const server = new McpServer({ name: "fake-gateway", version: "0.0.0" });
 
-      const json = (value: Record<string, unknown>) => ({
+      const json = (value: { [field: string]: string | number }) => ({
         content: [{ type: "text" as const, text: JSON.stringify(value) }],
         structuredContent: value,
       });
@@ -126,7 +132,7 @@ async function startFakeGateway() {
   });
 
   await new Promise<void>((resolve) => server.once("listening", () => resolve()));
-  const { port } = server.address() as AddressInfo;
+  const { port } = ListeningAddress.parse(server.address());
 
   return {
     url: `http://127.0.0.1:${port}/mcp`,
@@ -195,7 +201,7 @@ async function talk(message: string): Promise<string> {
   });
 
   expect(created.status).toBeLessThan(300);
-  const { sessionId } = (await created.json()) as { sessionId: string };
+  const { sessionId } = CreatedSession.parse(await created.json());
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), 90_000);
 
@@ -302,7 +308,7 @@ describe("eve agent on the encrypting World", () => {
         hookForceClaim: true,
         hookRetention: { active: true },
       });
-      expect(typeof world.getEncryptionKeyForRun).toBe("function");
+      expect(world.getEncryptionKeyForRun).toBeTypeOf("function");
       await world.close?.();
     } finally {
       process.env.WORKFLOW_POSTGRES_URL = previous.url;

@@ -33,8 +33,9 @@ import {
   payingAgent,
   propose,
 } from "../src/installation.ts";
+import { type JsonObject, jsonObjectLines } from "../src/json.ts";
 import { Person } from "../src/person.ts";
-import { stack } from "../src/stack.ts";
+import { ExecFailure, stack } from "../src/stack.ts";
 
 test.describe.configure({ mode: "serial" });
 
@@ -82,7 +83,7 @@ let failoverAt = 0;
 
 const seconds = (since: number): number => Math.round((Date.now() - since) / 100) / 10;
 
-const report = (line: Record<string, unknown>): void => {
+const report = (line: JsonObject): void => {
   process.stdout.write(`${JSON.stringify(line)}\n`);
 };
 
@@ -253,21 +254,10 @@ async function expectNoServerRestarted(): Promise<void> {
 }
 
 /** The JSON objects one server pod logged, oldest first. */
-async function logLines(pod: string): Promise<Record<string, unknown>[]> {
-  const lines: Record<string, unknown>[] = [];
+async function logLines(pod: string): Promise<JsonObject[]> {
   const logs = await kubectl("logs", "--namespace", NAMESPACE, pod, "--container", "server");
 
-  for (const line of logs.split("\n")) {
-    try {
-      const parsed: unknown = JSON.parse(line);
-
-      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-        lines.push(parsed as Record<string, unknown>);
-      }
-    } catch {}
-  }
-
-  return lines;
+  return jsonObjectLines(logs);
 }
 
 /** The server pod that logged `step.started` for `approvalId`'s signing step, once one has. */
@@ -355,15 +345,27 @@ async function getFrom(pod: string, path: string, cookie: string): Promise<numbe
   return answer.status;
 }
 
+/** A write made while no standby can confirm it: whether it has answered yet, and how. */
+interface PendingWrite {
+  settled: boolean;
+  /** The answer, or why it failed. */
+  outcome?: unknown;
+}
+
+/** What {@link sessionCookie} saw on the way out of a request. */
+interface SeenRequest {
+  cookie?: string;
+}
+
 /** The session cookie `person` sends, seen on the way out of one of their requests. */
 async function sessionCookie(person: Person): Promise<string> {
   const original = globalThis.fetch;
-  const seen: { cookie?: string } = {};
-  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+  const seen: SeenRequest = {};
+  globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
     seen.cookie = new Headers(init?.headers).get("cookie") ?? undefined;
 
     return original(input, init);
-  }) as typeof fetch;
+  };
 
   try {
     await person.api.call("getSession");
@@ -490,7 +492,7 @@ async function runProbe(): Promise<Record<string, { outcome: string; log: string
         "--namespace",
         job.metadata.namespace,
         `job/${job.metadata.name}`,
-      ).catch((error: unknown) => `no log: ${String(error)}`);
+      ).catch((cause: unknown) => `no log: ${String(cause)}`);
 
       results[job.metadata.name] = { outcome, log };
     }
@@ -533,10 +535,7 @@ async function probeInside(
 
     return { ok: true, output };
   } catch (error) {
-    const output =
-      error instanceof Error && "stdout" in error && typeof error.stdout === "string"
-        ? error.stdout
-        : "";
+    const output = ExecFailure.parse(error).stdout;
 
     return { ok: false, output: `${output}\n${String(error)}` };
   }
@@ -567,7 +566,7 @@ async function sealedRequest(name: string): Promise<{ workspaceId: string; appro
 
   const draft: PolicyDraft = {
     chains: [CHAIN],
-    requesters: [created.agent.id as PolicyDraft["requesters"][number]],
+    requesters: [created.agent.id],
     assets: [
       {
         chainId: CHAIN,
@@ -721,7 +720,7 @@ test("the primary is deleted while a payment is being signed, and the payment la
   // With mining held, the payment cannot confirm before the primary is gone, whatever the step
   // has reached; the approval's answer may wait on the database, so it is not awaited first.
   await withMiningHeld(async ({ resume }) => {
-    const approving = ada.confirm(approvalId).catch((error: unknown) => error);
+    const approving = ada.confirm(approvalId).catch((cause: unknown) => cause);
     signingPod = await podThatStartsSigning(approvalId, 60_000);
     failoverAt = Date.now();
     await kubectl(
@@ -911,7 +910,7 @@ test("with both standbys gone a write waits instead of committing alone, and lan
   const countWorkspaces = () => sql(primary, "SELECT count(*) FROM os.workspaces");
   const workspacesBefore = Number(await countWorkspaces());
 
-  const write: { settled: boolean; outcome?: unknown } = { settled: false };
+  const write: PendingWrite = { settled: false };
   let deletedAt = 0;
   let writtenAt = 0;
   let waiting = Promise.resolve();
@@ -941,9 +940,9 @@ test("with both standbys gone a write waits instead of committing alone, and lan
         write.settled = true;
         write.outcome = outcome;
       },
-      (error: unknown) => {
+      (cause: unknown) => {
         write.settled = true;
-        write.outcome = error;
+        write.outcome = cause;
       },
     );
     await delay(20_000);

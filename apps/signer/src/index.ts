@@ -43,12 +43,13 @@ import {
   verifyRequestSignature,
 } from "@askgina/os-protocol/signer";
 import { Hono } from "hono";
-import type { z } from "zod";
+import { z } from "zod";
 import { DEFAULT_MAX_TX_ATTEMPTS, DEFAULT_REPRICE_WINDOW_SECONDS } from "./attempts.ts";
 import { createConfirmations } from "./confirmations.ts";
 import { openDatabase, transaction } from "./db.ts";
 import { SignerFailure } from "./errors.ts";
 import { FENCE_BY_OPERATOR, fenceReplacedDatabase, raiseFence } from "./fence.ts";
+import type { JsonValue } from "./json.ts";
 import {
   DEFAULT_MAX_DESTROY_DELAY_SECONDS,
   DEFAULT_MIN_DESTROY_DELAY_SECONDS,
@@ -79,11 +80,9 @@ export {
   VaultError,
 } from "./vault.ts";
 
-const VERSION: string = (
-  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
-    version: string;
-  }
-).version;
+const VERSION = z
+  .object({ version: z.string() })
+  .parse(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))).version;
 
 export interface SignerOptions {
   /** SQLite file, or ":memory:" for tests. */
@@ -198,6 +197,8 @@ const compiledRoutes = Object.entries(signerRoutes).map(([name, route]) => {
     return "([^/]+)";
   });
 
+  // SAFETY: Object.entries of the `signerRoutes` object literal yields its own keys and nothing
+  // else, and RouteName is exactly those keys.
   return {
     name: name as RouteName,
     method: route.method,
@@ -277,15 +278,18 @@ function clientScopes(certificates: SignerOptions["clientCertificates"]) {
 }
 
 /**
- * The fingerprint of the client certificate the request's TLS connection verified, or null for
- * a request that did not arrive over a verified TLS connection. `env` is what
- * `@hono/node-server` passes along: the Node request, whose socket is the TLS socket.
+ * What `@hono/node-server` passes along as `c.env`: the Node request, whose socket is the TLS
+ * socket. A request that did not come through it (`app.request` in tests) has none.
  */
-function verifiedClientFingerprint(env: unknown): string | null {
-  if (typeof env !== "object" || env === null || !("incoming" in env)) return null;
+const NodeBindings = z.object({ incoming: z.instanceof(IncomingMessage) });
 
-  if (!(env.incoming instanceof IncomingMessage)) return null;
-  const socket = env.incoming.socket;
+/**
+ * The fingerprint of the client certificate the request's TLS connection verified, or null for
+ * a request that did not arrive over a verified TLS connection.
+ */
+function verifiedClientFingerprint(incoming: IncomingMessage | undefined): string | null {
+  if (incoming === undefined) return null;
+  const socket = incoming.socket;
 
   if (!(socket instanceof TLSSocket) || !socket.authorized) return null;
   const { raw } = socket.getPeerCertificate();
@@ -293,7 +297,7 @@ function verifiedClientFingerprint(env: unknown): string | null {
   return Buffer.isBuffer(raw) ? derFingerprint(raw) : null;
 }
 
-function parse<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
+function parse<S extends z.ZodType>(schema: S, value: JsonValue | undefined): z.infer<S> {
   const result = schema.safeParse(value);
 
   if (!result.success) throw new SignerFailure("invalid_request");
@@ -301,7 +305,7 @@ function parse<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
   return result.data;
 }
 
-function parseBody(body: Uint8Array): unknown {
+function parseBody(body: Uint8Array): JsonValue {
   try {
     return JSON.parse(Buffer.from(body).toString("utf8"));
   } catch {
@@ -401,7 +405,7 @@ export function createSigner(options: SignerOptions): Signer {
     query: URLSearchParams,
     body: Uint8Array,
     confirmToken: string,
-  ): Promise<unknown> {
+  ) {
     const workspaceId = () => parse(WorkspaceIdSchema, params.workspaceId);
     const approvalId = () => parse(ApprovalId, params.approvalId);
     const mandateId = () => parse(MandateId, params.mandateId);
@@ -559,7 +563,9 @@ export function createSigner(options: SignerOptions): Signer {
         // wrong client's connection is refused like a wrong secret.
         if (
           scopeOfClient !== null &&
-          scopeOfClient.get(verifiedClientFingerprint(c.env) ?? "") !== scope
+          scopeOfClient.get(
+            verifiedClientFingerprint(NodeBindings.safeParse(c.env).data?.incoming) ?? "",
+          ) !== scope
         ) {
           throw new SignerFailure("unauthenticated");
         }
@@ -581,7 +587,8 @@ export function createSigner(options: SignerOptions): Signer {
         if (!authentic) throw new SignerFailure("unauthenticated");
       }
 
-      const result = await dispatch(
+      // Every route answers with an object; Hono serializes it with JSON.stringify.
+      const result: object = await dispatch(
         route.name,
         route.params,
         url.searchParams,
@@ -591,7 +598,7 @@ export function createSigner(options: SignerOptions): Signer {
 
       log.info("request", { route: route.name, status: 200 });
 
-      return c.json(result as object, 200);
+      return c.json(result, 200);
     } catch (error) {
       const failure = error instanceof SignerFailure ? error : new SignerFailure("internal");
 
@@ -608,7 +615,7 @@ export function createSigner(options: SignerOptions): Signer {
         code: failure.code,
       });
 
-      return c.json(failure.body(), failure.status as 400);
+      return c.json(failure.body(), failure.status);
     }
   });
 

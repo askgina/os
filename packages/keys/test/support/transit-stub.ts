@@ -5,6 +5,8 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { z } from "zod";
+import type { JsonValue } from "../../src/index.ts";
 
 export interface TransitStubOptions {
   mount?: string;
@@ -38,6 +40,21 @@ export interface TransitStub {
   corruptPlaintextLength(length: number | undefined): void;
   close(): Promise<void>;
 }
+
+/** A field or header the stub reads; absent or of another type, it reads as `undefined`. */
+const RequestText = z.string().optional().catch(undefined);
+
+/** The fields of a request body the stub reads, on whichever route it is. */
+const RequestBody = z.object({
+  role_id: RequestText,
+  secret_id: RequestText,
+  role: RequestText,
+  jwt: RequestText,
+  key_version: z.number().optional().catch(undefined),
+  plaintext: RequestText,
+  associated_data: RequestText,
+  ciphertext: RequestText,
+});
 
 function aes(key: Buffer, plaintext: Buffer, aad: Buffer): Buffer {
   const iv = randomBytes(12);
@@ -88,7 +105,7 @@ export async function startTransitStub(options: TransitStubOptions = {}): Promis
     return { client_token: token, lease_duration: tokenTtl, renewable };
   };
 
-  function reply(res: ServerResponse, status: number, body?: unknown) {
+  function reply(res: ServerResponse, status: number, body?: JsonValue) {
     if (res.destroyed) return;
     const text = body === undefined ? "" : JSON.stringify(body);
     res.writeHead(status, { "content-type": "application/json" });
@@ -103,10 +120,10 @@ export async function startTransitStub(options: TransitStubOptions = {}): Promis
       return;
     }
 
-    let body: Record<string, unknown> = {};
+    let body: z.infer<typeof RequestBody>;
 
     try {
-      body = raw === "" ? {} : (JSON.parse(raw) as Record<string, unknown>);
+      body = RequestBody.parse(raw === "" ? {} : JSON.parse(raw));
     } catch {
       reply(res, 400, { errors: ["bad json"] });
 
@@ -140,8 +157,8 @@ export async function startTransitStub(options: TransitStubOptions = {}): Promis
       return;
     }
 
-    const token = req.headers["x-vault-token"];
-    const entry = typeof token === "string" ? tokens.get(token) : undefined;
+    const token = RequestText.parse(req.headers["x-vault-token"]);
+    const entry = token === undefined ? undefined : tokens.get(token);
 
     if (!entry || (entry.expires !== null && entry.expires <= Date.now())) {
       reply(res, 403, { errors: ["permission denied"] });
@@ -180,16 +197,16 @@ export async function startTransitStub(options: TransitStubOptions = {}): Promis
     }
 
     if (method === "POST" && path === `/v1/${mount}/encrypt/${keyName}`) {
-      const version = body.key_version === undefined ? latest : Number(body.key_version);
+      const version = body.key_version ?? latest;
       const key = versions.get(version);
 
-      if (!key || typeof body.plaintext !== "string") {
+      if (!key || body.plaintext === undefined) {
         reply(res, 400, { errors: ["invalid key version or plaintext"] });
 
         return;
       }
 
-      const aad = Buffer.from(String(body.associated_data ?? ""), "base64");
+      const aad = Buffer.from(body.associated_data ?? "", "base64");
       const sealed = aes(key, Buffer.from(body.plaintext, "base64"), aad);
       reply(res, 200, { data: { ciphertext: `vault:v${version}:${sealed.toString("base64")}` } });
 
@@ -197,7 +214,7 @@ export async function startTransitStub(options: TransitStubOptions = {}): Promis
     }
 
     if (method === "POST" && path === `/v1/${mount}/decrypt/${keyName}`) {
-      const match = /^vault:v(\d+):(.+)$/.exec(String(body.ciphertext ?? ""));
+      const match = /^vault:v(\d+):(.+)$/.exec(body.ciphertext ?? "");
       const version = Number(match?.[1]);
       const key = versions.get(version);
 
@@ -219,7 +236,7 @@ export async function startTransitStub(options: TransitStubOptions = {}): Promis
         plaintext = unaes(
           key,
           Buffer.from(match[2] ?? "", "base64"),
-          Buffer.from(String(body.associated_data ?? ""), "base64"),
+          Buffer.from(body.associated_data ?? "", "base64"),
         );
       } catch {
         reply(res, 400, { errors: ["cipher: message authentication failed"] });
@@ -251,6 +268,9 @@ export async function startTransitStub(options: TransitStubOptions = {}): Promis
   const { promise, resolve } = Promise.withResolvers<void>();
   server.listen(0, "127.0.0.1", () => resolve());
   await promise;
+  // SAFETY: `server.address()` returns an AddressInfo for a server listening on a TCP port, as
+  // this one is once `listen(0, "127.0.0.1")` has called back (awaited just above); it returns a
+  // string only for a pipe or socket path and null only before listening.
   const port = (server.address() as AddressInfo).port;
 
   return {

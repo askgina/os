@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
+import type { ApiErrorCode } from "@askgina/os-api";
 import { DataKeyStore, keyProviderFromEnv } from "@askgina/os-keys";
-import { UserId } from "@askgina/os-protocol";
+import { UserId, type WorkspaceId } from "@askgina/os-protocol";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import { loadConfig } from "../config.ts";
@@ -11,6 +12,12 @@ import { createLogger } from "../log.ts";
 import { checkErasable, type ErasureDeps, eraseUser } from "./erase.ts";
 
 const USAGE = "usage: node apps/server/src/identity/erase-cli.ts --user <usr_id>\n";
+
+/** The one JSON line the command prints last; see {@link main}. */
+type EraseResult =
+  | { ok: true; userId: UserId; alreadyErased: boolean }
+  | { ok: false; code: "still_approving"; workspaces: WorkspaceId[] }
+  | { ok: false; code: ApiErrorCode; detail: string | null; message: string };
 
 /**
  * `node apps/server/src/identity/erase-cli.ts --user <usr_id>`: erase a person as the operator,
@@ -31,7 +38,7 @@ const USAGE = "usage: node apps/server/src/identity/erase-cli.ts --user <usr_id>
 export async function main(
   argv: readonly string[],
   ctx: ErasureDeps,
-  print: (line: object) => void = (line) => process.stdout.write(`${JSON.stringify(line)}\n`),
+  print: (line: EraseResult) => void = (line) => process.stdout.write(`${JSON.stringify(line)}\n`),
 ): Promise<number> {
   let user: string | undefined;
 

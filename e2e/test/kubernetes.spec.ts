@@ -20,7 +20,7 @@ import { z } from "zod";
 import { connectAgent } from "../src/agent.ts";
 import { chain, chainAdmin } from "../src/chain.ts";
 import { Person } from "../src/person.ts";
-import { stack } from "../src/stack.ts";
+import { ExecFailure, stack } from "../src/stack.ts";
 
 test.describe.configure({ mode: "serial" });
 
@@ -136,7 +136,7 @@ async function runProbe(): Promise<Record<string, ProbeResult>> {
           "--namespace",
           job.metadata.namespace,
           `job/${job.metadata.name}`,
-        ).catch((error: unknown) => `no log: ${String(error)}`);
+        ).catch((cause: unknown) => `no log: ${String(cause)}`);
 
         results[job.metadata.name] = { outcome, log };
       }
@@ -205,10 +205,7 @@ async function probeInside(
     return { ok: true, output };
   } catch (error) {
     // execFile's error carries the command's stdout: the probe's lines, the evidence.
-    const output =
-      error instanceof Error && "stdout" in error && typeof error.stdout === "string"
-        ? error.stdout
-        : "";
+    const output = ExecFailure.parse(error).stdout;
 
     return { ok: false, output: `${output}\n${String(error)}` };
   }
@@ -400,7 +397,7 @@ test("an agent's payment approved on the signer's confirmation page lands once",
 
   const draft: PolicyDraft = {
     chains: [CHAIN],
-    requesters: [created.agent.id as PolicyDraft["requesters"][number]],
+    requesters: [created.agent.id],
     assets: [
       {
         chainId: CHAIN,

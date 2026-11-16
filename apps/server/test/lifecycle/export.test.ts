@@ -2,10 +2,11 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ApiError, type MandateDraft } from "@askgina/os-api";
-import type { ApprovalId, IntentId, MandateId, PushSubscriptionId } from "@askgina/os-protocol";
+import { type ApprovalId, MandateId } from "@askgina/os-protocol";
 import type { Client } from "@modelcontextprotocol/client";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { intents, pushSubscriptions, transactions } from "../../src/db/schema.ts";
 import { engineOf } from "../../src/execution/approvals.ts";
 import { RECENT_SIGN_IN_MAX_AGE_SECONDS } from "../../src/identity/sessions.ts";
@@ -18,7 +19,13 @@ import {
   recordLines,
   verifyRecord,
 } from "../../src/lifecycle/verify-record.ts";
-import { createFixture, type Fixture, toolJson } from "../execution/fixture.ts";
+import {
+  createFixture,
+  type Fixture,
+  intentIdOf,
+  type ToolArguments,
+  toolJson,
+} from "../execution/fixture.ts";
 import { TEST_CHAIN_ID } from "../support/context.ts";
 
 const ETH = 10n ** 18n;
@@ -41,15 +48,13 @@ let mandateId: MandateId;
 
 const api = () => f.t.owner.browser.api;
 
-async function propose(args: Record<string, unknown>): Promise<ApprovalId> {
+async function propose(args: ToolArguments): Promise<ApprovalId> {
   const answer = toolJson(await client.callTool({ name: "propose_transfer", arguments: args }));
-
-  if (typeof answer.intentId !== "string") throw new Error(JSON.stringify(answer));
 
   const [row] = await f.t.ctx.db
     .select({ approvalId: intents.approvalId })
     .from(intents)
-    .where(eq(intents.id, answer.intentId as IntentId));
+    .where(eq(intents.id, intentIdOf(answer)));
 
   if (!row?.approvalId) throw new Error("an intent without its approval or use");
 
@@ -89,7 +94,7 @@ beforeAll(async () => {
     agentId: f.agent.id,
     assets: [
       {
-        chainId: TEST_CHAIN_ID as MandateDraft["assets"][number]["chainId"],
+        chainId: TEST_CHAIN_ID,
         asset: "native",
         maxPerAction: ETH.toString(),
         maxPerWindow: (2n * ETH).toString(),
@@ -109,9 +114,9 @@ beforeAll(async () => {
     body: draft,
   });
 
-  const granted = await f.t.approve(opened.id as ApprovalId, [f.t.owner]);
+  const granted = await f.t.approve(opened.id, [f.t.owner]);
   expect(granted.status).toBe("executed");
-  mandateId = granted.subjectId as MandateId;
+  mandateId = MandateId.parse(granted.subjectId);
   mandatePayment = await propose({
     chainId: TEST_CHAIN_ID,
     to: SUPPLIER,
@@ -124,7 +129,7 @@ beforeAll(async () => {
 
   // A browser's push endpoint, which belongs to a person and never to a record.
   await f.t.ctx.db.insert(pushSubscriptions).values({
-    id: "psb_01jd0000000000000000000099" as PushSubscriptionId,
+    id: "psb_01jd0000000000000000000099",
     userId: f.t.owner.userId,
     endpoint: PUSH_ENDPOINT,
     p256dh:
@@ -247,11 +252,8 @@ describe("exporting a workspace's record", () => {
 
     if (!row) throw new Error("no transaction");
 
-    const raw = (await f.t.ctx.sealer.open(
-      f.workspaceId,
-      `transactions.raw:${row.approvalId}`,
-      row.raw,
-    )) as string;
+    const location = `transactions.raw:${row.approvalId}`;
+    const raw = z.string().parse(await f.t.ctx.sealer.open(f.workspaceId, location, row.raw));
 
     expect(raw.startsWith("0x")).toBe(true);
     expect(record).not.toContain(raw.slice(2));
@@ -262,28 +264,20 @@ describe("exporting a workspace's record", () => {
   it("needs an owner whose passkey signed in within the last five minutes", async () => {
     f.t.clock.advance(RECENT_SIGN_IN_MAX_AGE_SECONDS + 1);
 
-    const refused = await api()
-      .call("exportRecord", { params: { workspaceId: f.workspaceId } })
-      .then(
-        () => null,
-        (error: unknown) => error,
-      );
+    const refused = api().call("exportRecord", { params: { workspaceId: f.workspaceId } });
 
-    expect(refused).toBeInstanceOf(ApiError);
-    expect(refused).toMatchObject({ code: "forbidden", detail: "sign_in_again" });
+    await expect(refused).rejects.toBeInstanceOf(ApiError);
+    await expect(refused).rejects.toMatchObject({ code: "forbidden", detail: "sign_in_again" });
 
     await f.t.signIn(f.t.owner.credentialId, f.t.owner.browser);
     expect(verifyRecord(await exportRecord()).ok).toBe(true);
 
     const viewer = await f.addApprover(f.workspaceId, "Vera Approver");
 
-    const notOwner = await viewer.browser.api
-      .call("exportRecord", { params: { workspaceId: f.workspaceId } })
-      .then(
-        () => null,
-        (error: unknown) => error,
-      );
+    const notOwner = viewer.browser.api.call("exportRecord", {
+      params: { workspaceId: f.workspaceId },
+    });
 
-    expect(notOwner).toMatchObject({ code: "forbidden" });
+    await expect(notOwner).rejects.toMatchObject({ code: "forbidden" });
   });
 });

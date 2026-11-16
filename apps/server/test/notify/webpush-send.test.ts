@@ -1,10 +1,10 @@
 import { createServer } from "node:https";
-import type { AddressInfo } from "node:net";
 import { newId } from "@askgina/os-protocol";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Config } from "../../src/config.ts";
 import {
   type PushMessage,
+  type PushResult,
   pushEndpointAllowed,
   pushTopic,
   sendPush,
@@ -12,6 +12,7 @@ import {
 import {
   browserSubscription,
   decryptPush,
+  listeningPort,
   type PushService,
   pushConfig,
   startPushService,
@@ -138,7 +139,7 @@ describe("sending a Web Push message", () => {
     const listening = Promise.withResolvers<void>();
     closedServer.listen(0, listening.resolve);
     await listening.promise;
-    const closedPort = (closedServer.address() as AddressInfo).port;
+    const closedPort = listeningPort(closedServer);
     const closed = Promise.withResolvers<void>();
     closedServer.close(() => closed.resolve());
     await closed.promise;
@@ -187,7 +188,7 @@ describe("sending a Web Push message", () => {
     const { keys } = await subscription();
     const before = service.pushed.length;
 
-    const refused = (result: unknown, reason: string) =>
+    const refused = (result: PushResult, reason: string) =>
       expect(result).toEqual({ ok: false, code: "rejected", reason });
 
     refused(await sendPush(ctx(), { ...keys, p256dh: "not+base64" }, message), "bad_subscription");

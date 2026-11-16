@@ -23,11 +23,20 @@ export const DomainTag = {
 
 export type DomainTag = (typeof DomainTag)[keyof typeof DomainTag];
 
+/** A value JSON can carry: what `JSON.parse` returns and what `JSON.stringify` writes as is. */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
 /**
  * RFC 8785 (JCS) canonical JSON. Callers pass only values that came out of a strict schema:
  * strings, integers below 2^53, booleans, null, arrays and plain objects.
  */
-export function canonicalJson(value: unknown): string {
+export function canonicalJson<Value>(value: Value): string {
   const text = canonicalize(value);
 
   if (text === undefined) {
@@ -37,10 +46,10 @@ export function canonicalJson(value: unknown): string {
   return text;
 }
 
-export function digest(tag: DomainTag, value: unknown): Uint8Array {
+export function digest<Value>(tag: DomainTag, value: Value): Uint8Array {
   return sha256(utf8ToBytes(`${tag}\n${canonicalJson(value)}`));
 }
 
-export function digestHex(tag: DomainTag, value: unknown): string {
+export function digestHex<Value>(tag: DomainTag, value: Value): string {
   return bytesToHex(digest(tag, value));
 }

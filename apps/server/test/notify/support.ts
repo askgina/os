@@ -3,11 +3,20 @@ import { createHmac, generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import type { AddressInfo } from "node:net";
+import type { Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import tls from "node:tls";
+import { z } from "zod";
 import { type Config, loadConfig } from "../../src/config.ts";
+
+/** What `address()` answers for a server listening on a TCP port, as opposed to a pipe. */
+const ListeningAddress = z.object({ port: z.number() });
+
+/** The TCP port `server` listens on; throws while it does not listen on one. */
+export function listeningPort(server: Pick<Server, "address">): number {
+  return ListeningAddress.parse(server.address()).port;
+}
 
 /** One request a receiver got, as it arrived. */
 export interface Received {
@@ -52,7 +61,7 @@ export async function startReceiver(): Promise<Receiver> {
   const listening = Promise.withResolvers<void>();
   server.listen(0, "127.0.0.1", listening.resolve);
   await listening.promise;
-  const { port } = server.address() as AddressInfo;
+  const port = listeningPort(server);
 
   return {
     url: `http://127.0.0.1:${port}/hook`,
@@ -221,7 +230,7 @@ export async function startPushService(): Promise<PushService> {
   const listening = Promise.withResolvers<void>();
   server.listen(0, listening.resolve);
   await listening.promise;
-  const { port } = server.address() as AddressInfo;
+  const port = listeningPort(server);
 
   return {
     origin: `https://localhost:${port}`,
@@ -282,7 +291,7 @@ export function pushConfig(extra: NodeJS.ProcessEnv = {}): Config {
 }
 
 /** The settings every configuration needs, with the files they name in a fresh directory. */
-export function baseEnv(): { env: NodeJS.ProcessEnv; dir: string } {
+export function baseEnv() {
   const dir = mkdtempSync(join(tmpdir(), "os-notify-config-"));
   const signerSecret = join(dir, "signer-secret");
   writeFileSync(signerSecret, randomBytes(32).toString("base64"));

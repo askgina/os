@@ -219,19 +219,22 @@ export function intentHash(intent: Intent): Digest {
   return digestHex(DomainTag.intent, Intent.parse(intent));
 }
 
+/** An amount of one asset that an intent moves, and whether it counts against a daily cap. */
+export type IntentSpend<Asset extends SpendAsset = SpendAsset> = {
+  asset: Asset;
+  amount: bigint;
+  daily: boolean;
+};
+
 /**
  * What an intent moves out of the wallet, for caps and budgets. Fees are not included. `daily`
  * says whether it counts against a daily cap: an EVM spend always does; an order's notional
  * (`usd6`) does unless the order is reduce-only; a withdrawal from the venue moves nothing the
  * caps measure, since it can only go to the wallet's own address.
  */
-export function intentSpend(intent: EvmIntent): {
-  asset: AssetRef;
-  amount: bigint;
-  daily: boolean;
-};
-export function intentSpend(intent: Intent): { asset: SpendAsset; amount: bigint; daily: boolean };
-export function intentSpend(intent: Intent): { asset: SpendAsset; amount: bigint; daily: boolean } {
+export function intentSpend(intent: EvmIntent): IntentSpend<AssetRef>;
+export function intentSpend(intent: Intent): IntentSpend;
+export function intentSpend(intent: Intent): IntentSpend {
   const { operation } = intent;
 
   switch (operation.type) {

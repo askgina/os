@@ -1,5 +1,5 @@
 import { ApiError, type MandateDraft } from "@askgina/os-api";
-import type { ApprovalId, IntentId, MandateId, WalletId, WorkspaceId } from "@askgina/os-protocol";
+import { type ApprovalId, MandateId, type WalletId, type WorkspaceId } from "@askgina/os-protocol";
 import { and, desc, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { auditEvents, intents, transactions } from "../../src/db/schema.ts";
@@ -11,6 +11,7 @@ import {
   draftFor,
   type Fixture,
   fund,
+  intentIdOf,
   type TestAgent,
   toolJson,
 } from "../execution/fixture.ts";
@@ -69,7 +70,7 @@ async function grantMandate(ws: WorkspaceId, agent: TestAgent): Promise<MandateI
     agentId: agent.id,
     assets: [
       {
-        chainId: TEST_CHAIN_ID as MandateDraft["assets"][number]["chainId"],
+        chainId: TEST_CHAIN_ID,
         asset: "native",
         maxPerAction: ETH.toString(),
         maxPerWindow: (2n * ETH).toString(),
@@ -89,10 +90,10 @@ async function grantMandate(ws: WorkspaceId, agent: TestAgent): Promise<MandateI
     body: draft,
   });
 
-  const row = await f.t.approve(opened.id as ApprovalId, [f.t.owner]);
+  const row = await f.t.approve(opened.id, [f.t.owner]);
   expect(row.status).toBe("executed");
 
-  return row.subjectId as MandateId;
+  return MandateId.parse(row.subjectId);
 }
 
 const requestRetire = (ws: WorkspaceId, walletId: WalletId, destroyAfter: number) =>
@@ -122,7 +123,7 @@ async function sweepToTreasury(ws: WorkspaceId, walletId: WalletId, to: `0x${str
     body: { chainId: TEST_CHAIN_ID, asset: "native", to },
   });
 
-  const approvalId = opened.id as ApprovalId;
+  const approvalId = opened.id;
   expect((await f.t.approve(approvalId, [f.t.owner])).status).toBe("executed");
   const steps = engineOf(f.t.ctx).steps();
 
@@ -157,7 +158,7 @@ describe("retiring a wallet", () => {
       wallet: { id: agent.walletId },
       destroyAfter: firstDestroyAfter,
     });
-    expect((await f.t.approve(opened.id as ApprovalId, [f.t.owner])).status).toBe("executed");
+    expect((await f.t.approve(opened.id, [f.t.owner])).status).toBe("executed");
 
     expect((await walletOf(ws, agent.walletId)).lifecycle).toEqual({
       state: "retiring",
@@ -199,7 +200,7 @@ describe("retiring a wallet", () => {
     // Retired again, and destroyed once its time has come.
     const destroyAfter = now() + WEEK + 60;
     const again = await requestRetire(ws, agent.walletId, destroyAfter);
-    expect((await f.t.approve(again.id as ApprovalId, [f.t.owner])).status).toBe("executed");
+    expect((await f.t.approve(again.id, [f.t.owner])).status).toBe("executed");
     expect(await finalizeDue(f.t.ctx)).toEqual({ finalized: 0, skipped: 0 });
     await advance(WEEK + 120);
     expect(await finalizeDue(f.t.ctx)).toEqual({ finalized: 1, skipped: 0 });
@@ -274,9 +275,10 @@ describe("removing an agent", () => {
     const [intent] = await f.t.ctx.db
       .select({ approvalId: intents.approvalId })
       .from(intents)
-      .where(eq(intents.id, proposed.intentId as IntentId));
+      .where(eq(intents.id, intentIdOf(proposed)));
 
-    const approvalId = intent?.approvalId as ApprovalId;
+    if (!intent?.approvalId) throw new Error("an intent without its approval");
+    const approvalId = intent.approvalId;
     expect((await engineOf(f.t.ctx).row(approvalId)).status).toBe("pending");
 
     const disabled = await api().call("disableAgent", {

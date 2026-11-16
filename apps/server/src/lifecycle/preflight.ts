@@ -28,8 +28,8 @@ export async function deletionPreflight(
   ctx: AppContext,
   workspaceId: WorkspaceId,
 ): Promise<DeletionPreflight> {
-  const state = await ctx.signer.getWorkspace(workspaceId).catch((error: unknown) => {
-    throw fromSignerError(error);
+  const state = await ctx.signer.getWorkspace(workspaceId).catch((cause: unknown) => {
+    throw fromSignerError(cause);
   });
 
   const rows = await ctx.db

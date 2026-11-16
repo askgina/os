@@ -17,6 +17,8 @@ import {
   draftFor,
   type Fixture,
   fund,
+  intentIdOf,
+  type ToolArguments,
   toolJson,
 } from "./fixture.ts";
 
@@ -33,20 +35,16 @@ afterAll(async () => {
   await f?.close();
 });
 
-const randomAddress = () => `0x${randomBytes(20).toString("hex")}` as `0x${string}`;
+const randomAddress = (): `0x${string}` => `0x${randomBytes(20).toString("hex")}`;
 
 async function propose(
   client: Client,
-  args: Record<string, unknown>,
+  args: ToolArguments,
 ): Promise<{ intentId: IntentId; approvalId: ApprovalId }> {
   const proposed = toolJson(await client.callTool({ name: "propose_transfer", arguments: args }));
+  const intentId = intentIdOf(proposed);
 
-  if (typeof proposed.intentId !== "string") throw new Error(JSON.stringify(proposed));
-
-  const [row] = await f.t.ctx.db
-    .select()
-    .from(intents)
-    .where(eq(intents.id, proposed.intentId as IntentId));
+  const [row] = await f.t.ctx.db.select().from(intents).where(eq(intents.id, intentId));
 
   if (!row?.approvalId) throw new Error("intent without approval");
 
@@ -138,9 +136,7 @@ describe("approving an intent", () => {
 
     expect(rows).toHaveLength(1);
     expect(rows[0]?.hash).toBe(signedFirst.transactionHash);
-    expect(rows[0]?.nonce).toBe(
-      parseTransaction(signedFirst.signedTransaction as `0x${string}`).nonce,
-    );
+    expect(rows[0]?.nonce).toBe(parseTransaction(signedFirst.signedTransaction).nonce);
 
     await followUntilDone(approvalId);
     // A second broadcast of the same bytes changes nothing on chain.
@@ -167,7 +163,7 @@ describe("approving an intent", () => {
       body: { adminThreshold: 2 },
     });
 
-    expect((await f.t.approve(raised.id as ApprovalId, [f.t.owner])).status).toBe("executed");
+    expect((await f.t.approve(raised.id, [f.t.owner])).status).toBe("executed");
     const agent = await f.newAgent("Two-person", workspaceId);
 
     const policy = await f.t.owner.browser.api.call("requestPolicy", {
@@ -175,9 +171,7 @@ describe("approving an intent", () => {
       body: { draft: draftFor(agent.id, { approvals: { threshold: 2, ttlSeconds: 3_600 } }) },
     });
 
-    expect((await f.t.approve(policy.id as ApprovalId, [f.t.owner, carol])).status).toBe(
-      "executed",
-    );
+    expect((await f.t.approve(policy.id, [f.t.owner, carol])).status).toBe("executed");
     await fund(agent.address, 50n * 10n ** 18n);
     const client = await f.mcp(agent.token);
 

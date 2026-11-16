@@ -39,6 +39,8 @@ const Opened = z.record(z.string(), z.unknown());
 
 const Head = z.strictObject({ seq: z.number().int().min(0), hash: z.string().nullable() });
 
+type Head = z.infer<typeof Head>;
+
 export const RecordHeader = z.strictObject({
   format: z.literal(RECORD_FORMAT),
   workspaceId: Id,
@@ -65,7 +67,8 @@ export const AuditLine = z.strictObject({
   previousHash: z.string().nullable(),
   hash: z.string(),
   salt: z.string(),
-  detail: Opened,
+  /** JSON, as the sealed detail it was opened from. */
+  detail: z.record(z.string(), z.json()),
 });
 
 export const IntentLine = z.strictObject({
@@ -302,11 +305,11 @@ export function verifyRecord(lines: readonly string[]): RecordVerification {
     "signer-decision": 0,
   };
 
-  const sameHead = (head: { seq: number; hash: string | null }, expected: typeof head) =>
+  const sameHead = (head: Head, expected: Head) =>
     head.seq === expected.seq && head.hash === expected.hash;
 
-  const audit: { seq: number; hash: string | null } = { seq: 0, hash: null };
-  const decisions: { seq: number; hash: string | null } = { seq: 0, hash: null };
+  const audit: Head = { seq: 0, hash: null };
+  const decisions: Head = { seq: 0, hash: null };
   let section = 0;
   let lastKey: string | number | null = null;
 

@@ -96,7 +96,8 @@ function line(text: string): string {
   return `${characters.slice(0, TEXT_MAX_CHARACTERS - 1).join("")}…`;
 }
 
-const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
+const bytes = (message: DeclarativePush) =>
+  new TextEncoder().encode(JSON.stringify(message)).length;
 
 /** Shorten a body, then a title, that is too long in bytes; throw when even that is not enough. */
 function fit(message: DeclarativePush): DeclarativePush {

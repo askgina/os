@@ -1,4 +1,8 @@
-import { type SignerErrorCode, signerErrorStatus } from "@askgina/os-protocol/signer";
+import {
+  type SignerErrorBody,
+  type SignerErrorCode,
+  signerErrorStatus,
+} from "@askgina/os-protocol/signer";
 
 // One fixed message per code. Responses and logs never quote what a caller sent.
 const MESSAGES: Record<SignerErrorCode, string> = {
@@ -59,17 +63,16 @@ export class SignerFailure extends Error {
     this.detail = detail;
   }
 
-  get status(): number {
+  get status(): (typeof signerErrorStatus)[SignerErrorCode] {
     return signerErrorStatus[this.code];
   }
 
-  body() {
-    return {
-      error: {
-        code: this.code,
-        message: MESSAGES[this.code],
-        ...(this.detail === undefined ? {} : { detail: this.detail }),
-      },
-    };
+  /** `detail` is present only when there is one: the key is absent, never `undefined`. */
+  body(): SignerErrorBody {
+    const error: SignerErrorBody["error"] = { code: this.code, message: MESSAGES[this.code] };
+
+    if (this.detail !== undefined) error.detail = this.detail;
+
+    return { error };
   }
 }

@@ -79,14 +79,19 @@ export const MANDATE_ACTIONS = {
 
 const DAY_SECONDS = 86_400;
 
+/**
+ * A `mandates` row (STRICT, db.ts, version 5). `grantMandate` inserts the ids from the parsed
+ * mandate and `grant_approval_id` from the grant envelope's ApprovalId; the CHECK on
+ * `revoked_reason` admits only a MandateRevokedReason.
+ */
 type MandateRow = {
-  mandate_id: string;
-  workspace_id: string;
-  wallet_id: string;
+  mandate_id: MandateId;
+  workspace_id: WorkspaceId;
+  wallet_id: WalletId;
   agent_id: string;
   mandate_hash: string;
   mandate: string;
-  grant_approval_id: string;
+  grant_approval_id: ApprovalId;
   not_before: number;
   not_after: number;
   granted_at: number;
@@ -126,14 +131,14 @@ function revokeEach(
   for (const row of rows) {
     if (!markRevoked(db, row.mandate_id, reason, at)) continue;
     appendDecision(db, {
-      workspaceId: row.workspace_id as WorkspaceId,
+      workspaceId: row.workspace_id,
       approvalId: row.grant_approval_id,
       action,
       outcome: "allowed",
       code: null,
       at,
     });
-    revoked.push(row.mandate_id as MandateId);
+    revoked.push(row.mandate_id);
   }
 
   return revoked;
@@ -146,6 +151,8 @@ function revokeEach(
  * transaction that moves the fence.
  */
 export function revokeMandatesOnFence(db: DatabaseSync, at: number): MandateId[] {
+  // SAFETY: `SELECT *` of the STRICT `mandates` table returns exactly MandateRow's columns,
+  // typed as its comment says.
   const rows = db
     .prepare(
       "SELECT * FROM mandates WHERE revoked_at IS NULL AND not_after > ? ORDER BY workspace_id, mandate_id",
@@ -164,7 +171,7 @@ export interface MandateInternals {
   maxLiveMandatesPerWallet: number;
   decide<T>(
     workspaceId: string,
-    approvalId: string | null,
+    approvalId: ApprovalId | null,
     action: string,
     work: (allow: () => void) => T | Promise<T>,
   ): Promise<T>;
@@ -188,6 +195,8 @@ export function createMandateOperations(internals: MandateInternals) {
   const { db, now, log } = internals;
 
   function findMandate(mandateId: string): MandateRow | undefined {
+    // SAFETY: `SELECT *` of the STRICT `mandates` table returns exactly MandateRow's columns,
+    // typed as its comment says; no row is undefined.
     return db.prepare("SELECT * FROM mandates WHERE mandate_id = ?").get(mandateId) as
       | MandateRow
       | undefined;
@@ -198,10 +207,13 @@ export function createMandateOperations(internals: MandateInternals) {
    * what moved in total and after `now - windowSeconds`.
    */
   function usageOf(row: MandateRow, mandate: Mandate, at: number): MandateUsage {
+    // SAFETY: an aggregate `COUNT(*) AS uses` returns exactly one row whose `uses` is an integer.
     const { uses } = db
       .prepare("SELECT COUNT(*) AS uses FROM mandate_uses WHERE mandate_id = ?")
       .get(row.mandate_id) as { uses: number };
 
+    // SAFETY: `chain_id`, `asset` and `amount` are TEXT NOT NULL columns of the STRICT `spends`
+    // table and `at` an INTEGER NOT NULL column of `mandate_uses` (db.ts, versions 1 and 5).
     const spends = db
       .prepare(
         "SELECT s.chain_id, s.asset, s.amount, u.at FROM mandate_uses u JOIN spends s ON s.approval_id = u.approval_id WHERE u.mandate_id = ?",
@@ -248,11 +260,13 @@ export function createMandateOperations(internals: MandateInternals) {
   }
 
   function grantors(mandateId: string): UserId[] {
+    // SAFETY: `user_id` is a TEXT NOT NULL column of the STRICT `mandate_grantors` table (db.ts,
+    // version 5), the one selected; `grantMandate` writes it from each assertion's UserId.
     const rows = db
       .prepare("SELECT user_id FROM mandate_grantors WHERE mandate_id = ? ORDER BY user_id")
-      .all(mandateId) as { user_id: string }[];
+      .all(mandateId) as { user_id: UserId }[];
 
-    return rows.map((row) => row.user_id as UserId);
+    return rows.map((row) => row.user_id);
   }
 
   /** The mandate as the signer holds it, with its status computed now. */
@@ -266,7 +280,7 @@ export function createMandateOperations(internals: MandateInternals) {
       mandate,
       mandateHash: row.mandate_hash,
       status: statusOf(row, mandate, usage, at),
-      grantApprovalId: row.grant_approval_id as ApprovalId,
+      grantApprovalId: row.grant_approval_id,
       grantedAt: row.granted_at,
       grantedBy: grantors(row.mandate_id),
       revokedAt: row.revoked_at,
@@ -285,6 +299,7 @@ export function createMandateOperations(internals: MandateInternals) {
 
   /** Not revoked and not past `notAfter`, as the cap on live mandates counts them. */
   function liveMandateCount(walletId: string, at: number): number {
+    // SAFETY: an aggregate `COUNT(*) AS n` returns exactly one row whose `n` is an integer.
     const row = db
       .prepare(
         "SELECT COUNT(*) AS n FROM mandates WHERE wallet_id = ? AND revoked_at IS NULL AND not_after > ?",
@@ -388,6 +403,8 @@ export function createMandateOperations(internals: MandateInternals) {
         }
       },
       state: () => {
+        // SAFETY: `SELECT *` of the STRICT `mandates` table returns exactly MandateRow's columns,
+        // typed as its comment says; no row is undefined.
         const row = db
           .prepare("SELECT * FROM mandates WHERE grant_approval_id = ?")
           .get(approvalId) as MandateRow | undefined;
@@ -416,6 +433,8 @@ export function createMandateOperations(internals: MandateInternals) {
     if (!wallet) throw new SignerFailure("not_found");
     internals.assertNotDeleted(wallet.workspace_id);
 
+    // SAFETY: `SELECT *` of the STRICT `mandates` table returns exactly MandateRow's columns,
+    // typed as its comment says.
     const rows = db
       .prepare("SELECT * FROM mandates WHERE wallet_id = ? ORDER BY not_after, mandate_id")
       .all(walletId) as MandateRow[];
@@ -559,6 +578,8 @@ export function createMandateOperations(internals: MandateInternals) {
   function revokeMandatesOfCredential(workspaceId: string, credentialId: string): MandateId[] {
     const at = now();
 
+    // SAFETY: `SELECT m.*` returns exactly the columns of the STRICT `mandates` table,
+    // MandateRow's, typed as its comment says.
     const rows = db
       .prepare(
         "SELECT m.* FROM mandates m JOIN mandate_grantors g ON g.mandate_id = m.mandate_id WHERE m.workspace_id = ? AND g.credential_id = ? AND m.revoked_at IS NULL AND m.not_after > ? ORDER BY m.mandate_id",
@@ -575,6 +596,8 @@ export function createMandateOperations(internals: MandateInternals) {
   function revokeWalletMandates(walletId: string): MandateId[] {
     const at = now();
 
+    // SAFETY: `SELECT *` of the STRICT `mandates` table returns exactly MandateRow's columns,
+    // typed as its comment says.
     const rows = db
       .prepare(
         "SELECT * FROM mandates WHERE wallet_id = ? AND revoked_at IS NULL AND not_after > ? ORDER BY mandate_id",
@@ -591,6 +614,8 @@ export function createMandateOperations(internals: MandateInternals) {
   function revokeWorkspaceMandates(workspaceId: string): MandateId[] {
     const at = now();
 
+    // SAFETY: `SELECT *` of the STRICT `mandates` table returns exactly MandateRow's columns,
+    // typed as its comment says.
     const rows = db
       .prepare(
         "SELECT * FROM mandates WHERE workspace_id = ? AND revoked_at IS NULL AND not_after > ? ORDER BY mandate_id",
@@ -635,6 +660,8 @@ export function createMandateOperations(internals: MandateInternals) {
       internals.requireWorkspace(workspaceId);
       const at = now();
 
+      // SAFETY: `SELECT *` of the STRICT `mandates` table returns exactly MandateRow's columns,
+      // typed as its comment says.
       const rows = db
         .prepare(
           "SELECT * FROM mandates WHERE workspace_id = ? AND revoked_at IS NULL AND not_after > ? ORDER BY mandate_id",
@@ -658,6 +685,8 @@ export function createMandateOperations(internals: MandateInternals) {
   function listWorkspaceMandates(workspaceId: WorkspaceId): MandateState[] {
     internals.assertNotDeleted(workspaceId);
 
+    // SAFETY: `SELECT *` of the STRICT `mandates` table returns exactly MandateRow's columns,
+    // typed as its comment says.
     const rows = db
       .prepare(
         "SELECT * FROM mandates WHERE workspace_id = ? ORDER BY wallet_id, not_after, mandate_id",

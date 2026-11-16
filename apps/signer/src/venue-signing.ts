@@ -1,6 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
-  type Address,
   type ApprovalId,
   type Authorization,
   type Cloid,
@@ -24,6 +23,7 @@ import {
 } from "@askgina/os-protocol/signer";
 import { transaction } from "./db.ts";
 import { SignerFailure } from "./errors.ts";
+import type { JsonObject } from "./json.ts";
 import type { Logger } from "./log.ts";
 import type { ApprovalRow, WalletRow, WorkspaceRow } from "./signer.ts";
 import {
@@ -63,13 +63,19 @@ const MIN_WINDOW_SECONDS = 5;
 
 const MAX_WINDOW_SECONDS = 300;
 
+/**
+ * A `venue_signatures` row (STRICT, db.ts, version 8). `signVenue` inserts it from the envelope's
+ * ApprovalId, the WalletRow's WalletId, the intent's VenueNetwork and `cloidFor`'s Cloid; the CHECK
+ * on `kind` admits only these two; `request` is the JSON of a HyperliquidRequest, emptied to ""
+ * by `destroyKey` (lifecycle.ts).
+ */
 type VenueSignatureRow = {
-  approval_id: string;
-  wallet_id: string;
-  network: string;
+  approval_id: ApprovalId;
+  wallet_id: WalletId;
+  network: VenueNetwork;
   kind: "order" | "withdraw";
   asset: number | null;
-  cloid: string | null;
+  cloid: Cloid | null;
   action_nonce: number;
   expires_after: number | null;
   connection_hash: string | null;
@@ -77,8 +83,13 @@ type VenueSignatureRow = {
   signed_at: number;
 };
 
+/**
+ * A `venue_cancels` row (STRICT, db.ts, version 8). `cancelVenueOrder` inserts it with the
+ * order's ApprovalId; `request` is the JSON of a HyperliquidRequest, emptied to "" by
+ * `destroyKey`.
+ */
 type VenueCancelRow = {
-  approval_id: string;
+  approval_id: ApprovalId;
   seq: number;
   action_nonce: number;
   expires_after: number;
@@ -95,7 +106,7 @@ export interface VenueInternals {
   maxIntentTtlSeconds: number;
   decide<T>(
     workspaceId: string,
-    approvalId: string | null,
+    approvalId: ApprovalId | null,
     action: string,
     work: (allow: () => void) => T | Promise<T>,
   ): Promise<T>;
@@ -142,6 +153,8 @@ export function createVenueOperations(internals: VenueInternals) {
   const { db, now, log } = internals;
 
   function venueSignatureOf(approvalId: string): VenueSignatureRow | undefined {
+    // SAFETY: `SELECT *` of the STRICT `venue_signatures` table returns exactly
+    // VenueSignatureRow's columns, typed as its comment says; no row is undefined.
     return db.prepare("SELECT * FROM venue_signatures WHERE approval_id = ?").get(approvalId) as
       | VenueSignatureRow
       | undefined;
@@ -153,6 +166,8 @@ export function createVenueOperations(internals: VenueInternals) {
    * the signing transaction, so a refusal after it leaves the ledger as it was.
    */
   function takeNonce(walletId: string, network: VenueNetwork, nowMs: number): number {
+    // SAFETY: `last_nonce` is an INTEGER NOT NULL column of the STRICT `venue_nonces` table
+    // (db.ts, version 8), the one selected; no row is undefined.
     const row = db
       .prepare("SELECT last_nonce FROM venue_nonces WHERE wallet_id = ? AND network = ?")
       .get(walletId, network) as { last_nonce: number } | undefined;
@@ -170,7 +185,7 @@ export function createVenueOperations(internals: VenueInternals) {
    * the contract's actions, and the body read back encodes to exactly the bytes that are hashed.
    * Only a defect in this signer can fail it (`internal`).
    */
-  function actionBody(action: MsgpackMap | object): HyperliquidAction {
+  function actionBody(action: MsgpackMap | JsonObject): HyperliquidAction {
     const hashed = action instanceof MsgpackMap;
     const parsed = HyperliquidAction.safeParse(hashed ? msgpackToJson(action) : action);
 
@@ -241,7 +256,7 @@ export function createVenueOperations(internals: VenueInternals) {
       };
     }
 
-    const destination = wallet.address as Address;
+    const destination = wallet.address;
     const body = actionBody(withdrawAction(network, destination, operation.amount, nonce));
 
     const signature = internals.signHyperliquidWith(wallet, {
@@ -282,12 +297,14 @@ export function createVenueOperations(internals: VenueInternals) {
     // Emptied when the wallet's key was destroyed: there is nothing left to hand back.
     if (row.request === "") throw new SignerFailure("wallet_retired");
 
+    // SAFETY: `signVenue` stores `request` as JSON.stringify of a HyperliquidRequest that
+    // `requestBody` parsed; the emptied "" was refused just above.
     return {
-      approvalId: row.approval_id as ApprovalId,
-      walletId: row.wallet_id as WalletId,
-      network: row.network as VenueNetwork,
-      account: wallet.address as Address,
-      cloid: row.cloid as Cloid | null,
+      approvalId: row.approval_id,
+      walletId: row.wallet_id,
+      network: row.network,
+      account: wallet.address,
+      cloid: row.cloid,
       request: JSON.parse(row.request) as HyperliquidRequest,
     };
   }
@@ -442,9 +459,9 @@ export function createVenueOperations(internals: VenueInternals) {
 
           return {
             approvalId: envelope.approvalId,
-            walletId: wallet.wallet_id as WalletId,
+            walletId: wallet.wallet_id,
             network: intent.chainId,
-            account: wallet.address as Address,
+            account: wallet.address,
             cloid: signed.cloid,
             request: signed.request,
           };
@@ -453,10 +470,16 @@ export function createVenueOperations(internals: VenueInternals) {
     );
   }
 
-  function cancelResponse(order: VenueSignatureRow, row: VenueCancelRow): CancelVenueOrderResponse {
+  function cancelResponse(
+    order: VenueSignatureRow,
+    cloid: Cloid,
+    row: VenueCancelRow,
+  ): CancelVenueOrderResponse {
+    // SAFETY: `cancelVenueOrder` stores `request` as JSON.stringify of a HyperliquidRequest that
+    // `requestBody` parsed, and refuses a destroyed wallet's emptied rows before reading one.
     return {
-      approvalId: order.approval_id as ApprovalId,
-      cloid: order.cloid as Cloid,
+      approvalId: order.approval_id,
+      cloid,
       request: JSON.parse(row.request) as HyperliquidRequest,
     };
   }
@@ -504,11 +527,15 @@ export function createVenueOperations(internals: VenueInternals) {
 
         const nowMs = now() * 1000;
 
+        // SAFETY: `SELECT *` of the STRICT `venue_cancels` table returns exactly VenueCancelRow's
+        // columns, typed as its comment says; no row is undefined.
         const latest = db
           .prepare("SELECT * FROM venue_cancels WHERE approval_id = ? ORDER BY seq DESC LIMIT 1")
           .get(approvalId) as VenueCancelRow | undefined;
 
-        if (latest && latest.expires_after > nowMs) return cancelResponse(order, latest);
+        if (latest && latest.expires_after > nowMs) {
+          return cancelResponse(order, order.cloid, latest);
+        }
 
         // The order's own submit window, as people approved it with the order: a later policy
         // neither shortens nor lengthens how long its cancel may wait to be posted.
@@ -518,10 +545,10 @@ export function createVenueOperations(internals: VenueInternals) {
           throw new SignerFailure("internal");
         }
 
-        const network = order.network as VenueNetwork;
+        const { network } = order;
         const nonce = takeNonce(wallet.wallet_id, network, nowMs);
         const expiresAfter = nowMs + windowMs;
-        const action = cancelByCloidAction(order.asset, order.cloid as Cloid);
+        const action = cancelByCloidAction(order.asset, order.cloid);
         const body = actionBody(action);
 
         const signature = internals.signHyperliquidWith(wallet, {
@@ -559,14 +586,14 @@ export function createVenueOperations(internals: VenueInternals) {
         );
         allow();
 
-        return cancelResponse(order, row);
+        return cancelResponse(order, order.cloid, row);
       }),
     );
   }
 
   /** The client order id of a signed venue order, for `GET /v1/approvals/:id`; null otherwise. */
   function cloidOf(approvalId: string): Cloid | null {
-    return (venueSignatureOf(approvalId)?.cloid as Cloid | null | undefined) ?? null;
+    return venueSignatureOf(approvalId)?.cloid ?? null;
   }
 
   /** True when the approval's one signature is a venue request, not a transaction. */

@@ -43,6 +43,8 @@ jobs:
           node-version: 26
       - run: bun install --frozen-lockfile
       - run: bun run check
+      # The vendored anti-slop rules (specs/anti-slop.md). Errors fail; code-smell warnings do not.
+      - run: bun run lint:slop
       - run: bun run typecheck
 
   # The World and key packages as another repository gets them: built, packed with their

@@ -1,4 +1,3 @@
-import type { WorkspaceId } from "@askgina/os-protocol";
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Hono } from "hono";
@@ -27,7 +26,7 @@ let agentId: string;
  * Another server process on the same database: its own pool and its own MCP gateway, with
  * nothing shared in memory with the test context's.
  */
-function replica(config: Partial<Config> = {}): { ctx: AppContext; app: Hono } {
+function replica(config: Partial<Config> = {}) {
   const pool = new pg.Pool({ connectionString: t.ctx.config.databaseUrl, max: 4 });
   pools.push(pool);
 
@@ -44,19 +43,23 @@ function replica(config: Partial<Config> = {}): { ctx: AppContext; app: Hono } {
   return { ctx, app };
 }
 
-const call = (app: Hono, bearer: string, forwardedFor?: string) =>
-  app.fetch(
+const call = (app: Hono, bearer: string, forwardedFor?: string) => {
+  const headers = new Headers({
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+    authorization: `Bearer ${bearer}`,
+  });
+
+  if (forwardedFor !== undefined) headers.set("x-forwarded-for", forwardedFor);
+
+  return app.fetch(
     new Request(`${TEST_ORIGIN}/mcp`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json, text/event-stream",
-        authorization: `Bearer ${bearer}`,
-        ...(forwardedFor === undefined ? {} : { "x-forwarded-for": forwardedFor }),
-      },
+      headers,
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
     }),
   );
+};
 
 const wrongToken = `osa_${"x".repeat(40)}`;
 
@@ -77,7 +80,7 @@ beforeAll(async () => {
   const workspace = await api.call("createWorkspace", { body: { name: "Limits" } });
 
   const created = await api.call("createAgent", {
-    params: { workspaceId: workspace.id as WorkspaceId },
+    params: { workspaceId: workspace.id },
     body: { name: "Busy" },
   });
 

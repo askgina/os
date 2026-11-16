@@ -67,7 +67,7 @@ import { readFence } from "./fence.ts";
 import { createLifecycleOperations, type LifecycleRefusal } from "./lifecycle.ts";
 import type { Logger } from "./log.ts";
 import { createMandateOperations } from "./mandates.ts";
-import { type EvmTransaction, type Vault, VaultError } from "./vault.ts";
+import { type CreatedWallet, type EvmTransaction, type Vault, VaultError } from "./vault.ts";
 import { createVenueOperations } from "./venue-signing.ts";
 import {
   type HyperliquidPayload,
@@ -113,7 +113,7 @@ export interface AuthorizedChangeInput<T> {
 
 /** What `signAndRecord` stores for one approval id: its signature, its spend and its digest. */
 export interface SignAndRecordInput {
-  approvalId: string;
+  approvalId: ApprovalId;
   workspaceId: string;
   /** The envelope's digest, or a mandate use's `mandateUseDigest`. */
   digest: string;
@@ -124,8 +124,12 @@ export interface SignAndRecordInput {
   spend: { asset: AssetRef; amount: bigint };
 }
 
+/**
+ * A `workspaces` row (STRICT, db.ts). `createWorkspace` inserts `workspace_id` from the parsed
+ * request's WorkspaceId; the CHECK on `state` admits only a WorkspaceLifecycle.
+ */
 export type WorkspaceRow = {
-  workspace_id: string;
+  workspace_id: WorkspaceId;
   admin_threshold: number;
   paused: number;
   created_request: string;
@@ -133,12 +137,17 @@ export type WorkspaceRow = {
   destroy_after: number | null;
 };
 
+/**
+ * A `wallets` row (STRICT, db.ts). `createWallet` inserts the ids and `kind` from the parsed
+ * request and `address` from the vault's CreatedWallet; the CHECKs on `state` and
+ * `state_before_delete` admit only the values below.
+ */
 export type WalletRow = {
-  wallet_id: string;
-  workspace_id: string;
-  kind: string;
+  wallet_id: WalletId;
+  workspace_id: WorkspaceId;
+  kind: WalletState["kind"];
   label: string;
-  address: string;
+  address: Address;
   sealed_credential: Uint8Array;
   state: WalletLifecycle;
   destroy_after: number | null;
@@ -146,6 +155,7 @@ export type WalletRow = {
   state_before_delete: "active" | "held" | null;
 };
 
+/** An `approvals` row (STRICT, db.ts); the CHECK on `state` admits only these three. */
 export type ApprovalRow = {
   approval_id: string;
   workspace_id: string;
@@ -153,14 +163,23 @@ export type ApprovalRow = {
   envelope_digest: string | null;
 };
 
-type ApproverRow = { credential_id: string; user_id: string; public_key: string; added_at: number };
+/** An `approvers` row (STRICT, db.ts). `insertApprover` writes `user_id` from a UserId. */
+type ApproverRow = { credential_id: string; user_id: UserId; public_key: string; added_at: number };
 
+/**
+ * The `signatures` columns `storedSignature` reads (STRICT, db.ts). `signAndRecord` writes them
+ * from its ApprovalId, the WalletRow's WalletId, the vault's checked Hex and its keccak256;
+ * `destroyKey` (lifecycle.ts) empties `signed_transaction` to "".
+ */
 type SignatureRow = {
-  approval_id: string;
-  wallet_id: string;
-  signed_transaction: string;
-  transaction_hash: string;
+  approval_id: ApprovalId;
+  wallet_id: WalletId;
+  signed_transaction: Hex | "";
+  transaction_hash: Hex;
 };
+
+/** A transaction the vault signed and the signer checked, with its hash. */
+export type SignedTransaction = { signed: Hex; transactionHash: Hex };
 
 /** The envelope's challenge in hex, as stored next to what the signer did with it. */
 export const envelopeDigest = (envelope: Envelope) =>
@@ -195,10 +214,14 @@ function recoverSigner(r: bigint, s: bigint, yParity: number, digest: Hex): stri
  */
 function isSignedBy(signed: Hex, expected: EvmTransaction, address: string): boolean {
   try {
-    const { r, s, yParity, v: _v, ...unsigned } = parseTransaction(signed);
+    const parsed = parseTransaction(signed);
+
+    // The signer builds only EIP-1559 transactions: bytes of any other type are not `expected`.
+    if (parsed.type !== "eip1559") return false;
+    const { r, s, yParity, v: _v, ...unsigned } = parsed;
 
     if (r === undefined || s === undefined || yParity === undefined) return false;
-    const rebuilt = serializeTransaction({ ...unsigned, type: "eip1559" } as EvmTransaction);
+    const rebuilt = serializeTransaction({ ...unsigned, type: "eip1559" });
 
     if (rebuilt !== serializeTransaction({ ...expected, type: "eip1559" })) return false;
 
@@ -245,6 +268,8 @@ export function createSignerCore(options: SignerCoreOptions) {
   // --- reads -------------------------------------------------------------------------------
 
   function findWorkspace(workspaceId: string): WorkspaceRow | undefined {
+    // SAFETY: `SELECT *` of the STRICT `workspaces` table returns exactly WorkspaceRow's columns
+    // (db.ts, versions 1 and 7), typed as its comment says; no row is undefined.
     return db.prepare("SELECT * FROM workspaces WHERE workspace_id = ?").get(workspaceId) as
       | WorkspaceRow
       | undefined;
@@ -259,6 +284,8 @@ export function createSignerCore(options: SignerCoreOptions) {
   }
 
   function approverRows(workspaceId: string): ApproverRow[] {
+    // SAFETY: `SELECT *` of the STRICT `approvers` table returns its columns, ApproverRow's and
+    // `workspace_id`, typed as ApproverRow's comment says.
     return db
       .prepare("SELECT * FROM approvers WHERE workspace_id = ? ORDER BY added_at, credential_id")
       .all(workspaceId) as ApproverRow[];
@@ -266,13 +293,14 @@ export function createSignerCore(options: SignerCoreOptions) {
 
   function approvers(workspaceId: string): ApproverCredential[] {
     return approverRows(workspaceId).map((row) => ({
-      userId: row.user_id as UserId,
+      userId: row.user_id,
       credentialId: row.credential_id,
       publicKey: row.public_key,
     }));
   }
 
   function distinctApproverCount(workspaceId: string): number {
+    // SAFETY: an aggregate `COUNT(...) AS n` returns exactly one row whose `n` is an integer.
     const row = db
       .prepare("SELECT COUNT(DISTINCT user_id) AS n FROM approvers WHERE workspace_id = ?")
       .get(workspaceId) as { n: number };
@@ -284,11 +312,11 @@ export function createSignerCore(options: SignerCoreOptions) {
     const row = requireWorkspace(workspaceId);
 
     return {
-      workspaceId: row.workspace_id as WorkspaceId,
+      workspaceId: row.workspace_id,
       adminThreshold: row.admin_threshold,
       paused: row.paused === 1,
       approvers: approverRows(workspaceId).map((approver) => ({
-        userId: approver.user_id as UserId,
+        userId: approver.user_id,
         credentialId: approver.credential_id,
         addedAt: approver.added_at,
       })),
@@ -335,12 +363,16 @@ export function createSignerCore(options: SignerCoreOptions) {
   }
 
   function findWallet(walletId: string): WalletRow | undefined {
+    // SAFETY: `SELECT *` of the STRICT `wallets` table returns exactly WalletRow's columns (db.ts,
+    // versions 1 and 7), typed as its comment says; no row is undefined.
     return db.prepare("SELECT * FROM wallets WHERE wallet_id = ?").get(walletId) as
       | WalletRow
       | undefined;
   }
 
   function currentPolicy(walletId: string): { policy: WalletPolicy; hash: string } | null {
+    // SAFETY: `policy` and `policy_hash` are TEXT NOT NULL columns of the STRICT `policies` table
+    // (db.ts, version 1), the two selected; no row is undefined.
     const row = db
       .prepare(
         "SELECT policy, policy_hash FROM policies WHERE wallet_id = ? ORDER BY revision DESC LIMIT 1",
@@ -354,6 +386,8 @@ export function createSignerCore(options: SignerCoreOptions) {
 
   /** A revision of a wallet's policy by its hash, current or earlier; null when it never was one. */
   function policyByHash(walletId: string, hash: string): WalletPolicy | null {
+    // SAFETY: `policy` is a TEXT NOT NULL column of the STRICT `policies` table (db.ts, version
+    // 1), the one selected; no row is undefined.
     const row = db
       .prepare("SELECT policy FROM policies WHERE wallet_id = ? AND policy_hash = ? LIMIT 1")
       .get(walletId, hash) as { policy: string } | undefined;
@@ -363,16 +397,20 @@ export function createSignerCore(options: SignerCoreOptions) {
 
   /** Where a sweep of `walletId` may go besides its allowlist: the workspace's other treasuries. */
   function treasuryAddresses(workspaceId: string, walletId: string): Address[] {
+    // SAFETY: the one column selected is WalletRow's `address`, written from the vault's
+    // CreatedWallet address (see WalletRow).
     const rows = db
       .prepare(
         "SELECT address FROM wallets WHERE workspace_id = ? AND kind = 'treasury' AND wallet_id <> ? ORDER BY address",
       )
-      .all(workspaceId, walletId) as { address: string }[];
+      .all(workspaceId, walletId) as Pick<WalletRow, "address">[];
 
-    return rows.map((row) => row.address as Address);
+    return rows.map((row) => row.address);
   }
 
   function spentSince(walletId: string, since: number): Map<string, bigint> {
+    // SAFETY: `chain_id`, `asset` and `amount` are TEXT NOT NULL columns of the STRICT `spends`
+    // table (db.ts, version 1), the three selected.
     const rows = db
       .prepare("SELECT chain_id, asset, amount FROM spends WHERE wallet_id = ? AND at > ?")
       .all(walletId, since) as { chain_id: string; asset: string; amount: string }[];
@@ -404,6 +442,9 @@ export function createSignerCore(options: SignerCoreOptions) {
       if (isVenueNetwork(chainId)) {
         venueSpent.push({ chainId, asset: "usd6", amount: amount.toString() });
       } else {
+        // SAFETY: besides `signVenue`'s rows on a venue network, `spends` is written only by
+        // `signAndRecord`, from a ChainId and an AssetRef; `spentSince` joined the two with "|",
+        // which neither contains, so the split gives them back.
         spent.push({
           chainId: chainId as ChainId,
           asset: asset as AssetRef,
@@ -413,11 +454,11 @@ export function createSignerCore(options: SignerCoreOptions) {
     }
 
     return {
-      walletId: row.wallet_id as WalletId,
-      workspaceId: row.workspace_id as WorkspaceId,
-      kind: row.kind as WalletState["kind"],
+      walletId: row.wallet_id,
+      workspaceId: row.workspace_id,
+      kind: row.kind,
       label: row.label,
-      address: row.address as Address,
+      address: row.address,
       policy: policy?.policy ?? null,
       policyHash: policy?.hash ?? null,
       spent,
@@ -428,12 +469,16 @@ export function createSignerCore(options: SignerCoreOptions) {
   }
 
   function findApproval(approvalId: string): ApprovalRow | undefined {
+    // SAFETY: `SELECT *` of the STRICT `approvals` table returns ApprovalRow's columns and `at`
+    // (db.ts, version 1), typed as its comment says; no row is undefined.
     return db.prepare("SELECT * FROM approvals WHERE approval_id = ?").get(approvalId) as
       | ApprovalRow
       | undefined;
   }
 
   function storedSignature(approvalId: string): SignResponse {
+    // SAFETY: `SELECT *` of the STRICT `signatures` table returns SignatureRow's columns among
+    // others (db.ts, version 1), typed as its comment says; no row is undefined.
     const row = db.prepare("SELECT * FROM signatures WHERE approval_id = ?").get(approvalId) as
       | SignatureRow
       | undefined;
@@ -448,11 +493,11 @@ export function createSignerCore(options: SignerCoreOptions) {
     if (row.signed_transaction === "") throw new SignerFailure("wallet_retired");
 
     return {
-      approvalId: row.approval_id as ApprovalId,
-      walletId: row.wallet_id as WalletId,
-      from: wallet.address as Address,
-      signedTransaction: row.signed_transaction as Hex,
-      transactionHash: row.transaction_hash as Hex,
+      approvalId: row.approval_id,
+      walletId: row.wallet_id,
+      from: wallet.address,
+      signedTransaction: row.signed_transaction,
+      transactionHash: row.transaction_hash,
     };
   }
 
@@ -464,13 +509,13 @@ export function createSignerCore(options: SignerCoreOptions) {
    */
   async function decide<T>(
     workspaceId: string,
-    approvalId: string | null,
+    approvalId: ApprovalId | null,
     action: string,
     work: (allow: () => void) => T | Promise<T>,
   ): Promise<T> {
     const allow = () =>
       appendDecision(db, {
-        workspaceId: workspaceId as WorkspaceId,
+        workspaceId,
         approvalId,
         action,
         outcome: "allowed",
@@ -489,7 +534,7 @@ export function createSignerCore(options: SignerCoreOptions) {
       // A refusal for a workspace this signer does not know has nowhere to be recorded.
       if (failure.code !== "not_found" && findWorkspace(workspaceId)) {
         appendDecision(db, {
-          workspaceId: workspaceId as WorkspaceId,
+          workspaceId,
           approvalId,
           action,
           outcome: "denied",
@@ -650,9 +695,10 @@ export function createSignerCore(options: SignerCoreOptions) {
   }
 
   function highestPolicyThreshold(workspaceId: string): number {
+    // SAFETY: the one column selected is WalletRow's `wallet_id` (see WalletRow).
     const wallets = db
       .prepare("SELECT wallet_id FROM wallets WHERE workspace_id = ?")
-      .all(workspaceId) as { wallet_id: string }[];
+      .all(workspaceId) as Pick<WalletRow, "wallet_id">[];
 
     let highest = 0;
 
@@ -760,6 +806,8 @@ export function createSignerCore(options: SignerCoreOptions) {
    * the change chose, and the one tap would hand that holder the workspace.
    */
   function assertPossessionProven(envelope: Envelope): void {
+    // SAFETY: the STRICT `confirmations` table (db.ts, version 3) has `envelope_digest TEXT NOT
+    // NULL` and a nullable INTEGER `possession_proven_at`, the two selected; no row is undefined.
     const row = db
       .prepare(
         "SELECT envelope_digest, possession_proven_at FROM confirmations WHERE approval_id = ?",
@@ -892,7 +940,7 @@ export function createSignerCore(options: SignerCoreOptions) {
     }
 
     return decide(request.workspaceId, null, "create-wallet", (allow) => {
-      let created: { address: Address; credential: string };
+      let created: CreatedWallet;
 
       try {
         created = vault.createWallet(request.walletId);
@@ -1065,10 +1113,7 @@ export function createSignerCore(options: SignerCoreOptions) {
    * Sign `unsigned` with the wallet's key and check that the signature is exactly that, by that
    * key. Records nothing; a refusal is `vault_error`.
    */
-  function signWith(
-    wallet: WalletRow,
-    unsigned: EvmTransaction,
-  ): { signed: Hex; transactionHash: Hex } {
+  function signWith(wallet: WalletRow, unsigned: EvmTransaction): SignedTransaction {
     const credential = open(
       options.tokenKey,
       wallet.sealed_credential,
@@ -1078,7 +1123,7 @@ export function createSignerCore(options: SignerCoreOptions) {
     let signed: Hex;
 
     try {
-      signed = vault.signEvmTransaction(wallet.wallet_id as WalletId, credential, unsigned);
+      signed = vault.signEvmTransaction(wallet.wallet_id, credential, unsigned);
     } catch (error) {
       log.error("vault sign failed", {
         walletId: wallet.wallet_id,
@@ -1115,7 +1160,7 @@ export function createSignerCore(options: SignerCoreOptions) {
     let signature: HyperliquidSignature;
 
     try {
-      signature = vault.signHyperliquid(wallet.wallet_id as WalletId, credential, payload);
+      signature = vault.signHyperliquid(wallet.wallet_id, credential, payload);
     } catch (error) {
       log.error("vault sign failed", {
         walletId: wallet.wallet_id,
@@ -1166,9 +1211,9 @@ export function createSignerCore(options: SignerCoreOptions) {
     );
 
     return {
-      approvalId: approvalId as ApprovalId,
-      walletId: wallet.wallet_id as WalletId,
-      from: wallet.address as Address,
+      approvalId,
+      walletId: wallet.wallet_id,
+      from: wallet.address,
       signedTransaction: signed,
       transactionHash,
     };
@@ -1406,7 +1451,7 @@ export function createSignerCore(options: SignerCoreOptions) {
    * Refuse an approval id for good. Revoking twice is a no-op; an id already signed or applied,
    * or revoked in another workspace, is a conflict. Recorded in the workspace's decision log.
    */
-  function revokeApproval(approvalId: string, workspaceId: string): Promise<ApprovalState> {
+  function revokeApproval(approvalId: ApprovalId, workspaceId: string): Promise<ApprovalState> {
     requireWorkspace(workspaceId);
 
     return decide(workspaceId, approvalId, "revoke-approval", (allow) =>
@@ -1430,14 +1475,14 @@ export function createSignerCore(options: SignerCoreOptions) {
     );
   }
 
-  function getApproval(approvalId: string): ApprovalState {
+  function getApproval(approvalId: ApprovalId): ApprovalState {
     const row = findApproval(approvalId);
 
     if (row) assertNotDeleted(row.workspace_id);
 
     if (!row) {
       return {
-        approvalId: approvalId as ApprovalId,
+        approvalId,
         state: "unknown",
         transactionHash: null,
         attempts: [],
@@ -1446,17 +1491,17 @@ export function createSignerCore(options: SignerCoreOptions) {
     }
 
     return {
-      approvalId: approvalId as ApprovalId,
+      approvalId,
       state: row.state,
       ...attempts.approvalAttempts(row),
       cloid: venues.cloidOf(approvalId),
     };
   }
 
-  function decisions(workspaceId: string, after: number, limit: number): SignerDecision[] {
+  function decisions(workspaceId: WorkspaceId, after: number, limit: number): SignerDecision[] {
     requireWorkspace(workspaceId);
 
-    return listDecisions(db, workspaceId as WorkspaceId, after, limit);
+    return listDecisions(db, workspaceId, after, limit);
   }
 
   const mandates = createMandateOperations({

@@ -24,7 +24,7 @@ function policyTemplate(
   policy: WalletPolicy,
   refOfAgent: ReadonlyMap<AgentId, TemplateWalletRef>,
 ): PolicyTemplate {
-  return {
+  const template: PolicyTemplate = {
     chains: [...policy.chains],
     // An agent left out of the template (disabled) is dropped from every requester list.
     requesters: policy.requesters.flatMap((agentId) => {
@@ -42,8 +42,12 @@ function policyTemplate(
     contractCalls: policy.contractCalls,
     fees: { maxPerTxWei: policy.fees.maxPerTxWei },
     approvals: { threshold: policy.approvals.threshold, ttlSeconds: policy.approvals.ttlSeconds },
-    ...(policy.venues === undefined ? {} : { venues: policy.venues }),
   };
+
+  // A policy without venue rules has no `venues` key at all, as in the policy itself.
+  if (policy.venues !== undefined) template.venues = policy.venues;
+
+  return template;
 }
 
 /**

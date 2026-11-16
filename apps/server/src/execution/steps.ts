@@ -36,12 +36,20 @@ export interface StepImplementations {
 
 export const STEPS_KEY = Symbol.for("askgina.os.steps");
 
+/** `globalThis`, seen as the one slot this module shares with the bundled workflow's steps. */
+function stepSlot(): { [STEPS_KEY]?: StepImplementations } {
+  // SAFETY: STEPS_KEY is a registered symbol that only registerSteps writes (with a
+  // StepImplementations) and unregisterSteps deletes; `steps()` in workflows/approval.ts only
+  // reads it.
+  return globalThis as { [STEPS_KEY]?: StepImplementations };
+}
+
 export function registerSteps(implementations: StepImplementations): void {
-  (globalThis as Record<symbol, unknown>)[STEPS_KEY] = implementations;
+  stepSlot()[STEPS_KEY] = implementations;
 }
 
 export function unregisterSteps(implementations: StepImplementations): void {
-  const store = globalThis as Record<symbol, unknown>;
+  const store = stepSlot();
 
   if (store[STEPS_KEY] === implementations) delete store[STEPS_KEY];
 }

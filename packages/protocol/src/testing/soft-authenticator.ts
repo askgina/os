@@ -6,6 +6,8 @@ import type {
   AuthenticatorTransport,
   RegistrationResponseJSON,
 } from "@simplewebauthn/server";
+import { z } from "zod";
+import type { JsonValue } from "../canonical.ts";
 import { cborEncode } from "./cbor.ts";
 
 export const b64url = (b: Uint8Array): string => Buffer.from(b).toString("base64url");
@@ -24,6 +26,12 @@ export type SoftCredential = {
   privateKey: KeyObject;
   publicKey: KeyObject;
   signCount: number;
+};
+
+/** What {@link SoftAuthenticator.register} returns: the browser's answer and its new passkey. */
+export type SoftRegistration = {
+  response: RegistrationResponseJSON;
+  credential: SoftCredential;
 };
 
 export type AuthenticatorOptions = {
@@ -49,6 +57,18 @@ type CallOverrides = {
   clientDataType?: string;
 };
 
+/** The client data a browser writes, in the order it writes the members. */
+type CollectedClientData = {
+  type: string;
+  challenge: string;
+  origin: string;
+  crossOrigin: boolean;
+  topOrigin?: string;
+};
+
+/** The two coordinates of an EC public key exported as a JWK. */
+const Ec2PublicJwk = z.object({ x: z.string(), y: z.string() });
+
 function flagsByte(f: Flags, extra: number): number {
   return (f.up ? 0x01 : 0) | (f.uv ? 0x04 : 0) | (f.be ? 0x08 : 0) | (f.bs ? 0x10 : 0) | extra;
 }
@@ -61,9 +81,9 @@ function u32be(n: number): Uint8Array {
 }
 
 export function coseEc2(pub: KeyObject): Uint8Array {
-  const jwk = pub.export({ format: "jwk" });
-  const x = fromB64url(jwk.x as string);
-  const y = fromB64url(jwk.y as string);
+  const jwk = Ec2PublicJwk.parse(pub.export({ format: "jwk" }));
+  const x = fromB64url(jwk.x);
+  const y = fromB64url(jwk.y);
 
   // kty: EC2(2), alg: ES256(-7), crv: P-256(1), x, y (CTAP2 canonical order)
   return cborEncode(
@@ -110,21 +130,16 @@ export class SoftAuthenticator {
     crossOrigin: boolean,
     topOrigin?: string,
   ): Uint8Array {
-    return new TextEncoder().encode(
-      JSON.stringify({
-        type,
-        challenge,
-        origin,
-        crossOrigin,
-        ...(topOrigin === undefined ? {} : { topOrigin }),
-      }),
-    );
+    const data: CollectedClientData = { type, challenge, origin, crossOrigin };
+
+    if (topOrigin !== undefined) data.topOrigin = topOrigin;
+
+    return new TextEncoder().encode(JSON.stringify(data));
   }
 
-  register(args: { rpId: string; challenge: string; userHandle?: Uint8Array } & CallOverrides): {
-    response: RegistrationResponseJSON;
-    credential: SoftCredential;
-  } {
+  register(
+    args: { rpId: string; challenge: string; userHandle?: Uint8Array } & CallOverrides,
+  ): SoftRegistration {
     const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
     const id = new Uint8Array(randomBytes(32));
 
@@ -229,7 +244,7 @@ export class SoftAuthenticator {
 /** Tampering helper: re-encode clientDataJSON with a patch while keeping the old signature. */
 export function tamperClientData(
   r: AuthenticationResponseJSON,
-  patch: Record<string, unknown>,
+  patch: Record<string, JsonValue>,
 ): AuthenticationResponseJSON {
   const cd = JSON.parse(Buffer.from(r.response.clientDataJSON, "base64url").toString("utf8"));
 

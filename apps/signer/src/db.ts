@@ -345,6 +345,8 @@ export function openDatabase(path: string): OpenedDatabase {
 }
 
 function migrate(db: DatabaseSync): boolean {
+  // SAFETY: `PRAGMA user_version` always returns one row with the integer column `user_version`,
+  // read as a number because the statement does not set `readBigInts`.
   const { user_version: version } = db.prepare("PRAGMA user_version").get() as {
     user_version: number;
   };

@@ -1,5 +1,7 @@
+import type { JsonValue } from "@askgina/os-protocol";
 import { describe, expect, it } from "vitest";
 import {
+  type ApiClientOptions,
   ApiError,
   ApprovalDetail,
   ApprovalSubject,
@@ -18,11 +20,14 @@ import * as f from "./fixtures.ts";
 
 const approvalsList = { approvals: [f.approvalSummary] };
 
+/** One example request and response for a route, each checked against the route's schemas. */
+type RouteExample = { body?: unknown; query?: unknown; response: unknown };
+
 /**
  * One realistic request body and response per route. A route missing here fails the coverage
  * test below, so a new endpoint cannot ship without its shapes being exercised once.
  */
-const examples: { [N in RouteName]: { body?: unknown; query?: unknown; response: unknown } } = {
+const examples: Record<RouteName, RouteExample> = {
   getSession: { response: f.session },
   startSetup: {
     body: { setupToken: "setup-0123456789abcdef", displayName: "Ada" },
@@ -207,6 +212,7 @@ describe("route contract", () => {
     expect(Object.keys(examples).sort()).toEqual(Object.keys(routes).sort());
   });
 
+  // SAFETY: `routes` is a `const` object literal, so its own keys are exactly `RouteName`.
   it.each(Object.keys(routes) as RouteName[])(
     "%s: body, query and response match their schemas",
     (name) => {
@@ -331,7 +337,7 @@ describe("route contract", () => {
   it("quiet hours are two different HH:MM times in a known time zone; each workspace is set once", () => {
     const body = routes.setNotificationPreferences.body;
     const prefs = f.notificationPreferences;
-    const quiet = (quietHours: unknown) => body.safeParse({ ...prefs, quietHours }).success;
+    const quiet = (quietHours: JsonValue) => body.safeParse({ ...prefs, quietHours }).success;
     expect(quiet({ start: "23:30", end: "06:15", timeZone: "America/New_York" })).toBe(true);
     expect(quiet({ start: "00:00", end: "23:59", timeZone: "UTC" })).toBe(true);
     expect(quiet({ start: "24:00", end: "07:00", timeZone: "UTC" })).toBe(false);
@@ -368,7 +374,7 @@ describe("route contract", () => {
   it("a lifecycle state that contradicts itself does not parse, and a deletion names its wallets", () => {
     expect(ApprovalDetail.parse(f.deleteApprovalDetail)).toEqual(f.deleteApprovalDetail);
 
-    const wallet = (lifecycle: unknown) =>
+    const wallet = (lifecycle: JsonValue) =>
       WalletSummary.safeParse({ ...f.wallet, lifecycle }).success;
 
     expect(wallet({ state: "retiring", destroyAfter: 1_700_604_800 })).toBe(true);
@@ -378,7 +384,7 @@ describe("route contract", () => {
     expect(wallet({ state: "held", destroyAfter: 1_700_604_800 })).toBe(false);
     expect(wallet({ state: "removed", destroyAfter: null })).toBe(false);
 
-    const workspace = (lifecycle: unknown) =>
+    const workspace = (lifecycle: JsonValue) =>
       WorkspaceSummary.safeParse({ ...f.workspaceSummary, lifecycle }).success;
 
     expect(workspace({ state: "deleting", destroyAfter: 1_700_604_800, deletedAt: null })).toBe(
@@ -463,23 +469,27 @@ type Seen = { url: string; init: RequestInit };
 function fakeClient(status: number, payload: string | null, headers?: Record<string, string>) {
   const seen: Seen[] = [];
 
-  const client = createApiClient({
-    baseUrl: "https://os.example.com/",
-    ...(headers ? { headers } : {}),
-    fetch: (async (input: string | URL | Request, init: RequestInit = {}) => {
-      seen.push({ url: String(input), init });
+  const fetch: typeof globalThis.fetch = async (
+    input: string | URL | Request,
+    init: RequestInit = {},
+  ) => {
+    seen.push({ url: String(input), init });
 
-      return new Response(payload, { status });
-    }) as typeof globalThis.fetch,
-  });
+    return new Response(payload, { status });
+  };
 
-  return { client, seen };
+  const options: ApiClientOptions = { baseUrl: "https://os.example.com/", fetch };
+
+  if (headers) options.headers = headers;
+
+  return { client: createApiClient(options), seen };
 }
 
 describe("api client", () => {
   // A value per parameter that would change the path if it were not encoded.
   const hostile = "a/../b?c=d#e f";
 
+  // SAFETY: `routes` is a `const` object literal, so its own keys are exactly `RouteName`.
   it.each(Object.keys(routes) as RouteName[])(
     "%s: fills and encodes every path parameter",
     async (name) => {
@@ -487,6 +497,9 @@ describe("api client", () => {
       const example = examples[name];
       const { client, seen } = fakeClient(200, JSON.stringify(example.response));
       const params = Object.fromEntries(paramNames(route.path).map((p) => [p, `${p}-${hostile}`]));
+      // SAFETY: deliberately unchecked: `name` is chosen at run time, so no single `RouteInput`
+      // applies; `params` names every parameter of the route's path and the example's body and
+      // query are the ones the contract test above parses with the route's own schemas.
       await client.call(name, { params, body: example.body, query: example.query } as never);
       const sent = seen[0];
 
@@ -536,7 +549,7 @@ describe("api client", () => {
 
     const error = await client
       .call("getApproval", { params: { approvalId: f.APPROVAL } })
-      .catch((e: unknown) => e);
+      .catch((cause: unknown) => cause);
 
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({

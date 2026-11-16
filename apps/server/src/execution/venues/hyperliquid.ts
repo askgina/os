@@ -173,9 +173,15 @@ const LedgerUpdates = z.array(
   }),
 );
 
+/** A read of `POST /info`, by its `type`. */
+type InfoRequest =
+  | { type: "meta" }
+  | { type: "orderStatus"; user: `0x${string}`; oid: Cloid }
+  | { type: "clearinghouseState" | "openOrders"; user: `0x${string}` }
+  | { type: "userNonFundingLedgerUpdates"; user: `0x${string}`; startTime: number };
+
 /** The venue's text, on one line and cut to {@link VENUE_TEXT_MAX} characters. */
-export function venueText(value: unknown): string {
-  const text = typeof value === "string" ? value : JSON.stringify(value ?? null);
+export function venueText(text: string): string {
   const flat = text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").trim();
 
   return Array.from(flat).slice(0, VENUE_TEXT_MAX).join("");
@@ -236,7 +242,7 @@ export function createHyperliquidClient(options: {
     return { refused: false, data: result.data };
   };
 
-  const read = async <T extends z.ZodType>(body: unknown, schema: T): Promise<z.infer<T>> => {
+  const read = async <T extends z.ZodType>(body: InfoRequest, schema: T): Promise<z.infer<T>> => {
     const answer = await call("/info", JSON.stringify(body), schema);
 
     if (answer.refused) throw new VenueError(`the venue refused a read: ${answer.text}`);
@@ -275,7 +281,13 @@ export function createHyperliquidClient(options: {
       if (answer.refused) return { kind: "refused", text: answer.text };
       const { data } = answer;
 
-      if (data.status === "err") return { kind: "refused", text: venueText(data.response) };
+      if (data.status === "err") {
+        // The venue's own string as it is, anything else as its JSON.
+        const own = z.string().safeParse(data.response);
+        const text = own.success ? own.data : JSON.stringify(data.response ?? null);
+
+        return { kind: "refused", text: venueText(text) };
+      }
 
       if (data.response.type === "default") return { kind: "accepted" };
       const entry = data.response.data.statuses[0];

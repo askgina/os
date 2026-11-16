@@ -30,9 +30,9 @@ describe("the approve service's configuration", () => {
     APPROVE_TLS_PEER_CERT_FILE: cert("signer.crt"),
   };
 
-  const split: Record<string, string> = { ...base, SIGNER_URL: "https://signer:8787", ...tlsFiles };
+  const split: NodeJS.ProcessEnv = { ...base, SIGNER_URL: "https://signer:8787", ...tlsFiles };
 
-  const refusal = (environment: Record<string, string>) => {
+  const refusal = (environment: NodeJS.ProcessEnv) => {
     try {
       loadConfig(environment);
     } catch (error) {

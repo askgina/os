@@ -1,11 +1,10 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { ApiError, type MandateDraft } from "@askgina/os-api";
 import { DataKeyUnavailableError } from "@askgina/os-keys";
-import type { ApprovalId, MandateId, WalletId, WorkspaceId } from "@askgina/os-protocol";
+import { type ApprovalId, MandateId, type WorkspaceId } from "@askgina/os-protocol";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { openAuditDetail, verifyAudit } from "../../src/audit.ts";
-import type { AppContext } from "../../src/context.ts";
 import {
   agents,
   approvals,
@@ -33,7 +32,7 @@ import {
   startReceiver,
   webhookSecret,
 } from "../notify/support.ts";
-import { TEST_CHAIN_ID } from "../support/context.ts";
+import { JsonObject, loggedLines, TEST_CHAIN_ID } from "../support/context.ts";
 
 const WEEK = 604_800;
 
@@ -98,7 +97,7 @@ async function grantMandate(ws: WorkspaceId, agent: TestAgent): Promise<MandateI
     agentId: agent.id,
     assets: [
       {
-        chainId: TEST_CHAIN_ID as MandateDraft["assets"][number]["chainId"],
+        chainId: TEST_CHAIN_ID,
         asset: "native",
         maxPerAction: ETH.toString(),
         maxPerWindow: (2n * ETH).toString(),
@@ -118,10 +117,10 @@ async function grantMandate(ws: WorkspaceId, agent: TestAgent): Promise<MandateI
     body: draft,
   });
 
-  const row = await f.t.approve(opened.id as ApprovalId, [f.t.owner]);
+  const row = await f.t.approve(opened.id, [f.t.owner]);
   expect(row.status).toBe("executed");
 
-  return row.subjectId as MandateId;
+  return MandateId.parse(row.subjectId);
 }
 
 const requestDelete = (ws: WorkspaceId, destroyAfter: number) =>
@@ -129,10 +128,11 @@ const requestDelete = (ws: WorkspaceId, destroyAfter: number) =>
 
 /** The codes of the finalize rounds that skipped `ws`, oldest first. */
 function skipsOf(ws: WorkspaceId): string[] {
-  return f.t.log.lines
-    .map((line) => JSON.parse(line) as Record<string, unknown>)
-    .filter((line) => line.event === "lifecycle.finalize_skipped" && line.workspaceId === ws)
-    .map((line) => String(line.code));
+  return loggedLines(f.t.log).flatMap((line) =>
+    line.event === "lifecycle.finalize_skipped" && line.workspaceId === ws
+      ? [String(line.code)]
+      : [],
+  );
 }
 
 async function deliveriesOf(approvalId: ApprovalId) {
@@ -181,7 +181,7 @@ describe("deleting a workspace", () => {
       code: "conflict",
       detail: "already_requested",
     });
-    const approvalId = opened.id as ApprovalId;
+    const approvalId = opened.id;
     const detail = await api().call("getApproval", { params: { approvalId } });
     expect(detail.envelope).toMatchObject({
       type: "delete-workspace",
@@ -219,7 +219,7 @@ describe("deleting a workspace", () => {
 
     const sent = receiver.requests.map((request) => ({
       request,
-      body: JSON.parse(request.body) as Record<string, unknown>,
+      body: JsonObject.parse(JSON.parse(request.body)),
     }));
 
     const scheduled = sent.find(({ body }) => body.event === "lifecycle.scheduled");
@@ -289,14 +289,14 @@ describe("deleting a workspace", () => {
       body: { chainId: TEST_CHAIN_ID, asset: "native", to: treasury.address },
     });
 
-    const sweepId = sweepRequest.id as ApprovalId;
+    const sweepId = sweepRequest.id;
     expect((await f.t.approve(sweepId, [f.t.owner])).status).toBe("executed");
     await api().call("pauseWorkspace", { params: { workspaceId: ws }, body: {} });
 
     const destroyAfter = now() + WEEK + 60;
     const opened = await requestDelete(ws, destroyAfter);
     expect(opened.title).toBe("Delete this workspace and destroy 2 wallet keys");
-    expect((await f.t.approve(opened.id as ApprovalId, [f.t.owner])).status).toBe("executed");
+    expect((await f.t.approve(opened.id, [f.t.owner])).status).toBe("executed");
     // A run of the workspace, keyed as the World keys it: by run id, with the workspace as tenant.
     const runId = `wrun_lifecycle_${ws}`;
     await f.t.ctx.keys.getOrCreate("run", runId, ws);
@@ -326,28 +326,14 @@ describe("deleting a workspace", () => {
     expect(sent?.status).toBe("confirmed");
 
     // A crash between the signer's destruction and shredding: the next round finishes it.
-    let crashes = 1;
-    const keys = f.t.ctx.keys;
+    const shred = vi.spyOn(f.t.ctx.keys, "shredTenant").mockRejectedValueOnce(new Error("crashed"));
 
-    const crashing: AppContext = {
-      ...f.t.ctx,
-      keys: new Proxy(keys, {
-        get(target, property, receiver) {
-          if (property === "shredTenant" && crashes > 0) {
-            return async () => {
-              crashes -= 1;
-              throw new Error("crashed");
-            };
-          }
+    try {
+      expect(await finalizeDue(f.t.ctx)).toEqual({ finalized: 0, skipped: 1 });
+    } finally {
+      shred.mockRestore();
+    }
 
-          const value = Reflect.get(target, property, receiver);
-
-          return typeof value === "function" ? value.bind(target) : value;
-        },
-      }),
-    };
-
-    expect(await finalizeDue(crashing)).toEqual({ finalized: 0, skipped: 1 });
     expect((await f.t.ctx.signer.getWorkspace(ws)).state).toBe("deleted");
     expect(await finalizeDue(f.t.ctx)).toEqual({ finalized: 1, skipped: 0 });
     expect(await finalizeDue(f.t.ctx)).toEqual({ finalized: 0, skipped: 0 });
@@ -379,7 +365,7 @@ describe("deleting a workspace", () => {
     // The signer destroyed every key and answers nothing of the workspace but its state.
     expect(await f.t.ctx.signer.getWorkspace(ws)).toMatchObject({ state: "deleted" });
 
-    for (const walletId of [agent.walletId, treasury.id as WalletId]) {
+    for (const walletId of [agent.walletId, treasury.id]) {
       await expect(f.t.ctx.signer.getWallet(walletId)).rejects.toMatchObject({
         code: "workspace_deleted",
       });
@@ -435,7 +421,7 @@ describe("deleting a workspace", () => {
     // Still waiting when the deletion applies, so it is cancelled then.
     const resume = await api().call("requestResume", { params: { workspaceId: ws }, body: {} });
     const opened = await requestDelete(ws, now() + WEEK + 60);
-    expect((await f.t.approve(opened.id as ApprovalId, [f.t.owner])).status).toBe("executed");
+    expect((await f.t.approve(opened.id, [f.t.owner])).status).toBe("executed");
     const engine = engineOf(f.t.ctx);
     expect(await engine.row(resume.id)).toMatchObject({
       status: "cancelled",

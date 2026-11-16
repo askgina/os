@@ -8,6 +8,9 @@ import { rotateSetupToken } from "./identity/setup.ts";
 
 const USAGE = "usage: node apps/server/src/cli.ts setup-token\n";
 
+/** The one JSON line a command prints. */
+type CliResult = { ok: true; setupToken: string } | { ok: false; code: "setup_done" };
+
 /**
  * The control plane's operator commands. Run them where the server runs, with its configuration
  * (`docker compose exec server node apps/server/src/cli.ts …`, or `kubectl exec`). The result
@@ -21,7 +24,7 @@ const USAGE = "usage: node apps/server/src/cli.ts setup-token\n";
 export async function main(
   argv: readonly string[],
   ctx: Pick<AppContext, "db">,
-  print: (line: object) => void = (line) => process.stdout.write(`${JSON.stringify(line)}\n`),
+  print: (line: CliResult) => void = (line) => process.stdout.write(`${JSON.stringify(line)}\n`),
 ): Promise<number> {
   if (argv.length !== 1 || argv[0] !== "setup-token") {
     process.stderr.write(USAGE);

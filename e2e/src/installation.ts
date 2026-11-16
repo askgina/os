@@ -47,7 +47,7 @@ export async function payingAgent(ada: Person, name: string): Promise<PayingAgen
 
   const draft: PolicyDraft = {
     chains: [CHAIN],
-    requesters: [created.agent.id as PolicyDraft["requesters"][number]],
+    requesters: [created.agent.id],
     assets: [
       {
         chainId: CHAIN,
@@ -115,7 +115,7 @@ export async function intentSettles(
       if (!pending.includes(status)) return status;
       last = status;
     } catch (error) {
-      last = `no answer: ${(error as Error).message}`;
+      last = `no answer: ${error instanceof Error ? error.message : String(error)}`;
     }
 
     if (Date.now() > deadline) throw new Error(`intent ${intentId} is still ${last}`);

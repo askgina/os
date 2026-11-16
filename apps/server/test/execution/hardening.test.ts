@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { ApprovalId, IntentId } from "@askgina/os-protocol";
+import { type ApprovalId, Hex, type IntentId } from "@askgina/os-protocol";
 import { SignerError, type SignRequest } from "@askgina/os-protocol/signer";
 import type { Client } from "@modelcontextprotocol/client";
 import { and, eq } from "drizzle-orm";
@@ -19,7 +19,16 @@ import { MAX_PENDING_PER_AGENT } from "../../src/execution/intents.ts";
 import type { WorkflowRuntime } from "../../src/execution/workflow-runtime.ts";
 import { FAILED_AUTH_PER_MINUTE } from "../../src/mcp/gateway.ts";
 import { TEST_CHAIN_ID, TEST_ORIGIN, type TestPerson } from "../support/context.ts";
-import { anvil, createFixture, draftFor, type Fixture, fund, toolJson } from "./fixture.ts";
+import {
+  anvil,
+  createFixture,
+  draftFor,
+  type Fixture,
+  fund,
+  intentIdOf,
+  type ToolArguments,
+  toolJson,
+} from "./fixture.ts";
 
 let f: Fixture;
 
@@ -34,7 +43,7 @@ afterAll(async () => {
   await f?.close();
 });
 
-const randomAddress = () => `0x${randomBytes(20).toString("hex")}` as `0x${string}`;
+const randomAddress = (): `0x${string}` => `0x${randomBytes(20).toString("hex")}`;
 
 async function propose(client: Client, amount = "0.01") {
   const result = await client.callTool({
@@ -43,13 +52,9 @@ async function propose(client: Client, amount = "0.01") {
   });
 
   const proposed = toolJson(result);
+  const intentId = intentIdOf(proposed);
 
-  if (typeof proposed.intentId !== "string") throw new Error(JSON.stringify(proposed));
-
-  const [row] = await f.t.ctx.db
-    .select()
-    .from(intents)
-    .where(eq(intents.id, proposed.intentId as IntentId));
+  const [row] = await f.t.ctx.db.select().from(intents).where(eq(intents.id, intentId));
 
   if (!row?.approvalId) throw new Error("intent without approval");
 
@@ -86,11 +91,9 @@ async function transactionOf(approvalId: ApprovalId) {
 async function rawOf(approvalId: ApprovalId) {
   const row = await transactionOf(approvalId);
 
-  return (await f.t.ctx.sealer.open(
-    f.workspaceId,
-    `transactions.raw:${approvalId}`,
-    row.raw,
-  )) as `0x${string}`;
+  return Hex.parse(
+    await f.t.ctx.sealer.open(f.workspaceId, `transactions.raw:${approvalId}`, row.raw),
+  );
 }
 
 /** Replace one method of an object for the length of `run`. */
@@ -183,7 +186,7 @@ describe("cancelling", () => {
 describe("the MCP gateway's errors", () => {
   const SECRET = "https://rpc.example/v2/SECRETKEY123";
 
-  async function expectInternal(client: Client, name: string, args: Record<string, unknown>) {
+  async function expectInternal(client: Client, name: string, args: ToolArguments) {
     const result = await client.callTool({ name, arguments: args });
     expect(result.isError).toBe(true);
     expect(toolJson(result)).toMatchObject({ error: "internal" });
@@ -400,6 +403,8 @@ describe("cleanup and recovery", () => {
     let starts = 0;
 
     const fake = {
+      // SAFETY: deliberately not a World: the engine calls only `startRun` and `wake` on an
+      // attached runtime (approvals.ts), and `finally` detaches this one before anything else.
       world: undefined as never,
       async startRun() {
         starts += 1;
@@ -432,7 +437,7 @@ describe("cleanup and recovery", () => {
 
 describe("the chain", () => {
   it("tells an RPC failure apart from a missing transaction", async () => {
-    const hash = `0x${randomBytes(32).toString("hex")}` as `0x${string}`;
+    const hash: `0x${string}` = `0x${randomBytes(32).toString("hex")}`;
     expect(await chainAccess(f.t.ctx).receipt(TEST_CHAIN_ID, hash)).toEqual({ state: "missing" });
 
     const dead = new ChainAccess([

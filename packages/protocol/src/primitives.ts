@@ -9,11 +9,23 @@ export const PROTOCOL_VERSION = 1;
 
 const ULID_BODY = "[0-9a-hjkmnp-tv-z]{26}";
 
-function prefixedId<P extends string>(prefix: P) {
-  const pattern = new RegExp(`^${prefix}_${ULID_BODY}$`);
+const AnyString = z.string();
 
-  return z.custom<`${P}_${string}`>(
-    (value) => typeof value === "string" && pattern.test(value),
+/**
+ * A string of type `T`: any string that `pattern` matches, and nothing else. A refusal carries
+ * only `message`, whatever the input was.
+ */
+export function stringMatching<T extends string>(pattern: RegExp, message: string) {
+  return z.custom<T>((value) => {
+    const text = AnyString.safeParse(value);
+
+    return text.success && pattern.test(text.data);
+  }, message);
+}
+
+function prefixedId<P extends string>(prefix: P) {
+  return stringMatching<`${P}_${string}`>(
+    new RegExp(`^${prefix}_${ULID_BODY}$`),
     `expected "${prefix}_" followed by a lowercase ULID`,
   );
 }
@@ -66,24 +78,24 @@ export function newId<P extends IdPrefix>(prefix: P): `${P}_${string}` {
 }
 
 /** A 20-byte EVM address in lowercase hex. Checksummed (EIP-55) forms are for display only. */
-export const Address = z.custom<`0x${string}`>(
-  (value) => typeof value === "string" && /^0x[0-9a-f]{40}$/.test(value),
+export const Address = stringMatching<`0x${string}`>(
+  /^0x[0-9a-f]{40}$/,
   "expected a lowercase 20-byte hex address",
 );
 
 export type Address = z.infer<typeof Address>;
 
 /** Arbitrary bytes as lowercase hex with a 0x prefix. `0x` is the empty byte string. */
-export const Hex = z.custom<`0x${string}`>(
-  (value) => typeof value === "string" && /^0x(?:[0-9a-f]{2})*$/.test(value),
+export const Hex = stringMatching<`0x${string}`>(
+  /^0x(?:[0-9a-f]{2})*$/,
   "expected lowercase hex with a 0x prefix and an even number of digits",
 );
 
 export type Hex = z.infer<typeof Hex>;
 
 /** A 32-byte value as 0x-prefixed lowercase hex, for example a transaction hash. */
-export const Hex32 = z.custom<`0x${string}`>(
-  (value) => typeof value === "string" && /^0x[0-9a-f]{64}$/.test(value),
+export const Hex32 = stringMatching<`0x${string}`>(
+  /^0x[0-9a-f]{64}$/,
   "expected 32 bytes of lowercase hex with a 0x prefix",
 );
 
@@ -99,8 +111,8 @@ export type Digest = z.infer<typeof Digest>;
  * number always fits a JavaScript number exactly: a longer id would round in `evmChainNumber`
  * and two different chain ids could sign for the same chain.
  */
-export const ChainId = z.custom<`eip155:${number}`>(
-  (value) => typeof value === "string" && /^eip155:[1-9][0-9]{0,14}$/.test(value),
+export const ChainId = stringMatching<`eip155:${number}`>(
+  /^eip155:[1-9][0-9]{0,14}$/,
   "expected a CAIP-2 EVM chain id such as eip155:8453",
 );
 

@@ -5,7 +5,7 @@ import {
   routes,
   type WorkspaceTemplate,
 } from "@askgina/os-api";
-import type { ApprovalId, UserId, WalletId, WorkspaceId } from "@askgina/os-protocol";
+import type { UserId, WalletId } from "@askgina/os-protocol";
 import { asc, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -18,7 +18,7 @@ import {
   workspaces,
 } from "../../src/db/schema.ts";
 import { createFixture, draftFor, type Fixture } from "../execution/fixture.ts";
-import { TEST_CHAIN_ID, type TestPerson } from "../support/context.ts";
+import { firstApproval, TEST_CHAIN_ID, type TestPerson } from "../support/context.ts";
 
 const ETH = 10n ** 18n;
 
@@ -62,7 +62,7 @@ beforeAll(async () => {
     agentId: f.agent.id,
     assets: [
       {
-        chainId: TEST_CHAIN_ID as MandateDraft["assets"][number]["chainId"],
+        chainId: TEST_CHAIN_ID,
         asset: "native",
         maxPerAction: ETH.toString(),
         maxPerWindow: (2n * ETH).toString(),
@@ -82,7 +82,7 @@ beforeAll(async () => {
     body: draft,
   });
 
-  expect((await f.t.approve(grant.id as ApprovalId, [f.t.owner])).status).toBe("executed");
+  expect((await f.t.approve(grant.id, [f.t.owner])).status).toBe("executed");
 
   // Two approvers now, and changes need both.
   const raise = await api().call("requestAdminThreshold", {
@@ -90,14 +90,14 @@ beforeAll(async () => {
     body: { adminThreshold: 2 },
   });
 
-  expect((await f.t.approve(raise.id as ApprovalId, [f.t.owner])).status).toBe("executed");
+  expect((await f.t.approve(raise.id, [f.t.owner])).status).toBe("executed");
 
   const treasury = await api().call("createTreasury", {
     params: { workspaceId: ws },
     body: { label: "Treasury" },
   });
 
-  treasuryId = treasury.id as WalletId;
+  treasuryId = treasury.id;
 
   const policy = await api().call("requestPolicy", {
     params: { workspaceId: ws, walletId: treasuryId },
@@ -109,7 +109,7 @@ beforeAll(async () => {
     },
   });
 
-  expect((await f.t.approve(policy.id as ApprovalId, [f.t.owner, bob])).status).toBe("executed");
+  expect((await f.t.approve(policy.id, [f.t.owner, bob])).status).toBe("executed");
 }, 120_000);
 
 afterAll(async () => {
@@ -223,7 +223,7 @@ describe("cloning a workspace", () => {
       body: { name: "Execution tests, again", includeAgents: true, includeMembers: true },
     });
 
-    const ws = clone.workspace.id as WorkspaceId;
+    const ws = clone.workspace.id;
     expect(ws).not.toBe(f.workspaceId);
     expect(clone.workspace).toMatchObject({
       name: "Execution tests, again",
@@ -263,9 +263,9 @@ describe("cloning a workspace", () => {
 
     // The signer holds no policy and no mandate for them until people approve.
     for (const wallet of clone.workspace.wallets) {
-      const state = await f.t.ctx.signer.getWallet(wallet.id as WalletId);
+      const state = await f.t.ctx.signer.getWallet(wallet.id);
       expect(state.policy).toBeNull();
-      expect((await f.t.ctx.signer.listMandates(wallet.id as WalletId)).mandates).toEqual([]);
+      expect((await f.t.ctx.signer.listMandates(wallet.id)).mandates).toEqual([]);
     }
 
     // Nothing of the source's history: only the policy proposals and the clone's own events.
@@ -318,12 +318,14 @@ describe("cloning a workspace", () => {
     // Once people approve, the policies apply as the template had them, pointing at the clone's
     // agent, with the threshold lowered to what one approver can meet.
     for (const approval of clone.approvals) {
-      const row = await f.t.approve(approval.id as ApprovalId, [f.t.owner]);
+      const row = await f.t.approve(approval.id, [f.t.owner]);
       expect(row.status).toBe("executed");
     }
 
-    const byKind = new Map(clone.workspace.wallets.map((wallet) => [wallet.kind, wallet.id]));
-    const treasury = await f.t.ctx.signer.getWallet(byKind.get("treasury") as WalletId);
+    const treasuryWallet = clone.workspace.wallets.find((wallet) => wallet.kind === "treasury");
+
+    if (treasuryWallet === undefined) throw new Error("the clone has no treasury");
+    const treasury = await f.t.ctx.signer.getWallet(treasuryWallet.id);
     expect(treasury.policy).toMatchObject({
       revision: 1,
       previousHash: null,
@@ -332,9 +334,9 @@ describe("cloning a workspace", () => {
       recipients: { mode: "allowlist", addresses: [VENDOR] },
       approvals: { threshold: 1 },
     });
-    const agentWallet = await f.t.ctx.signer.getWallet(agent.walletId as WalletId);
+    const agentWallet = await f.t.ctx.signer.getWallet(agent.walletId);
     expect(agentWallet.policy).toMatchObject({ requesters: [agent.agentId] });
-    expect((await f.t.ctx.signer.listMandates(agent.walletId as WalletId)).mandates).toEqual([]);
+    expect((await f.t.ctx.signer.listMandates(agent.walletId)).mandates).toEqual([]);
   });
 
   it("from a template file drops people this installation does not know and refuses an unknown chain before creating anything", async () => {
@@ -342,7 +344,7 @@ describe("cloning a workspace", () => {
       params: { workspaceId: f.workspaceId },
     });
 
-    const stranger = "usr_01jd0000000000000000000042" as UserId;
+    const stranger: UserId = "usr_01jd0000000000000000000042";
     const countWorkspaces = async () => (await f.t.ctx.db.select().from(workspaces)).length;
 
     const before = await countWorkspaces();
@@ -393,9 +395,12 @@ describe("cloning a workspace", () => {
       .then((page) => page.items.filter((event) => event.action === "workspace.cloned"));
 
     expect(cloned?.detail).toMatchObject({ source: { templateDigest: expect.any(String) } });
-    const row = await f.t.approve(imported.approvals[0]?.id as ApprovalId, [bob]);
+    const row = await f.t.approve(firstApproval(imported.approvals), [bob]);
     expect(row.status).toBe("executed");
-    const treasury = await f.t.ctx.signer.getWallet(imported.workspace.wallets[0]?.id as WalletId);
+    const [importedWallet] = imported.workspace.wallets;
+
+    if (importedWallet === undefined) throw new Error("the import made no wallet");
+    const treasury = await f.t.ctx.signer.getWallet(importedWallet.id);
     expect(treasury.policy).toMatchObject({
       requesters: [],
       recipients: { mode: "allowlist", addresses: [VENDOR] },

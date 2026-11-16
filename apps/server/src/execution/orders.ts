@@ -5,9 +5,11 @@ import {
   VenueAccount,
 } from "@askgina/os-api";
 import {
-  type Cloid,
+  type ApprovalId,
+  Cloid,
   type HyperliquidOrderOperation,
   type HyperliquidTimeInForce,
+  isVenueIntent,
   isVenueNetwork,
   type MandateId,
   newId,
@@ -57,6 +59,9 @@ type AgentRow = typeof agents.$inferSelect;
 type VenueOrderRow = typeof venueOrders.$inferSelect;
 
 type Next = { done: boolean; waitSeconds: number };
+
+/** A venue report as this request's next status, its facts, and the intent's failure code. */
+type StatusChange = { to: VenueOrderStatus; facts: Facts; failureCode?: string };
 
 /** How long the follow-up of a posted order watches it; the reconcile sweeper takes over after. */
 export const ORDER_WATCH_SECONDS = 3_600;
@@ -253,12 +258,12 @@ export async function proposeOrder(
 
   const universe = await venueClient(ctx, network)
     .meta()
-    .catch((error: unknown) => {
-      if (error instanceof VenueError) {
+    .catch((cause: unknown) => {
+      if (cause instanceof VenueError) {
         throw new HttpError("internal", "the venue could not be read", "venue_unreachable");
       }
 
-      throw error;
+      throw cause;
     });
 
   const perp = universe[market.asset];
@@ -406,11 +411,14 @@ export async function proposeVenueWithdrawal(
 
 // --- signing and posting ----------------------------------------------------------------------
 
-async function orderRow(ctx: AppContext, approvalId: string): Promise<VenueOrderRow | undefined> {
+async function orderRow(
+  ctx: AppContext,
+  approvalId: ApprovalId,
+): Promise<VenueOrderRow | undefined> {
   const [row] = await ctx.db
     .select()
     .from(venueOrders)
-    .where(eq(venueOrders.approvalId, approvalId as VenueOrderRow["approvalId"]));
+    .where(eq(venueOrders.approvalId, approvalId));
 
   return row;
 }
@@ -490,16 +498,14 @@ async function record(
   options: { from?: readonly VenueOrderStatus[]; failureCode?: string } = {},
 ): Promise<boolean> {
   const now = new Date(ctx.now() * 1000);
+  const from = options.from ?? OPEN;
 
   return ctx.db.transaction(async (tx) => {
     const [updated] = await tx
       .update(venueOrders)
       .set({ status: to, ...facts, checkedAt: now, updatedAt: now })
       .where(
-        and(
-          eq(venueOrders.approvalId, order.approvalId),
-          inArray(venueOrders.status, [...(options.from ?? OPEN)]),
-        ),
+        and(eq(venueOrders.approvalId, order.approvalId), inArray(venueOrders.status, [...from])),
       )
       .returning({ approvalId: venueOrders.approvalId });
 
@@ -508,7 +514,7 @@ async function record(
     if (to !== order.status) {
       await moveIntent(ctx, intent, ["signed", "submitted", "placed"], INTENT_STATUS[to], {
         executor: tx,
-        ...(options.failureCode === undefined ? {} : { failureCode: options.failureCode }),
+        failureCode: options.failureCode,
       });
     }
 
@@ -535,14 +541,14 @@ async function followed(ctx: AppContext, order: VenueOrderRow): Promise<Followed
     ctx.sealer.open(intent.workspaceId, bodyLocation(order.approvalId), order.request),
   ]);
 
-  if (!("operation" in parsed) || !isVenueNetwork(parsed.chainId) || !wallet) {
+  if (!isVenueIntent(parsed) || !wallet) {
     throw new Error("a venue request without its venue intent or wallet");
   }
 
   return {
     order,
     intent,
-    operation: parsed.operation as VenueIntent["operation"],
+    operation: parsed.operation,
     account: wallet.address,
     body: String(body),
     client: venueClient(ctx, order.network),
@@ -556,15 +562,13 @@ const expired = (ctx: AppContext, order: VenueOrderRow) =>
 function fromStatus(
   operation: HyperliquidOrderOperation,
   status: Extract<OrderStatusAnswer, { found: true }>,
-): { to: VenueOrderStatus; facts: Facts; failureCode?: string } {
+): StatusChange {
   const original = scaled(status.originalSize);
   const remaining = scaled(status.remaining);
   const filled = original !== null && remaining !== null ? original - remaining : null;
+  const facts: Facts = { venueOrderId: status.venueOrderId };
 
-  const facts: Facts = {
-    venueOrderId: status.venueOrderId,
-    ...(filled === null ? {} : { filledSize: unscaled(filled) }),
-  };
+  if (filled !== null) facts.filledSize = unscaled(filled);
 
   if (status.status === "filled") {
     return { to: "filled", facts: { ...facts, filledSize: operation.size } };
@@ -573,11 +577,14 @@ function fromStatus(
   if (status.status === "canceled" || status.status.endsWith("Canceled")) {
     const byVenue = status.status !== "canceled";
 
-    return {
+    const change: StatusChange = {
       to: filled !== null && filled > 0n ? "partially_filled" : "cancelled",
       facts: { ...facts, venueError: byVenue ? status.status : null },
-      ...(byVenue ? { failureCode: "venue_cancelled" } : {}),
     };
+
+    if (byVenue) change.failureCode = "venue_cancelled";
+
+    return change;
   }
 
   if (/rejected$/i.test(status.status)) {
@@ -730,7 +737,8 @@ async function check(ctx: AppContext, f: Followed): Promise<Next | "unknown" | "
   let status: OrderStatusAnswer;
 
   try {
-    status = await f.client.orderStatus(f.account, order.cloid as Cloid);
+    // Stored from the signer's answer, which its client parsed as a Cloid.
+    status = await f.client.orderStatus(f.account, Cloid.parse(order.cloid));
   } catch (error) {
     if (error instanceof VenueError) return "unreachable";
     throw error;
@@ -890,11 +898,11 @@ export async function reconcileOpenOrders(ctx: AppContext): Promise<number | nul
     .limit(RECONCILE_BATCH);
 
   for (const order of due) {
-    await advance(ctx, order, false).catch((error: unknown) => {
+    await advance(ctx, order, false).catch((cause: unknown) => {
       ctx.log.error("venue reconcile failed", {
         event: "venue.status",
         approvalId: order.approvalId,
-        error: error instanceof Error ? error.name : "unknown",
+        error: cause instanceof Error ? cause.name : "unknown",
       });
     });
   }
@@ -925,9 +933,9 @@ export async function cancelVenueOrder(
 
   const signed = await ctx.signer
     .cancelVenueOrder(order.approvalId, row.workspaceId)
-    .catch((error: unknown) => {
-      if (error instanceof SignerError && !RETRYABLE_SIGNER_CODES.includes(error.code)) {
-        throw new HttpError("signer_refused", "the signer refused the cancel", error.code);
+    .catch((cause: unknown) => {
+      if (cause instanceof SignerError && !RETRYABLE_SIGNER_CODES.includes(cause.code)) {
+        throw new HttpError("signer_refused", "the signer refused the cancel", cause.code);
       }
 
       throw new HttpError("internal", "the signer could not be reached", "retry_later");

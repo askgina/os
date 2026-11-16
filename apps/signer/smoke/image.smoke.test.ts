@@ -143,6 +143,8 @@ describe("the signer image", () => {
       },
     });
 
+    // SAFETY: the signer signs only EIP-1559 transactions (`isSignedBy` refuses bytes of any other
+    // type), and EIP-1559 bytes start with the type byte 0x02.
     const from = await recoverTransactionAddress({
       serializedTransaction: signed.signedTransaction as `0x02${string}`,
     });

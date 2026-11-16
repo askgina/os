@@ -10,7 +10,10 @@
  * `eve build` evaluates the agent definition too, with none of these set (an image must not
  * contain a model key), so the choice is made on the first call rather than at import.
  */
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import {
+  createOpenAICompatible,
+  type OpenAICompatibleProviderSettings,
+} from "@ai-sdk/openai-compatible";
 import type { MockLanguageModelV4 } from "ai/test";
 import { offlineModel } from "./offline-model.ts";
 
@@ -34,11 +37,10 @@ function choose(): LanguageModel {
     throw new Error("no model configured: set MODEL_BASE_URL and MODEL_ID, or OFFLINE_MODEL=1");
   }
 
-  chosen = createOpenAICompatible({
-    name: "operator",
-    baseURL,
-    ...(process.env.MODEL_API_KEY ? { apiKey: process.env.MODEL_API_KEY } : {}),
-  }).chatModel(modelId);
+  const settings: OpenAICompatibleProviderSettings = { name: "operator", baseURL };
+
+  if (process.env.MODEL_API_KEY) settings.apiKey = process.env.MODEL_API_KEY;
+  chosen = createOpenAICompatible(settings).chatModel(modelId);
 
   return chosen;
 }

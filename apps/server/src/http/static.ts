@@ -2,18 +2,21 @@ import { readFile, stat } from "node:fs/promises";
 import { extname, join, resolve, sep } from "node:path";
 import type { Hono } from "hono";
 
-const TYPES: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".ico": "image/x-icon",
-  ".webmanifest": "application/manifest+json",
-  ".woff2": "font/woff2",
-  ".txt": "text/plain; charset=utf-8",
-};
+const HTML = "text/html; charset=utf-8";
+
+/** Content type by file extension. */
+const TYPES = new Map([
+  [".html", HTML],
+  [".js", "text/javascript; charset=utf-8"],
+  [".css", "text/css; charset=utf-8"],
+  [".json", "application/json"],
+  [".svg", "image/svg+xml"],
+  [".png", "image/png"],
+  [".ico", "image/x-icon"],
+  [".webmanifest", "application/manifest+json"],
+  [".woff2", "font/woff2"],
+  [".txt", "text/plain; charset=utf-8"],
+]);
 
 /** Paths the UI never owns: an unknown one there is a 404, not the app shell. */
 const NOT_THE_UI = ["/api/", "/mcp", "/.well-known/"];
@@ -55,7 +58,7 @@ export function serveWebApp(app: Hono, root: string): void {
       const immutable = path.startsWith("/assets/");
 
       return c.body(new Uint8Array(file), 200, {
-        "content-type": TYPES[extname(candidate)] ?? "application/octet-stream",
+        "content-type": TYPES.get(extname(candidate)) ?? "application/octet-stream",
         "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache",
       });
     }
@@ -65,7 +68,7 @@ export function serveWebApp(app: Hono, root: string): void {
     if (shell === null) return c.notFound();
 
     return c.body(new Uint8Array(shell), 200, {
-      "content-type": TYPES[".html"] as string,
+      "content-type": HTML,
       "cache-control": "no-cache",
     });
   });

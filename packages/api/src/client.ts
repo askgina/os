@@ -36,12 +36,13 @@ type LooseInput = {
   body?: unknown;
 };
 
+/** The input after a route's name: optional exactly when the route needs nothing. */
+type CallInput<N extends RouteName> =
+  Record<never, never> extends RouteInput<N> ? [RouteInput<N>?] : [RouteInput<N>];
+
 export interface ApiClient {
   /** Call an endpoint by its name in {@link routes}. Rejects with {@link ApiError} on a refusal. */
-  call<N extends RouteName>(
-    name: N,
-    ...input: Record<never, never> extends RouteInput<N> ? [RouteInput<N>?] : [RouteInput<N>]
-  ): Promise<RouteOutput<N>>;
+  call<N extends RouteName>(name: N, ...input: CallInput<N>): Promise<RouteOutput<N>>;
 }
 
 export function createApiClient(options: ApiClientOptions = {}): ApiClient {
@@ -49,8 +50,12 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   const baseUrl = (options.baseUrl ?? "").replace(/\/+$/, "");
 
   return {
-    async call(name, ...rest) {
+    async call<N extends RouteName>(name: N, ...rest: CallInput<N>): Promise<RouteOutput<N>> {
       const route: RouteDefinition = routes[name];
+      // SAFETY: `rest[0]` is the `RouteInput` of `routes[name]`: `PathParams` maps each path
+      // parameter to a string, every route's query schema is an object of optional strings, and
+      // the body is only stringified, so it fits `LooseInput`; TypeScript cannot resolve
+      // `RouteInput<N>` for the generic `N`.
       const input = (rest[0] ?? {}) as LooseInput;
       let path = route.path;
 
@@ -66,15 +71,18 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
 
       const url = `${baseUrl}${path}${query.size === 0 ? "" : `?${query}`}`;
 
-      const response = await doFetch(url, {
+      const headers: Record<string, string> = {};
+
+      if (route.body !== null) headers["content-type"] = "application/json";
+
+      const init: RequestInit = {
         method: route.method,
         credentials: "same-origin",
-        headers: {
-          ...(route.body === null ? {} : { "content-type": "application/json" }),
-          ...options.headers,
-        },
-        ...(route.body === null ? {} : { body: JSON.stringify(input.body ?? {}) }),
-      });
+        headers: { ...headers, ...options.headers },
+      };
+
+      if (route.body !== null) init.body = JSON.stringify(input.body ?? {});
+      const response = await doFetch(url, init);
 
       const payload: unknown = await response.json().catch(() => null);
 
@@ -89,7 +97,9 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
         throw new ApiError("internal", `server answered HTTP ${response.status}`, response.status);
       }
 
-      return route.response.parse(payload) as never;
+      // SAFETY: `route` is `routes[name]`, so `route.response` is the schema `RouteOutput<N>` is
+      // inferred from, and `parse` returned that schema's output or threw.
+      return route.response.parse(payload) as RouteOutput<N>;
     },
   };
 }

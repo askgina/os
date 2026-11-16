@@ -17,6 +17,7 @@ import {
   newPerson,
   ORIGIN,
   type Person,
+  personAt,
   provePossession,
   refused,
   setUpWorld,
@@ -308,7 +309,7 @@ describe("approvers and recovery", () => {
 
   it("refuses to remove an approver when the thresholds would become unreachable", async () => {
     const world = await setUpWorld(startSigner(), { people: 2, policyThreshold: 2 });
-    const [, bob] = world.people as [Person, Person];
+    const bob = personAt(world, 1);
     await refused(
       world.t.client.removeApprover(
         world.workspaceId,
@@ -337,6 +338,8 @@ describe("approvers and recovery", () => {
     });
 
     expect(response.status).toBe(401);
+    // SAFETY: deliberately not a valid add-approver request (a recovery code instead of an
+    // authorization); the test checks the signer refuses it with invalid_request.
     await refused(
       world.t.client.addApprover(world.workspaceId, {
         recovery: { code: "a".repeat(32) },
@@ -350,7 +353,7 @@ describe("approvers and recovery", () => {
   it("recovers a workspace whose passkeys are lost: the host operator enrolls a new approver", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
-    const [lost] = world.people as [Person];
+    const lost = personAt(world, 0);
     const replacement = newPerson();
 
     expect(() => t.signer.enrollApproverByOperator(newId("ws"), replacement.credential)).toThrow(

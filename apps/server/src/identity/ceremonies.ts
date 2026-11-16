@@ -1,9 +1,8 @@
-import type { UserId } from "@askgina/os-protocol";
+import type { CeremonyStart, RegistrationResponse } from "@askgina/os-api";
+import type { AssertionResponse, UserId } from "@askgina/os-protocol";
 import {
-  type AuthenticationResponseJSON,
   generateAuthenticationOptions,
   generateRegistrationOptions,
-  type RegistrationResponseJSON,
   verifyAuthenticationResponse,
   verifyRegistrationResponse,
 } from "@simplewebauthn/server";
@@ -73,7 +72,7 @@ export async function startRegistration(
     context: Record<string, string>;
     exclude?: { id: string; transports: string[] }[];
   },
-): Promise<{ ceremonyId: string; options: Record<string, unknown> }> {
+): Promise<CeremonyStart> {
   const options = await generateRegistrationOptions({
     rpName: ctx.config.relyingParty.name,
     rpID: ctx.config.relyingParty.id,
@@ -110,12 +109,12 @@ export interface NewPasskey {
  */
 export async function finishRegistration(
   ctx: Deps,
-  input: { ceremonyId: string; kind: Exclude<Kind, "login">; response: unknown },
+  input: { ceremonyId: string; kind: Exclude<Kind, "login">; response: RegistrationResponse },
 ): Promise<{ ceremony: typeof ceremonies.$inferSelect; passkey: NewPasskey }> {
   const ceremony = await consumeCeremony(ctx, input.ceremonyId, input.kind);
 
   const verified = await verifyRegistrationResponse({
-    response: input.response as RegistrationResponseJSON,
+    response: input.response,
     expectedChallenge: ceremony.challenge,
     expectedOrigin: ctx.config.relyingParty.origins,
     expectedRPID: ctx.config.relyingParty.id,
@@ -158,9 +157,7 @@ export async function insertPasskey(
 }
 
 /** Options for signing in with any passkey of this site the browser holds. */
-export async function startLogin(
-  ctx: Deps,
-): Promise<{ ceremonyId: string; options: Record<string, unknown> }> {
+export async function startLogin(ctx: Deps): Promise<CeremonyStart> {
   const options = await generateAuthenticationOptions({
     rpID: ctx.config.relyingParty.id,
     userVerification: "required",
@@ -180,7 +177,7 @@ export async function startLogin(
 /** Verify a sign-in and return whose passkey it was. Revoked passkeys are refused. */
 export async function finishLogin(
   ctx: Deps,
-  input: { ceremonyId: string; response: AuthenticationResponseJSON },
+  input: { ceremonyId: string; response: AssertionResponse },
 ): Promise<{ userId: UserId; credentialId: string }> {
   const ceremony = await consumeCeremony(ctx, input.ceremonyId, "login");
 

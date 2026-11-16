@@ -10,6 +10,7 @@ import { referenceMsgpackEncode } from "@askgina/os-testkit/msgpack";
 import { parseSignature } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it } from "vitest";
+import type { JsonValue } from "../src/json.ts";
 import {
   cancelByCloidAction,
   cloidFor,
@@ -22,6 +23,7 @@ import {
   withdrawAction,
   withdrawTypedData,
 } from "../src/venues/hyperliquid.ts";
+
 import { encodeMsgpack, MsgpackMap, type MsgpackValue } from "../src/venues/msgpack.ts";
 import { mapFromJson } from "./hyperliquid-vectors.ts";
 import vectors from "./vectors/hyperliquid-python-sdk.json" with { type: "json" };
@@ -30,19 +32,23 @@ const account = privateKeyToAccount(Hex32.parse(vectors.privateKey));
 
 const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString("hex");
 
+function isMsgpackArray(value: MsgpackValue): value is readonly MsgpackValue[] {
+  return Array.isArray(value);
+}
+
 /** A `MsgpackMap` tree as plain objects, for the reference encoder (it keeps insertion order). */
-function toPlain(value: MsgpackValue): unknown {
+function toPlain(value: MsgpackValue): JsonValue {
   if (value instanceof MsgpackMap) {
-    return Object.fromEntries(value.entries.map(([key, entry]) => [key, toPlain(entry)]));
+    return Object.fromEntries(value.entries.map(([key, entry]) => [key, toPlain(entry)] as const));
   }
 
-  if (Array.isArray(value)) return value.map(toPlain);
+  if (isMsgpackArray(value)) return value.map(toPlain);
 
   return value;
 }
 
 /** Our bytes for `ours` equal the reference encoder's bytes for `plain`. */
-function expectSameBytes(ours: MsgpackValue, plain: unknown) {
+function expectSameBytes<Plain>(ours: MsgpackValue, plain: Plain) {
   expect(hex(encodeMsgpack(ours))).toBe(hex(referenceMsgpackEncode(plain)));
 }
 
@@ -178,6 +184,8 @@ function random(seed: number) {
 
   return {
     int,
+    // SAFETY: `next()` is a uint32 divided by 2^32, so in [0, 1), and `int(values.length)` is an
+    // index below `values.length`; every caller passes a non-empty list.
     pick: <T>(values: readonly T[]) => values[int(values.length)] as T,
     hexBytes: (count: number) =>
       Array.from({ length: count }, () => int(256).toString(16).padStart(2, "0")).join(""),
@@ -242,6 +250,13 @@ describe("encodeMsgpack against @msgpack/msgpack 3.1.3", () => {
   });
 });
 
+/** `value` passed to the encoder as a msgpack value, which the refusal tests' values are not. */
+function claimedMsgpack<Value>(value: Value): MsgpackValue {
+  // SAFETY: deliberately not a valid MsgpackValue: every caller passes a value encodeMsgpack
+  // must refuse, and the test checks that it throws.
+  return value as MsgpackValue;
+}
+
 describe("encodeMsgpack refuses what it does not define", () => {
   const refused: [string, unknown][] = [
     ["a float", 1.5],
@@ -257,12 +272,12 @@ describe("encodeMsgpack refuses what it does not define", () => {
     ["bytes", new Uint8Array([1])],
     ["a lone surrogate", "\ud800"],
     ["a float inside an array", [1, 2.5]],
-    ["a plain object inside a map", new MsgpackMap([["a", { b: 1 } as unknown as MsgpackValue]])],
+    ["a plain object inside a map", new MsgpackMap([["a", claimedMsgpack({ b: 1 })]])],
   ];
 
   for (const [name, value] of refused) {
     it(`throws on ${name}`, () => {
-      expect(() => encodeMsgpack(value as MsgpackValue)).toThrow();
+      expect(() => encodeMsgpack(claimedMsgpack(value))).toThrow();
     });
   }
 
@@ -299,6 +314,8 @@ describe("the builders refuse values outside the intent's shape", () => {
       { ...order, asset: 10_000 },
       { ...order, builder: { b: "0x0", f: 1 } },
     ]) {
+      // SAFETY: deliberately not a valid HyperliquidOrderOperation (each case breaks one field's
+      // format or type); the test checks orderAction refuses it.
       expect(() => orderAction(bad as HyperliquidOrderOperation, cloid)).toThrow();
     }
 
@@ -339,11 +356,12 @@ describe("the builders refuse values outside the intent's shape", () => {
   });
 
   it("refuses a malformed connection id, network, destination or amount", () => {
-    expect(() => l1TypedData("0x12" as `0x${string}`, "hyperliquid:testnet")).toThrow();
+    expect(() => l1TypedData("0x12", "hyperliquid:testnet")).toThrow();
     const id = `0x${"ab".repeat(32)}` as const;
+    // SAFETY: deliberately not a valid VenueNetwork (an EVM chain); the test checks the refusal.
     expect(() => l1TypedData(id, "eip155:1" as VenueNetwork)).toThrow();
     const destination = `0x${"11".repeat(20)}` as const;
-    expect(() => withdrawAction("hyperliquid:testnet", "0x11" as `0x${string}`, "1", 1)).toThrow();
+    expect(() => withdrawAction("hyperliquid:testnet", "0x11", "1", 1)).toThrow();
     expect(() => withdrawAction("hyperliquid:testnet", destination, "0", 1)).toThrow();
     expect(() => withdrawAction("hyperliquid:testnet", destination, "-1", 1)).toThrow();
     expect(() => withdrawTypedData("hyperliquid:testnet", destination, "1", -1)).toThrow();
@@ -401,6 +419,7 @@ describe("cloidFor and nextNonce", () => {
     expect(cloidFor("apr_01jd0000000000000000000006")).not.toBe(
       cloidFor("apr_01jd0000000000000000000005"),
     );
+    // SAFETY: deliberately not a valid ApprovalId (an intent id); the test checks the refusal.
     expect(() => cloidFor("int_01jd0000000000000000000005" as ApprovalId)).toThrow();
   });
 

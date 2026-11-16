@@ -1,11 +1,23 @@
 import type { Role } from "@askgina/os-api";
-import type { WorkspaceId } from "@askgina/os-protocol";
+import { WorkspaceId } from "@askgina/os-protocol";
 import { and, eq } from "drizzle-orm";
 import type { AppContext, Session } from "./context.ts";
 import { memberships } from "./db/schema.ts";
 import { HttpError } from "./http/errors.ts";
 
 const RANK: Record<Role, number> = { viewer: 0, approver: 1, owner: 2 };
+
+/**
+ * The workspace id in a request path. A segment that is not a workspace id names no workspace,
+ * so it gets the answer {@link requireMember} gives for a workspace that does not exist.
+ */
+export function workspaceIdFromPath(segment: string): WorkspaceId {
+  const parsed = WorkspaceId.safeParse(segment);
+
+  if (!parsed.success) throw new HttpError("not_found", "no such workspace");
+
+  return parsed.data;
+}
 
 /**
  * The signed-in person's role in a workspace, or a refusal. Someone who is not a member gets

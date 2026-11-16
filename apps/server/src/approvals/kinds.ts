@@ -10,6 +10,7 @@ import type {
 } from "@askgina/os-protocol";
 import type { AppContext, Transaction } from "../context.ts";
 import type { approvals } from "../db/schema.ts";
+import type { JsonValue } from "../db/sealed.ts";
 
 /** Any row of `approvals`: a request people decide on, or one use of a mandate. */
 export type ApprovalRow = typeof approvals.$inferSelect;
@@ -26,6 +27,28 @@ export function isRequest(row: ApprovalRow): row is RequestRow {
 }
 
 type EnvelopeOf<K extends ApprovalKind> = Extract<Envelope, { type: K }>;
+
+function isEnvelopeOf<K extends ApprovalKind>(
+  envelope: Envelope,
+  kind: K,
+): envelope is EnvelopeOf<K> {
+  return envelope.type === kind;
+}
+
+/**
+ * A request's envelope, as the envelope of its kind. The engine builds every envelope with its
+ * request's kind as `type` and hands a row only to its kind's handler, so the check fails only
+ * for a row that was never written by the engine.
+ */
+export function envelopeOf<K extends ApprovalKind>(approval: RequestRow, kind: K): EnvelopeOf<K> {
+  const { envelope } = approval;
+
+  if (!isEnvelopeOf(envelope, kind)) {
+    throw new Error(`approval ${approval.id} of kind ${kind} carries another kind's envelope`);
+  }
+
+  return envelope;
+}
 
 type HeaderField = "v" | "type" | "approvalId" | "workspaceId" | "nonce" | "issuedAt" | "expiresAt";
 
@@ -88,17 +111,18 @@ export class ApprovalFailure extends Error {
 
 /**
  * What one kind of approval means. The engine is the same for every kind; a handler supplies how
- * to show a request and what happens once enough people approved it.
+ * to show a request and what happens once enough people approved it. Every method gets the
+ * request's `detail` as the sealer opened it, JSON, and decodes it with its kind's schema.
  */
 export interface ApprovalKindHandler<K extends ApprovalKind = ApprovalKind> {
   kind: K;
   /** One line a person can act on, for the inbox. */
-  title(ctx: AppContext, approval: RequestRow, detail: unknown): Promise<string>;
+  title(ctx: AppContext, approval: RequestRow, detail: JsonValue): Promise<string>;
   /** Everything the approval page shows. */
   describe(
     ctx: AppContext,
     approval: RequestRow,
-    detail: unknown,
+    detail: JsonValue,
   ): Promise<Extract<ApprovalSubject, { kind: K }>>;
   /**
    * What the envelope names by its hash, for the signer's confirmation page: the intent, the
@@ -108,7 +132,7 @@ export interface ApprovalKindHandler<K extends ApprovalKind = ApprovalKind> {
   confirmationSubject(
     ctx: AppContext,
     approval: RequestRow,
-    detail: unknown,
+    detail: JsonValue,
   ): Promise<ConfirmationSubject>;
   /**
    * Apply the effect at the signer and in our tables. Runs inside a workflow step, which the
@@ -119,31 +143,32 @@ export interface ApprovalKindHandler<K extends ApprovalKind = ApprovalKind> {
     ctx: AppContext,
     approval: RequestRow,
     authorization: Authorization,
-    detail: unknown,
+    detail: JsonValue,
   ): Promise<void>;
   /** The request ended with no effect. Undo whatever opening it set up. */
   abandon?(
     ctx: AppContext,
     approval: RequestRow,
     status: "rejected" | "expired" | "cancelled" | "failed",
-    detail: unknown,
+    detail: JsonValue,
   ): Promise<void>;
 }
 
 /**
  * What one use of a mandate does. A use has no envelope, no assertions and nothing a person is
  * shown; like a request's handler, `execute` runs in a workflow step and must be safe to run
- * twice, and throws {@link ApprovalFailure} for a refusal retrying cannot fix.
+ * twice, and throws {@link ApprovalFailure} for a refusal retrying cannot fix. `detail` is the
+ * opened JSON, as for a request's handler.
  */
 export interface MandateUseHandler {
   kind: "mandate-use";
-  execute(ctx: AppContext, use: ApprovalRow, detail: unknown): Promise<void>;
+  execute(ctx: AppContext, use: ApprovalRow, detail: JsonValue): Promise<void>;
   /** The use ended without a signature: undo what recording it set up. */
   abandon(
     ctx: AppContext,
     use: ApprovalRow,
     status: "rejected" | "expired" | "cancelled" | "failed",
-    detail: unknown,
+    detail: JsonValue,
   ): Promise<void>;
 }
 

@@ -11,6 +11,7 @@ import type { HyperliquidPayload } from "../src/venues/hyperliquid.ts";
 import {
   approveIntent,
   authorize,
+  eip1559Serialized,
   grantMandate,
   header,
   intentFor,
@@ -96,11 +97,15 @@ describe("a vault that misbehaves", () => {
             honest.signEvmTransaction(walletId, credential, transaction),
           );
 
+          if (r === undefined || s === undefined) {
+            throw new Error("the honest vault returned an unsigned transaction");
+          }
+
           return serializeTransaction(
             { ...transaction, type: "eip1559" },
             {
-              r: r as `0x${string}`,
-              s: `0x${(N - BigInt(s as string)).toString(16).padStart(64, "0")}`,
+              r,
+              s: `0x${(N - BigInt(s)).toString(16).padStart(64, "0")}`,
               yParity: yParity === 0 ? 1 : 0,
             },
           );
@@ -208,11 +213,15 @@ describe("venue intents", () => {
     const { world } = await venueWorld();
     const intent = venueOrder(world);
     const authorization = approveIntent(world, intent);
+    // SAFETY: deliberately not a valid EVM sign request (it carries a venue intent); the test
+    // checks the signer refuses it with invalid_request.
     await refused(
       world.t.client.sign({ intent, authorization, transaction: txParams() } as never),
       "invalid_request",
     );
     const { mandate } = await grantMandate(world);
+    // SAFETY: deliberately not a valid sign-under-mandate request (it carries a venue intent);
+    // the test checks the signer refuses it with invalid_request.
     await refused(
       world.t.client.signUnderMandate(mandate.id, {
         approvalId: newId("apr"),
@@ -358,11 +367,9 @@ describe("limits on what the signer accepts", () => {
       },
     });
 
-    const request = new Request("http://signer.test/v1/sign", {
-      method: "POST",
-      body,
-      duplex: "half",
-    } as RequestInit);
+    // A streamed request body needs `duplex: "half"`.
+    const init: RequestInit & { duplex: "half" } = { method: "POST", body, duplex: "half" };
+    const request = new Request("http://signer.test/v1/sign", init);
 
     expect(request.headers.get("content-length")).toBeNull();
     const response = await signer.app.request(request);
@@ -424,10 +431,13 @@ describe("a Hyperliquid signature the vault returns", () => {
     } as const;
 
     expect(isTypedSignedBy(highS, payload, address)).toBe(false);
+    // SAFETY: deliberately not a valid recovery id (29); the test checks the signature is refused.
     expect(isTypedSignedBy({ ...signature, v: 29 as 27 }, payload, address)).toBe(false);
     expect(isTypedSignedBy({ ...signature, r: `0x${"00".repeat(32)}` }, payload, address)).toBe(
       false,
     );
+    // SAFETY: deliberately not valid lowercase hex (upper-case "0X…"); the test checks the
+    // signature is refused.
     expect(
       isTypedSignedBy(
         { ...signature, s: signature.s.toUpperCase() as `0x${string}` },
@@ -484,7 +494,7 @@ describe("the OWS vault after a crash during wallet creation", () => {
     });
 
     const from = await recoverTransactionAddress({
-      serializedTransaction: signed as `0x02${string}`,
+      serializedTransaction: eip1559Serialized(signed),
     });
 
     expect(from.toLowerCase()).toBe(orphan.address);

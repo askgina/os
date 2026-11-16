@@ -11,6 +11,7 @@ import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "@playwright/test";
+import { z } from "zod";
 import { docker, exec, HELPER_IMAGE, signerProject, stack } from "../src/stack.ts";
 
 const run = promisify(execFile);
@@ -138,7 +139,10 @@ async function fromWire(): Promise<Record<string, number | string>> {
     script,
   );
 
-  return JSON.parse(output.trim().split("\n").at(-1) ?? "{}") as Record<string, number | string>;
+  // Each attempt printed its status, or its error's code or message.
+  return z
+    .record(z.string(), z.union([z.number(), z.string()]))
+    .parse(JSON.parse(output.trim().split("\n").at(-1) ?? "{}"));
 }
 
 /** From inside the signer container: the status of https://example.com/, or "unreachable". */
@@ -200,7 +204,7 @@ test("a container on the wire without the control plane's key cannot complete a 
 
   // No certificate, or one the signer does not trust: no HTTP response at all.
   for (const client of ["none", "stranger"]) {
-    expect(typeof seen[client], `${client}: ${seen[client]}`).toBe("string");
+    expect(seen[client], `${client}: ${seen[client]}`).toEqual(expect.any(String));
     expect(seen[client], client).not.toBe("timeout");
   }
 });

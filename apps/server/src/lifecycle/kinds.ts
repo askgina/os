@@ -1,6 +1,5 @@
-import type { Envelope } from "@askgina/os-protocol";
 import { and, eq, inArray } from "drizzle-orm";
-import type { ApprovalKindHandler } from "../approvals/kinds.ts";
+import { type ApprovalKindHandler, envelopeOf } from "../approvals/kinds.ts";
 import { appendAudit } from "../audit.ts";
 import type { AppContext } from "../context.ts";
 import { agents, wallets } from "../db/schema.ts";
@@ -9,10 +8,6 @@ import { loadWallet, walletSummary } from "../directory/views.ts";
 import { endMandateMirrors } from "../execution/mandates.ts";
 import { enqueueLifecycleNotifications } from "../notify/outbox.ts";
 import { cancelRequests, mirrorWallet, mirrorWorkspace, waitingRequests } from "./state.ts";
-
-type RetireWalletEnvelope = Extract<Envelope, { type: "retire-wallet" }>;
-
-type DeleteWorkspaceEnvelope = Extract<Envelope, { type: "delete-workspace" }>;
 
 const systemActor = { type: "system", id: null } as const;
 
@@ -25,7 +20,7 @@ const KEPT_WHILE_RETIRING = ["cancel-transaction"] as const;
 const retireWallet: ApprovalKindHandler<"retire-wallet"> = {
   kind: "retire-wallet",
   async title(ctx, approval) {
-    const envelope = approval.envelope as RetireWalletEnvelope;
+    const envelope = envelopeOf(approval, "retire-wallet");
 
     const [wallet] = await ctx.db
       .select({ label: wallets.label })
@@ -35,7 +30,7 @@ const retireWallet: ApprovalKindHandler<"retire-wallet"> = {
     return `Retire ${wallet?.label || "a wallet"} and destroy its key`;
   },
   async describe(ctx, approval) {
-    const envelope = approval.envelope as RetireWalletEnvelope;
+    const envelope = envelopeOf(approval, "retire-wallet");
 
     const { wallet, agentId } = await loadWallet(
       ctx,
@@ -51,7 +46,7 @@ const retireWallet: ApprovalKindHandler<"retire-wallet"> = {
   },
   confirmationSubject: envelopeOnly,
   async execute(ctx, approval, authorization) {
-    const envelope = approval.envelope as RetireWalletEnvelope;
+    const envelope = envelopeOf(approval, "retire-wallet");
     const { workspaceId } = approval;
     const walletId = envelope.wallet.walletId;
 
@@ -100,14 +95,14 @@ const retireWallet: ApprovalKindHandler<"retire-wallet"> = {
 const deleteWorkspace: ApprovalKindHandler<"delete-workspace"> = {
   kind: "delete-workspace",
   async title(_ctx, approval) {
-    const count = (approval.envelope as DeleteWorkspaceEnvelope).wallets.length;
+    const count = envelopeOf(approval, "delete-workspace").wallets.length;
 
     return count === 1
       ? "Delete this workspace and destroy 1 wallet key"
       : `Delete this workspace and destroy ${count} wallet keys`;
   },
   async describe(ctx, approval) {
-    const envelope = approval.envelope as DeleteWorkspaceEnvelope;
+    const envelope = envelopeOf(approval, "delete-workspace");
     const ids = envelope.wallets.map((wallet) => wallet.walletId);
 
     const rows =
@@ -131,7 +126,7 @@ const deleteWorkspace: ApprovalKindHandler<"delete-workspace"> = {
   },
   confirmationSubject: envelopeOnly,
   async execute(ctx, approval, authorization) {
-    const envelope = approval.envelope as DeleteWorkspaceEnvelope;
+    const envelope = envelopeOf(approval, "delete-workspace");
     const { workspaceId } = approval;
 
     if (!(await alreadyApplied(ctx, approval.id))) {

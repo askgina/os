@@ -86,40 +86,10 @@ export async function sweep(ctx: AppContext): Promise<{
   lifecycle: { finalized: number; skipped: number } | null;
 }> {
   const engine = engineOf(ctx);
-  const runtime = workflowRuntime(ctx);
   const now = ctx.now();
-  let woken = 0;
+  const woken = await wakeDecided(ctx, now);
   let started = 0;
   let abandoned = 0;
-
-  const waiting = await ctx.db
-    .select({ id: approvals.id, runId: approvals.runId })
-    .from(approvals)
-    .where(
-      and(
-        eq(approvals.resumeState, "needed"),
-        lt(approvals.decidedAt, new Date((now - RESUME_GRACE_SECONDS) * 1000)),
-      ),
-    );
-
-  for (const row of waiting) {
-    if (await engine.wake(row.id)) {
-      woken += 1;
-      continue;
-    }
-
-    // A run that already finished has nothing left to wake.
-    const run = row.runId
-      ? await runtime.world.runs.get(row.runId, { resolveData: "none" } as never).catch(() => null)
-      : null;
-
-    if (run && ["completed", "failed", "cancelled"].includes(run.status)) {
-      await ctx.db
-        .update(approvals)
-        .set({ resumeState: "done" })
-        .where(and(eq(approvals.id, row.id), eq(approvals.resumeState, "needed")));
-    }
-  }
 
   const unstarted = await ctx.db
     .select()
@@ -160,6 +130,48 @@ export async function sweep(ctx: AppContext): Promise<{
 }
 
 /**
+ * The sweeper's workflow wake-up outbox: every decision that waited past the grace for its
+ * wake-up is delivered again, and one whose run already finished is marked done. Returns how
+ * many runs were woken.
+ */
+async function wakeDecided(ctx: AppContext, now: number): Promise<number> {
+  const engine = engineOf(ctx);
+  const runtime = workflowRuntime(ctx);
+  let woken = 0;
+
+  const waiting = await ctx.db
+    .select({ id: approvals.id, runId: approvals.runId })
+    .from(approvals)
+    .where(
+      and(
+        eq(approvals.resumeState, "needed"),
+        lt(approvals.decidedAt, new Date((now - RESUME_GRACE_SECONDS) * 1000)),
+      ),
+    );
+
+  for (const row of waiting) {
+    if (await engine.wake(row.id)) {
+      woken += 1;
+      continue;
+    }
+
+    // A run that already finished has nothing left to wake.
+    const run = row.runId
+      ? await runtime.world.runs.get(row.runId, { resolveData: "none" }).catch(() => null)
+      : null;
+
+    if (run && ["completed", "failed", "cancelled"].includes(run.status)) {
+      await ctx.db
+        .update(approvals)
+        .set({ resumeState: "done" })
+        .where(and(eq(approvals.id, row.id), eq(approvals.resumeState, "needed")));
+    }
+  }
+
+  return woken;
+}
+
+/**
  * Start the Workflow runtime and the sweeper. The World's tables are migrated first, the step
  * implementations registered, and runs delivered in this process.
  *
@@ -191,9 +203,9 @@ export async function startBackground(
   const bundle = await holdBundleLock(ctx.pool, join(GENERATED_DIR, "flow.mjs"), (error) => {
     mismatch(error);
     void stop().then(() => options.onFatal?.(error));
-  }).catch((error: unknown) => {
-    if (error instanceof BundleMismatchError) mismatch(error);
-    throw error;
+  }).catch((cause: unknown) => {
+    if (cause instanceof BundleMismatchError) mismatch(cause);
+    throw cause;
   });
 
   const steps = engineOf(ctx).steps();
@@ -207,8 +219,8 @@ export async function startBackground(
   const timer = setInterval(() => {
     running = running
       .then(() => sweep(ctx))
-      .catch((error: unknown) => {
-        ctx.log.warn("sweep failed", { error: error instanceof Error ? error.name : "unknown" });
+      .catch((cause: unknown) => {
+        ctx.log.warn("sweep failed", { error: cause instanceof Error ? cause.name : "unknown" });
       });
   }, SWEEP_INTERVAL_MS);
 

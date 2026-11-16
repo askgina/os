@@ -2,7 +2,7 @@ import type { ApprovalKind } from "@askgina/os-api";
 import type { ApprovalId, WalletRef, WorkspaceId } from "@askgina/os-protocol";
 import { and, asc, eq } from "drizzle-orm";
 import type { Hono } from "hono";
-import { requireMember } from "../access.ts";
+import { requireMember, workspaceIdFromPath } from "../access.ts";
 import { appendAudit } from "../audit.ts";
 import type { AppContext, Session } from "../context.ts";
 import { approvals, wallets, workspaces } from "../db/schema.ts";
@@ -93,14 +93,14 @@ async function mirrorAllWallets(ctx: AppContext, workspaceId: WorkspaceId): Prom
  */
 export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
   handle(app, ctx, "getDeletionPreflight", async ({ session, params }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "owner");
 
     return deletionPreflight(ctx, workspaceId);
   });
 
   handle(app, ctx, "requestDeleteWorkspace", async ({ session, params, body }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "owner");
     // The signer's own flags decide: a deletion is asked for only once nothing signs.
     const state = await signerCall(() => ctx.signer.getWorkspace(workspaceId));
@@ -150,7 +150,7 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "cancelDeleteWorkspace", async ({ session, params }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     // Any member: cancelling keeps the keys and leaves the workspace paused.
     const role = await requireMember(ctx, session, workspaceId, "viewer");
     const waiting = await waitingRequest(ctx, workspaceId, "delete-workspace", workspaceId);
@@ -191,7 +191,7 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "requestRetireWallet", async ({ session, params, body }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "owner");
     const { wallet } = await loadWallet(ctx, workspaceId, params.walletId);
     // The envelope names the wallet as the signer holds it, never as our mirror does.
@@ -228,7 +228,7 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "cancelRetireWallet", async ({ session, params }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "approver");
     const { wallet, agentId } = await loadWallet(ctx, workspaceId, params.walletId);
 
@@ -285,14 +285,14 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
   // --- export and clone (D11) -----------------------------------------------------------------
 
   handle(app, ctx, "exportTemplate", async ({ session, params }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "owner");
 
     return toTemplate(ctx, workspaceId);
   });
 
   handle(app, ctx, "exportRecord", async ({ session, params }) => {
-    const workspaceId = params.workspaceId as WorkspaceId;
+    const workspaceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, workspaceId, "owner");
     await requireRecentSignIn(ctx, session, "export the record");
     const lines: string[] = [];
@@ -304,7 +304,7 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
   });
 
   handle(app, ctx, "cloneWorkspace", async ({ session, params, body }) => {
-    const sourceId = params.workspaceId as WorkspaceId;
+    const sourceId = workspaceIdFromPath(params.workspaceId);
     await requireMember(ctx, session, sourceId, "owner");
     const { workspaceId, ...result } = await cloneWorkspace(ctx, session, { ...body, sourceId });
 

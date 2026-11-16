@@ -16,6 +16,8 @@ import type { SettledStatus, StepImplementations } from "../src/execution/steps.
 const STEPS = Symbol.for("askgina.os.steps");
 
 function steps(): StepImplementations {
+  // SAFETY: the server's registerSteps (src/execution/steps.ts) is the only writer of this
+  // registered symbol and stores a StepImplementations there; an unset slot is caught below.
   const registered = (globalThis as Record<symbol, StepImplementations | undefined>)[STEPS];
 
   if (registered === undefined) throw new Error("step implementations are not registered");

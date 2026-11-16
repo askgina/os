@@ -38,7 +38,7 @@ export function templateFileText(template: WorkspaceTemplate): string {
  * Whether the server refused the record because the sign-in is too old: the record needs a
  * passkey sign-in from the last 300 seconds.
  */
-export function needsFreshSignIn(error: unknown): boolean {
+export function needsFreshSignIn(error: Error | null): boolean {
   return (
     error instanceof ApiError && error.code === "forbidden" && error.detail === "sign_in_again"
   );

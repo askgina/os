@@ -10,6 +10,7 @@ import {
   VenueNetwork,
 } from "@askgina/os-protocol";
 import { concatBytes, hashTypedData, keccak256, numberToBytes } from "viem";
+import { z } from "zod";
 import { encodeMsgpack, MsgpackMap } from "./msgpack.ts";
 
 /**
@@ -284,22 +285,32 @@ export function payloadDigest(payload: HyperliquidPayload): Hex32 {
       );
 }
 
+/** What OWS signs typed data from: the chain it checks the domain against, and the JSON. */
+export interface TypedDataRequest {
+  chain: `eip155:${number}`;
+  json: string;
+}
+
+/** The one bigint in the typed data, the withdrawal's `time`, as the JSON replacer meets it. */
+const TypedDataInteger = z.bigint();
+
 /**
  * A payload's typed data as `eth_signTypedData_v4` JSON for OWS: the `EIP712Domain` type written
  * out and every integer (chain id, `time`) a JSON number; each is a safe integer, checked when the
  * typed data was built. Returns the chain argument OWS checks the domain against.
  */
-export function eip712Json(payload: HyperliquidPayload): {
-  chain: `eip155:${number}`;
-  json: string;
-} {
+export function eip712Json(payload: HyperliquidPayload): TypedDataRequest {
   const typedData = payloadTypedData(payload);
 
   return {
     chain: `eip155:${typedData.domain.chainId}`,
     json: JSON.stringify(
       { ...typedData, types: { EIP712Domain: EIP712_DOMAIN_TYPE, ...typedData.types } },
-      (_key, value) => (typeof value === "bigint" ? Number(value) : value),
+      (_key, value) => {
+        const integer = TypedDataInteger.safeParse(value);
+
+        return integer.success ? Number(integer.data) : value;
+      },
     ),
   };
 }

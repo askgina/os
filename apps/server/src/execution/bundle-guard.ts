@@ -115,8 +115,8 @@ export async function holdBundleLock(
           client = fresh;
           retryMs = RETRY_FIRST_MS;
         },
-        (error: unknown) => {
-          if (error instanceof BundleMismatchError) onMismatch(error);
+        (cause: unknown) => {
+          if (cause instanceof BundleMismatchError) onMismatch(cause);
           else reacquire();
         },
       );

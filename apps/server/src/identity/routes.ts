@@ -81,7 +81,10 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
       response: body.response,
     });
 
-    const userId = ceremony.userId as UserId;
+    const { userId } = ceremony;
+
+    // startSetup stores the new person's id with every setup ceremony.
+    if (userId === null) throw new Error("a setup ceremony without its user id");
     const displayName = ceremony.context.displayName ?? "Owner";
     await ctx.db.transaction(async (tx) => {
       // Two setups racing with two ceremonies started from the same token: the second one waits
@@ -105,7 +108,7 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
   handle(app, ctx, "finishLogin", async ({ body, c }) => {
     const { userId, credentialId } = await finishLogin(ctx, {
       ceremonyId: body.ceremonyId,
-      response: body.response as never,
+      response: body.response,
     });
 
     await issueSession(ctx, c, { userId, credentialId });

@@ -14,6 +14,7 @@ import {
 import type { AttemptResponse, SignResponse, TransactionParams } from "@askgina/os-protocol/signer";
 import { parseTransaction, recoverTransactionAddress } from "viem";
 import { afterAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { createTestVault, SCHEMA_VERSION, type Vault } from "../src/index.ts";
 import {
   approveIntent,
@@ -22,6 +23,7 @@ import {
   Clock,
   DROP_VERSION_7,
   ETH,
+  eip1559Serialized,
   grantMandate,
   header,
   intentFor,
@@ -37,6 +39,9 @@ import {
   useRequest,
   type World,
 } from "./harness.ts";
+
+/** The row `PRAGMA user_version` returns. */
+const UserVersion = z.object({ user_version: z.number() });
 
 /** The first signature's fees (`txParams`). */
 const FEE = 2_000_000_000n;
@@ -183,7 +188,7 @@ describe("a reprice", () => {
       expect([first.maxFeePerGas, first.maxPriorityFeePerGas]).toEqual([FEE, TIP]);
 
       const from = await recoverTransactionAddress({
-        serializedTransaction: next.signedTransaction as `0x02${string}`,
+        serializedTransaction: eip1559Serialized(next.signedTransaction),
       });
 
       expect(from.toLowerCase()).toBe(world.address);
@@ -258,7 +263,7 @@ describe("a reprice", () => {
     const applied = decisions.find((decision) => decision.action === "set-policy")?.approvalId;
 
     if (!applied) throw new Error("no policy approval");
-    await refused(world.t.client.reprice(applied as ApprovalId, request), "conflict");
+    await refused(world.t.client.reprice(applied, request), "conflict");
 
     // Another envelope for the same approval id and intent: not the one people approved.
     const other = approveIntent(world, payment.intent).envelope;
@@ -803,7 +808,7 @@ describe("the database's schema version 6", () => {
     t.signer.close();
 
     const db = new DatabaseSync(sqlitePath);
-    const { user_version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
+    const { user_version } = UserVersion.parse(db.prepare("PRAGMA user_version").get());
     db.close();
     expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(6);
     expect(user_version).toBe(SCHEMA_VERSION);

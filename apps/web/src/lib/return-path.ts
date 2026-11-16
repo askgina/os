@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 /** Where a person lands after signing in when they asked for no page, or for an unsafe one. */
 export const DEFAULT_LANDING = "/";
 
@@ -6,6 +8,9 @@ const MAX_LENGTH = 2048;
 
 /** Only used to resolve a path; never contacted. */
 const BASE = "https://return-path.invalid";
+
+/** A requested page as the query string can carry one: text, no longer than any page here. */
+const RequestedPath = z.string().max(MAX_LENGTH);
 
 /** True if the text holds a C0 control character or DEL, which browsers strip or reinterpret. */
 function hasControlCharacter(text: string): boolean {
@@ -19,16 +24,20 @@ function hasControlCharacter(text: string): boolean {
 }
 
 /**
- * The page to open after signing in, if `value` names a page on this site; the default landing
- * page otherwise. Accepted: a path with exactly one leading `/`. Refused: `//host` and `/\host`
- * (browsers read both as another origin), any backslash, any scheme or absolute URL, control
+ * The page to open after signing in, if `requested` names a page on this site; the default
+ * landing page otherwise. Accepted: a path with exactly one leading `/`. Refused: `//host` and
+ * `/\host` (browsers read both as another origin), any backslash, any scheme or absolute URL, control
  * characters, a path whose dot segments resolve to `//`, and a path with an encoded `/`, `\` or
  * control character (`%2F`, `%5C`, `%09`), which no page here has and which a later decoding
  * could turn into `//host`.
  * The result is the resolved path, search and hash, so what was checked is what is opened.
+ * `requested` is whatever the query string held, so it is decoded here, where it enters.
  */
-export function safeReturnPath(value: unknown): string {
-  if (typeof value !== "string" || value.length > MAX_LENGTH) return DEFAULT_LANDING;
+export function safeReturnPath<Requested>(requested: Requested): string {
+  const decoded = RequestedPath.safeParse(requested);
+
+  if (!decoded.success) return DEFAULT_LANDING;
+  const value = decoded.data;
 
   if (!value.startsWith("/") || value.startsWith("//")) return DEFAULT_LANDING;
 

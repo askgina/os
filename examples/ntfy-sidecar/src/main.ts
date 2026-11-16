@@ -4,10 +4,10 @@
  * credential of the control plane's: only the webhook's signing secret, and an ntfy token if the
  * topic needs one. Settings are listed in `src/config.ts` and the README.
  */
-import { createBridge } from "./bridge.ts";
+import { createBridge, type LogFields } from "./bridge.ts";
 import { readConfig, type SidecarConfig } from "./config.ts";
 
-function say(fields: Record<string, unknown>): void {
+function say(fields: LogFields): void {
   process.stdout.write(`${JSON.stringify(fields)}\n`);
 }
 

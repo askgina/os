@@ -1,10 +1,11 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import type { Address, Hex, WalletId } from "@askgina/os-protocol";
+import { Address, type Hex, type WalletId } from "@askgina/os-protocol";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import * as ows from "@open-wallet-standard/core";
 import { keccak256, serializeTransaction, type TransactionSerializableEIP1559 } from "viem";
 import { privateKeyToAddress } from "viem/accounts";
+import { z } from "zod";
 import {
   eip712Json,
   type HyperliquidPayload,
@@ -14,6 +15,12 @@ import {
 
 /** An EIP-1559 transaction the signer built itself from an approved intent. */
 export type EvmTransaction = TransactionSerializableEIP1559 & { chainId: number };
+
+/** A wallet a vault just created: its lowercase address, and what later unlocks it for signing. */
+export interface CreatedWallet {
+  address: Address;
+  credential: string;
+}
 
 /**
  * Where wallet keys live. The signer decides what to sign; a vault only holds keys and signs the
@@ -27,7 +34,7 @@ export type EvmTransaction = TransactionSerializableEIP1559 & { chainId: number 
  */
 export interface Vault {
   /** Create a new wallet with its own key. `credential` is what later unlocks it for signing. */
-  createWallet(walletId: WalletId): { address: Address; credential: string };
+  createWallet(walletId: WalletId): CreatedWallet;
   /** Sign one transaction and return it serialized, ready to broadcast. */
   signEvmTransaction(walletId: WalletId, credential: string, transaction: EvmTransaction): Hex;
   /** Sign one Hyperliquid L1 action hash or withdrawal with the wallet's own key. */
@@ -58,8 +65,8 @@ const MIN_PASSPHRASE_LENGTH = 12;
 
 // OWS reports every failure as a plain Error whose message is the only distinguishing data, so the
 // package version is pinned exactly and the mapping below is checked by the real-OWS test.
-function classifyOwsError(error: unknown): VaultError {
-  const message = error instanceof Error ? error.message : "";
+function classifyOwsError(cause: unknown): VaultError {
+  const message = cause instanceof Error ? cause.message : "";
 
   if (/API key (not found|expired)|decryption failed/i.test(message)) {
     return new VaultError("credential_rejected", "the vault rejected the wallet credential");
@@ -74,6 +81,9 @@ function classifyOwsError(error: unknown): VaultError {
 
 /** OWS's answer when the key or wallet a call names is not in the vault. */
 const OWS_GONE = /^(API key not found|wallet not found)/i;
+
+/** The two fields of an OWS key listing the vault reads; `listApiKeys` is typed `any[]`. */
+const OwsKeyName = z.object({ id: z.string(), name: z.string() });
 
 /** Run an OWS call that deletes something; finding nothing to delete is success. */
 function owsDelete(operation: () => void): void {
@@ -162,7 +172,7 @@ export class OwsVault implements Vault {
     this.#passphraseFile = options.passphraseFile;
   }
 
-  createWallet(walletId: WalletId): { address: Address; credential: string } {
+  createWallet(walletId: WalletId): CreatedWallet {
     if (!existsSync(this.#passphraseFile)) {
       throw new VaultError("passphrase_missing", "the vault passphrase file is absent");
     }
@@ -192,11 +202,15 @@ export class OwsVault implements Vault {
 
     if (!account) throw new VaultError("failed", "the new wallet has no EVM account");
 
+    const address = Address.safeParse(account.address.toLowerCase());
+
+    if (!address.success) throw new VaultError("failed", "the new wallet's address is malformed");
+
     const key = owsCall(() =>
       ows.createApiKey(walletId, [wallet.id], [], passphrase, null, this.#vaultPath),
     );
 
-    return { address: account.address.toLowerCase() as Address, credential: key.token };
+    return { address: address.data, credential: key.token };
   }
 
   signEvmTransaction(walletId: WalletId, credential: string, transaction: EvmTransaction): Hex {
@@ -220,7 +234,7 @@ export class OwsVault implements Vault {
     return serializeTransaction(
       { ...transaction, type: "eip1559" },
       splitSignature(result.signature, result.recoveryId ?? undefined),
-    ) as Hex;
+    );
   }
 
   /**
@@ -257,10 +271,11 @@ export class OwsVault implements Vault {
       throw new VaultError("failed", "the vault could not list its keys");
     }
 
-    for (const key of keys) {
-      const { id, name } = (key ?? {}) as { id?: unknown; name?: unknown };
+    for (const entry of keys) {
+      const key = OwsKeyName.safeParse(entry);
 
-      if (name !== walletId || typeof id !== "string") continue;
+      if (!key.success || key.data.name !== walletId) continue;
+      const { id } = key.data;
       owsDelete(() => ows.revokeApiKey(id, this.#vaultPath));
     }
 
@@ -325,7 +340,7 @@ export function createTestVault(): Vault {
       wallets.set(walletId, { privateKey, credential });
       const address = privateKeyToAddress(`0x${Buffer.from(privateKey).toString("hex")}`);
 
-      return { address: address.toLowerCase() as Address, credential };
+      return { address: Address.parse(address.toLowerCase()), credential };
     },
     signEvmTransaction(walletId, credential, transaction) {
       const wallet = unlock(walletId, credential);
@@ -339,7 +354,7 @@ export function createTestVault(): Vault {
           s: `0x${signature.s.toString(16).padStart(64, "0")}`,
           yParity: signature.recovery ?? 0,
         },
-      ) as Hex;
+      );
     },
     signHyperliquid(walletId, credential, payload) {
       const wallet = unlock(walletId, credential);

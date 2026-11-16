@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { newId } from "@askgina/os-protocol";
 import { mnemonicToAccount } from "viem/accounts";
 import { afterAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { OwsVault } from "../src/index.ts";
 import {
   approveIntent,
@@ -30,6 +31,9 @@ const run = promisify(execFile);
 
 const ADMIN = new URL("../src/admin.ts", import.meta.url).pathname;
 
+/** The one JSON object the admin CLI prints per run. */
+const AdminLine = z.record(z.string(), z.json());
+
 describe("the admin CLI on the signer host", () => {
   const dir = mkdtempSync(join(tmpdir(), "os-signer-admin-"));
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -47,7 +51,7 @@ describe("the admin CLI on the signer host", () => {
     ...confirmationEnvironment(dir),
   };
 
-  async function admin(args: string[]): Promise<{ code: number; line: Record<string, unknown> }> {
+  async function admin(args: string[]) {
     const result = await run(process.execPath, [ADMIN, ...args], { env }).then(
       ({ stdout }) => ({ code: 0, stdout }),
       (error: { code: number; stdout: string }) => ({ code: error.code, stdout: error.stdout }),
@@ -56,7 +60,7 @@ describe("the admin CLI on the signer host", () => {
     const lines = result.stdout.trim().split("\n");
     expect(lines).toHaveLength(1);
 
-    return { code: result.code, line: JSON.parse(lines[0] ?? "") };
+    return { code: result.code, line: AdminLine.parse(JSON.parse(lines[0] ?? "")) };
   }
 
   const enroll = (workspaceId: string, person: Person) =>
@@ -291,7 +295,7 @@ describe("the admin CLI on the signer host", () => {
         {
           ...header(t.clock, newId("apr"), world.workspaceId),
           type: "retire-wallet",
-          wallet: { walletId: world.walletId, address: world.address as `0x${string}` },
+          wallet: { walletId: world.walletId, address: world.address },
           destroyAfter: t.clock.value + 60,
         },
         world.people,

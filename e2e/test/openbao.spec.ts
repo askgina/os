@@ -19,6 +19,7 @@ import {
   payingAgent,
   propose,
 } from "../src/installation.ts";
+import type { JsonObject } from "../src/json.ts";
 import type { Person } from "../src/person.ts";
 import {
   compose,
@@ -83,17 +84,16 @@ async function bao(
   method: string,
   path: string,
   token: string | undefined,
-  body?: unknown,
+  body?: JsonObject,
 ): Promise<BaoAnswer> {
-  const response = await fetch(`${stack.openBaoUrl}/v1/${path}`, {
-    method,
-    headers: {
-      "content-type": "application/json",
-      ...(token === undefined ? {} : { "x-vault-token": token }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    signal: AbortSignal.timeout(10_000),
-  });
+  const headers = new Headers({ "content-type": "application/json" });
+
+  if (token !== undefined) headers.set("x-vault-token", token);
+  const init: RequestInit = { method, headers };
+
+  if (body !== undefined) init.body = JSON.stringify(body);
+  init.signal = AbortSignal.timeout(10_000);
+  const response = await fetch(`${stack.openBaoUrl}/v1/${path}`, init);
 
   const text = await response.text();
   const answer: unknown = text === "" ? {} : JSON.parse(text);
@@ -136,7 +136,7 @@ async function liveKeks(): Promise<Record<string, number>> {
 }
 
 /** A JSON line for the record: CI keeps it in the job's log. */
-function record(line: Record<string, unknown>): void {
+function record(line: JsonObject): void {
   process.stdout.write(`${JSON.stringify(line)}\n`);
 }
 
@@ -263,7 +263,7 @@ test("with OpenBao paused for 20 seconds new work fails closed, and a payment ap
     // New work needs a data key and none is cached: the proposal is refused, not stored.
     const refusal = await propose(payer.agent, RECIPIENT, "0.001", REFUSED_MEMO).then(
       () => null,
-      (error: unknown) => error,
+      (cause: unknown) => cause,
     );
 
     refusedAfterMs = Date.now() - pausedAt;

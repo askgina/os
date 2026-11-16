@@ -7,12 +7,12 @@ import {
   Sweep,
   sweepHash,
   type UserId,
-  type WalletId,
   type WorkspaceId,
 } from "@askgina/os-protocol";
 import { SignerError } from "@askgina/os-protocol/signer";
 import { and, eq, ne } from "drizzle-orm";
 import { encodeFunctionData, erc20Abi, formatUnits } from "viem";
+import { z } from "zod";
 import { ApprovalFailure, type ApprovalKindHandler } from "../approvals/kinds.ts";
 import { appendAudit } from "../audit.ts";
 import type { AppContext } from "../context.ts";
@@ -40,14 +40,19 @@ import {
  * Signing, the nonce, the broadcast and the follow-up are the same as an intent's.
  */
 
-/** What `sweep-wallet` keeps sealed in its approval's detail. */
-interface SweepDetail {
-  sweep: Sweep;
-  assetSymbol: string;
-  assetDecimals: number;
+/**
+ * What `sweep-wallet` keeps sealed in its approval's detail. The sweep was sealed as `Sweep`
+ * parsed it, so parsing it again changes nothing that is hashed or sent.
+ */
+const SweepDetail = z.object({
+  sweep: Sweep,
+  assetSymbol: z.string(),
+  assetDecimals: z.number(),
   /** The simulation's gas estimate, decimal, or the fallback when it failed. */
-  gasEstimate: string;
-}
+  gasEstimate: z.string(),
+});
+
+type SweepDetail = z.infer<typeof SweepDetail>;
 
 /**
  * Open a request to sweep `asset` from the wallet to `to`. The amount is fixed now, from the
@@ -82,11 +87,11 @@ export async function requestSweep(
   if (!workspace) throw new HttpError("not_found", "no such workspace");
 
   // The signer's copy of the policy decides the fee ceiling it will accept.
-  const state = await ctx.signer.getWallet(wallet.id).catch((error: unknown) => {
+  const state = await ctx.signer.getWallet(wallet.id).catch((cause: unknown) => {
     throw new HttpError(
       "internal",
       "the signer could not be reached",
-      error instanceof SignerError ? error.code : undefined,
+      cause instanceof SignerError ? cause.code : undefined,
     );
   });
 
@@ -98,10 +103,8 @@ export async function requestSweep(
     if (!balance) throw new HttpError("internal", "the balance could not be read");
 
     // The gas of the transfer does not depend on the amount, so one base unit stands in for it.
-    const simulated = await chains.simulate({
-      chainId: input.chainId,
-      from: wallet.address,
-      ...(input.asset === "native"
+    const transfer =
+      input.asset === "native"
         ? { to: input.to, value: 1n, data: undefined }
         : {
             to: input.asset,
@@ -111,18 +114,23 @@ export async function requestSweep(
               functionName: "transfer",
               args: [input.to, 1n],
             }),
-          }),
+          };
+
+    const simulated = await chains.simulate({
+      chainId: input.chainId,
+      from: wallet.address,
+      ...transfer,
     });
 
     return { balance, simulated, fees: await chains.fees(input.chainId) };
   };
 
-  const { balance, simulated, fees } = await read().catch((error: unknown) => {
-    if (error instanceof ChainError) {
-      throw new HttpError("internal", "the chain could not be read", error.code);
+  const { balance, simulated, fees } = await read().catch((cause: unknown) => {
+    if (cause instanceof ChainError) {
+      throw new HttpError("internal", "the chain could not be read", cause.code);
     }
 
-    throw error;
+    throw cause;
   });
 
   const estimate = simulated.gasEstimate ?? FALLBACK_GAS;
@@ -196,13 +204,13 @@ export async function requestSweep(
 const sweepWallet: ApprovalKindHandler<"sweep-wallet"> = {
   kind: "sweep-wallet",
   async title(_ctx, _approval, detail) {
-    const { sweep, assetSymbol, assetDecimals } = detail as SweepDetail;
+    const { sweep, assetSymbol, assetDecimals } = SweepDetail.parse(detail);
     const amount = formatUnits(BigInt(sweep.amount), assetDecimals);
 
     return `Empty ${amount} ${assetSymbol} from the wallet to ${sweep.to.slice(0, 6)}…${sweep.to.slice(-4)}`;
   },
   async describe(ctx, approval, detail) {
-    const { sweep, assetSymbol, assetDecimals } = detail as SweepDetail;
+    const { sweep, assetSymbol, assetDecimals } = SweepDetail.parse(detail);
     const { wallet, agentId } = await loadWallet(ctx, approval.workspaceId, sweep.walletId);
 
     const [treasury] = await ctx.db
@@ -239,17 +247,14 @@ const sweepWallet: ApprovalKindHandler<"sweep-wallet"> = {
     };
   },
   async confirmationSubject(_ctx, _approval, detail) {
-    return { kind: "sweep-wallet", sweep: (detail as SweepDetail).sweep };
+    return { kind: "sweep-wallet", sweep: SweepDetail.parse(detail).sweep };
   },
   async execute(ctx, approval, authorization, detail) {
-    const { sweep, gasEstimate } = detail as SweepDetail;
+    const { sweep, gasEstimate } = SweepDetail.parse(detail);
 
     if (await transactionOf(ctx, approval.id)) return;
 
-    const [wallet] = await ctx.db
-      .select()
-      .from(wallets)
-      .where(eq(wallets.id, sweep.walletId as WalletId));
+    const [wallet] = await ctx.db.select().from(wallets).where(eq(wallets.id, sweep.walletId));
 
     if (!wallet) throw new ApprovalFailure("wallet_missing", "the wallet no longer exists");
     await signOnce(ctx, {

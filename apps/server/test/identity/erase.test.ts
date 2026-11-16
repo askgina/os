@@ -1,5 +1,5 @@
 import { ApiError, type MandateDraft, type WorkspaceTemplate } from "@askgina/os-api";
-import type { ApprovalId, UserId, WorkspaceId } from "@askgina/os-protocol";
+import type { UserId, WorkspaceId } from "@askgina/os-protocol";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -78,12 +78,12 @@ async function joinAsViewer(workspaceId: WorkspaceId, displayName: string): Prom
 
   const session = await browser.api.call("finishInviteRegistration", {
     params: { token },
-    body: { ceremonyId: start.ceremonyId, response: passkey.response as never },
+    body: { ceremonyId: start.ceremonyId, response: passkey.response },
   });
 
   if (session.user === null) throw new Error("invite registration did not sign in");
 
-  return session.user.id as UserId;
+  return session.user.id;
 }
 
 /** Rows anywhere in the `os` schema whose text holds `marker` as itself, hex or base64. */
@@ -136,7 +136,7 @@ beforeAll(async () => {
     agentId: f.agent.id,
     assets: [
       {
-        chainId: TEST_CHAIN_ID as MandateDraft["assets"][number]["chainId"],
+        chainId: TEST_CHAIN_ID,
         asset: "native",
         maxPerAction: ETH.toString(),
         maxPerWindow: (2n * ETH).toString(),
@@ -156,14 +156,13 @@ beforeAll(async () => {
     body: draft,
   });
 
-  expect((await f.t.approve(grant.id as ApprovalId, [bob])).status).toBe("executed");
+  expect((await f.t.approve(grant.id, [bob])).status).toBe("executed");
   const [state] = (await f.t.ctx.signer.listMandates(f.agent.walletId)).mandates;
   expect(state?.grantedBy).toEqual([bob.userId]);
   mandateId = state?.mandate.id ?? "";
 
   // Bob's own workspace, where he is the only owner.
-  bobs = (await bob.browser.api.call("createWorkspace", { body: { name: "Bob's books" } }))
-    .id as WorkspaceId;
+  bobs = (await bob.browser.api.call("createWorkspace", { body: { name: "Bob's books" } })).id;
 
   template = await owner().call("exportTemplate", { params: { workspaceId: ws } });
   expect(template.members.map((member) => member.userId)).toContain(bob.userId);
@@ -197,7 +196,9 @@ describe("erasing a person", () => {
     });
 
     const enroll = pending.items.find((item) => item.kind === "add-approver");
-    expect((await f.t.approve(enroll?.id as ApprovalId, [bob])).status).toBe("executed");
+
+    if (enroll === undefined) throw new Error("no pending add-approver request");
+    expect((await f.t.approve(enroll.id, [bob])).status).toBe("executed");
   });
 
   it("refuses while a workspace's threshold needs their passkey", async () => {
@@ -206,7 +207,7 @@ describe("erasing a person", () => {
       body: { adminThreshold: 3 },
     });
 
-    expect((await f.t.approve(raise.id as ApprovalId, [f.t.owner])).status).toBe("executed");
+    expect((await f.t.approve(raise.id, [f.t.owner])).status).toBe("executed");
     expect(await refusal(bob.browser.api.call("eraseMe", { body: {} }))).toEqual({
       code: "conflict",
       detail: "last_approver",
@@ -223,9 +224,7 @@ describe("erasing a person", () => {
       body: { adminThreshold: 2 },
     });
 
-    expect((await f.t.approve(lower.id as ApprovalId, [f.t.owner, bob, carol])).status).toBe(
-      "executed",
-    );
+    expect((await f.t.approve(lower.id, [f.t.owner, bob, carol])).status).toBe("executed");
   });
 
   it("needs a passkey sign-in from the last five minutes", async () => {
@@ -256,7 +255,7 @@ describe("erasing a person", () => {
 
     for (const approval of first.approvals) {
       const people = approval.workspaceId === bobs ? [f.t.owner] : [bob, carol];
-      expect((await f.t.approve(approval.id as ApprovalId, people)).status).toBe("executed");
+      expect((await f.t.approve(approval.id, people)).status).toBe("executed");
     }
 
     for (const workspaceId of [f.workspaceId, bobs]) {
@@ -366,9 +365,8 @@ describe("the operator's command", () => {
   it("erases someone whose passkeys approve nowhere, as the system, once", async () => {
     const vera = await joinAsViewer(f.workspaceId, "Vera Viewer");
     const printed: object[] = [];
-    const print = (line: object) => printed.push(line);
-    expect(await eraseCli(["--user", vera], f.t.ctx, print)).toBe(0);
-    expect(await eraseCli(["--user", vera], f.t.ctx, print)).toBe(0);
+    expect(await eraseCli(["--user", vera], f.t.ctx, (line) => printed.push(line))).toBe(0);
+    expect(await eraseCli(["--user", vera], f.t.ctx, (line) => printed.push(line))).toBe(0);
     expect(printed).toEqual([
       { ok: true, userId: vera, alreadyErased: false },
       { ok: true, userId: vera, alreadyErased: true },
@@ -392,7 +390,7 @@ describe("the operator's command", () => {
       body: { adminThreshold: 1 },
     });
 
-    expect((await f.t.approve(lower.id as ApprovalId, [f.t.owner, carol])).status).toBe("executed");
+    expect((await f.t.approve(lower.id, [f.t.owner, carol])).status).toBe("executed");
     const printed: object[] = [];
     expect(await eraseCli(["--user", carol.userId], f.t.ctx, (line) => printed.push(line))).toBe(3);
     expect(printed).toEqual([{ ok: false, code: "still_approving", workspaces: [f.workspaceId] }]);

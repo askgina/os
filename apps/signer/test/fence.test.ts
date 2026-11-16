@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { newId } from "@askgina/os-protocol";
 import { afterAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { createTestVault, SCHEMA_VERSION, SchemaTooNewError } from "../src/index.ts";
 import {
   approveIntent,
@@ -304,10 +305,13 @@ describe("after a fence", () => {
   });
 });
 
+/** The row `PRAGMA user_version` returns. */
+const UserVersion = z.object({ user_version: z.number() });
+
 describe("the database's schema version", () => {
   const userVersion = (path: string) => {
     const db = new DatabaseSync(path);
-    const { user_version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
+    const { user_version } = UserVersion.parse(db.prepare("PRAGMA user_version").get());
     db.close();
 
     return user_version;

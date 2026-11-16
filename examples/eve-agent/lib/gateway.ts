@@ -7,6 +7,18 @@
  *   AGENT_TOKEN  the token shown once when the agent was created in the UI (osa_…)
  */
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { z } from "zod";
+
+/** A JSON value, as the gateway's tools take and answer them. */
+export const GatewayJson = z.json();
+
+export type GatewayJson = z.infer<typeof GatewayJson>;
+
+/** A tool's arguments by name. An optional argument left unset is not sent. */
+export type GatewayArguments = { [name: string]: GatewayJson | undefined };
+
+/** The body of a refusal: its stable code. */
+const RefusalBody = z.object({ error: z.string() });
 
 export class GatewayRefusal extends Error {
   override readonly name = "GatewayRefusal";
@@ -46,25 +58,24 @@ function connect(): Promise<Client> {
 }
 
 /** Call one gateway tool and return its JSON answer. A refusal becomes {@link GatewayRefusal}. */
-export async function callGateway(name: string, args: Record<string, unknown>): Promise<unknown> {
+export async function callGateway(name: string, args: GatewayArguments): Promise<GatewayJson> {
   connection ??= connect();
   const client = await connection;
   const result = await client.callTool({ name, arguments: args });
-  const content = result.content as { type: string; text?: string }[] | undefined;
-  const text = content?.find((part) => part.type === "text")?.text ?? "";
+  const text = result.content.find((part) => part.type === "text")?.text ?? "";
 
   if (result.isError) {
     // Refusals carry a stable code; the message text is not passed on to the model verbatim.
     let code = "refused";
 
     try {
-      const parsed = JSON.parse(text) as { error?: unknown };
+      const refusal = RefusalBody.safeParse(JSON.parse(text));
 
-      if (typeof parsed.error === "string") code = parsed.error;
+      if (refusal.success) code = refusal.data.error;
     } catch {}
 
     throw new GatewayRefusal(name, code);
   }
 
-  return result.structuredContent ?? JSON.parse(text);
+  return GatewayJson.parse(result.structuredContent ?? JSON.parse(text));
 }

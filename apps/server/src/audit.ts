@@ -5,6 +5,13 @@ import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { AppContext, Executor } from "./context.ts";
 import { auditEvents, workspaces } from "./db/schema.ts";
+import type { JsonValue } from "./db/sealed.ts";
+
+/**
+ * The detail of an event, as the code that records it builds it: JSON fields. A field set to
+ * `undefined` is left out, as JSON leaves it out.
+ */
+export type AuditDetail = { [field: string]: JsonValue | undefined };
 
 export interface AuditInput {
   workspaceId: WorkspaceId;
@@ -13,7 +20,7 @@ export interface AuditInput {
   action: string;
   subject?: { type: string; id: string };
   /** Stored sealed. Anything a person or agent typed belongs here, not in `action`. */
-  detail?: Record<string, unknown>;
+  detail?: AuditDetail;
 }
 
 /**
@@ -23,7 +30,7 @@ export interface AuditInput {
  */
 export const SealedDetail = z.strictObject({
   salt: z.string(),
-  detail: z.record(z.string(), z.unknown()),
+  detail: z.record(z.string(), z.json()),
 });
 
 export type SealedDetail = z.infer<typeof SealedDetail>;
@@ -81,7 +88,13 @@ export async function appendAudit(
 
     const sealed: SealedDetail = {
       salt: randomBytes(16).toString("base64url"),
-      detail: input.detail ?? {},
+      // The detail without its `undefined` fields, in the same order. Sealing (`JSON.stringify`)
+      // and the digest (canonical JSON) leave those fields out anyway: the bytes are the same.
+      detail: Object.fromEntries(
+        Object.entries(input.detail ?? {}).flatMap(([field, value]) =>
+          value === undefined ? [] : [[field, value] as const],
+        ),
+      ),
     };
 
     const fields: ChainedFields = {
@@ -139,7 +152,7 @@ export async function openAuditSealed(
 export async function openAuditDetail(
   ctx: Pick<AppContext, "sealer">,
   row: { workspaceId: WorkspaceId; seq: number; detail: Buffer },
-): Promise<Record<string, unknown>> {
+): Promise<Record<string, JsonValue>> {
   return (await openAuditSealed(ctx, row)).detail;
 }
 

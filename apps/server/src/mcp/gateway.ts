@@ -2,13 +2,14 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { IntentStatus } from "@askgina/os-api";
 import {
-  type AgentId,
+  Address,
+  Hex,
   HyperliquidTimeInForce,
   isVenueNetwork,
-  type MandateId,
+  MandateId,
   Memo,
   VENUE_NETWORK_NAMES,
-  type WalletId,
+  WalletId,
 } from "@askgina/os-protocol";
 import { createMcpHandler, type McpHttpHandler, McpServer } from "@modelcontextprotocol/server";
 import { and, eq, isNull, lt, or } from "drizzle-orm";
@@ -59,21 +60,22 @@ const TERMINAL: readonly IntentRow["status"][] = [
 ];
 
 // Tool inputs are published as JSON Schema, which the protocol package's custom validators
-// cannot be turned into; these are the same rules written as plain patterns.
+// cannot be turned into; these are the same rules written as plain patterns. Each transform
+// then decodes with the protocol's schema, which accepts everything the pattern let through.
 const WalletIdInput = z
   .string()
   .regex(/^wal_[0-9a-hjkmnp-tv-z]{26}$/)
-  .transform((value) => value as WalletId);
+  .transform((value) => WalletId.parse(value));
 
 const MandateIdInput = z
   .string()
   .regex(/^mnd_[0-9a-hjkmnp-tv-z]{26}$/)
-  .transform((value) => value as MandateId);
+  .transform((value) => MandateId.parse(value));
 
 const CalldataInput = z
   .string()
   .regex(/^0x[0-9a-fA-F]{8}(?:[0-9a-fA-F]{2})*$/)
-  .transform((value) => value.toLowerCase() as `0x${string}`);
+  .transform((value) => Hex.parse(value.toLowerCase()));
 
 const MemoInput = z
   .string()
@@ -84,7 +86,7 @@ const MemoInput = z
 const EvmAddress = z
   .string()
   .regex(/^0x[0-9a-fA-F]{40}$/, "a 0x-prefixed 20-byte hex address")
-  .transform((value) => value.toLowerCase() as `0x${string}`);
+  .transform((value) => Address.parse(value.toLowerCase()));
 
 /** Exactly the tools an agent gets. Nothing here signs, approves or administers. */
 export const MCP_TOOL_NAMES = [
@@ -101,10 +103,10 @@ export const MCP_TOOL_NAMES = [
 const APPROVAL_NOTE =
   'If a mandate a person approved in advance covers the proposal (see whoami), it is signed and sent with no person asked: the answer says authorizedBy "mandate", its mandateId, status approved, and approvalUrl and expiresAt null. Otherwise (authorizedBy "person") nothing is sent yet: a person must approve the proposal with their passkey first, at approvalUrl, before expiresAt. Either way, call get_intent with the returned intentId and waitSeconds (up to 50) to wait for the outcome; repeat until the status is final (confirmed, reverted, stuck, rejected, expired, cancelled, denied, failed or voided). A stuck transaction is still valid: the server raises its fee by itself, and people may speed it up or cancel it (you cannot), so it can still become confirmed or reverted, or voided when a cancel people approved was mined in its place (nothing moved; a network fee was paid). get_intent lists every attempt at the same nonce, and stuckReason says why it is not mined yet. Two proposals racing for the last of a mandate\'s budget can both start approved: the signer signs one and the other ends denied with a counter code such as mandate_over_window_cap, and your next proposal then waits for a person.';
 
-function json(value: unknown) {
+function json<T>(value: T) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value) }],
-    structuredContent: value as Record<string, unknown>,
+    structuredContent: value,
   };
 }
 
@@ -486,6 +488,9 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
         let row = await ownIntent(intentId);
         const initial = row.status;
         const deadline = Date.now() + (waitSeconds ?? 0) * 1000;
+        // SAFETY: this only widens `extra` to read an optional `signal`. SDK 2's ServerContext
+        // has no top-level `signal` (it carries one at `extra.mcpReq.signal`), so this reads
+        // undefined and the wait runs to its deadline or a status change.
         const signal = (extra as { signal?: AbortSignal } | undefined)?.signal;
 
         while (
@@ -518,7 +523,8 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
         const { rows } = await listIntentRows(ctx, {
           workspaceId: agent.workspaceId,
           agentId: agent.id,
-          ...(status === undefined ? {} : { status }),
+          // Undefined means every status, as if the filter were left out.
+          status,
           limit: limit ?? 20,
         });
 
@@ -552,13 +558,11 @@ const sha256 = (value: string) => createHash("sha256").update(value).digest("hex
 
 /** Answer with an HTTP status and a fixed JSON error. */
 function deny(status: number, code: string, message: string): Response {
-  return new Response(JSON.stringify({ error: { code, message } }), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      ...(status === 401 ? { "www-authenticate": "Bearer" } : {}),
-    },
-  });
+  const headers = new Headers({ "content-type": "application/json" });
+
+  if (status === 401) headers.set("www-authenticate", "Bearer");
+
+  return new Response(JSON.stringify({ error: { code, message } }), { status, headers });
 }
 
 /**
@@ -667,10 +671,7 @@ export function mountMcp(app: Hono, ctx: AppContext): void {
       const bound = agent.id;
       handler = createMcpHandler(
         async () => {
-          const [current] = await ctx.db
-            .select()
-            .from(agents)
-            .where(eq(agents.id, bound as AgentId));
+          const [current] = await ctx.db.select().from(agents).where(eq(agents.id, bound));
 
           if (!current) throw new HttpError("unauthenticated", "agent removed");
 

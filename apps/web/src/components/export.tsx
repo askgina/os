@@ -210,7 +210,7 @@ function CloneForm({
   defaultName: string;
   submitLabel: string;
   pending: boolean;
-  error: unknown;
+  error: Error | null;
   onSubmit: (options: CloneOptions) => void;
   onCancel?: () => void;
   children?: ReactNode;

@@ -25,6 +25,7 @@ import type { ConfirmationView } from "@askgina/os-protocol";
 import type { SignerDecision } from "@askgina/os-protocol/signer";
 import { scanForMarkers } from "@askgina/os-testkit";
 import {
+  type ExchangeBody,
   type FakeAsset,
   type FakeNetwork,
   parseExchangeBody,
@@ -32,7 +33,9 @@ import {
 } from "@askgina/os-testkit/fake-hyperliquid";
 import { expect, test } from "@playwright/test";
 import { isAddressEqual, parseEther, parseUnits } from "viem";
+import { z } from "zod";
 import { type AgentConnection, connectAgent, Proposal, ToolRefused } from "../src/agent.ts";
+import type { JsonValue } from "../src/json.ts";
 import { Person } from "../src/person.ts";
 import {
   compose,
@@ -189,7 +192,7 @@ async function newTrader(name: string, rules: TraderRules): Promise<Trader> {
     body: { name },
   });
 
-  const agentId = created.agent.id as Trader["agentId"];
+  const agentId = created.agent.id;
 
   const request = await ada.api.call("requestPolicy", {
     params: { workspaceId: workspace.id, walletId: created.wallet.id },
@@ -254,7 +257,7 @@ async function settles(intentId: string, timeoutMs = 120_000): Promise<IntentDet
       if (!WAITING.includes(intent.status)) return intent;
       last = intent.status;
     } catch (error) {
-      last = `no answer: ${(error as Error).message}`;
+      last = `no answer: ${error instanceof Error ? error.message : String(error)}`;
     }
 
     if (Date.now() > deadline) throw new Error(`intent ${intentId} is still ${last}`);
@@ -277,7 +280,7 @@ async function toolRefusal(
 ): Promise<{ code: string | null; detail: string | null }> {
   const outcome = await attempt.then(
     () => null,
-    (error: unknown) => error,
+    (cause: unknown) => cause,
   );
 
   if (!(outcome instanceof ToolRefused)) {
@@ -393,8 +396,13 @@ async function expectSignedBy(
 ): Promise<void> {
   const parsed = parseExchangeBody(body);
 
-  if (typeof parsed === "string") throw new Error(`the venue could not read a request: ${parsed}`);
+  if (isRefusal(parsed)) throw new Error(`the venue could not read a request: ${parsed}`);
   expect(isAddressEqual(await recoverExchangeSigner(parsed, network), wallet.address)).toBe(true);
+}
+
+/** Whether the venue's parser could not read a body: it answers its reason, a string, then. */
+function isRefusal(parsed: ExchangeBody | string): parsed is string {
+  return z.string().safeParse(parsed).success;
 }
 
 // --- the server's way to the venue ------------------------------------------------------------
@@ -552,7 +560,7 @@ test("an order proposal becomes exactly one order at the venue after a passkey a
   expect(posted.body).toBe(signed.request);
   const parsed = parseExchangeBody(posted.body);
 
-  if (typeof parsed === "string") throw new Error(parsed);
+  if (isRefusal(parsed)) throw new Error(parsed);
   expect(parsed.action).toEqual({
     type: "order",
     orders: [
@@ -1064,7 +1072,7 @@ test("the daily cap counts every order but a reduce-only one, which still closes
     expect(requests.map((request) => request.accepted)).toEqual([true]);
     const parsed = parseExchangeBody(requests[0]?.body ?? "");
 
-    if (typeof parsed === "string") throw new Error(parsed);
+    if (isRefusal(parsed)) throw new Error(parsed);
     expect(parsed.action).toMatchObject({
       type: "order",
       orders: [{ a: BTC, b: false, p: "60000", s: "0.0002", r: true }],
@@ -1247,7 +1255,7 @@ test("a withdrawal from the venue goes to the wallet's own address only, after a
     await expectSignedBy(request.body, withdrawer.wallet);
     const parsed = parseExchangeBody(request.body);
 
-    if (typeof parsed === "string") throw new Error(parsed);
+    if (isRefusal(parsed)) throw new Error(parsed);
 
     if (parsed.action.type !== "withdraw3") throw new Error(`a ${parsed.action.type} was posted`);
     expect(parsed.action.hyperliquidChain).toBe("Testnet");
@@ -1396,7 +1404,7 @@ test("a server whose venues file pairs one of Hyperliquid's own hosts with the w
   expect(both.output).toMatch(/"code":"(ENOTFOUND|EAI_AGAIN)"/);
   expect(both.exitCode, both.output).toBe(1);
 
-  const wrong: [unknown, string][] = [
+  const wrong: [JsonValue, string][] = [
     [
       [{ network: TESTNET, apiUrl: "https://api.hyperliquid.xyz" }],
       "api.hyperliquid.xyz is Hyperliquid's mainnet API",
@@ -1417,12 +1425,11 @@ test("a server whose venues file pairs one of Hyperliquid's own hosts with the w
 test("what an agent typed with an order or a withdrawal, and every signed request, is in no column of the database in the clear", async () => {
   const bodies = [
     ...new Set(
-      [...(await venueExchangeLog()), ...(await venueExchangeLog("mainnet"))]
-        .filter(
-          (record) =>
-            record.accepted && (record.actionType === "order" || record.actionType === "withdraw3"),
-        )
-        .map((record) => record.body),
+      [...(await venueExchangeLog()), ...(await venueExchangeLog("mainnet"))].flatMap((record) =>
+        record.accepted && (record.actionType === "order" || record.actionType === "withdraw3")
+          ? [record.body]
+          : [],
+      ),
     ),
   ];
 
@@ -1431,7 +1438,7 @@ test("what an agent typed with an order or a withdrawal, and every signed reques
   const signatures = bodies.flatMap((body) => {
     const parsed = parseExchangeBody(body);
 
-    if (typeof parsed === "string") throw new Error(parsed);
+    if (isRefusal(parsed)) throw new Error(parsed);
 
     return [parsed.signature.r.slice(2), parsed.signature.s.slice(2)];
   });

@@ -86,7 +86,10 @@ async function failure(attempt: Promise<unknown>): Promise<Error> {
     () => {
       throw new Error("expected a failure");
     },
-    (error: unknown) => error as Error,
+    (cause: unknown) => {
+      if (cause instanceof Error) return cause;
+      throw new Error(`expected an Error, got ${String(cause)}`);
+    },
   );
 }
 
@@ -142,7 +145,7 @@ describe("signing in", () => {
 
     const refused = await failure(wrong.ready());
     expect(refused).toBeInstanceOf(KeyProviderRefusedError);
-    expect((refused as KeyProviderRefusedError).status).toBe(400);
+    expect(refused).toMatchObject({ status: 400 });
     expect(refused.message).not.toContain("not-the-secret");
 
     const missing = provider(server, {
@@ -168,7 +171,7 @@ describe("signing in", () => {
 
     const refused = await failure(byToken.ready());
     expect(refused).toBeInstanceOf(KeyProviderRefusedError);
-    expect((refused as KeyProviderRefusedError).status).toBe(403);
+    expect(refused).toMatchObject({ status: 403 });
   });
 });
 
@@ -335,8 +338,9 @@ describe("what is checked", () => {
     }
 
     expect(error).toBeInstanceOf(KeyProviderConfigError);
-    expect((error as KeyProviderConfigError).code).toBe(setting);
-    expect((error as Error).message).not.toContain("pass");
+    const configError = error instanceof KeyProviderConfigError ? error : undefined;
+    expect(configError?.code).toBe(setting);
+    expect(configError?.message).not.toContain("pass");
   });
 });
 

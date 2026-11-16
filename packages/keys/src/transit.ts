@@ -1,7 +1,13 @@
 import { readFileSync } from "node:fs";
-import { Agent as HttpAgent, request as httpRequest } from "node:http";
-import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
+import { Agent as HttpAgent, request as httpRequest, type OutgoingHttpHeaders } from "node:http";
+import {
+  Agent as HttpsAgent,
+  type AgentOptions as HttpsAgentOptions,
+  request as httpsRequest,
+} from "node:https";
 import { setTimeout as sleep } from "node:timers/promises";
+import { z } from "zod";
+import type { JsonValue } from "./json.ts";
 import {
   type KeyProvider,
   KeyProviderConfigError,
@@ -48,11 +54,7 @@ const MOUNT = /^[a-z0-9_-]+(?:\/[a-z0-9_-]+)*$/;
 const NAME = /^[a-z0-9_-]+$/;
 
 /** Key types that authenticate associated data; any other would ignore the AAD binding. */
-const AEAD_TYPES: Record<string, true> = {
-  "aes128-gcm96": true,
-  "aes256-gcm96": true,
-  "chacha20-poly1305": true,
-};
+const AEAD_TYPES = ["aes128-gcm96", "aes256-gcm96", "chacha20-poly1305"] as const;
 
 const MAX_ANSWER_BYTES = 64 * 1024;
 
@@ -71,15 +73,76 @@ export function isTransitKekId(kekId: string): boolean {
   return kekId.startsWith("bao:");
 }
 
+/** A request body: the fields of one Transit or login call. */
+type RequestBody = Record<string, string | number>;
+
 interface Answer {
   status: number;
-  body: Record<string, unknown> | undefined;
+  /** The parsed JSON, or `undefined` when the body is empty or not JSON. */
+  body: JsonValue | undefined;
 }
 
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
+// OpenBao's answers are decoded field by field. A field that is absent or of another type reads
+// as `undefined`, and so does every field of an answer, or a part of one, that is not a JSON
+// object; the check that needs the field then refuses the answer. Nothing here throws.
+
+const AnswerString = z.string().optional().catch(undefined);
+
+const AnswerBoolean = z.boolean().optional().catch(undefined);
+
+/** A JSON number; `JSON.parse` reads a literal too large for a double as `Infinity`. */
+const AnswerNumber = z.number().or(z.literal(Infinity)).optional().catch(undefined);
+
+/** A key type that authenticates associated data; any other reads as `undefined`. */
+const AnswerAeadType = z.enum(AEAD_TYPES).optional().catch(undefined);
+
+/** `GET <mount>/keys/<key>`: the latest version, and the type. */
+const KeyRead = z
+  .object({ latest_version: AnswerNumber, type: AnswerAeadType })
+  .optional()
+  .catch(undefined);
+
+const KeyReadAnswer = z.object({ data: KeyRead }).optional().catch(undefined);
+
+/** `POST <mount>/encrypt/<key>`. */
+const Encrypted = z.object({ ciphertext: AnswerString }).optional().catch(undefined);
+
+const EncryptAnswer = z.object({ data: Encrypted }).optional().catch(undefined);
+
+/** `POST <mount>/decrypt/<key>`. */
+const Decrypted = z.object({ plaintext: AnswerString }).optional().catch(undefined);
+
+const DecryptAnswer = z.object({ data: Decrypted }).optional().catch(undefined);
+
+/** `GET auth/token/lookup-self`: the token's remaining TTL in seconds, and whether it renews. */
+const TokenLookup = z
+  .object({ ttl: AnswerNumber, renewable: AnswerBoolean })
+  .optional()
+  .catch(undefined);
+
+const TokenLookupAnswer = z.object({ data: TokenLookup }).optional().catch(undefined);
+
+/** A login or `POST auth/token/renew-self`: the token, its lease in seconds, whether it renews. */
+const TokenAuth = z
+  .object({ client_token: AnswerString, lease_duration: AnswerNumber, renewable: AnswerBoolean })
+  .optional()
+  .catch(undefined);
+
+const AuthAnswer = z.object({ auth: TokenAuth }).optional().catch(undefined);
+
+/** The `code` Node sets on a system error, such as `ECONNREFUSED`. */
+const SystemErrorCode = z.object({ code: z.string() });
+
+/** A monitoring event, with `status` only when there is one. */
+function providerEvent(
+  event: KeyProviderEvent["event"],
+  operation: string,
+  status: number | undefined,
+  durationMs: number,
+): KeyProviderEvent {
+  return status === undefined
+    ? { event, provider: "openbao", operation, durationMs }
+    : { event, provider: "openbao", operation, status, durationMs };
 }
 
 /** 429, 5xx (503 is a sealed server) and anything that is neither success nor a 4xx answer. */
@@ -169,17 +232,17 @@ export class TransitKeyProvider implements KeyProvider {
     this.#onEvent = options.onEvent;
 
     if (this.#base.protocol === "https:") {
-      let ca: Buffer | undefined;
+      const agentOptions: HttpsAgentOptions = { keepAlive: true };
 
       if (options.caFile !== undefined) {
         try {
-          ca = readFileSync(options.caFile);
+          agentOptions.ca = readFileSync(options.caFile);
         } catch {
           throw new KeyProviderConfigError("openbao: the CA file cannot be read", "caFile");
         }
       }
 
-      this.#agent = new HttpsAgent({ keepAlive: true, ...(ca ? { ca } : {}) });
+      this.#agent = new HttpsAgent(agentOptions);
     } else {
       if (options.caFile !== undefined) {
         throw new KeyProviderConfigError("openbao: a CA file needs an https: address", "caFile");
@@ -202,16 +265,16 @@ export class TransitKeyProvider implements KeyProvider {
       undefined,
     );
 
-    const data = record(body?.data);
+    const data = KeyReadAnswer.parse(body)?.data;
     const latest = data?.latest_version;
 
-    if (typeof latest !== "number" || !Number.isSafeInteger(latest) || latest < 1) {
+    if (latest === undefined || !Number.isSafeInteger(latest) || latest < 1) {
       throw new KeyProviderRefusedError(
         `openbao: the key ${this.#mount}/${this.#key} was read without a latest version`,
       );
     }
 
-    if (typeof data?.type !== "string" || AEAD_TYPES[data.type] !== true) {
+    if (data?.type === undefined) {
       throw new KeyProviderRefusedError(
         `openbao: the key ${this.#mount}/${this.#key} is not of a type that authenticates associated data`,
       );
@@ -222,16 +285,15 @@ export class TransitKeyProvider implements KeyProvider {
     if (this.#refreshMs > 0 && this.#refreshTimer === undefined && !this.#closed) {
       this.#refreshTimer = setInterval(() => {
         const started = Date.now();
-        this.ready().catch((error: unknown) => {
-          this.#onEvent?.({
-            event: "keys.provider_refresh_failed",
-            provider: "openbao",
-            operation: "read key",
-            ...(error instanceof KeyProviderRefusedError && error.status !== undefined
-              ? { status: error.status }
-              : {}),
-            durationMs: Date.now() - started,
-          });
+        this.ready().catch((cause: unknown) => {
+          this.#onEvent?.(
+            providerEvent(
+              "keys.provider_refresh_failed",
+              "read key",
+              cause instanceof KeyProviderRefusedError ? cause.status : undefined,
+              Date.now() - started,
+            ),
+          );
         });
       }, this.#refreshMs);
       this.#refreshTimer.unref();
@@ -257,9 +319,9 @@ export class TransitKeyProvider implements KeyProvider {
       kekId,
     );
 
-    const ciphertext = record(body?.data)?.ciphertext;
+    const ciphertext = EncryptAnswer.parse(body)?.data?.ciphertext;
 
-    if (typeof ciphertext !== "string" || !ciphertext.startsWith(`vault:v${version}:`)) {
+    if (ciphertext === undefined || !ciphertext.startsWith(`vault:v${version}:`)) {
       throw new KeyProviderRefusedError(
         `openbao: encrypt under ${kekId} did not answer with a version ${version} ciphertext`,
         { kekId },
@@ -294,8 +356,8 @@ export class TransitKeyProvider implements KeyProvider {
       kekId,
     );
 
-    const plaintext = record(body?.data)?.plaintext;
-    const key = typeof plaintext === "string" ? Buffer.from(plaintext, "base64") : undefined;
+    const plaintext = DecryptAnswer.parse(body)?.data?.plaintext;
+    const key = plaintext === undefined ? undefined : Buffer.from(plaintext, "base64");
 
     if (key?.length !== 32) {
       key?.fill(0);
@@ -340,9 +402,9 @@ export class TransitKeyProvider implements KeyProvider {
     operation: string,
     method: "GET" | "POST",
     path: string,
-    payload: Record<string, unknown> | undefined,
+    payload: RequestBody | undefined,
     kekId: string | undefined,
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<JsonValue | undefined> {
     const started = Date.now();
     const deadline = started + this.#timeoutMs;
     let retried = false;
@@ -368,16 +430,17 @@ export class TransitKeyProvider implements KeyProvider {
           continue;
         }
 
+        // `kekId` is undefined or a `bao:` id that `#version` accepted, never empty.
         if (!transient(answer.status)) {
           throw new KeyProviderRefusedError(
             `openbao: ${operation}${kekId ? ` under ${kekId}` : ""} was refused with status ${answer.status}`,
-            { ...(kekId ? { kekId } : {}), status: answer.status },
+            { kekId, status: answer.status },
           );
         }
 
         failure = new KeyProviderUnavailableError(
           `openbao: ${operation}${kekId ? ` under ${kekId}` : ""} failed with status ${answer.status}`,
-          { ...(kekId ? { kekId } : {}), status: answer.status },
+          { kekId, status: answer.status },
         );
       } catch (error) {
         if (!(error instanceof KeyProviderUnavailableError)) throw error;
@@ -392,13 +455,9 @@ export class TransitKeyProvider implements KeyProvider {
         continue;
       }
 
-      this.#onEvent?.({
-        event: "keys.provider_unavailable",
-        provider: "openbao",
-        operation,
-        ...(failure.status === undefined ? {} : { status: failure.status }),
-        durationMs: Date.now() - started,
-      });
+      this.#onEvent?.(
+        providerEvent("keys.provider_unavailable", operation, failure.status, Date.now() - started),
+      );
       throw failure;
     }
   }
@@ -418,12 +477,12 @@ export class TransitKeyProvider implements KeyProvider {
     if (auth.kind === "token") {
       const token = this.#readCredential(auth.tokenFile, "tokenFile");
 
-      const data = record(
+      const data = TokenLookupAnswer.parse(
         this.#expect(
           "token lookup",
           await this.#send("GET", "v1/auth/token/lookup-self", undefined, token, deadline),
-        )?.data,
-      );
+        ),
+      )?.data;
 
       this.#adopt(token, data?.ttl, data?.renewable === true);
 
@@ -450,10 +509,10 @@ export class TransitKeyProvider implements KeyProvider {
             deadline,
           );
 
-    const result = record(this.#expect("login", answer)?.auth);
+    const result = AuthAnswer.parse(this.#expect("login", answer))?.auth;
     const token = result?.client_token;
 
-    if (typeof token !== "string" || token === "") {
+    if (token === undefined || token === "") {
       throw new KeyProviderRefusedError("openbao: the login answered without a token");
     }
 
@@ -463,13 +522,13 @@ export class TransitKeyProvider implements KeyProvider {
   }
 
   /** Use a token, and renew it, or drop it for a fresh login, at two thirds of its TTL. */
-  #adopt(token: string, ttlSeconds: unknown, renewable: boolean): void {
+  #adopt(token: string, ttlSeconds: number | undefined, renewable: boolean): void {
     if (this.#closed) throw new KeyProviderUnavailableError("openbao: the provider is closed");
     this.#token = token;
     clearTimeout(this.#renewTimer);
     this.#renewTimer = undefined;
 
-    if (typeof ttlSeconds !== "number" || !(ttlSeconds > 0)) return;
+    if (ttlSeconds === undefined || !(ttlSeconds > 0)) return;
     const delay = Math.min(Math.floor((ttlSeconds * 2000) / 3), MAX_TIMER_MS);
     this.#renewTimer = setTimeout(() => void this.#renew(token, renewable), delay);
     this.#renewTimer.unref();
@@ -488,10 +547,10 @@ export class TransitKeyProvider implements KeyProvider {
           Date.now() + this.#timeoutMs,
         );
 
-        const result = record(answer.body?.auth);
+        const result = AuthAnswer.parse(answer.body)?.auth;
         const lease = result?.lease_duration;
 
-        if (answer.status === 200 && typeof lease === "number" && lease >= 3) {
+        if (answer.status === 200 && lease !== undefined && lease >= 3) {
           if (this.#token === token && !this.#closed) {
             this.#adopt(token, lease, result?.renewable === true);
           }
@@ -523,7 +582,7 @@ export class TransitKeyProvider implements KeyProvider {
     return value;
   }
 
-  #expect(operation: string, answer: Answer): Record<string, unknown> | undefined {
+  #expect(operation: string, answer: Answer): JsonValue | undefined {
     if (answer.status >= 200 && answer.status < 300) return answer.body;
 
     if (transient(answer.status)) {
@@ -543,7 +602,7 @@ export class TransitKeyProvider implements KeyProvider {
   #send(
     method: "GET" | "POST",
     path: string,
-    payload: Record<string, unknown> | undefined,
+    payload: RequestBody | undefined,
     token: string | undefined,
     deadline: number,
   ): Promise<Answer> {
@@ -560,18 +619,26 @@ export class TransitKeyProvider implements KeyProvider {
     const signal = AbortSignal.timeout(remaining);
     const { promise, resolve, reject } = Promise.withResolvers<Answer>();
 
-    const fail = (error: unknown) => {
-      const code = (error as { code?: unknown } | null)?.code;
+    const fail = (error: Error) => {
+      const code = SystemErrorCode.safeParse(error).data?.code;
       reject(
         new KeyProviderUnavailableError(
           signal.aborted
             ? `openbao: no answer within ${this.#timeoutMs} ms`
-            : `openbao: the server could not be reached${typeof code === "string" ? ` (${code})` : ""}`,
+            : `openbao: the server could not be reached${code === undefined ? "" : ` (${code})`}`,
         ),
       );
     };
 
     const send = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const headers: OutgoingHttpHeaders = { accept: "application/json" };
+
+    if (body) {
+      headers["content-type"] = "application/json";
+      headers["content-length"] = body.length;
+    }
+
+    if (token) headers["x-vault-token"] = token;
 
     const request = send(
       url,
@@ -579,11 +646,7 @@ export class TransitKeyProvider implements KeyProvider {
         method,
         agent: this.#agent,
         signal,
-        headers: {
-          accept: "application/json",
-          ...(body ? { "content-type": "application/json", "content-length": body.length } : {}),
-          ...(token ? { "x-vault-token": token } : {}),
-        },
+        headers,
       },
       (response) => {
         const chunks: Buffer[] = [];
@@ -601,7 +664,7 @@ export class TransitKeyProvider implements KeyProvider {
         });
         response.on("error", fail);
         response.on("end", () => {
-          let parsed: unknown;
+          let parsed: JsonValue | undefined;
 
           try {
             parsed = size === 0 ? undefined : JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -609,7 +672,7 @@ export class TransitKeyProvider implements KeyProvider {
             parsed = undefined;
           }
 
-          resolve({ status: response.statusCode ?? 0, body: record(parsed) });
+          resolve({ status: response.statusCode ?? 0, body: parsed });
         });
       },
     );

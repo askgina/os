@@ -173,9 +173,10 @@ function signWith(
         credentialId: person.credential.credentialId,
         challenge: b64url(envelopeChallenge(envelope)),
         origin: clientData.origin ?? ORIGIN,
-        ...(clientData.crossOrigin === undefined ? {} : { crossOrigin: clientData.crossOrigin }),
-        ...(clientData.topOrigin === undefined ? {} : { topOrigin: clientData.topOrigin }),
-        ...(clientData.type === undefined ? {} : { clientDataType: clientData.type }),
+        // The authenticator reads an absent override and an `undefined` one alike.
+        crossOrigin: clientData.crossOrigin,
+        topOrigin: clientData.topOrigin,
+        clientDataType: clientData.type,
       }),
     ),
   };
@@ -289,7 +290,7 @@ describe("relying party and authenticator checks", () => {
 
     const tampered: Assertion = {
       ...assertion,
-      response: tamperClientData(assertion.response as never, { challenge }) as never,
+      response: AssertionResponse.parse(tamperClientData(assertion.response, { challenge })),
     };
 
     expect(codeOf(await verify(envelope, [tampered]))).toBe("assertion_invalid");

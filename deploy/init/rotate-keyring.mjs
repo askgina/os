@@ -40,13 +40,13 @@ function read() {
     fail("the keyring file is missing or is not valid JSON");
   }
 
-  const validShape =
+  const hasActiveKey =
     typeof keyring?.active === "string" &&
     typeof keyring?.keys === "object" &&
     keyring.keys !== null &&
     typeof keyring.keys[keyring.active] === "string";
 
-  if (!validShape) fail("the keyring file does not have an active key");
+  if (!hasActiveKey) fail("the keyring file does not have an active key");
 
   return keyring;
 }
@@ -86,7 +86,7 @@ if (command === "add") {
     })}\n`,
   );
 } else if (command === "activate") {
-  if (typeof flag !== "string" || !Object.hasOwn(keyring.keys, flag)) {
+  if (flag === undefined || !Object.hasOwn(keyring.keys, flag)) {
     fail("activate needs the id of a key in the keyring, as add printed it");
   }
 

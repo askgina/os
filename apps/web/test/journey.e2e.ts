@@ -8,6 +8,7 @@ import {
   type Page,
   type TestInfo,
 } from "@playwright/test";
+import { z } from "zod";
 import { expectNoSidewaysOverflow, type LayoutOptions, widenText } from "./layout.ts";
 import { standInPushManager } from "./push-stand-in.ts";
 
@@ -149,7 +150,9 @@ async function shownNotifications(page: Page): Promise<ShownNotification[]> {
       title: item.title,
       body: item.body,
       tag: item.tag,
-      path: (item.data as { path?: unknown } | null)?.path ?? null,
+      // `data` is what the worker passed to `showNotification` (`{ path }`); the DOM types it
+      // `any`, so `path` stays `unknown` in `ShownNotification` and the journey compares it.
+      path: item.data?.path ?? null,
     }));
   });
 }
@@ -159,7 +162,7 @@ async function shownNotifications(page: Page): Promise<ShownNotification[]> {
  * it: through the DevTools protocol, so the worker's own `push` handler shows it. `cdp` is the
  * page's session that holds its virtual authenticator.
  */
-async function deliverPush(page: Page, cdp: CDPSession, message: unknown): Promise<void> {
+async function deliverPush(page: Page, cdp: CDPSession, message: PushMessage): Promise<void> {
   const origin = new URL(page.url()).origin;
   const registered = Promise.withResolvers<string>();
 
@@ -186,8 +189,22 @@ async function deliverPush(page: Page, cdp: CDPSession, message: unknown): Promi
   await cdp.send("ServiceWorker.disable");
 }
 
+/** A Declarative Web Push message, as the server sends it (`web_push: 8030`). */
+interface PushMessage {
+  web_push: number;
+  notification: {
+    title: string;
+    body: string;
+    navigate: string;
+    tag: string;
+    lang: string;
+    silent: boolean;
+    app_badge: string;
+  };
+}
+
 /** The message the server sends for a waiting request, at the `count` level. */
-function approvalMessage(link: string, pending: number) {
+function approvalMessage(link: string, pending: number): PushMessage {
   return {
     web_push: 8030,
     notification: {
@@ -243,6 +260,25 @@ async function setUpServer(page: Page, name: string): Promise<void> {
   await expect(page.getByRole("heading", { name: "Workspaces" })).toBeVisible();
 }
 
+/** The agent API's answer to a proposal that waits for people: the approval to decide. */
+const WaitingProposal = z.object({ approvalId: z.string() });
+
+/** The same answer when the journey also follows the payment itself. */
+const WaitingPayment = WaitingProposal.extend({ id: z.string() });
+
+/** The answer to a payment an approval in advance may cover: no approval when it did. */
+const CoveredProposal = z.object({
+  approvalId: z.string().nullable(),
+  mandateId: z.string().nullable(),
+});
+
+/** One line of a workspace record, as far as the journey reads it; every field is kept. */
+const RecordLine = z.looseObject({
+  format: z.string().optional(),
+  type: z.string().optional(),
+  action: z.string().optional(),
+});
+
 /** Acts as the agent: proposes a native transfer and returns its intent and approval ids. */
 async function proposePayment(
   request: APIRequestContext,
@@ -257,7 +293,7 @@ async function proposePayment(
 
   expect(proposed.ok()).toBe(true);
 
-  return (await proposed.json()) as { id: string; approvalId: string };
+  return WaitingPayment.parse(await proposed.json());
 }
 
 test("first day: setup, agent, limits, one approved payment, one rejected call", async ({
@@ -396,7 +432,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     });
 
     expect(proposed.ok()).toBe(true);
-    const intent = (await proposed.json()) as { approvalId: string };
+    const intent = WaitingProposal.parse(await proposed.json());
     const workspacePath = new URL(page.url()).pathname.replace(/\/approvals\/.*$/, "");
     await page.goto(`${workspacePath}/approvals`);
     await expect(page.getByRole("link", { name: /Send 0\.015 ETH/ })).toBeVisible();
@@ -454,7 +490,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     });
 
     expect(proposed.ok()).toBe(true);
-    const { approvalId } = (await proposed.json()) as { approvalId: string };
+    const { approvalId } = WaitingProposal.parse(await proposed.json());
     await page.goto(approvalUrl.replace(/[^/]+$/, approvalId));
     await expect(page.getByText("Raw contract call.")).toBeVisible();
     await shot("13-approval-raw-call", { viewport: true });
@@ -835,10 +871,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
 
     expect(covered.ok()).toBe(true);
 
-    const coveredIntent = (await covered.json()) as {
-      approvalId: string | null;
-      mandateId: string | null;
-    };
+    const coveredIntent = CoveredProposal.parse(await covered.json());
 
     expect(coveredIntent.approvalId).toBeNull();
     expect(coveredIntent.mandateId).toBe(mandatePath.split("/").pop());
@@ -1108,7 +1141,9 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
         body: JSON.stringify({ detail: "count" }),
       });
 
-      return { status: response.status, body: (await response.json()) as unknown };
+      const body: unknown = await response.json();
+
+      return { status: response.status, body };
     }, base.split("/").pop() ?? "");
 
     expect(refused).toMatchObject({ status: 403, body: { error: { code: "forbidden" } } });
@@ -1534,7 +1569,7 @@ test("export, copy and import a workspace; erase a person", async ({
     const lines = (await readFile(await record.path(), "utf8"))
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line) as { format?: string; type?: string; action?: string });
+      .map((line) => RecordLine.parse(JSON.parse(line)));
 
     expect(lines[0]).toMatchObject({ format: "askgina.os/workspace-record/v1" });
     expect(lines.at(-1)).toMatchObject({ type: "end" });
@@ -1749,7 +1784,7 @@ test("an order on Hyperliquid mainnet: venue rules, the order, where it rests, i
     });
 
     expect(proposed.ok()).toBe(true);
-    const { approvalId } = (await proposed.json()) as { approvalId: string };
+    const { approvalId } = WaitingProposal.parse(await proposed.json());
     await page.goto(page.url().replace(/[^/]+$/, approvalId));
     await expect(page.getByRole("heading", { name: "Buy 0.01 BTC perpetual" })).toBeVisible();
     await expect(page.getByText("650 USD", { exact: true })).toBeVisible();

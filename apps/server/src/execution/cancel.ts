@@ -1,9 +1,10 @@
 import type { ApprovalSummary } from "@askgina/os-api";
-import type { ApprovalId, ChainId, IntentId, UserId, WorkspaceId } from "@askgina/os-protocol";
+import { ApprovalId, IntentId, type UserId, type WorkspaceId } from "@askgina/os-protocol";
 import { type AttemptResponse, SignerError } from "@askgina/os-protocol/signer";
 import { and, eq, gt, ne, sql } from "drizzle-orm";
+import { z } from "zod";
 import { ApprovalFailure, type ApprovalKindHandler } from "../approvals/kinds.ts";
-import { appendAudit } from "../audit.ts";
+import { type AuditInput, appendAudit } from "../audit.ts";
 import type { AppContext } from "../context.ts";
 import { approvals, transactions } from "../db/schema.ts";
 import { loadWallet, walletSummary } from "../directory/views.ts";
@@ -16,6 +17,7 @@ import {
   type Attempt,
   attemptsOf,
   broadcastNewest,
+  chainIdOf,
   lockAttempts,
   RETRYABLE_SIGNER_CODES,
   recordAttempt,
@@ -35,12 +37,14 @@ import {
  */
 
 /** What `cancel-transaction` keeps sealed in its approval's detail. */
-interface CancelDetail {
+const CancelDetail = z.object({
   /** The approval whose transaction it stops: an `approve-intent`, a mandate use or a sweep. */
-  targetApprovalId: ApprovalId;
+  targetApprovalId: ApprovalId,
   /** The payment it stops; null for a sweep. */
-  intentId: IntentId | null;
-}
+  intentId: IntentId.nullable(),
+});
+
+type CancelDetail = z.infer<typeof CancelDetail>;
 
 /** The gas of a transfer of nothing from the wallet to itself. */
 const CANCEL_GAS = 21_000n;
@@ -98,11 +102,11 @@ export async function requestCancel(
     );
   }
 
-  const state = await ctx.signer.getWallet(transaction.walletId).catch((error: unknown) => {
+  const state = await ctx.signer.getWallet(transaction.walletId).catch((cause: unknown) => {
     throw new HttpError(
       "internal",
       "the signer could not be reached",
-      error instanceof SignerError ? error.code : undefined,
+      cause instanceof SignerError ? cause.code : undefined,
     );
   });
 
@@ -144,7 +148,7 @@ export async function requestCancel(
       envelope: {
         targetApprovalId: target,
         walletId: transaction.walletId,
-        chainId: transaction.chainId as ChainId,
+        chainId: chainIdOf(transaction),
         txNonce: transaction.nonce,
         maxFeeWei: maxFeeWei.toString(),
       },
@@ -205,14 +209,14 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
   return {
     kind: "cancel-transaction",
     async title(ctx, _approval, detail) {
-      const { targetApprovalId, intentId } = detail as CancelDetail;
+      const { targetApprovalId, intentId } = CancelDetail.parse(detail);
 
       if (intentId === null) return `Cancel sweep: ${await sweepTitle(ctx, targetApprovalId)}`;
 
       return `Cancel payment: ${await intentTitle(ctx, await getIntentRow(ctx, intentId))}`;
     },
     async describe(ctx, approval, detail) {
-      const { targetApprovalId, intentId } = detail as CancelDetail;
+      const { targetApprovalId, intentId } = CancelDetail.parse(detail);
       const { envelope } = approval;
 
       if (envelope.type !== "cancel-transaction") throw new Error("a cancel with another envelope");
@@ -251,7 +255,7 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
      * the signer signed them, and the cancel is asked for once more after the newest of them.
      */
     async execute(ctx, approval, authorization, detail) {
-      const { targetApprovalId } = detail as CancelDetail;
+      const { targetApprovalId } = CancelDetail.parse(detail);
       const { envelope } = approval;
 
       if (envelope.type !== "cancel-transaction") throw new Error("a cancel with another envelope");
@@ -273,7 +277,7 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
 
         if (!SENT.includes(transaction.status)) return { failure: "transaction_final" };
         // A chain that cannot be read fails the step, which is tried again.
-        const quote = await chainAccess(ctx).fees(transaction.chainId as ChainId);
+        const quote = await chainAccess(ctx).fees(chainIdOf(transaction));
 
         /** The audit event and log line of one attempt stored here. */
         const stored = async (
@@ -289,25 +293,25 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
             maxPriorityFeePerGas: attempt.maxPriorityFeePerGas,
           };
 
-          await appendAudit(
-            ctx,
-            {
-              workspaceId: approval.workspaceId,
-              actor: { type: "system", id: null },
-              subject: { type: "approval", id: targetApprovalId },
-              ...(under.producedBy === null
-                ? {
-                    // A reprice its caller did not store before it stopped.
-                    action: "transaction.repriced",
-                    detail: { trigger: "recovered", kind: attempt.kind, ...fees },
-                  }
-                : {
-                    action: "transaction.cancel_signed",
-                    detail: { cancelApprovalId: under.producedBy, ...fees },
-                  }),
-            },
-            tx,
-          );
+          const event: AuditInput =
+            under.producedBy === null
+              ? {
+                  workspaceId: approval.workspaceId,
+                  actor: { type: "system", id: null },
+                  subject: { type: "approval", id: targetApprovalId },
+                  // A reprice its caller did not store before it stopped.
+                  action: "transaction.repriced",
+                  detail: { trigger: "recovered", kind: attempt.kind, ...fees },
+                }
+              : {
+                  workspaceId: approval.workspaceId,
+                  actor: { type: "system", id: null },
+                  subject: { type: "approval", id: targetApprovalId },
+                  action: "transaction.cancel_signed",
+                  detail: { cancelApprovalId: under.producedBy, ...fees },
+                };
+
+          await appendAudit(ctx, event, tx);
           ctx.log.info(
             under.producedBy === null ? "transaction repriced" : "transaction cancel signed",
             { approvalId: targetApprovalId, attempt: attempt.attempt },

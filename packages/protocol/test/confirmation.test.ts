@@ -15,6 +15,7 @@ import {
   type SignerWalletRecord,
 } from "../src/confirmation.ts";
 import {
+  Address,
   type Envelope,
   envelopeChallenge,
   type GrantMandateEnvelope,
@@ -189,7 +190,7 @@ function values(view: RenderedConfirmation, label: string): string[] {
 }
 
 /** Read a rendered amount such as "1,234.5 USDC" back into base units. */
-function parseAmount(text: string, decimals: number): { amount: bigint; unit: string } {
+function parseAmount(text: string, decimals: number) {
   const match = /^((?:\d{1,3})(?:,\d{3})*)(?:\.(\d*[1-9]))? (.+)$/.exec(text);
 
   if (match === null) throw new Error(`not an amount: ${text}`);
@@ -425,7 +426,11 @@ describe("checkSubject", () => {
 
 describe("payments", () => {
   it("a transfer's lines show exactly the intent's recipient, amount and chain", () => {
-    const recipients = [ALICE, BOB, ...EIP55.map((address) => address.toLowerCase())] as const;
+    const recipients = [
+      ALICE,
+      BOB,
+      ...EIP55.map((address) => Address.parse(address.toLowerCase())),
+    ] as const;
 
     const amounts = [
       1n,
@@ -463,7 +468,7 @@ describe("payments", () => {
         const cases: { subject: Intent; decimals: number; unit: string; chain: string }[] = [
           {
             subject: intent({
-              operation: { type: "evm.transfer", to: to as `0x${string}`, valueWei: `${amount}` },
+              operation: { type: "evm.transfer", to, valueWei: `${amount}` },
             }),
             decimals: 18,
             unit: "ETH",
@@ -472,7 +477,7 @@ describe("payments", () => {
           {
             subject: intent({
               chainId: UNLISTED_CHAIN,
-              operation: { type: "evm.transfer", to: to as `0x${string}`, valueWei: `${amount}` },
+              operation: { type: "evm.transfer", to, valueWei: `${amount}` },
             }),
             decimals: 0,
             unit: "wei",
@@ -483,7 +488,7 @@ describe("payments", () => {
               operation: {
                 type: "evm.erc20.transfer" as const,
                 token,
-                to: to as `0x${string}`,
+                to,
                 amount: `${amount}`,
               },
             }),
@@ -496,7 +501,7 @@ describe("payments", () => {
               operation: {
                 type: "evm.erc20.transfer",
                 token: unknownToken,
-                to: to as `0x${string}`,
+                to,
                 amount: `${amount}`,
               },
             }),
@@ -986,10 +991,12 @@ describe("venue orders and withdrawals", () => {
 
     expect(ConfirmationView.safeParse(view).success).toBe(true);
     expect(envelope.type === "approve-intent" && envelope.chainId).toBe(HL_TESTNET);
-    const other = { kind: "approve-intent", intent: order({ size: "0.02" }) };
+    const other: ConfirmationSubject = { kind: "approve-intent", intent: order({ size: "0.02" }) };
     expect(ConfirmationView.safeParse({ ...view, subject: other }).success).toBe(false);
-    expect(checkSubject(envelope, other as ConfirmationSubject)).toBe("intent_mismatch");
+    expect(checkSubject(envelope, other)).toBe("intent_mismatch");
     const onEvm = { kind: "approve-intent", intent: { ...subject, chainId: BASE } };
+    // SAFETY: deliberately not a valid ConfirmationSubject (a Hyperliquid order moved onto an EVM
+    // chain); the test checks the refusal.
     expect(checkSubject(envelope, onEvm as ConfirmationSubject)).toBe("envelope_mismatch");
   });
 });

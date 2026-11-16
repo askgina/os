@@ -1,7 +1,7 @@
 import type { WalletId, WorkspaceId } from "@askgina/os-protocol";
 import { SignerError } from "@askgina/os-protocol/signer";
 import { and, desc, eq, inArray, lte, not, sql } from "drizzle-orm";
-import { appendAudit } from "../audit.ts";
+import { type AuditDetail, appendAudit } from "../audit.ts";
 import type { AppContext } from "../context.ts";
 import {
   agents,
@@ -161,7 +161,7 @@ async function recordOnce(
   workspaceId: WorkspaceId,
   subject: { type: "wallet" | "workspace"; id: string },
   action: string,
-  detail: Record<string, unknown>,
+  detail: AuditDetail,
 ): Promise<void> {
   await ctx.db.transaction(async (tx) => {
     await tx

@@ -1,7 +1,7 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import type { AddressInfo, Socket } from "node:net";
+import type { Socket } from "node:net";
 import { connect as connectTcp, createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,7 @@ import {
 } from "@askgina/os-protocol/signer";
 import { createSignerFetch, type SignerTls } from "@askgina/os-protocol/signer-transport";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { ConfigError, loadConfig } from "../src/config.ts";
 import { createSigner, createTestVault } from "../src/index.ts";
 import {
@@ -125,7 +126,7 @@ const secretFile = (name: string, bytes: Uint8Array) => {
 };
 
 /** A signer process's environment with mutual TLS, listening on `port` and `healthPort`. */
-function signerEnvironment(port: number, healthPort: number): Record<string, string> {
+function signerEnvironment(port: number, healthPort: number) {
   const dataDir = join(dir, `data-${port}`);
 
   return {
@@ -171,12 +172,18 @@ function startProcess(environment: Record<string, string>, until: string[]) {
   return { child, ready: ready.promise, exited: exited.promise, output: () => output };
 }
 
+/** A TCP server's `address()` once it listens on a port (not a pipe). */
+const ListeningAddress = z.object({ port: z.number() });
+
+/** One JSON line of the signer's log. */
+const LogLine = z.record(z.string(), z.json());
+
 async function freePort(): Promise<number> {
   const server = createTcpServer();
   const listening = Promise.withResolvers<void>();
   server.listen(0, "127.0.0.1", () => listening.resolve());
   await listening.promise;
-  const { port } = server.address() as AddressInfo;
+  const { port } = ListeningAddress.parse(server.address());
   const closed = Promise.withResolvers<void>();
   server.close(() => closed.resolve());
   await closed.promise;
@@ -401,7 +408,7 @@ describe("a signer on its own host, behind mutual TLS", () => {
       .output()
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line) as Record<string, unknown>);
+      .map((line) => LogLine.parse(JSON.parse(line)));
 
     // Every start logs the days left on each certificate: about two years for the two made by
     // the script, years ago for the expired one.
@@ -519,11 +526,17 @@ describe("the signer's TLS configuration", () => {
   });
 
   it("refuses some TLS files without the others", () => {
-    for (const name of Object.keys(base).filter((variable) => variable.startsWith("SIGNER_TLS_"))) {
-      expect(refusal({ ...plain, [name]: base[name] ?? "" })).toBe(
-        "SIGNER_TLS_*: set all four or none",
+    const tlsVariables = Object.entries(base).filter(([variable]) =>
+      variable.startsWith("SIGNER_TLS_"),
+    );
+
+    for (const [name, value] of tlsVariables) {
+      expect(refusal({ ...plain, [name]: value })).toBe("SIGNER_TLS_*: set all four or none");
+
+      const three = Object.fromEntries(
+        Object.entries(base).filter(([variable]) => variable !== name),
       );
-      const { [name]: _dropped, ...three } = base;
+
       expect(refusal(three)).toBe("SIGNER_TLS_*: set all four or none");
     }
   });

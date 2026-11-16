@@ -1,13 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes, X509Certificate } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type Server } from "node:https";
-import type { AddressInfo } from "node:net";
+import { createServer, type Server, type ServerOptions } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { TLSSocket } from "node:tls";
+import { TLSSocket } from "node:tls";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
-import { newId } from "../src/index.ts";
+import { z } from "zod";
+import { type JsonValue, newId } from "../src/index.ts";
 import {
   createSignerClient,
   SIGNATURE_HEADER,
@@ -37,28 +37,24 @@ interface Pair {
 function selfSigned(name: string, subjectAltName?: string): Pair {
   const certPath = join(dir, `${name}.crt`);
   const keyPath = join(dir, `${name}.key`);
-  execFileSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "ec",
-      "-pkeyopt",
-      "ec_paramgen_curve:P-256",
-      "-nodes",
-      "-days",
-      "2",
-      "-subj",
-      `/CN=${name}`,
-      ...(subjectAltName === undefined ? [] : ["-addext", `subjectAltName=${subjectAltName}`]),
-      "-keyout",
-      keyPath,
-      "-out",
-      certPath,
-    ],
-    { stdio: "ignore" },
-  );
+
+  const args = [
+    "req",
+    "-x509",
+    "-newkey",
+    "ec",
+    "-pkeyopt",
+    "ec_paramgen_curve:P-256",
+    "-nodes",
+    "-days",
+    "2",
+    "-subj",
+    `/CN=${name}`,
+  ];
+
+  if (subjectAltName !== undefined) args.push("-addext", `subjectAltName=${subjectAltName}`);
+  args.push("-keyout", keyPath, "-out", certPath);
+  execFileSync("openssl", args, { stdio: "ignore" });
 
   return { cert: readFileSync(certPath), key: readFileSync(keyPath), certPath, keyPath };
 }
@@ -102,49 +98,57 @@ async function startSigner(
 ): Promise<TestSigner> {
   const peers: string[] = [];
 
-  const server = createServer(
-    {
-      cert: identity.cert,
-      key: identity.key,
-      ca: [control.cert],
-      requestCert: true,
-      rejectUnauthorized: true,
-      ...(options.maxVersion === undefined ? {} : { maxVersion: options.maxVersion }),
-    },
-    async (request, response) => {
-      peers.push((request.socket as TLSSocket).getPeerCertificate().fingerprint256);
-      const chunks: Buffer[] = [];
+  const tls: ServerOptions = {
+    cert: identity.cert,
+    key: identity.key,
+    ca: [control.cert],
+    requestCert: true,
+    rejectUnauthorized: true,
+  };
 
-      for await (const chunk of request) chunks.push(chunk as Buffer);
+  if (options.maxVersion !== undefined) tls.maxVersion = options.maxVersion;
 
-      const reply = (status: number, body: unknown) => {
-        response.writeHead(status, { "content-type": "application/json" });
-        response.end(JSON.stringify(body));
-      };
+  const server = createServer(tls, async (request, response) => {
+    const socket = request.socket;
 
-      if (request.url === "/healthz") return reply(200, { ok: true, version: "0.1.0" });
+    if (!(socket instanceof TLSSocket)) throw new TypeError("not a TLS connection");
+    peers.push(socket.getPeerCertificate().fingerprint256);
+    const chunks: Buffer[] = [];
 
-      const authentic = verifyRequestSignature(secret, {
-        method: request.method ?? "",
-        pathWithQuery: request.url ?? "",
-        timestamp: Number(request.headers[TIMESTAMP_HEADER]),
-        body: new Uint8Array(Buffer.concat(chunks)),
-        signature: String(request.headers[SIGNATURE_HEADER] ?? ""),
-        now: Math.floor(Date.now() / 1000),
-      });
+    for await (const chunk of request) {
+      if (!Buffer.isBuffer(chunk)) throw new TypeError("expected the body as bytes");
+      chunks.push(chunk);
+    }
 
-      const code = authentic ? "not_found" : "unauthenticated";
+    const reply = (status: number, body: JsonValue) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify(body));
+    };
 
-      return reply(authentic ? 404 : 401, { error: { code, message: code } });
-    },
-  );
+    if (request.url === "/healthz") return reply(200, { ok: true, version: "0.1.0" });
+
+    const authentic = verifyRequestSignature(secret, {
+      method: request.method ?? "",
+      pathWithQuery: request.url ?? "",
+      timestamp: Number(request.headers[TIMESTAMP_HEADER]),
+      body: new Uint8Array(Buffer.concat(chunks)),
+      signature: String(request.headers[SIGNATURE_HEADER] ?? ""),
+      now: Math.floor(Date.now() / 1000),
+    });
+
+    const code = authentic ? "not_found" : "unauthenticated";
+
+    return reply(authentic ? 404 : 401, { error: { code, message: code } });
+  });
 
   servers.push(server);
   const listening = Promise.withResolvers<void>();
   server.listen(0, "127.0.0.1", () => listening.resolve());
   await listening.promise;
+  // Listening on a host and a port, so the address is an object with the port, not a pipe name.
+  const { port } = z.object({ port: z.number() }).parse(server.address());
 
-  return { baseUrl: `https://127.0.0.1:${(server.address() as AddressInfo).port}`, peers };
+  return { baseUrl: `https://127.0.0.1:${port}`, peers };
 }
 
 const controlFingerprint = new X509Certificate(control.cert).fingerprint256;
@@ -161,9 +165,11 @@ describe("createSignerFetch", () => {
 
     expect(await client.health()).toEqual({ ok: true, version: "0.1.0" });
     // The request signature still binds the request inside TLS: the signer checked it.
-    const refusal = await client.getWorkspace(newId("ws")).catch((error: unknown) => error);
+    const refusal = await client.getWorkspace(newId("ws")).catch((cause: unknown) => cause);
     expect(refusal).toBeInstanceOf(SignerError);
-    expect((refusal as SignerError).code).toBe("not_found");
+
+    if (!(refusal instanceof SignerError)) throw new Error("expected a SignerError");
+    expect(refusal.code).toBe("not_found");
     expect(test.peers).toEqual([controlFingerprint, controlFingerprint]);
   });
 
@@ -176,9 +182,11 @@ describe("createSignerFetch", () => {
       fetch: createSignerFetch(clientTls, "signer"),
     });
 
-    const failure = await client.health().catch((error: unknown) => error);
+    const failure = await client.health().catch((cause: unknown) => cause);
     expect(failure).toBeInstanceOf(TypeError);
-    expect((failure as TypeError).cause).toMatchObject({ code: "DEPTH_ZERO_SELF_SIGNED_CERT" });
+
+    if (!(failure instanceof TypeError)) throw new Error("expected a TypeError");
+    expect(failure.cause).toMatchObject({ code: "DEPTH_ZERO_SELF_SIGNED_CERT" });
     expect(test.peers).toEqual([]);
   });
 
@@ -191,9 +199,11 @@ describe("createSignerFetch", () => {
       fetch: createSignerFetch(clientTls, "signer.elsewhere"),
     });
 
-    const failure = await client.health().catch((error: unknown) => error);
+    const failure = await client.health().catch((cause: unknown) => cause);
     expect(failure).toBeInstanceOf(TypeError);
-    expect((failure as TypeError).cause).toMatchObject({ code: "ERR_TLS_CERT_ALTNAME_INVALID" });
+
+    if (!(failure instanceof TypeError)) throw new Error("expected a TypeError");
+    expect(failure.cause).toMatchObject({ code: "ERR_TLS_CERT_ALTNAME_INVALID" });
     expect(test.peers).toEqual([]);
   });
 

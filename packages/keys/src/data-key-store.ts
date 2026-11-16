@@ -234,9 +234,9 @@ export class DataKeyStore {
   ensureMigrated(): Promise<void> {
     this.#migrated ??= Promise.all([this.#ensureTable(), this.#provider.ready()]).then(
       () => {},
-      (error: unknown) => {
+      (cause: unknown) => {
         this.#migrated = undefined;
-        throw error;
+        throw cause;
       },
     );
 

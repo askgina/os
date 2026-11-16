@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { MandateDraft } from "@askgina/os-api";
-import type { ApprovalId, IntentId, MandateId } from "@askgina/os-protocol";
+import type { ApprovalId } from "@askgina/os-protocol";
 import type { Client } from "@modelcontextprotocol/client";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -14,7 +14,9 @@ import {
   draftFor,
   type Fixture,
   fund,
+  intentIdOf,
   type TestAgent,
+  type ToolArguments,
   toolJson,
 } from "../execution/fixture.ts";
 import { TEST_CHAIN_ID, TEST_ORIGIN, type TestPerson } from "../support/context.ts";
@@ -51,7 +53,7 @@ afterAll(async () => {
   await receiver?.close();
 });
 
-const randomAddress = () => `0x${randomBytes(20).toString("hex")}` as `0x${string}`;
+const randomAddress = (): `0x${string}` => `0x${randomBytes(20).toString("hex")}`;
 
 async function agentWith(name: string): Promise<{ agent: TestAgent; client: Client }> {
   const agent = await f.newAgent(name);
@@ -61,15 +63,13 @@ async function agentWith(name: string): Promise<{ agent: TestAgent; client: Clie
   return { agent, client: await f.mcp(agent.token) };
 }
 
-async function propose(client: Client, args: Record<string, unknown>) {
+async function propose(client: Client, args: ToolArguments) {
   const answer = toolJson(await client.callTool({ name: "propose_transfer", arguments: args }));
-
-  if (typeof answer.intentId !== "string") throw new Error(JSON.stringify(answer));
 
   const [row] = await f.t.ctx.db
     .select()
     .from(intents)
-    .where(eq(intents.id, answer.intentId as IntentId));
+    .where(eq(intents.id, intentIdOf(answer)));
 
   if (!row?.approvalId) throw new Error("an intent without its approval or use");
 
@@ -185,7 +185,7 @@ describe("the signed webhook", () => {
       agentId: agent.id,
       assets: [
         {
-          chainId: TEST_CHAIN_ID as MandateDraft["assets"][number]["chainId"],
+          chainId: TEST_CHAIN_ID,
           asset: "native",
           maxPerAction: ETH.toString(),
           maxPerWindow: (2n * ETH).toString(),
@@ -205,16 +205,16 @@ describe("the signed webhook", () => {
       body: draft,
     });
 
-    const grantRequests = await delivered(grant.id as ApprovalId);
+    const grantRequests = await delivered(grant.id);
     expect(grantRequests).toHaveLength(1);
     expect(JSON.parse(grantRequests[0]?.body ?? "{}")).toMatchObject({
       event: "approval.opened",
       kind: "grant-mandate",
       link: `${TEST_ORIGIN}/w/${f.workspaceId}/approvals/${grant.id}`,
     });
-    const granted = await f.t.approve(grant.id as ApprovalId, [bob]);
+    const granted = await f.t.approve(grant.id, [bob]);
     expect(granted.status).toBe("executed");
-    const mandateId = granted.subjectId as MandateId;
+    const mandateId = granted.subjectId;
 
     const memo = `use-marker-${randomBytes(6).toString("hex")}`;
 

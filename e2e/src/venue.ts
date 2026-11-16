@@ -20,7 +20,17 @@ import type {
 } from "@askgina/os-testkit/fake-hyperliquid";
 import pg from "pg";
 import { z } from "zod";
-import { compose, composeArgs, containersOf, databaseUrl, docker, execIn, stack } from "./stack.ts";
+import { JsonObject, JsonValue } from "./json.ts";
+import {
+  compose,
+  composeArgs,
+  containersOf,
+  databaseUrl,
+  docker,
+  ExecFailure,
+  execIn,
+  stack,
+} from "./stack.ts";
 
 const run = promisify(execFile);
 
@@ -37,19 +47,24 @@ const FAKES: Record<FakeNetwork, { service: string; url: string }> = {
 
 const NETWORKS: readonly FakeNetwork[] = ["testnet", "mainnet"];
 
-/** Call one of a fake venue's control routes; fails on anything but a 2xx answer. */
+/**
+ * Call one of a fake venue's control routes, with `json` as its body when given; fails on
+ * anything but a 2xx answer.
+ */
 async function control(
   network: FakeNetwork,
   method: string,
   path: string,
-  body?: unknown,
+  json?: string,
 ): Promise<string> {
-  const response = await fetch(`${FAKES[network].url}/control/${path}`, {
-    method,
-    ...(body === undefined
-      ? {}
-      : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
-  });
+  const init: RequestInit = { method };
+
+  if (json !== undefined) {
+    init.headers = { "content-type": "application/json" };
+    init.body = json;
+  }
+
+  const response = await fetch(`${FAKES[network].url}/control/${path}`, init);
 
   const text = await response.text();
 
@@ -68,7 +83,7 @@ export async function seedVenueAccount(
   usdc: string,
   network: FakeNetwork = "testnet",
 ): Promise<void> {
-  await control(network, "POST", "accounts", { address, usdc });
+  await control(network, "POST", "accounts", JSON.stringify({ address, usdc }));
 }
 
 /** The perpetuals the venue lists; the asset index is the position. */
@@ -76,7 +91,7 @@ export async function setVenueUniverse(
   universe: FakeAsset[],
   network: FakeNetwork = "testnet",
 ): Promise<void> {
-  await control(network, "PUT", "meta", { universe });
+  await control(network, "PUT", "meta", JSON.stringify({ universe }));
 }
 
 /** The best bid and ask of one asset; an order that crosses them fills at its limit price. */
@@ -86,21 +101,28 @@ export async function setVenueBook(
   ask: string,
   network: FakeNetwork = "testnet",
 ): Promise<void> {
-  await control(network, "PUT", "book", { asset, bid, ask });
+  await control(network, "PUT", "book", JSON.stringify({ asset, bid, ask }));
 }
 
 /** Every `/exchange` request the venue received, oldest first, with what it made of it. */
 export async function venueExchangeLog(
   network: FakeNetwork = "testnet",
 ): Promise<ExchangeRecord[]> {
+  // SAFETY: GET /control/exchange answers `JSON.stringify(venue.exchangeLog())` of testkit's
+  // FakeHyperliquid (`#control`), an ExchangeRecord[] whose fields are all strings, numbers,
+  // booleans or null, so parsing it gives that array back field for field.
   return JSON.parse(await control(network, "GET", "exchange")) as ExchangeRecord[];
 }
 
 export async function venueOrders(network: FakeNetwork = "testnet"): Promise<FakeOrder[]> {
+  // SAFETY: GET /control/orders answers `JSON.stringify(venue.orders())` of testkit's
+  // FakeHyperliquid, a FakeOrder[] of strings, numbers, booleans and nulls only.
   return JSON.parse(await control(network, "GET", "orders")) as FakeOrder[];
 }
 
 export async function venueCancels(network: FakeNetwork = "testnet"): Promise<FakeCancel[]> {
+  // SAFETY: GET /control/cancels answers `JSON.stringify(venue.cancels())` of testkit's
+  // FakeHyperliquid, a FakeCancel[] of strings, numbers and nulls only.
   return JSON.parse(await control(network, "GET", "cancels")) as FakeCancel[];
 }
 
@@ -108,6 +130,8 @@ export async function venueCancels(network: FakeNetwork = "testnet"): Promise<Fa
 export async function venueWithdrawals(
   network: FakeNetwork = "testnet",
 ): Promise<FakeWithdrawal[]> {
+  // SAFETY: GET /control/withdrawals answers `JSON.stringify(venue.withdrawals())` of testkit's
+  // FakeHyperliquid, a FakeWithdrawal[] of strings and numbers only.
   return JSON.parse(await control(network, "GET", "withdrawals")) as FakeWithdrawal[];
 }
 
@@ -118,7 +142,7 @@ export async function venueWithdrawals(
 export async function postToVenue(
   body: string,
   network: FakeNetwork = "testnet",
-): Promise<{ status: number; answer: unknown }> {
+): Promise<{ status: number; answer: JsonValue }> {
   const response = await fetch(`${FAKES[network].url}/exchange`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -128,7 +152,7 @@ export async function postToVenue(
   const text = await response.text();
 
   try {
-    return { status: response.status, answer: JSON.parse(text) as unknown };
+    return { status: response.status, answer: JsonValue.parse(JSON.parse(text)) };
   } catch {
     return { status: response.status, answer: text };
   }
@@ -193,11 +217,14 @@ export async function reachFrom(
 
   const output = await execIn(container, "node", "-e", script);
 
-  return JSON.parse(output.trim().split("\n").at(-1) ?? "{}") as {
-    resolvesVenue: boolean;
-    statuses: (number | "unreachable")[];
-  };
+  return ProbeAnswer.parse(JSON.parse(output.trim().split("\n").at(-1) ?? "{}"));
 }
+
+/** The line the probe script of {@link reachFrom} prints. */
+const ProbeAnswer = z.object({
+  resolvesVenue: z.boolean(),
+  statuses: z.array(z.union([z.number(), z.literal("unreachable")])),
+});
 
 /** The server's sealed copy of every request the signer signed, by approval, as Postgres holds it. */
 export async function sealedVenueRequests(): Promise<{ approvalId: string; request: Buffer }[]> {
@@ -242,7 +269,7 @@ const BOOT_SCRIPT = [
  * everything it wrote. The running stack is not touched.
  */
 export async function bootServerWith(
-  venues: unknown,
+  venues: JsonValue,
 ): Promise<{ exitCode: number | null; output: string }> {
   const args = composeArgs(
     "run",
@@ -270,12 +297,9 @@ export async function bootServerWith(
 
     return { exitCode: 0, output: `${stdout}\n${stderr}` };
   } catch (error) {
-    const failure = error as { code?: unknown; stdout?: string; stderr?: string };
+    const failure = ExecFailure.parse(error);
 
-    return {
-      exitCode: typeof failure.code === "number" ? failure.code : null,
-      output: `${failure.stdout ?? ""}\n${failure.stderr ?? ""}`,
-    };
+    return { exitCode: failure.code, output: `${failure.stdout}\n${failure.stderr}` };
   }
 }
 
@@ -322,7 +346,7 @@ export async function requestsFor(
 
 /** What each fake venue holds, for a failed gate's output. Never throws. */
 export async function venueReport(): Promise<string> {
-  const report: Record<string, unknown> = {};
+  const report: Partial<Record<FakeNetwork, VenueHoldings | string>> = {};
 
   for (const network of NETWORKS) {
     try {
@@ -334,11 +358,20 @@ export async function venueReport(): Promise<string> {
 
       report[network] = { exchange, orders, cancels };
     } catch (error) {
-      report[network] = `the fake ${network} venue could not be read: ${(error as Error).message}`;
+      report[network] = `the fake ${network} venue could not be read: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
     }
   }
 
   return JSON.stringify(report, null, 2);
+}
+
+/** What one fake venue holds, as {@link venueReport} prints it. */
+interface VenueHoldings {
+  exchange: ExchangeRecord[];
+  orders: FakeOrder[];
+  cancels: FakeCancel[];
 }
 
 /** Where the signer keeps its state, inside its container (`SIGNER_DATA_DIR`). */
@@ -357,10 +390,7 @@ const SIGNER_QUERY_SCRIPT = [
 ].join("\n");
 
 /** Rows of `sql` in the signer's SQLite file. */
-export async function signerQuery(
-  sql: string,
-  ...params: unknown[]
-): Promise<Record<string, unknown>[]> {
+export async function signerQuery(sql: string, ...params: unknown[]): Promise<JsonObject[]> {
   const output = await compose(
     "exec",
     "-T",
@@ -376,7 +406,7 @@ export async function signerQuery(
     SIGNER_QUERY_SCRIPT,
   );
 
-  return JSON.parse(output) as Record<string, unknown>[];
+  return z.array(JsonObject).parse(JSON.parse(output));
 }
 
 /** What the signer recorded for an approval it signed (`venue_signatures`). */

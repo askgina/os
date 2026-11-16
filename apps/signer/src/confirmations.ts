@@ -2,7 +2,6 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
   type AddApproverEnvelope,
-  type Address,
   type ApprovalId,
   type ApproverCredential,
   type Assertion,
@@ -121,9 +120,13 @@ export interface Confirmations {
   ): Promise<SubmitPossessionResponse>;
 }
 
+/**
+ * A `confirmations` row (STRICT, db.ts). `openConfirmation` inserts it with `workspace_id` from
+ * the parsed envelope's WorkspaceId.
+ */
 type ConfirmationRow = {
   approval_id: string;
-  workspace_id: string;
+  workspace_id: WorkspaceId;
   envelope_digest: string;
   envelope: string;
   subject: string;
@@ -133,7 +136,14 @@ type ConfirmationRow = {
   created_at: number;
 };
 
-type AssertionRow = { user_id: string; credential_id: string; response: string };
+/**
+ * Three `confirmation_assertions` columns (STRICT, db.ts). `submitConfirmation` writes `user_id`
+ * from the matched approver's UserId.
+ */
+type AssertionRow = { user_id: UserId; credential_id: string; response: string };
+
+/** A stored confirmation's envelope and subject, typed again. */
+type StoredConfirmation = { envelope: Envelope; subject: ConfirmationSubject };
 
 /** What the signer requires of an approval: how many people, and how long its envelope may live. */
 type Rules = { required: number; maxTtlSeconds: number };
@@ -175,6 +185,8 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
   const relyingParty = { id: options.rpId, origins: [options.approvalOrigin] };
 
   function find(approvalId: string): ConfirmationRow | undefined {
+    // SAFETY: `SELECT *` of the STRICT `confirmations` table returns exactly ConfirmationRow's
+    // columns (db.ts, version 3), typed as its comment says; no row is undefined.
     return db.prepare("SELECT * FROM confirmations WHERE approval_id = ?").get(approvalId) as
       | ConfirmationRow
       | undefined;
@@ -194,7 +206,7 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
   }
 
   // Written by `openConfirmation` from parsed values; parsed again only to type them.
-  function stored(row: ConfirmationRow): { envelope: Envelope; subject: ConfirmationSubject } {
+  function stored(row: ConfirmationRow): StoredConfirmation {
     return {
       envelope: Envelope.parse(JSON.parse(row.envelope)),
       subject: ConfirmationSubject.parse(JSON.parse(row.subject)),
@@ -306,6 +318,8 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
   function collected(row: ConfirmationRow, approvers: readonly ApproverCredential[]): Assertion[] {
     const current = new Map(approvers.map((approver) => [approver.credentialId, approver.userId]));
 
+    // SAFETY: the three columns selected are AssertionRow's, all TEXT NOT NULL in the STRICT
+    // `confirmation_assertions` table (db.ts, version 3), typed as its comment says.
     const rows = db
       .prepare(
         "SELECT user_id, credential_id, response FROM confirmation_assertions WHERE approval_id = ? ORDER BY at, user_id",
@@ -315,7 +329,7 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
     return rows
       .filter((stored) => current.get(stored.credential_id) === stored.user_id)
       .map((stored) => ({
-        userId: stored.user_id as UserId,
+        userId: stored.user_id,
         credentialId: stored.credential_id,
         response: AssertionResponse.parse(JSON.parse(stored.response)),
       }));
@@ -462,7 +476,7 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
     const rendered = renderConfirmation({
       envelope,
       subject,
-      wallet: wallet ? { label: wallet.label, address: wallet.address as Address } : null,
+      wallet: wallet ? { label: wallet.label, address: wallet.address } : null,
       chains: options.chains,
       assets: options.assets,
       currentPolicy: walletId === null ? null : (records.currentPolicy(walletId)?.policy ?? null),
@@ -476,7 +490,7 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
         const held = records.findWallet(listed.walletId);
 
         return held?.workspace_id === row.workspace_id
-          ? [{ walletId: listed.walletId, label: held.label, address: held.address as Address }]
+          ? [{ walletId: listed.walletId, label: held.label, address: held.address }]
           : [];
       }),
     });
@@ -486,7 +500,7 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
     return {
       v: PROTOCOL_VERSION,
       approvalId,
-      workspaceId: row.workspace_id as WorkspaceId,
+      workspaceId: row.workspace_id,
       kind: envelope.type,
       state: stateOf(envelope, subject, assertions.length, required),
       expiresAt: envelope.expiresAt,
@@ -512,6 +526,9 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
    * before anything else, so a refused one still counts.
    */
   function countAttempt(fields: { approvalId: ApprovalId; workspaceId: string }): void {
+    // SAFETY: the caller read this approval's row just before, synchronously (`rowForToken`),
+    // and only a finalized workspace deletion removes it, so the UPDATE returns one row, whose
+    // `attempts` is the STRICT table's INTEGER NOT NULL column (db.ts, version 3).
     const { attempts } = transaction(
       db,
       () =>
@@ -595,6 +612,9 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
 
         if (!still) throw new SignerFailure("approver_unknown");
 
+        // SAFETY: `credential_id` is a TEXT NOT NULL column of the STRICT
+        // `confirmation_assertions` table (db.ts, version 3), the one selected; no row is
+        // undefined.
         const previous = db
           .prepare(
             "SELECT credential_id FROM confirmation_assertions WHERE approval_id = ? AND user_id = ?",
@@ -683,7 +703,8 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
         "INSERT INTO possession_challenges (approval_id, nonce) VALUES (?, ?) ON CONFLICT (approval_id) DO NOTHING",
       ).run(approvalId, randomBytes(NONCE_BYTES).toString("base64url"));
 
-      // Present: inserted just above unless it was there already.
+      // SAFETY: the INSERT just above, in this transaction, leaves one row for this approval, and
+      // `nonce` is its TEXT NOT NULL column (db.ts, version 4).
       const issued = db
         .prepare("SELECT nonce FROM possession_challenges WHERE approval_id = ?")
         .get(approvalId) as { nonce: string };
@@ -721,6 +742,8 @@ export function createConfirmations(options: ConfirmationOptions): Confirmations
       assertPossessionOpen(row, envelope);
 
       // Only an answer to the challenge the signer issued, and that no answer used yet, counts.
+      // SAFETY: `nonce` is a TEXT NOT NULL column of the STRICT `possession_challenges` table
+      // (db.ts, version 4), the one selected; no row is undefined.
       const issued = db
         .prepare("SELECT nonce FROM possession_challenges WHERE approval_id = ?")
         .get(approvalId) as { nonce: string } | undefined;

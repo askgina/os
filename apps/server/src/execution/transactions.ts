@@ -1,6 +1,13 @@
 import { hostname } from "node:os";
 import type { TransactionAttemptView, TransactionInfo } from "@askgina/os-api";
-import type { ApprovalId, ChainId, IntentId, WorkspaceId } from "@askgina/os-protocol";
+import {
+  type ApprovalId,
+  ChainId,
+  Hex,
+  Hex32,
+  type IntentId,
+  type WorkspaceId,
+} from "@askgina/os-protocol";
 import {
   type AttemptResponse,
   SignerError,
@@ -85,6 +92,35 @@ const attemptRawLocation = (approvalId: string, attempt: number) =>
 
 const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
 
+/**
+ * The chain a transaction is on. Its only writer, {@link signOnce}, stores a ChainId (an
+ * intent's or a sweep's, both parsed with that schema).
+ */
+export function chainIdOf(row: TransactionRow): ChainId {
+  return ChainId.parse(row.chainId);
+}
+
+/**
+ * A stored transaction hash: the signer's `transactionHash` of a signature or an attempt, which
+ * its client parsed as a Hex32 before it was stored.
+ */
+function storedHash(hash: string): ViemHex {
+  return Hex32.parse(hash);
+}
+
+/**
+ * A signed transaction opened from its sealed column: the signer's `signedTransaction`, which its
+ * client parsed as a Hex before it was sealed.
+ */
+async function openSigned(
+  ctx: AppContext,
+  workspaceId: WorkspaceId,
+  location: string,
+  sealed: Uint8Array,
+): Promise<ViemHex> {
+  return Hex.parse(await ctx.sealer.open(workspaceId, location, sealed));
+}
+
 /** The transaction an approval signed, or null when it has none (yet). */
 export async function transactionOf(
   ctx: AppContext,
@@ -107,7 +143,7 @@ export async function transactionOf(
 export async function shownHash(ctx: AppContext, row: TransactionRow): Promise<ViemHex> {
   const attempt = row.minedAttempt ?? row.latestAttempt;
 
-  if (attempt === 0) return row.hash as ViemHex;
+  if (attempt === 0) return storedHash(row.hash);
 
   const [shown] = await ctx.db
     .select({ hash: transactionAttempts.hash })
@@ -119,7 +155,7 @@ export async function shownHash(ctx: AppContext, row: TransactionRow): Promise<V
       ),
     );
 
-  return (shown?.hash ?? row.hash) as ViemHex;
+  return storedHash(shown?.hash ?? row.hash);
 }
 
 /** Statuses in which a transaction was sent and nothing is final: it can get more attempts. */
@@ -172,7 +208,7 @@ export async function attemptViews(
     signedAt: attempt.signedAt,
     cancelApprovalId: attempt.cancelApprovalId,
     status: attempt.status === "replaced" ? "not_mined" : attempt.status,
-    explorerUrl: chains.explorerLink(row.chainId as ChainId, attempt.hash),
+    explorerUrl: chains.explorerLink(chainIdOf(row), attempt.hash),
   }));
 }
 
@@ -200,7 +236,7 @@ export async function transactionInfo(
     (attempt) => attempt.attempt === (row.minedAttempt ?? row.latestAttempt),
   );
 
-  const hash = shown?.hash ?? (row.hash as ViemHex);
+  const hash = shown?.hash ?? storedHash(row.hash);
   const sent = SENT.includes(row.status);
   const reason = row.stuckReason;
 
@@ -208,7 +244,7 @@ export async function transactionInfo(
     hash,
     status: row.status,
     blockNumber: row.blockNumber,
-    explorerUrl: chainAccess(ctx).explorerLink(row.chainId as ChainId, hash),
+    explorerUrl: chainAccess(ctx).explorerLink(chainIdOf(row), hash),
     attempts,
     minedAttempt: row.minedAttempt,
     stuckReason: sent ? reason : null,
@@ -277,7 +313,7 @@ export async function attemptsOf(
   executor: Executor = ctx.db,
 ): Promise<Attempt[]> {
   const [raw, later] = await Promise.all([
-    ctx.sealer.open(workspaceId, rawLocation(row.approvalId), row.raw) as Promise<ViemHex>,
+    openSigned(ctx, workspaceId, rawLocation(row.approvalId), row.raw),
     executor
       .select()
       .from(transactionAttempts)
@@ -291,7 +327,7 @@ export async function attemptsOf(
     {
       attempt: 0,
       kind: "original",
-      hash: row.hash as ViemHex,
+      hash: storedHash(row.hash),
       gas: first.gas ?? 0n,
       maxFeePerGas: first.maxFeePerGas ?? 0n,
       maxPriorityFeePerGas: first.maxPriorityFeePerGas ?? 0n,
@@ -303,7 +339,7 @@ export async function attemptsOf(
     ...later.map((attempt) => ({
       attempt: attempt.attempt,
       kind: attempt.kind,
-      hash: attempt.hash as ViemHex,
+      hash: storedHash(attempt.hash),
       gas: BigInt(attempt.gas),
       maxFeePerGas: BigInt(attempt.maxFeePerGas),
       maxPriorityFeePerGas: BigInt(attempt.maxPriorityFeePerGas),
@@ -322,8 +358,8 @@ async function newestAttempt(
 ): Promise<{ hash: ViemHex; raw: ViemHex }> {
   if (row.latestAttempt === 0) {
     return {
-      hash: row.hash as ViemHex,
-      raw: (await ctx.sealer.open(workspaceId, rawLocation(row.approvalId), row.raw)) as ViemHex,
+      hash: storedHash(row.hash),
+      raw: await openSigned(ctx, workspaceId, rawLocation(row.approvalId), row.raw),
     };
   }
 
@@ -340,12 +376,13 @@ async function newestAttempt(
   if (!newest) throw new Error("the newest attempt of a transaction has no row");
 
   return {
-    hash: newest.hash as ViemHex,
-    raw: (await ctx.sealer.open(
+    hash: storedHash(newest.hash),
+    raw: await openSigned(
+      ctx,
       workspaceId,
       attemptRawLocation(row.approvalId, row.latestAttempt),
       newest.raw,
-    )) as ViemHex,
+    ),
   };
 }
 
@@ -383,7 +420,7 @@ export async function recordAttempt(
   }
 
   // Every attempt shares the first signature's nonce; that is what makes them exclusive.
-  if (parseTransaction(response.signedTransaction as ViemHex).nonce !== transaction.nonce) {
+  if (parseTransaction(response.signedTransaction).nonce !== transaction.nonce) {
     throw new Error("the signer returned an attempt at another account nonce");
   }
 
@@ -439,7 +476,7 @@ export async function broadcastNewest(
   const newest = await newestAttempt(ctx, workspaceId, row);
 
   try {
-    await chainAccess(ctx).broadcast(row.chainId as ChainId, newest.raw, newest.hash);
+    await chainAccess(ctx).broadcast(chainIdOf(row), newest.raw, newest.hash);
   } catch (error) {
     if (!(error instanceof ChainError)) throw error;
     ctx.log.warn("broadcasting an attempt failed", { approvalId, code: error.code });
@@ -580,7 +617,7 @@ export async function releaseNonce(ctx: AppContext, approvalId: ApprovalId): Pro
  * second transaction. A permanent signer refusal releases the nonce and ends the request with
  * the signer's code (for `policy_denied` and `mandate_denied`, the policy's or mandate's reason).
  */
-export async function signOnce(
+export async function signOnce<R>(
   ctx: AppContext,
   input: {
     approval: ApprovalRow;
@@ -592,7 +629,7 @@ export async function signOnce(
     intentId: IntentId | null;
     sign(transaction: TransactionParams): Promise<SignResponse>;
     /** Runs in the database transaction that stores the signed transaction. */
-    stored(tx: Transaction): Promise<unknown>;
+    stored(tx: Transaction): Promise<R>;
   },
 ): Promise<void> {
   const { approval, wallet, chainId } = input;
@@ -639,7 +676,7 @@ export async function signOnce(
   }
 
   // A repeated request returns the transaction signed the first time, with its own nonce.
-  const parsed = parseTransaction(signed.signedTransaction as ViemHex);
+  const parsed = parseTransaction(signed.signedTransaction);
   await ctx.db.transaction(async (tx) => {
     await tx
       .insert(transactions)
@@ -677,13 +714,13 @@ export interface FollowUpHooks {
     status: TransactionStatusColumn,
     tx: Transaction,
     outcome: { cancelAttempted: boolean },
-  ): Promise<unknown>;
+  ): Promise<void>;
   /**
    * Reprice now if one is due. Present only for a kind whose transactions can be repriced while
    * automatic repricing is on (a sweep's cannot: the signer has no intent to rebuild it from).
    * Handles the signer's refusals itself, recording them as the stuck reason.
    */
-  reprice?(): Promise<unknown>;
+  reprice?(): Promise<void>;
 }
 
 /** The block whose account nonce counts as final: the head, less the confirmation depth. */
@@ -713,7 +750,7 @@ export async function followUpTransaction(
   hooks: FollowUpHooks = {},
 ): Promise<{ done: boolean; waitSeconds: number }> {
   const chains = chainAccess(ctx);
-  const chainId = transaction.chainId as ChainId;
+  const chainId = chainIdOf(transaction);
   const now = ctx.now();
   const at = new Date(now * 1000);
   const done = { done: true, waitSeconds: 0 };
@@ -754,15 +791,18 @@ export async function followUpTransaction(
     ctx.db.transaction(async (tx) => {
       await lockAttempts(tx, approval.id);
 
+      const changes: Partial<TransactionRow> = {
+        status,
+        updatedAt: at,
+        stuckReason: null,
+        minedAttempt: mined?.attempt ?? null,
+      };
+
+      if (mined !== null) changes.blockNumber = mined.blockNumber;
+
       const [updated] = await tx
         .update(transactions)
-        .set({
-          status,
-          updatedAt: at,
-          stuckReason: null,
-          minedAttempt: mined?.attempt ?? null,
-          ...(mined === null ? {} : { blockNumber: mined.blockNumber }),
-        })
+        .set(changes)
         .where(
           and(
             eq(transactions.approvalId, approval.id),
@@ -806,14 +846,15 @@ export async function followUpTransaction(
   };
 
   if (transaction.status === "signed") {
-    const raw = (await ctx.sealer.open(
+    const raw = await openSigned(
+      ctx,
       approval.workspaceId,
       rawLocation(approval.id),
       transaction.raw,
-    )) as ViemHex;
+    );
 
     try {
-      await chains.broadcast(chainId, raw, transaction.hash as ViemHex);
+      await chains.broadcast(chainId, raw, storedHash(transaction.hash));
     } catch (error) {
       if (!(error instanceof ChainError)) throw error;
 
@@ -831,7 +872,7 @@ export async function followUpTransaction(
       let known: boolean;
 
       try {
-        known = await chains.known(chainId, transaction.hash as ViemHex);
+        known = await chains.known(chainId, storedHash(transaction.hash));
       } catch (lookup) {
         if (lookup instanceof ChainError) return retryLater(lookup.code, options.pollSeconds);
         throw lookup;

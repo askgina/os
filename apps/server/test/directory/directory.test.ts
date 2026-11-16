@@ -1,10 +1,15 @@
 import { ApiError, type PolicyDraft } from "@askgina/os-api";
-import { type ApprovalId, DomainTag, digestHex, type WorkspaceId } from "@askgina/os-protocol";
+import {
+  type AgentId,
+  type ApprovalId,
+  DomainTag,
+  digestHex,
+  type WalletId,
+  type WorkspaceId,
+} from "@askgina/os-protocol";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { ApprovalKindHandler } from "../../src/approvals/kinds.ts";
 import { appendAudit, verifyAudit } from "../../src/audit.ts";
-import type { AppContext } from "../../src/context.ts";
 import {
   agents,
   approvals,
@@ -13,10 +18,10 @@ import {
   memberships,
   wallets,
 } from "../../src/db/schema.ts";
-import { registerDirectoryKinds } from "../../src/directory/kinds.ts";
 import { engineOf } from "../../src/execution/approvals.ts";
 import {
   createTestContext,
+  firstApproval,
   TEST_CHAIN_ID,
   type TestContext,
   type TestPerson,
@@ -40,15 +45,19 @@ afterAll(async () => {
   await t?.close();
 });
 
+/** The API's refusal of `promise`; throws when it succeeded or failed some other way. */
+async function rejection(promise: Promise<unknown>): Promise<ApiError> {
+  try {
+    await promise;
+  } catch (caught) {
+    if (caught instanceof ApiError) return caught;
+  }
+
+  throw new Error("expected the API to refuse");
+}
+
 async function refusal(promise: Promise<unknown>): Promise<string> {
-  const error = await promise.then(
-    () => null,
-    (caught: unknown) => caught,
-  );
-
-  if (!(error instanceof ApiError)) throw new Error("expected the API to refuse");
-
-  return error.code;
+  return (await rejection(promise)).code;
 }
 
 /** A new person who joins `workspaceId` through an invite for `role`. */
@@ -70,7 +79,7 @@ async function join(role: "owner" | "approver" | "viewer", name: string): Promis
 
   const session = await browser.api.call("finishInviteRegistration", {
     params: { token },
-    body: { ceremonyId: start.ceremonyId, response: passkey.response as never },
+    body: { ceremonyId: start.ceremonyId, response: passkey.response },
   });
 
   if (!session.user) throw new Error("joining did not sign in");
@@ -92,9 +101,9 @@ async function pendingFor(kind: string, subjectId: string): Promise<ApprovalId> 
   return row.id;
 }
 
-const draft = (agentId: string): PolicyDraft => ({
+const draft = (agentId: AgentId): PolicyDraft => ({
   chains: [TEST_CHAIN_ID],
-  requesters: [agentId as never],
+  requesters: [agentId],
   assets: [{ chainId: TEST_CHAIN_ID, asset: "native", maxPerTx: "1000", maxPerDay: "5000" }],
   recipients: { mode: "any" },
   contractCalls: { mode: "deny" },
@@ -179,7 +188,7 @@ describe("members", () => {
     const passkey = t.register(start.options);
     await first.api.call("finishInviteRegistration", {
       params: { token },
-      body: { ceremonyId: start.ceremonyId, response: passkey.response as never },
+      body: { ceremonyId: start.ceremonyId, response: passkey.response },
     });
     expect(await refusal(someone.api.call("acceptInvite", { params: { token }, body: {} }))).toBe(
       "not_found",
@@ -237,7 +246,7 @@ describe("members", () => {
 
     expect(changed.member.role).toBe("approver");
     expect(changed.approvals).toHaveLength(1);
-    const removal = changed.approvals[0]?.id as ApprovalId;
+    const removal = firstApproval(changed.approvals);
     expect((await t.approve(removal, [t.owner])).status).toBe("executed");
     const after = await api.call("getWorkspace", { params: { workspaceId } });
     expect(after.members.find((m) => m.user.id === approver.userId)).toMatchObject({
@@ -273,8 +282,8 @@ describe("members", () => {
 });
 
 describe("agents and wallets", () => {
-  let agentId: string;
-  let walletId: string;
+  let agentId: AgentId;
+  let walletId: WalletId;
   let token: string;
 
   it("creates the agent with its own wallet at the signer and a token shown once", async () => {
@@ -294,10 +303,7 @@ describe("agents and wallets", () => {
   });
 
   it("never stores or logs the token in clear", async () => {
-    const [row] = await t.ctx.db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, agentId as never));
+    const [row] = await t.ctx.db.select().from(agents).where(eq(agents.id, agentId));
 
     // `osa_<agent ulid>_<secret>`: the secret starts at 31, and may itself contain `_`.
     const secret = token.slice(31);
@@ -315,10 +321,7 @@ describe("agents and wallets", () => {
 
     expect(rotated.token).not.toBe(token);
 
-    const [row] = await t.ctx.db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, agentId as never));
+    const [row] = await t.ctx.db.select().from(agents).where(eq(agents.id, agentId));
 
     expect(row?.tokenPrefix).toBe(rotated.token.slice(0, 35));
   });
@@ -338,10 +341,10 @@ describe("agents and wallets", () => {
 
     const [firstRow] = await t.ctx.db.select().from(approvals).where(eq(approvals.id, first.id));
     expect(firstRow?.status).toBe("cancelled");
-    expect((await t.ctx.signer.getWallet(walletId as never)).policy).toBeNull();
+    expect((await t.ctx.signer.getWallet(walletId)).policy).toBeNull();
 
     expect((await t.approve(second.id, [t.owner])).status).toBe("executed");
-    const atSigner = await t.ctx.signer.getWallet(walletId as never);
+    const atSigner = await t.ctx.signer.getWallet(walletId);
     expect(atSigner.policy?.fees.maxPerTxWei).toBe("2000");
     expect(atSigner.policy?.revision).toBe(1);
     const wallet = await api.call("getWallet", { params: { workspaceId, walletId } });
@@ -389,14 +392,10 @@ describe("agents and wallets", () => {
       },
     });
 
-    const refused = await api
-      .call("requestPolicy", { params, body: { draft: withVenue("hyperliquid:testnet") } })
-      .then(
-        () => null,
-        (caught: unknown) => caught,
-      );
+    const refused = await rejection(
+      api.call("requestPolicy", { params, body: { draft: withVenue("hyperliquid:testnet") } }),
+    );
 
-    if (!(refused instanceof ApiError)) throw new Error("expected the API to refuse");
     expect([refused.code, refused.detail, refused.message]).toEqual([
       "invalid_request",
       "venue_not_configured",
@@ -464,7 +463,7 @@ async function joinInto(
 
   const session = await browser.api.call("finishInviteRegistration", {
     params: { token },
-    body: { ceremonyId: start.ceremonyId, response: passkey.response as never },
+    body: { ceremonyId: start.ceremonyId, response: passkey.response },
   });
 
   if (!session.user) throw new Error("joining did not sign in");
@@ -486,28 +485,14 @@ async function joinActive(target: WorkspaceId, role: "owner" | "approver", name:
   return person;
 }
 
-/** The directory's approval kinds, called directly to replay a step that runs again late. */
-function directoryKinds(): Map<string, ApprovalKindHandler> {
-  const kinds = new Map<string, ApprovalKindHandler>();
-
-  const collector: Pick<AppContext["approvals"], "register"> = {
-    register: (handler) => {
-      kinds.set(handler.kind, handler as unknown as ApprovalKindHandler);
-    },
-  };
-
-  registerDirectoryKinds(collector as AppContext["approvals"]);
-
-  return kinds;
-}
-
+/** Run a directory approval's step again, as a step that runs late does, through its handler. */
 async function replay(approvalId: ApprovalId): Promise<void> {
   const engine = engineOf(t.ctx);
   const row = await engine.request(approvalId);
-  const handler = directoryKinds().get(row.kind);
-
-  if (!handler) throw new Error(`no handler for ${row.kind}`);
-  // The signer already applied this approval, so the handler never uses the authorization.
+  // The handler `registerDirectory` registered on this context's engine for the row's kind.
+  const handler = engine.handler(row.kind);
+  // SAFETY: deliberately not a valid Authorization; the signer already applied this approval,
+  // so the replayed handler never reads the authorization.
   await handler.execute(t.ctx, row, {} as never, await engine.openDetail(row));
 }
 
@@ -659,10 +644,8 @@ describe("members and approvers", () => {
       body: { role: "viewer" },
     });
 
-    expect((await t.approve(removeOlivia.approvals[0]?.id as never, [ada])).status).toBe(
-      "executed",
-    );
-    expect((await t.approve(removeBob.approvals[0]?.id as never, [ada])).status).toBe("executed");
+    expect((await t.approve(firstApproval(removeOlivia.approvals), [ada])).status).toBe("executed");
+    expect((await t.approve(firstApproval(removeBob.approvals), [ada])).status).toBe("executed");
 
     const rows = await t.ctx.db
       .select()
@@ -690,7 +673,7 @@ describe("members and approvers", () => {
 
     await expect(
       t.ctx.db.insert(wallets).values({
-        id: "wal_01j0000000000000000000000x" as never,
+        id: "wal_01j0000000000000000000000x",
         workspaceId: target,
         kind: "treasury",
         label: "Second",
@@ -705,7 +688,7 @@ describe("members and approvers", () => {
 
     await expect(
       t.ctx.db.insert(agents).values({
-        id: "agt_01j0000000000000000000000x" as never,
+        id: "agt_01j0000000000000000000000x",
         workspaceId: target,
         name: "Twin",
         tokenHash: "x".repeat(64),

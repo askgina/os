@@ -13,6 +13,7 @@ import {
 import { SignerError } from "@askgina/os-protocol/signer";
 import { decodeFunctionData, erc20Abi, parseTransaction, recoverTransactionAddress } from "viem";
 import { afterAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { createTestVault, SCHEMA_VERSION, SchemaTooNewError } from "../src/index.ts";
 import {
   approveIntent,
@@ -21,12 +22,14 @@ import {
   Clock,
   DROP_VERSION_7,
   ETH,
+  eip1559Serialized,
   grantMandate,
   grantRequest,
   header,
   intentFor,
   mandateFor,
   type Person,
+  personAt,
   RECIPIENT,
   ROUTER,
   refused,
@@ -39,6 +42,9 @@ import {
   useRequest,
   type World,
 } from "./harness.ts";
+
+/** The row `PRAGMA user_version` returns. */
+const UserVersion = z.object({ user_version: z.number() });
 
 /** An address on no list. */
 const STRANGER = "0x00000000000000000000000000000000000000dd" as const;
@@ -54,7 +60,8 @@ describe("granting a mandate", () => {
   it("applies with assertions at the admin threshold, records who granted it, and answers a repeat with the same state", async () => {
     const t = startSigner();
     const world = await setUpWorld(t, { people: 2, adminThreshold: 2 });
-    const [alice, bob] = world.people as [Person, Person];
+    const alice = personAt(world, 0);
+    const bob = personAt(world, 1);
     const mandate = mandateFor(world);
 
     await refused(
@@ -277,7 +284,7 @@ describe("signing under a mandate", () => {
     expect(signed.from).toBe(world.address);
 
     const recovered = await recoverTransactionAddress({
-      serializedTransaction: signed.signedTransaction as `0x02${string}`,
+      serializedTransaction: eip1559Serialized(signed.signedTransaction),
     });
 
     expect(recovered.toLowerCase()).toBe(world.address);
@@ -285,10 +292,10 @@ describe("signing under a mandate", () => {
     expect(transaction.to).toBe(TOKEN);
     const call = decodeFunctionData({ abi: erc20Abi, data: transaction.data ?? "0x" });
     expect(call.functionName).toBe("transfer");
-    expect(call.args.map((arg) => (typeof arg === "string" ? arg.toLowerCase() : arg))).toEqual([
-      RECIPIENT,
-      500_000n,
-    ]);
+
+    if (call.functionName !== "transfer") throw new Error("not a transfer");
+
+    expect([call.args[0].toLowerCase(), call.args[1]]).toEqual([RECIPIENT, 500_000n]);
 
     // A retry returns the same transaction, even with other fees, and counts nothing more.
     expect(
@@ -569,11 +576,12 @@ describe("signing under a mandate", () => {
     );
 
     expect(rejected).toHaveLength(1);
-    expect(rejected[0]).toBeInstanceOf(SignerError);
-    expect([(rejected[0] as SignerError).code, (rejected[0] as SignerError).detail]).toEqual([
-      "mandate_denied",
-      "mandate_over_window_cap",
-    ]);
+    const [reason] = rejected;
+    expect(reason).toBeInstanceOf(SignerError);
+
+    if (!(reason instanceof SignerError)) throw new Error("not a SignerError");
+
+    expect([reason.code, reason.detail]).toEqual(["mandate_denied", "mandate_over_window_cap"]);
     expect((await t.client.getMandate(mandate.id)).usage.uses).toBe(1);
   });
 });
@@ -626,7 +634,9 @@ describe("ending a mandate", () => {
   it("revokes every mandate a removed passkey granted, in the removal itself, and no other", async () => {
     const t = startSigner();
     const world = await setUpWorld(t, { people: 3 });
-    const [alice, bob, carol] = world.people as [Person, Person, Person];
+    const alice = personAt(world, 0);
+    const bob = personAt(world, 1);
+    const carol = personAt(world, 2);
     const byAlice = await grantMandate(world, {}, [alice]);
     const byBob = await grantMandate(world, {}, [bob]);
 
@@ -676,7 +686,8 @@ describe("ending a mandate", () => {
   it("stops the uses of a mandate whose grantors are fewer than a raised admin threshold", async () => {
     const t = startSigner();
     const world = await setUpWorld(t, { people: 2 });
-    const [alice, bob] = world.people as [Person, Person];
+    const alice = personAt(world, 0);
+    const bob = personAt(world, 1);
     const { mandate } = await grantMandate(world, {}, [alice]);
     await use(world, mandate.id, tokenIntent(world, 1n));
 
@@ -748,7 +759,7 @@ describe("the database's schema version 5", () => {
 
   const userVersion = (path: string) => {
     const db = new DatabaseSync(path);
-    const { user_version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
+    const { user_version } = UserVersion.parse(db.prepare("PRAGMA user_version").get());
     db.close();
 
     return user_version;

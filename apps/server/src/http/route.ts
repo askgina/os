@@ -6,8 +6,10 @@ import {
   type Routes,
   routes,
 } from "@askgina/os-api";
+import { WorkspaceId } from "@askgina/os-protocol";
 import { and, eq } from "drizzle-orm";
 import type { Context, Hono } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import type { AppContext, Session } from "../context.ts";
 import { memberships, workspaces } from "../db/schema.ts";
@@ -72,12 +74,13 @@ export function handle<N extends RouteName>(
       throw new HttpError("unauthenticated", "sign in first");
     }
 
-    const workspaceId = (c.req.param() as Record<string, string | undefined>).workspaceId;
+    // A path parameter that is not a workspace id names no workspace row, so it is not checked.
+    const workspaceId = WorkspaceId.safeParse(c.req.param("workspaceId"));
 
     if (
       route.method !== "GET" &&
       session !== null &&
-      workspaceId !== undefined &&
+      workspaceId.success &&
       ALLOWED_WHILE_DELETING[name] !== true
     ) {
       // Only a member learns the state; anyone else gets the handler's `not_found`.
@@ -85,9 +88,7 @@ export function handle<N extends RouteName>(
         .select({ lifecycle: workspaces.lifecycle })
         .from(workspaces)
         .innerJoin(memberships, eq(memberships.workspaceId, workspaces.id))
-        .where(
-          and(eq(workspaces.id, workspaceId as never), eq(memberships.userId, session.user.id)),
-        );
+        .where(and(eq(workspaces.id, workspaceId.data), eq(memberships.userId, session.user.id)));
 
       if (row && row.lifecycle !== "active") {
         throw new HttpError(
@@ -103,6 +104,10 @@ export function handle<N extends RouteName>(
 
     const query = route.query === null ? undefined : route.query.parse(c.req.query());
 
+    // SAFETY: `route` is `routes[name]`, so Hono matched `route.path` and its params are
+    // `PathParams<Routes[N]["path"]>`; `query` and `body` are the outputs of that route's own
+    // `query` and `body` schemas (undefined where it has none); a `session` route threw above
+    // when `session` was null. TypeScript cannot relate the erased `RouteDefinition` to `N`.
     const output = await handler({
       params: c.req.param() as never,
       query: query as never,
@@ -111,6 +116,8 @@ export function handle<N extends RouteName>(
       c,
     });
 
+    // SAFETY: every response schema in the `@askgina/os-api` route table is an object schema
+    // (`z.strictObject`, `items(...)`, `page(...)`), so what it parsed is an object.
     return c.json(route.response.parse(output) as object);
   });
 }
@@ -119,15 +126,13 @@ export function handle<N extends RouteName>(
 export function installErrorHandler(app: Hono, ctx: Pick<AppContext, "log">): void {
   app.onError((error, c) => {
     if (error instanceof HttpError) {
-      const body: ApiErrorBody = {
-        error: {
-          code: error.code,
-          message: error.message,
-          ...(error.detail === undefined ? {} : { detail: error.detail }),
-        },
-      };
+      const body: ApiErrorBody = { error: { code: error.code, message: error.message } };
 
-      return c.json(body, error.status as 400);
+      if (error.detail !== undefined) body.error.detail = error.detail;
+
+      // SAFETY: `apiErrorStatus` maps every error code to a 4xx or 5xx status, all of which
+      // carry a body; its type only says `number`.
+      return c.json(body, error.status as ContentfulStatusCode);
     }
 
     if (error instanceof z.ZodError) {

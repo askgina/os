@@ -1,6 +1,7 @@
 import { gunzipSync, zstdDecompressSync } from "node:zlib";
 import { decode } from "cbor-x";
 import pg from "pg";
+import { z } from "zod";
 
 /**
  * Looks for marker strings in every column of every table of every non-system schema. This is
@@ -29,23 +30,48 @@ export interface MarkerScan {
   rows: number;
 }
 
-function collectLeaves(value: unknown, out: Buffer[], depth = 0): void {
-  if (depth > 20 || value === null || value === undefined) return;
+/** A value cbor-x decoded, waiting to be looked into, `depth` containers down. */
+interface Pending {
+  value: unknown;
+  depth: number;
+}
 
-  if (value instanceof Uint8Array) {
-    out.push(Buffer.from(value));
-  } else if (typeof value === "string") {
-    out.push(Buffer.from(value));
-  } else if (Array.isArray(value)) {
-    for (const item of value) collectLeaves(item, out, depth + 1);
-  } else if (value instanceof Map) {
-    for (const [key, item] of value) {
-      collectLeaves(key, out, depth + 1);
-      collectLeaves(item, out, depth + 1);
+/**
+ * The values inside a decoded container, in order (a map's entries as key, value, key, value);
+ * none for a value that holds none.
+ */
+const CborChildren = z
+  .union([
+    z.array(z.unknown()),
+    z.instanceof(Map).transform((map) => [...map].flat()),
+    z.instanceof(Object).transform((object) => Object.values(object)),
+  ])
+  .catch([]);
+
+/** Every byte string and text in what `buffer` CBOR-decodes to, depth first, 20 levels deep. */
+function cborLeaves(buffer: Buffer): Buffer[] {
+  const leaves: Buffer[] = [];
+  const pending: Pending[] = [{ value: decode(buffer), depth: 0 }];
+
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const { value, depth } = next;
+
+    if (depth > 20 || value === null || value === undefined) continue;
+    const text = z.string().safeParse(value);
+
+    if (value instanceof Uint8Array) leaves.push(Buffer.from(value));
+    else if (text.success) leaves.push(Buffer.from(text.data));
+    else {
+      const children = CborChildren.parse(value);
+
+      // Pushed last first, so the first child is looked into next, as a recursive walk would.
+      for (let index = children.length - 1; index >= 0; index -= 1) {
+        pending.push({ value: children[index], depth: depth + 1 });
+      }
     }
-  } else if (typeof value === "object") {
-    for (const item of Object.values(value)) collectLeaves(item, out, depth + 1);
   }
+
+  return leaves;
 }
 
 /** The value itself plus every view of it that decodes or decompresses. */
@@ -68,10 +94,7 @@ function expand(buffer: Buffer, depth = 0): Buffer[] {
   }
 
   try {
-    const leaves: Buffer[] = [];
-    collectLeaves(decode(buffer), leaves);
-
-    for (const leaf of leaves) {
+    for (const leaf of cborLeaves(buffer)) {
       if (!leaf.equals(buffer)) views.push(...expand(leaf, depth + 1));
     }
   } catch {
@@ -94,6 +117,9 @@ function base64Needles(marker: string): string[] {
 
   return needles.filter((needle) => needle.length >= 12);
 }
+
+/** A row as the scan selects it: bytea columns as bytes, every other column cast to text. */
+type ScannedRow = Record<string, string | Buffer | null>;
 
 export async function scanForMarkers(
   connectionString: string,
@@ -122,7 +148,10 @@ export async function scanForMarkers(
 
     for (const column of columns) {
       const key = `${column.table_schema}.${column.table_name}`;
-      byTable.set(key, [...(byTable.get(key) ?? []), column]);
+      const group = byTable.get(key);
+
+      if (group === undefined) byTable.set(key, [column]);
+      else group.push(column);
     }
 
     const needles = markers.map((marker) => ({
@@ -130,9 +159,9 @@ export async function scanForMarkers(
       forms: [
         ["utf8", marker],
         ["hex", Buffer.from(marker).toString("hex")],
-        ...base64Needles(marker).map((needle) => ["base64", needle]),
+        ...base64Needles(marker).map((needle): [string, string] => ["base64", needle]),
         ["base64url", Buffer.from(marker).toString("base64url").slice(1, -3)],
-      ] as [string, string][],
+      ] satisfies [string, string][],
     }));
 
     const hits: MarkerHit[] = [];
@@ -151,7 +180,7 @@ export async function scanForMarkers(
         )
         .join(", ");
 
-      const { rows } = await client.query<Record<string, unknown>>(
+      const { rows } = await client.query<ScannedRow>(
         `SELECT ${select} FROM "${first.table_schema}"."${first.table_name}"`,
       );
 

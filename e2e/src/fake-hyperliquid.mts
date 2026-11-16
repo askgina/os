@@ -52,6 +52,8 @@ async function readBody(request: IncomingMessage): Promise<string | null> {
   let size = 0;
 
   for await (const chunk of request) {
+    // SAFETY: an IncomingMessage with no encoding set yields Buffer chunks, and nothing in this
+    // file calls `setEncoding` on a request.
     const bytes = chunk as Buffer;
     size += bytes.length;
 

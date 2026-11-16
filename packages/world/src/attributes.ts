@@ -50,7 +50,7 @@ type Change = { key: string; value: string | null };
 export function withholdRunAttributes(world: World, readableKeys: readonly string[]): void {
   const readable = new Set([...ALWAYS_READABLE_ATTRIBUTE_KEYS, ...readableKeys]);
 
-  const attributes = (given: Attributes): Attributes => {
+  const attributes = (given: Attributes) => {
     const kept: Attributes = {};
 
     for (const [key, value] of Object.entries(given)) {
@@ -110,6 +110,10 @@ export function withholdRunAttributes(world: World, readableKeys: readonly strin
 
   const events = world.events;
   const create = events.create.bind(events);
+  // SAFETY: the SDK's `Storage` interface declares `events.create` as two generic overloads (a
+  // run id or null), which one arrow function cannot declare. This one hands every argument to
+  // the original `create` as it came, except that `event` replaces attribute values in `data`
+  // and keeps its `eventType`, so each overload gets the result the original gives it.
   events.create = ((runId: string, data: CreateEventRequest, params?: CreateEventParams) =>
     create(runId, event(data), params)) as typeof events.create;
 

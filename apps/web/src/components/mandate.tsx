@@ -378,16 +378,15 @@ export function MandateUsage({
             used: used?.usedTotal ?? "0",
             cap: limit.maxTotal,
           },
-          ...(compact
-            ? []
-            : [
-                {
-                  label: `${info.symbol} in the last ${window}`,
-                  used: used?.usedInWindow ?? "0",
-                  cap: limit.maxPerWindow,
-                },
-              ]),
         ];
+
+        if (!compact) {
+          bars.push({
+            label: `${info.symbol} in the last ${window}`,
+            used: used?.usedInWindow ?? "0",
+            cap: limit.maxPerWindow,
+          });
+        }
 
         return bars.map((bar) => {
           const share = percentOf(bar.used, bar.cap);
@@ -657,7 +656,7 @@ interface EditorState {
  * Why the server refused a draft, in words: the reason it gives as `detail` for a draft the
  * wallet's limits or the signer's longest life refuse, the missing policy, a disabled agent.
  */
-function refusalText(error: unknown): string {
+function refusalText(error: Error | null): string {
   if (error instanceof ApiError) {
     if (error.code === "invalid_request" && error.detail)
       return explainMandateRefusal(error.detail);

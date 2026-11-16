@@ -64,28 +64,40 @@ function begin(name: string): void {
   process.stdout.write(`${JSON.stringify({ event: "openbao.bootstrap_step", step })}\n`);
 }
 
+/** A value as `JSON.parse` gives it: OpenBao's answers and the state file are read as this. */
+type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
+
 interface Answer {
   status: number;
-  body: unknown;
+  body: Json;
 }
 
 /** `value[name]` when `value` is an object, else undefined: answers are checked, not trusted. */
-function field(value: unknown, name: string): unknown {
-  return typeof value === "object" && value !== null ? Reflect.get(value, name) : undefined;
+function field(value: Json | undefined, name: string): Json | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value[name]
+    : undefined;
+}
+
+/** The `code` of a failed fetch's `cause` and of each error it gathers in `errors`. */
+function codesOf(cause: unknown): unknown[] {
+  if (typeof cause !== "object" || cause === null) return [undefined];
+  const inner = "errors" in cause && Array.isArray(cause.errors) ? cause.errors : [];
+
+  return [
+    "code" in cause ? cause.code : undefined,
+    ...inner.map((each) =>
+      typeof each === "object" && each !== null && "code" in each ? each.code : undefined,
+    ),
+  ];
 }
 
 /**
  * Whether a failed fetch never reached OpenBao: nothing listens yet, or its name does not resolve
  * yet. Only then is any request, even one that changes something, safe to send again.
  */
-function neverArrived(error: unknown): boolean {
-  const cause = error instanceof Error ? error.cause : undefined;
-  const codes = [field(cause, "code")];
-  const inner = field(cause, "errors");
-
-  if (Array.isArray(inner)) codes.push(...inner.map((each) => field(each, "code")));
-
-  return codes.some(
+function neverArrived(error: Error): boolean {
+  return codesOf(error.cause).some(
     (code) => code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EAI_AGAIN",
   );
 }
@@ -110,17 +122,16 @@ async function call(
     let response: Response;
 
     try {
-      response = await fetch(new URL(`/v1/${path}`, ADDRESS), {
-        method,
-        headers: {
-          "content-type": "application/json",
-          ...(options.token === undefined ? {} : { "x-vault-token": options.token }),
-        },
-        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
-        signal: AbortSignal.timeout(allowed),
-      });
+      const headers = new Headers({ "content-type": "application/json" });
+
+      if (options.token !== undefined) headers.set("x-vault-token", options.token);
+      const init: RequestInit = { method, headers };
+
+      if (options.body !== undefined) init.body = JSON.stringify(options.body);
+      init.signal = AbortSignal.timeout(allowed);
+      response = await fetch(new URL(`/v1/${path}`, ADDRESS), init);
     } catch (error) {
-      if (neverArrived(error)) {
+      if (error instanceof Error && neverArrived(error)) {
         await delay(500);
         continue;
       }
@@ -133,7 +144,7 @@ async function call(
     }
 
     const text = await response.text();
-    let parsed: unknown = {};
+    let parsed: Json = {};
 
     try {
       parsed = text === "" ? {} : JSON.parse(text);
@@ -250,7 +261,7 @@ async function main(): Promise<void> {
     throw new Error(`OpenBao is initialized, but ${STATE_FILE} is missing: it cannot be unsealed`);
   }
 
-  const saved: unknown = JSON.parse(readFileSync(STATE_FILE, "utf8"));
+  const saved: Json = JSON.parse(readFileSync(STATE_FILE, "utf8"));
   const unsealKey = field(saved, "unsealKey");
   const token = field(saved, "rootToken");
 
@@ -331,7 +342,9 @@ async function main(): Promise<void> {
   );
 }
 
-main().catch((error: unknown) => {
+try {
+  await main();
+} catch (error) {
   process.stdout.write(
     `${JSON.stringify({
       event: "openbao.bootstrap_failed",
@@ -340,4 +353,4 @@ main().catch((error: unknown) => {
     })}\n`,
   );
   process.exit(1);
-});
+}
