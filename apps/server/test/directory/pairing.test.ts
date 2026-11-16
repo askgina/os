@@ -68,7 +68,7 @@ async function agentRequest({ path, body, origin }: AgentRequest): Promise<Respo
   );
 }
 
-async function start(clientName = "Hermes"): Promise<Started> {
+async function start(clientName = "Example agent"): Promise<Started> {
   const response = await agentRequest({ path: "/agent-pairing", body: { clientName } });
 
   expect(response.status).toBe(201);
@@ -95,7 +95,7 @@ async function refusal(promise: Promise<unknown>): Promise<string> {
   throw new Error("expected the API to refuse");
 }
 
-function approve(person: TestPerson, pairingId: string, name = "Hermes") {
+function approve(person: TestPerson, pairingId: string, name = "Example agent") {
   return person.browser.api.call("approvePairing", {
     params: { pairingId },
     body: { workspaceId, name },
@@ -147,7 +147,7 @@ describe("agent pairing", () => {
     });
 
     expect(seen).toMatchObject({
-      clientName: "Hermes",
+      clientName: "Example agent",
       userCode: pairing.userCode,
       status: "pending",
     });

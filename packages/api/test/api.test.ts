@@ -123,7 +123,7 @@ const examples: Record<RouteName, RouteExample> = {
   getPairing: {
     response: {
       id: "pai_01jz8n0000000000000000000a",
-      clientName: "Hermes",
+      clientName: "Example agent",
       userCode: "QF7K-2M9X",
       status: "pending",
       expiresAt: 1_800_000_600,
@@ -132,7 +132,7 @@ const examples: Record<RouteName, RouteExample> = {
     },
   },
   approvePairing: {
-    body: { workspaceId: f.WS, name: "Hermes" },
+    body: { workspaceId: f.WS, name: "Example agent" },
     response: { workspaceId: f.WS, agentId: f.agent.id, walletId: f.wallet.id },
   },
   denyPairing: { body: {}, response: {} },

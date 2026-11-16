@@ -385,7 +385,7 @@ function pairingOf(id: string): PairingDetail {
 
   const pairing: PairingDetail = {
     id: PairingId.parse(id),
-    clientName: "Hermes",
+    clientName: "Example agent",
     userCode: "QF7K-2M9X",
     status: "pending",
     expiresAt: now() + 600,

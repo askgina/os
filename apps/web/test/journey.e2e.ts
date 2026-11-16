@@ -1208,15 +1208,15 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
   });
 
   await test.step("an agent's pairing link shows its code; one is refused, one allowed into a new wallet", async () => {
-    // The fixture treats any well-formed id as a waiting pairing from "Hermes" with this code; a
-    // real server is asked for one, as an agent asks.
+    // The fixture treats any well-formed id as a waiting pairing from "Example agent" with this
+    // code; a real server is asked for one, as an agent asks.
     const startPairing = async (suffix: string) => {
       if (!process.env.OS_WEB_BASE_URL) {
         return { pairingId: `pai_01jz8n000000000000000000${suffix}`, userCode: "QF7K-2M9X" };
       }
 
       const started = await request.post(`${baseURL}/agent-pairing`, {
-        data: { clientName: "Hermes" },
+        data: { clientName: "Example agent" },
       });
 
       expect(started.status()).toBe(201);
@@ -1226,7 +1226,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
 
     const refused = await startPairing("0a");
     await page.goto(`/pair/${refused.pairingId}`);
-    await expect(page.getByRole("heading", { name: "Connect Hermes" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Connect Example agent" })).toBeVisible();
     await expect(page.getByText(refused.userCode, { exact: true })).toBeVisible();
     await expect(page.getByText(/Only allow this if you started it yourself/)).toBeVisible();
     await shot("23-pair");
@@ -1239,7 +1239,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await page.getByRole("button", { name: "Allow", exact: true }).click();
     // The agent's own wallet, which has no limits yet: the page leads to setting them.
     await page.getByRole("link", { name: "Set spending limits" }).click();
-    await expect(page.getByRole("heading", { name: "Hermes's wallet" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Example agent's wallet" })).toBeVisible();
     await shot("24-paired-wallet");
   });
 
