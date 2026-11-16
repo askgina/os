@@ -81,6 +81,7 @@ networks:
     internal: true
 
 volumes:
+  anvil-state: {}
   postgres-data: {}
   server-secrets: {}
   db-secrets: {}
