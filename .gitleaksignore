@@ -1,2 +1,4 @@
 # False positive: compiled bytecode of the ERC-20 used by the execution tests, not a credential.
 2a506aac75c99fa2121a990d8ff2149876d663c2:apps/server/test/execution/token.ts:generic-api-key:19
+# False positive: the `auth` value of a made-up web-push subscription in a test fixture, not a credential.
+432d05d6c469da6b1050b751da678bd41d2b559f:apps/server/test/lifecycle/export.test.ts:generic-api-key:117
