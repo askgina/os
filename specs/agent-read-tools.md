@@ -1,13 +1,12 @@
 # Let an agent read the venue it trades on: markets, prices, its account
 
 - Branch: `feat/venue-account-reads`
-- Status: In Progress (2026-11-16). Milestones 1 to 5 are written and their server tests pass
-  when run one file at a time; the release gates of Milestone 4 have not run until CI runs them.
-  Nothing was run against the venue itself.
+- Status: Ready for Review (built 2026-11-16; every milestone green in CI run 43965458266 at
+  `678d714`, against fake venues only). Nothing was run against the real venue.
 - Owner(s): the repository owner
 - Created: 2026-11-16
 - Last Updated: 2026-11-16
-- Links: [Map #18](https://github.com/askgina/os/issues/18) | [Research report](research/agent-read-tools.md)
+- Links: [Map #18](https://github.com/askgina/os/issues/18)
 
 This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`,
 `Decision Log`, and `Outcomes & Retrospective` current as research,
@@ -23,11 +22,10 @@ fills, and on the network the stack gives it, it can reach nothing but the MCP e
 chooses a limit price blind, or its operator opens a path to the internet for it, which the
 architecture tells them not to.
 
-A sibling repository, `askgina/gina`, now serves "Gina Read": an MCP server of read-only market
-and account tools for hosted assistants. This plan ports the part of it that fits this system,
-which is the Hyperliquid reads, and rebuilds it on what is already here: the server's venue
-client, the agent's bearer token, the wallet rules, the Postgres rate limits. The research
-report says what was left behind and why.
+This plan gives an agent the reads that fit this system, which are Hyperliquid's, because
+Hyperliquid perpetual markets are the only venue an agent here can trade. It builds them on what
+is already here: the server's venue client, the agent's bearer token, the wallet rules, the
+Postgres rate limits. It adds no dependency, no outside host and no secret.
 
 After this change an agent has seven more tools, all read-only:
 
@@ -52,14 +50,16 @@ Non-goals, each out of scope for this plan:
 
 - Any tool that signs, approves, administers or changes anything. The gateway's proposal tools
   are unchanged.
-- The other parts of Gina Read: the OAuth authorization server, sign-in through a hosted
-  provider, Redis, widgets and presentation tools, skills served from the endpoint, hosted error
-  capture, the Effect runtime, the safety script (research report, "Fit, part by part").
+- What a public read service for hosted assistants needs and this endpoint does not: an OAuth
+  authorization server and sign-in, a cache or rate store outside Postgres, widgets and
+  presentation tools, instruction files served from the endpoint, hosted error capture. Agents
+  here hold a bearer token on a private network, and people see accounts in the web app.
 - Prediction-market reads, token price and metadata reads from a paid data provider, and a
-  cross-chain portfolio **(depends on owner decision D1)**.
+  cross-chain portfolio **(owner decision D1)**: this system can act on none of them, and
+  `whoami` and `get_balances` already answer the balances of the configured chains.
 - Markets this system cannot trade: builder-deployed perpetual markets, spot markets, and the
   venue's account modes (`specs/non-evm-operations.md`, non-goals).
-- The venue's profit history and per-market trading capacity **(depends on owner decision D3)**.
+- The venue's profit history and per-market trading capacity **(owner decision D3)**.
 - A connection for hosted assistants, and agents that can only read **(owner decision D4)**.
 - A live price feed. Reads are requests; nothing subscribes to the venue.
 - Any change to what people see in the web app, beyond one sentence on the agent page.
@@ -84,8 +84,8 @@ Success means:
 
 ## Progress
 
-- [x] (2026-11-16) Research: what Gina Read is, what this repository has, and what fits
-      ([research report](research/agent-read-tools.md)).
+- [x] (2026-11-16) Research: what this repository has, the venue's published API and limits,
+      and which reads fit (`Surprises & Discoveries`, `Artifacts and Notes`).
 - [x] (2026-11-16) Define the approach and the validation plan (this file).
 - [x] (2026-11-16) Parked before any owner decision, then taken up again the same day; see
       `Decision Log`.
@@ -96,56 +96,68 @@ Success means:
 - [x] (2026-11-16) Milestone 2: the read budget.
 - [x] (2026-11-16) Milestone 3: the seven MCP tools. `get_venue_account` also returns, for each
       position, its margin mode, return on equity, maximum leverage and funding paid.
-- [ ] Milestone 4: release gates. Written; unproven until CI runs them.
+- [x] (2026-11-16) Milestone 4: release gates. The price gate failed at first in `stack (amd64)`
+      and `stack (arm64)`; fixed at `678d714` (`Surprises & Discoveries`), after which every CI
+      job passed in run 43965458266, the four new gates included.
 - [x] (2026-11-16) Milestone 5: documentation.
-- [ ] Record outcomes, risks and follow-up work.
+- [x] (2026-11-16) Record outcomes, risks and follow-up work.
 
 ## Surprises & Discoveries
 
-- Observation: the venue returns at most 20 order-book levels a side. Gina Read's tools accept a
-  depth of up to 200 and get 20.
-  Evidence: the venue's "Info endpoint" page, L2 book snapshot ("Returns at most 20 levels per
-  side"); `lib/server/mcp/tools/perps.ts:472` in `askgina/gina` at `ed2387c`.
+- Observation: the venue returns at most 20 order-book levels a side, whatever depth a request
+  asks for.
+  Evidence: the venue's [Info endpoint](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint)
+  page, L2 book snapshot ("Returns at most 20 levels per side").
   Impact: `get_order_book` and `preview_order` say 20, and a preview of an order larger than
   20 levels of depth reports itself as not fully covered.
 - Observation: a fill row names the venue's order id and no client order id.
-  Evidence: the venue's "Info endpoint" page, user fills.
+  Evidence: the venue's [Info endpoint](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint)
+  page, user fills.
   Impact: fills and resting orders are tied to intents through `venue_orders.venueOrderId`,
   which the server already stores.
 - Observation: the venue counts request weight for each client address across reads and signed
   requests together, 1,200 a minute, and a fills read costs one more unit for every 20 rows it
   returns, which the request cannot bound.
-  Evidence: the venue's "Rate limits and user limits" page.
-  Impact: Milestone 2. A read is admitted on its base weight and charged for its rows afterwards.
+  Evidence: the venue's [Rate limits and user limits](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/rate-limits-and-user-limits)
+  page.
+  Impact: Milestone 2, the read budget, counted in the venue's own weights.
 - Observation: the server's venue client follows redirects, reads an answer of any size, and
   sends no `user-agent`. The posts of signed orders go through the same function.
-  Evidence: `apps/server/src/execution/venues/hyperliquid.ts:213-219`.
+  Evidence: `apps/server/src/execution/venues/hyperliquid.ts:213-219` before Milestone 1.
   Impact: Milestone 1 hardens the one function every venue request passes through.
 - Observation: the example egress rules for Kubernetes allow the server to reach chain nodes and
   the key provider, and name no venue host.
   Evidence: `deploy/k8s/overlays/production-example/egress.yaml:1-30`.
   Impact: Milestone 5 adds the venue to that example and to the deploy guide's text; it is a gap
   for orders today, not one this plan creates.
+- Observation: concurrent reads that were charged for their rows only after the answer could
+  together overdraw a bucket and take allowance that order handling needs.
+  Evidence: a review of the first build of Milestone 2, before merge.
+  Impact: a read is admitted at the most its answer can weigh (a fills read at 120, for the
+  venue's 2,000 fills; a candles read at what its time range allows) and gives back the unused
+  part once its answer is in. One agent has at most two fills reads on their way at a time.
+- Observation: the gateway may answer a JSON-RPC call either as JSON or as one server-sent event,
+  as the MCP Streamable HTTP transport allows. The first price gate parsed JSON only and failed in
+  `stack (amd64)` and `stack (arm64)`.
+  Evidence: `e2e/test/venue.spec.ts`, "an agent on the agents network reads each configured
+  venue's own prices"; fixed at `678d714`.
+  Impact: the gate reads either form. The server was not changed.
 
 ## Decision Log
 
-Owner decisions. Each is open; the plan is written for the recommended option.
+Owner decisions. The owner asked for the plan to be built as written, so each of D1 to D5 stands
+at its recommended option, (a).
 
 - Decision: park this plan.
-  Rationale: it was written for an agent that can reach nothing but this gateway. The agent it
-  was meant to serve first, the Hermes plugin in `askgina/hermes-gina`, runs next to a person
-  and takes its market and account data from the hosted Gina Read endpoint directly, so seven
-  rebuilt market reads here would give that agent the same data twice. What this repository
-  owed that plugin was agent pairing and `approvalUrl` on intent reads (PRs 29 and 30). Two
-  parts of the plan stand without it and can be picked up alone: the venue client follows
-  redirects and reads answers of any size (Milestone 1), and no hosted read can see a wallet
-  held here, so `get_venue_account` and `get_venue_fills` are the tools to build first if an
-  agent on the `agents` network needs to see its own positions.
+  Rationale: the first agent it was meant to serve could take its market data from a hosted read
+  service, so seven reads here would have given it the same data twice. Two parts stood on their
+  own: hardening the venue client (Milestone 1), and the account reads, since no hosted service
+  can see a wallet held here.
   Date/Author: 2026-11-16, the lead.
 - Decision: build the plan after all, in full.
-  Rationale: the owner does not want that plugin to depend on a hosted endpoint at all. Its
-  market and account views then have one possible source, the system the person runs, which is
-  this one. That removes the duplication the parking rested on.
+  Rationale: the owner wants agents not to depend on any hosted endpoint. Their market and
+  account data then have one possible source, the system the person runs, which removes the
+  duplication the parking rested on.
   Date/Author: 2026-11-16, the lead.
 - Decision: `get_venue_account` carries four more facts for each position than the table in
   Milestone 3 lists: `leverageType`, `returnOnEquity`, `maxLeverage` and the three funding sums.
@@ -153,35 +165,35 @@ Owner decisions. Each is open; the plan is written for the recommended option.
   needs them.
   Date/Author: 2026-11-16, the lead.
 
-- Decision D1 (open): which of Gina Read's data families come across. Recommended: (a) the
-  Hyperliquid reads only. (b) also token prices from a data provider the operator holds a key
-  for. (c) also prediction-market reads.
+- Decision D1 (taken: a): which data families an agent can read. Options: (a) the Hyperliquid
+  reads only. (b) also token prices from a data provider the operator holds a key for. (c) also
+  prediction-market reads.
   Rationale for (a): a read belongs here when the workspace can act on it. This system trades
   Hyperliquid perpetual markets and nothing else at a venue. (b) adds an outside host, a secret
   and issuer-written text for little: with a venue configured, its mids price the majors.
-  (c) is about 5,300 lines for markets no agent here can trade; it belongs with a plan that adds
-  that venue.
+  (c) serves markets no agent here can trade; it belongs with a plan that adds that venue.
   Date/Author: 2026-11-16, the lead.
-- Decision D2 (open): tool names and count. Recommended: (a) seven tools in this gateway's
-  style (`get_prices`), merging Gina Read's thirteen Hyperliquid tools. (b) Gina Read's names
-  as they are (`perps.getHyperliquidPrice`), so its instruction files apply unchanged.
-  Rationale for (a): Gina Read keeps its names because a published listing was reviewed against
-  them. Nothing binds this gateway to them, and an agent here reads one tool list in one style.
+- Decision D2 (taken: a): tool names and count. Options: (a) seven tools in this gateway's
+  style (`get_prices`), one tool for each question an agent asks: account, positions and resting
+  orders in one tool, one price and many prices in another. (b) one tool for each venue request,
+  about thirteen.
+  Rationale for (a): an agent here reads one tool list in one style, and a shorter list is
+  easier for a small model to choose from.
   Date/Author: 2026-11-16, the lead.
-- Decision D3 (open): the venue's profit history and per-market trading capacity. Recommended:
+- Decision D3 (taken: a): the venue's profit history and per-market trading capacity. Options:
   (a) leave both out. (b) add `get_venue_performance` and a capacity block.
   Rationale for (a): this system has no operation that sets leverage or margin mode, so capacity
   is what `withdrawableUsd` and the position list already say; profit history can be derived
   from fills. Each costs 20 units of the read budget a call.
   Date/Author: 2026-11-16, the lead.
-- Decision D4 (open): hosted assistants and read-only agents. Recommended: (a) neither in this
+- Decision D4 (taken: a): hosted assistants and read-only agents. Options: (a) neither in this
   plan; open one ticket for each under map 18. (b) add an agent kind that gets the read tools
-  only. (c) port Gina Read's authorization server so a hosted assistant can connect.
+  only. (c) add an OAuth authorization server so a hosted assistant can connect.
   Rationale for (a): (b) is small but changes the agent model and the web app; (c) puts a
   sign-in server and a consent page on the control plane, which is a new trust boundary and
   deserves its own research.
   Date/Author: 2026-11-16, the lead.
-- Decision D5 (open): how much of the venue's request allowance reads may use. Recommended:
+- Decision D5 (taken: a): how much of the venue's request allowance reads may use. Options:
   (a) half, 600 units a minute for each network, and 240 for each agent. (b) other numbers.
   Rationale for (a): order handling today uses a few units for each order (a post, status reads,
   a reconcile pass every five minutes); half leaves it far more than it uses and still serves
@@ -190,10 +202,28 @@ Owner decisions. Each is open; the plan is written for the recommended option.
 
 Decisions the plan takes itself.
 
-- Decision: rebuild on this repository's venue client; copy no module from `askgina/gina`.
-  Rationale: every tool there is an Effect program bound to that application's service layers
-  (research report, "The source"). What moves is the request shapes, the decode rules, the row
-  limits and the tests' cases.
+- Decision: build on this repository's venue client, with no new dependency.
+  Rationale: the server already talks to the venue for orders, through one function with a
+  deadline and typed errors. A second client, or a runtime such as Effect, would add a second
+  way to write a service to a codebase that has one.
+  Date/Author: 2026-11-16, the lead.
+- Decision: every venue request, signed order posts included, follows no redirect and reads at
+  most 4 MiB of answer; either is a `VenueError`.
+  Rationale: a redirect would send a request, and for a post a signed order, to a host the
+  operator did not list. An answer of unbounded size lets a broken or hostile venue exhaust the
+  server's memory. For a post, a refused redirect is an unknown outcome that the order's status
+  read resolves, as a lost answer already is.
+  Date/Author: 2026-11-16, the lead.
+- Decision: every result is bounded: at most 500 markets or prices, 50 named coins, 20 book
+  levels a side, 500 candles, 100 positions, 100 resting orders and 200 fills.
+  Rationale: an agent's context and the server's memory are finite, and the venue's own limits
+  (20 levels, its 2,000 most recent fills, its 5,000 most recent candles) are above what one
+  decision needs.
+  Date/Author: 2026-11-16, the lead.
+- Decision: reads have their own budget of the venue's request weight (D5), separate from order
+  handling, which takes from no bucket.
+  Rationale: the venue counts reads and signed requests of one address together. Without a
+  budget an agent could spend the whole allowance on reads and delay another agent's cancel.
   Date/Author: 2026-11-16, the lead.
 - Decision: reads go to the host `VENUES_FILE` names for the network in the call. There is no
   second setting for a data host.
@@ -202,16 +232,20 @@ Decisions the plan takes itself.
   Date/Author: 2026-11-16, the lead.
 - Decision: no tool takes an address. Account reads take a `walletId` and apply the rule
   `get_balances` applies.
-  Rationale: otherwise the server answers for any address on request.
+  Rationale: otherwise the server answers for any address on request, and an agent could read
+  wallets of other agents and other workspaces through it.
   Date/Author: 2026-11-16, the lead.
 - Decision: amounts and prices are decimal strings as the venue spelled them; arithmetic is in
   scaled integers.
-  Rationale: the convention of `packages/protocol/src/venues.ts`. Gina Read uses floats.
+  Rationale: the convention of `packages/protocol/src/venues.ts`. A float loses digits of the
+  venue's decimal strings, and a preview's notional must equal what the wallet's caps count
+  (`orderNotionalUsd6`).
   Date/Author: 2026-11-16, the lead.
 - Decision: a row whose market name or numbers do not fit the strict result schema is dropped
   and counted in `omitted`; the read does not fail.
-  Rationale: Gina Read's record shows one undeclared optional field failing a whole read. A
-  dropped row also keeps venue-written text away from the agent.
+  Rationale: one odd row, such as an optional field the decoder did not declare, should cost
+  that row and not the whole read. A dropped row also keeps venue-written text away from the
+  agent, which may be following injected instructions.
   Date/Author: 2026-11-16, the lead.
 - Decision: no `outputSchema` is published for the new tools.
   Rationale: none of the eight has one. The result still passes a strict schema on the server
@@ -220,19 +254,25 @@ Decisions the plan takes itself.
 
 ## Outcomes & Retrospective
 
-- Outcome: none yet; the plan is a draft.
-  Evidence: `Progress`.
-  Follow-up: the owner decisions.
+- Outcome (2026-11-16): the seven tools, the hardened venue client, the read budget, the release
+  gates and the documentation are built and merged. The MCP tool list is fifteen tools.
+  Evidence: CI run 43965458266 at `678d714`, every job green: `test` (the server tests named in
+  `Concrete Steps`), and `stack (amd64)` and `stack (arm64)`, the jobs that run the gates in
+  `e2e/test/venue.spec.ts`, all against fake venues.
+  Follow-up: unproven against the real venue: no read has been sent to the real testnet or
+  mainnet, so its answer shapes are known only from its published pages. No run with a real
+  model has used the tools. A deployment whose replicas reach the venue from several addresses,
+  or that shares its address with other software, gets a budget that does not match the venue's
+  count.
 
 ## Context and Orientation
 
 Words are used as [`docs/architecture.md`](../docs/architecture.md#words-used-on-this-page)
-defines them. Three more:
+defines them. Two more:
 
 - **Read tool.** An MCP tool that gets data and changes nothing in this system or at the venue.
 - **Request weight.** The venue's unit for counting requests against its limit of 1,200 a minute
   for each client address. A price read weighs 2, most other reads 20, a signed request 1.
-- **Gina Read.** The MCP server in `askgina/gina` this plan draws from, as of `ed2387c`.
 
 Relevant repo rules:
 
@@ -273,8 +313,8 @@ How the relevant pieces fit together:
 
 Assumptions:
 
-- The venue's answer shapes are as its published pages show and as Gina Read decodes them in
-  production. Nothing in this plan was run against the venue.
+- The venue's answer shapes are as its published pages show. Nothing in this plan was run
+  against the real venue; every test uses the fake venue in `packages/testkit`.
 - A deployment's server replicas reach the venue from one address, so one budget for each
   network is right. With several addresses the budget is stricter than it needs to be.
 
@@ -349,8 +389,8 @@ Work:
 
 `takeTokens` is `takeToken` for a cost above one: it takes `cost` tokens when the bucket holds
 them and changes nothing otherwise. `takeToken` becomes a call to it. `chargeTokens` subtracts
-without a check and may leave the bucket below zero; the refill pays that back before the next
-take succeeds.
+without a check and may leave the bucket below zero, which the refill pays back before the next
+take succeeds; a negative cost gives tokens back, never past the bucket's burst.
 
 `venueReads(ctx, network, agentId)` wraps the client's read methods. For each read it:
 
@@ -358,12 +398,15 @@ take succeeds.
    for 15 seconds, mids and a book for 1 second, candles for 5 seconds, a fee rate for 10
    minutes. Account state, resting orders and fills are never cached. The cache holds at most
    200 answers, and concurrent identical reads share one request to the venue.
-2. Otherwise takes the read's base weight from two buckets, `venue-read:<network>` (600 a
-   minute) and `venue-read:<network>:<agentId>` (240 a minute). Either one empty: `HttpError`
+2. Otherwise takes, from two buckets, `venue-read:<network>` (600 a minute) and
+   `venue-read:<network>:<agentId>` (240 a minute), the most the read's answer can weigh: its
+   base weight plus, for fills, one for every 20 of the venue's 2,000 most recent (120 in all),
+   and for candles, one for every 60 its time range can hold. Either one short: `HttpError`
    `rate_limited`, detail `venue_budget`, and no request is made. The weights are the venue's:
    mids, a book and account state 2; markets, candles, resting orders, fills and a fee rate 20.
-3. Makes the request. Afterwards charges both buckets the weight only the answer reveals: one
-   for every 60 candles, one for every 20 fills.
+   Taking the most first means reads made at once never overdraw a bucket.
+3. Makes the request, then gives both buckets back the part of the weight the answer did not
+   use.
 4. Turns a `VenueError` into `HttpError` `internal`, detail `venue_unreachable`, as
    `proposeOrder` does.
 
@@ -373,12 +416,13 @@ Acceptance:
 
 - Run `node_modules/.bin/vitest run apps/server/test/support/rate-limit.test.ts` and expect: a
   take of 20 from a bucket holding 19 fails and leaves 19; a charge takes a bucket below zero
-  and the next take fails until the refill has paid it back; two database connections taking at
-  once never overdraw.
+  and the next take fails until the refill has paid it back; a negative charge gives tokens back
+  and never past the burst; two database connections taking at once never overdraw.
 - Run `venue-reads.test.ts` and expect: a second identical price read inside a second makes no
   second request; reads past an agent's budget are refused with `venue_budget` while another
   agent's reads and a `proposeOrder` on the same network succeed; a fills read of 100 rows
-  costs 25.
+  costs 25 once its unused part is given back; fills reads made at once are admitted only as far
+  as their worst cases fit.
 
 ### Milestone 3: the seven MCP tools
 
@@ -401,15 +445,15 @@ the agent's own wallet; a wallet outside `walletsFor` is `not_found`. Every tool
 `{ readOnlyHint: true, openWorldHint: true }`. Every result carries `network` and `observedAt`
 (the server's clock, ISO 8601). Prices, sizes and USD amounts are decimal strings.
 
-| Tool                | Input                                                                                                         | Result                                                                                                                                                                                                                                                                                                                                     | From Gina Read                                                                                                   |
-| ------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `get_markets`       | `network`, `coins?` (at most 50)                                                                              | Up to 500 markets: `coin`, `asset`, `sizeDecimals`, `maxLeverage`, `isolatedOnly`, `markPrice`, `midPrice`, `oraclePrice`, `fundingRateHourly`, `openInterest`, `dayVolumeUsd`, `previousDayPrice`, and `allowed`; `omitted`                                                                                                               | `perps.getHyperliquidMarkets`, without builder-deployed markets or text search                                   |
-| `get_prices`        | `network`, `coins?` (at most 50)                                                                              | `prices`: `coin`, `mid`. Without `coins`, every perpetual market, at most 500                                                                                                                                                                                                                                                              | `perps.getHyperliquidPrice` and `perps.getHyperliquidPrices`, as one tool                                        |
-| `get_order_book`    | `network`, `coin`, `depth?` (1 to 20, default 10)                                                             | `venueTime`, `mid`, `spread`, `bids` and `asks`: `price`, `size`, `orders`                                                                                                                                                                                                                                                                 | `perps.fetchHyperliquidOrderBook`, with the venue's real limit of 20                                             |
-| `get_candles`       | `network`, `coin`, `interval` (one of the venue's 14), `count?` (1 to 500, default 60), `endTime?` (ISO 8601) | `candles`: `openTime`, `closeTime`, `open`, `high`, `low`, `close`, `volume`, `closed`                                                                                                                                                                                                                                                     | `perps.fetchHyperliquidCandles`, one interval a call; the five extra intervals it fetches for its chart are gone |
-| `preview_order`     | `network`, `coin`, `side`, `size`, `limitPrice?`, `walletId?`                                                 | `fillableSize`, `unfilledSize`, `fullyCovered`, `averagePrice`, `worstPrice`, `bestPrice`, `mid`, `slippageBps`, `notionalUsd6`, `takerFeeRate`, `estimatedFeeUsd`, `levelsUsed`, `venueTime`                                                                                                                                              | `perps.previewHyperliquidOrderCost`, made aware of a limit price and of the caps                                 |
-| `get_venue_account` | `network`, `walletId?`                                                                                        | `walletId`, `address`, `accountValueUsd`, `withdrawableUsd`, `marginUsedUsd`, up to 100 `positions` (`coin`, `side`, `size`, `entryPrice`, `positionValueUsd`, `unrealizedPnlUsd`, `leverage`, `liquidationPrice`, `marginUsedUsd`), up to 100 `openOrders` (`coin`, `side`, `size`, `limitPrice`, `placedAt`, `venueOrderId`, `intentId`) | `perps.getHyperliquidAccount`, `perps.getHyperliquidPositions` and `perps.getHyperliquidOpenOrders`, as one tool |
-| `get_venue_fills`   | `network`, `walletId?`, `coin?`, `limit?` (1 to 200, default 50)                                              | `fills`, newest first: `time`, `coin`, `side`, `price`, `size`, `feeUsd`, `closedPnlUsd`, `taker`, `venueOrderId`, `intentId`                                                                                                                                                                                                              | `perps.fetchHyperliquidTrades`                                                                                   |
+| Tool                | Input                                                                                                         | Result                                                                                                                                                                                                                                                                                                                                     | Notes                                                                                        |
+| ------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `get_markets`       | `network`, `coins?` (at most 50)                                                                              | Up to 500 markets: `coin`, `asset`, `sizeDecimals`, `maxLeverage`, `isolatedOnly`, `markPrice`, `midPrice`, `oraclePrice`, `fundingRateHourly`, `openInterest`, `dayVolumeUsd`, `previousDayPrice`, and `allowed`; `omitted`                                                                                                               | Perpetual markets of the first market list only; no builder-deployed markets, no text search |
+| `get_prices`        | `network`, `coins?` (at most 50)                                                                              | `prices`: `coin`, `mid`. Without `coins`, every perpetual market, at most 500                                                                                                                                                                                                                                                              | One price or many in one tool; a mid is not a price an order will get                        |
+| `get_order_book`    | `network`, `coin`, `depth?` (1 to 20, default 10)                                                             | `venueTime`, `mid`, `spread`, `bids` and `asks`: `price`, `size`, `orders`                                                                                                                                                                                                                                                                 | The venue answers at most 20 levels a side                                                   |
+| `get_candles`       | `network`, `coin`, `interval` (one of the venue's 14), `count?` (1 to 500, default 60), `endTime?` (ISO 8601) | `candles`: `openTime`, `closeTime`, `open`, `high`, `low`, `close`, `volume`, `closed`                                                                                                                                                                                                                                                     | One interval a call; the venue keeps its 5,000 most recent candles of an interval            |
+| `preview_order`     | `network`, `coin`, `side`, `size`, `limitPrice?`, `walletId?`                                                 | `fillableSize`, `unfilledSize`, `fullyCovered`, `averagePrice`, `worstPrice`, `bestPrice`, `mid`, `slippageBps`, `notionalUsd6`, `takerFeeRate`, `estimatedFeeUsd`, `levelsUsed`, `venueTime`                                                                                                                                              | Aware of a limit price and of the notional the wallet's caps count; places nothing           |
+| `get_venue_account` | `network`, `walletId?`                                                                                        | `walletId`, `address`, `accountValueUsd`, `withdrawableUsd`, `marginUsedUsd`, up to 100 `positions` (`coin`, `side`, `size`, `entryPrice`, `positionValueUsd`, `unrealizedPnlUsd`, `leverage`, `liquidationPrice`, `marginUsedUsd`), up to 100 `openOrders` (`coin`, `side`, `size`, `limitPrice`, `placedAt`, `venueOrderId`, `intentId`) | Account, positions and resting orders as one tool; only a wallet the agent may propose from  |
+| `get_venue_fills`   | `network`, `walletId?`, `coin?`, `limit?` (1 to 200, default 50)                                              | `fills`, newest first: `time`, `coin`, `side`, `price`, `size`, `feeUsd`, `closedPnlUsd`, `taker`, `venueOrderId`, `intentId`                                                                                                                                                                                                              | The venue answers its 2,000 most recent fills at most                                        |
 
 Rules that are this system's own:
 
@@ -470,9 +514,9 @@ eight tools…" and add:
 
 Acceptance:
 
-- CI jobs `stack (amd64)`, `stack (arm64)`, `stack (split)`, `stack (replicas)` and
-  `stack (openbao)` pass with the new gates. These run in CI; do not run `./e2e/run.sh` locally
-  unless asked.
+- CI jobs `stack (amd64)` and `stack (arm64)`, which run `venue.spec.ts`, pass with the new
+  gates, and every `stack` job passes with the fifteen-tool `AGENT_TOOLS` list. These run in CI;
+  do not run `./e2e/run.sh` locally unless asked.
 
 ### Milestone 5: documentation
 
@@ -539,9 +583,11 @@ Local interfaces:
 External dependencies:
 
 - The venue's `/info` endpoint:
-  - Version or source checked: its published "Info endpoint", "Perpetuals" and "Rate limits and
-    user limits" pages on 2026-11-16, and the schemas Gina Read decodes with at `ed2387c`
-    (`lib/server/mcp/hyperliquid.ts`).
+  - Version or source checked: its published
+    [Info endpoint](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint),
+    [Perpetuals](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals)
+    and [Rate limits and user limits](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/rate-limits-and-user-limits)
+    pages, as read on 2026-11-16.
   - API used: `metaAndAssetCtxs`, `allMids`, `l2Book`, `candleSnapshot`, `userFills`,
     `userFees`, and the two the server already uses, `clearinghouseState` and `openOrders`.
   - Constraints: 1,200 request weight a minute for each client address; 20 book levels a side;
@@ -580,7 +626,8 @@ Automated validation:
 - The five test files above, each alone: all pass.
 - `bun run check`, `bun run lint:slop`, `tsc --noEmit` in `apps/server`, `packages/testkit` and
   `e2e`: clean.
-- CI: every job green, with the four new gates in the `stack` jobs.
+- CI: every job green, with the four new gates in `stack (amd64)` and `stack (arm64)`. Done in
+  run 43965458266 at `678d714`.
 
 Manual or runtime validation:
 
@@ -622,34 +669,43 @@ Regression checks:
   constants in one file, named after the venue's page.
 - Risk: fifteen tools make an agent's tool list long enough to change how a small model
   chooses.
-  Mitigation or validation: seven tools, not Gina Read's thirteen; descriptions say when to use
-  each. No run with a real model has used them yet.
+  Mitigation or validation: seven tools rather than one for each venue request; descriptions say
+  when to use each. No run with a real model has used them yet.
 - Risk: an agent treats a mid or a preview as a promise.
   Mitigation or validation: the descriptions say they are not; an order is still a limit order
   that a person approves.
-- Open question: D1 to D5 in the `Decision Log`.
-  Owner or next step: the repository owner.
+- Open question: whether the real venue's answers match its published pages and the fake venue.
+  Owner or next step: a read against the real testnet, proven once by hand, needs the owner's
+  word; nothing in this plan depends on it.
 - Open question: whether the venue treats a request with no `user-agent` differently.
   Owner or next step: none needed; the client names itself either way.
 
 ## Artifacts and Notes
 
-Gina Read's Hyperliquid tools and where each went:
+The venue's documented limits this plan relies on, as read on 2026-11-16. Nothing here was
+checked against the real venue.
 
-    perps.getHyperliquidMarkets         -> get_markets
-    perps.getHyperliquidPrice           -> get_prices
-    perps.getHyperliquidPrices          -> get_prices
-    perps.fetchHyperliquidOrderBook     -> get_order_book
-    perps.fetchHyperliquidCandles       -> get_candles
-    perps.previewHyperliquidOrderCost   -> preview_order
-    perps.getHyperliquidAccount         -> get_venue_account
-    perps.getHyperliquidPositions       -> get_venue_account
-    perps.getHyperliquidOpenOrders      -> get_venue_account
-    perps.fetchHyperliquidTrades        -> get_venue_fills
-    perps.getHyperliquidPerpDexes       -> not ported (markets this system cannot trade)
-    perps.getHyperliquidPortfolio       -> not ported (D3)
-    perps.getHyperliquidAssetData       -> not ported (D3)
+- Request weight: 1,200 a minute for each client address, reads and signed requests together.
+  Weight 2 for `l2Book`, `allMids`, `clearinghouseState` and `orderStatus`; 20 for most other
+  `/info` requests; `candleSnapshot` one more for every 60 candles answered; `userFills` one
+  more for every 20 fills answered; a signed request 1. Source:
+  [Rate limits and user limits](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/rate-limits-and-user-limits).
+- Order book: at most 20 levels a side. Source:
+  [Info endpoint](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint),
+  L2 book snapshot.
+- Fills: the 2,000 most recent; a fill names the venue's order id (`oid`) and no client order
+  id. Source: [Info endpoint](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint),
+  user fills.
+- Candles: the 5,000 most recent of an interval, 14 intervals. Source:
+  [Info endpoint](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint),
+  candle snapshot.
+- Perpetual market metadata and asset contexts (`metaAndAssetCtxs`): source
+  [Perpetuals](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals).
 
 ## Revision Notes
 
-- 2026-11-16: first draft, from the research report of the same date.
+- 2026-11-16: first draft, from a research report of the same date.
+- 2026-11-16: built; Status, Progress, Decision Log and Outcomes updated to the merged state at
+  `678d714`. The read budget section now describes reserving the most a read can weigh. The
+  research report was withdrawn; the venue's documented limits it held are in
+  `Artifacts and Notes`.
