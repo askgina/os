@@ -1058,8 +1058,19 @@ export class Engine implements ApprovalEngine {
     const ctx = this.#ctx;
     const detail = await this.openDetail(row);
 
-    if (isRequest(row)) await this.handler(row.kind).abandon?.(ctx, row, status, detail);
-    else await this.#use().abandon(ctx, row, status, detail);
+    try {
+      if (isRequest(row)) await this.handler(row.kind).abandon?.(ctx, row, status, detail);
+      else await this.#use().abandon(ctx, row, status, detail);
+    } catch (error) {
+      // The undo needs the request's stored detail and cannot read it. Trying again reads the
+      // same value, so the request still ends and the signer is still told never to act on it.
+      if (!(error instanceof StoredDataError)) throw error;
+      ctx.log.error("an ended request's undo was skipped: its stored data could not be read", {
+        approvalId: row.id,
+        kind: row.kind,
+        message: error.message,
+      });
+    }
 
     try {
       await ctx.signer.revokeApproval(row.id, row.workspaceId);

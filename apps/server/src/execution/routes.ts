@@ -5,7 +5,7 @@ import { HttpError } from "../http/errors.ts";
 import { handle } from "../http/route.ts";
 import { engineOf } from "./approvals.ts";
 import { requestCancel } from "./cancel.ts";
-import { getIntentRow, intentDetail, intentSummary, listIntentRows } from "./intents.ts";
+import { getIntentRow, intentDetail, intentSummaries, listIntentRows } from "./intents.ts";
 import {
   listMandates,
   loadMandate,
@@ -50,7 +50,7 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
 
     return {
       ...(await mandateSummary(ctx, row, state)),
-      intents: await Promise.all(rows.map((intent) => intentSummary(ctx, intent))),
+      intents: await intentSummaries(ctx, rows),
       intentsCursor: nextCursor,
     };
   });
@@ -144,7 +144,7 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
       cursor: query.cursor,
     });
 
-    return { items: await Promise.all(rows.map((row) => intentSummary(ctx, row))), nextCursor };
+    return { items: await intentSummaries(ctx, rows), nextCursor };
   });
 
   handle(app, ctx, "getIntent", async ({ params, session }) => {

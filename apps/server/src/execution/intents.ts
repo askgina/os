@@ -57,7 +57,7 @@ import { type AuditInput, appendAudit } from "../audit.ts";
 import type { AppContext, Executor } from "../context.ts";
 import { agents, intents, venueOrders, wallets, workspaces } from "../db/schema.ts";
 import type { JsonValue } from "../db/sealed.ts";
-import { stored } from "../db/stored.ts";
+import { StoredDataError, stored } from "../db/stored.ts";
 import { walletLifecycle } from "../directory/views.ts";
 import { HttpError } from "../http/errors.ts";
 import { approvalLink } from "../notify/content.ts";
@@ -224,6 +224,33 @@ export async function intentSummary(ctx: AppContext, row: IntentRow): Promise<In
     failureCode: row.failureCode,
     order,
   };
+}
+
+/**
+ * The summaries of a list's rows. A row whose stored details cannot be read is left out and
+ * logged, so one damaged intent does not take the whole list with it.
+ */
+export async function intentSummaries(
+  ctx: AppContext,
+  rows: IntentRow[],
+): Promise<IntentSummary[]> {
+  const summaries = await Promise.all(
+    rows.map(async (row) => {
+      try {
+        return await intentSummary(ctx, row);
+      } catch (error) {
+        if (!(error instanceof StoredDataError)) throw error;
+        ctx.log.error("an intent left out of a list: its stored data could not be read", {
+          intentId: row.id,
+          message: error.message,
+        });
+
+        return null;
+      }
+    }),
+  );
+
+  return summaries.filter((summary) => summary !== null);
 }
 
 export async function intentDetail(ctx: AppContext, row: IntentRow): Promise<IntentDetail> {
@@ -1113,6 +1140,28 @@ export function mandateUseKind(): MandateUseHandler {
   };
 }
 
+/**
+ * The intent an ended request or use was for. The request's detail names it; when that detail
+ * cannot be read, the intent that points back at the request is the same one.
+ */
+async function abandonedIntent(
+  ctx: AppContext,
+  approval: ApprovalRow,
+  detail: JsonValue,
+): Promise<IntentRow> {
+  try {
+    return await intentRow(ctx, intentApprovalDetail(detail).intentId);
+  } catch (error) {
+    if (!(error instanceof StoredDataError)) throw error;
+
+    const [row] = await ctx.db.select().from(intents).where(eq(intents.approvalId, approval.id));
+
+    if (!row) throw error;
+
+    return row;
+  }
+}
+
 /** An intent's request or use ended without a signature: the intent ends with it. */
 async function abandonIntent(
   ctx: AppContext,
@@ -1122,7 +1171,7 @@ async function abandonIntent(
 ): Promise<void> {
   // Ended without a signature we stored: a reserved nonce goes back to the wallet.
   await releaseNonce(ctx, approval.id);
-  const row = await intentRow(ctx, intentApprovalDetail(detail).intentId);
+  const row = await abandonedIntent(ctx, approval, detail);
 
   if (status === "failed") {
     const code = approval.failureCode ?? "failed";

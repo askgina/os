@@ -13,6 +13,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import type { AppContext, Session } from "../context.ts";
 import { memberships, workspaces } from "../db/schema.ts";
+import { StoredDataError } from "../db/stored.ts";
 import { HttpError } from "./errors.ts";
 
 type Infer<S> = S extends z.ZodType ? z.infer<S> : undefined;
@@ -152,7 +153,18 @@ export function installErrorHandler(app: Hono, ctx: Pick<AppContext, "log">): vo
 
     // The message may quote user data; log only what kind of error it was and where.
     ctx.log.error("unhandled error", { name: error.name, path: new URL(c.req.url).pathname });
-    const body: ApiErrorBody = { error: { code: "internal", message: "something went wrong" } };
+
+    // Asking again reads the same stored value, so the caller is told this is not a passing fault.
+    const body: ApiErrorBody =
+      error instanceof StoredDataError
+        ? {
+            error: {
+              code: "internal",
+              message: "what is stored for this could not be read",
+              detail: "stored_data_invalid",
+            },
+          }
+        : { error: { code: "internal", message: "something went wrong" } };
 
     return c.json(body, 500);
   });

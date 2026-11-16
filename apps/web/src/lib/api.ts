@@ -39,6 +39,10 @@ export const queryClient = new QueryClient({
 
 /** The API's own message for a refusal; a fixed sentence for anything that never reached it. */
 export function errorMessage(error: Error | null): string {
+  if (error instanceof ApiError && error.detail === "stored_data_invalid") {
+    return "The saved details of this can no longer be read, so it cannot be shown. Trying again will not help. If it was waiting to be signed, it was stopped before anything was signed or sent.";
+  }
+
   if (error instanceof ApiError) return error.message;
 
   if (error instanceof Error && error.name === "NotAllowedError") {

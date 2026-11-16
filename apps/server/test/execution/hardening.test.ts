@@ -6,6 +6,7 @@ import { and, eq } from "drizzle-orm";
 import { parseTransaction } from "viem";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  approvals,
   approverCredentials,
   intents,
   memberships,
@@ -269,8 +270,21 @@ describe("stored data", () => {
 
       expect(response.status).toBe(500);
       expect(await response.json()).toEqual({
-        error: { code: "internal", message: "something went wrong" },
+        error: {
+          code: "internal",
+          message: "what is stored for this could not be read",
+          detail: "stored_data_invalid",
+        },
       });
+
+      // A list the damaged intent is in still loads, without it.
+      const listed = await f.t.owner.browser.api.call("listIntents", {
+        params: { workspaceId: f.workspaceId },
+        query: {},
+      });
+
+      expect(listed.items.map((intent) => intent.id)).not.toContain(intentId);
+      expect(listed.items.length).toBeGreaterThan(0);
       expect(loggedLines(f.t.log)).toContainEqual(
         expect.objectContaining({
           message: "unhandled error",
@@ -303,6 +317,29 @@ describe("stored data, once approved", () => {
     expect(await steps().execute(approvalId)).toEqual({ ok: false, code: "stored_data_invalid" });
     await steps().fail(approvalId, "stored_data_invalid");
 
+    expect(
+      await f.t.ctx.db.select().from(transactions).where(eq(transactions.approvalId, approvalId)),
+    ).toEqual([]);
+
+    const answer = toolJson(await client.callTool({ name: "get_intent", arguments: { intentId } }));
+
+    expect(answer).toMatchObject({ status: "failed", failureCode: "stored_data_invalid" });
+  });
+
+  it("ends the payment too when it is the request's own stored detail that cannot be read", async () => {
+    const { client } = await agentClient("Damaged request");
+    const { intentId, approvalId } = await propose(client);
+    await approveOnly(approvalId);
+
+    // Opens fine, but names no intent.
+    const damaged = await f.t.ctx.sealer.seal(f.workspaceId, `approvals.detail:${approvalId}`, {});
+
+    await f.t.ctx.db.update(approvals).set({ detail: damaged }).where(eq(approvals.id, approvalId));
+
+    expect(await steps().execute(approvalId)).toEqual({ ok: false, code: "stored_data_invalid" });
+    await steps().fail(approvalId, "stored_data_invalid");
+
+    expect((await engineOf(f.t.ctx).row(approvalId)).status).toBe("failed");
     expect(
       await f.t.ctx.db.select().from(transactions).where(eq(transactions.approvalId, approvalId)),
     ).toEqual([]);

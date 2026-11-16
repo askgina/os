@@ -122,9 +122,13 @@ Success means:
     ends at once as `failed` with `stored_data_invalid`, logged once, instead
     of after twelve retries, but only while no transaction or venue order was
     recorded for it. The agent's `get_intent` and `list_intents` answer such
-    an intent with its status and a note. The web app has words for the code,
-    but its pages for that one intent still answer 500, because they need the
-    display that cannot be read.
+    an intent with its status and a note. The same holds when it is the
+    request's own stored detail that cannot be read: the request and its
+    payment still end, and for other kinds of request the undo is skipped and
+    logged. In the web app, a page for something unreadable says so in plain
+    words (the API answers 500 with detail `stored_data_invalid`), and a list
+    leaves an unreadable payment out, logged, instead of failing whole. The
+    page cannot show the payment itself, since the display is what was lost.
   - Not from the refactor, still open: a token with 37 to 255 decimals can be
     proposed and signed, but every HTTP answer that shows it fails the API's
     display schema (at most 36).
