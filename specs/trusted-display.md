@@ -1064,8 +1064,8 @@ Work:
 10. Web: the approval page shows "Review and approve on the signer's page" linking to
     `confirmUrl` (`rel="noopener noreferrer"`), shows the confirmation host in text, offers
     "Copy link" for another device, and refetches the detail every 3 seconds while pending.
-11. e2e: `e2e/run.sh` exports `APPROVE_HTTP_PORT=55903` and
-    `APPROVE_ORIGIN=http://localhost:55903`, and `APPROVE_ORIGIN=https://localhost:8443` with
+11. e2e: `e2e/run.sh` exports `APPROVE_HTTP_PORT=25903` and
+    `APPROVE_ORIGIN=http://localhost:25903`, and `APPROVE_ORIGIN=https://localhost:8443` with
     `E2E_TLS=1`. `Person.confirm(approvalId)` reads `confirmUrl`, fetches the view from the
     confirmation origin, signs the challenge with its `SoftAuthenticator` using that origin,
     posts it, then calls `collectApproval`.

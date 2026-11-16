@@ -53,7 +53,7 @@ Both scripts need Docker with Compose and Chromium for Playwright (`cd e2e && bu
 | `E2E_REPLICAS=1` | `replicas.spec.ts`, then `release-gates.spec.ts` on a fresh two-replica stack.                                                |
 | `E2E_OPENBAO=1`  | `openbao.spec.ts`, then `release-gates.spec.ts` on a fresh stack of the same kind.                                            |
 
-`./e2e/run.sh --keep` leaves the last stack running afterwards, for looking around. Without TLS the stack listens on `http://localhost:55902` and the confirmation page on `http://localhost:55903`; the gates' other ports are between 55900 and 55907. `HTTP_PORT`, `APPROVE_HTTP_PORT` and the `E2E_*_PORT` variables in `run.sh` move them.
+`./e2e/run.sh --keep` leaves the last stack running afterwards, for looking around. Without TLS the stack listens on `http://localhost:25902` and the confirmation page on `http://localhost:25903`; the gates' other ports are between 25900 and 25907. `HTTP_PORT`, `APPROVE_HTTP_PORT` and the `E2E_*_PORT` variables in `run.sh` move them.
 
 `./e2e/run-k8s.sh` builds the server, signer and `approve` images, starts a kind cluster, applies `deploy/k8s/overlays/kind`, publishes the two origins with `kubectl port-forward` and runs `kubernetes.spec.ts`. `--ha` applies `deploy/k8s/overlays/kind-ha` after installing the CloudNativePG operator and runs `kubernetes-ha.spec.ts` instead. `--keep` leaves the cluster running. It needs `docker`, `kind`, `kubectl`, `curl` and `sha256sum`; the versions CI pins are in `.github/workflows/ci.yml`.
 

@@ -11,10 +11,10 @@ services:
       SIGNER_MIN_DESTROY_DELAY_SECONDS: "0"
   postgres:
     ports:
-      - "127.0.0.1:${E2E_POSTGRES_PORT:-55900}:5432"
+      - "127.0.0.1:${E2E_POSTGRES_PORT:-25900}:5432"
   anvil:
     ports:
-      - "127.0.0.1:${E2E_ANVIL_PORT:-55901}:8545"
+      - "127.0.0.1:${E2E_ANVIL_PORT:-25901}:8545"
   caddy:
     environment:
       # Every request, its status and its duration, in the logs a failed gate prints.
@@ -35,7 +35,7 @@ services:
     volumes:
       - ./e2e/src/webhook-receiver.mts:/receiver/webhook-receiver.mts:ro
     ports:
-      - "127.0.0.1:${E2E_WEBHOOK_PORT:-55904}:8080"
+      - "127.0.0.1:${E2E_WEBHOOK_PORT:-25904}:8080"
     networks: [control]
     healthcheck:
       test:

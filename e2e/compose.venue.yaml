@@ -41,7 +41,7 @@ services:
     environment:
       FAKE_HYPERLIQUID_NETWORK: testnet
     ports:
-      - "127.0.0.1:${E2E_VENUE_PORT:-55906}:8080"
+      - "127.0.0.1:${E2E_VENUE_PORT:-25906}:8080"
 
   # The server's hyperliquid:mainnet venue: the same fake, taking mainnet signatures only.
   fake-hyperliquid-mainnet:
@@ -49,7 +49,7 @@ services:
     environment:
       FAKE_HYPERLIQUID_NETWORK: mainnet
     ports:
-      - "127.0.0.1:${E2E_VENUE_MAINNET_PORT:-55907}:8080"
+      - "127.0.0.1:${E2E_VENUE_MAINNET_PORT:-25907}:8080"
 
   server:
     environment:

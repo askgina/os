@@ -30,11 +30,11 @@ configMapGenerator:
     namespace: os
     behavior: merge
     literals:
-      - PUBLIC_ORIGIN=http://localhost:55902
+      - PUBLIC_ORIGIN=http://localhost:25902
       - WEBAUTHN_RP_ID=localhost
-      - APPROVE_ORIGIN=http://localhost:55903
+      - APPROVE_ORIGIN=http://localhost:25903
   - name: os-agent-gateway
     namespace: os-agents
     behavior: merge
     literals:
-      - PUBLIC_HOST=localhost:55902
+      - PUBLIC_HOST=localhost:25902

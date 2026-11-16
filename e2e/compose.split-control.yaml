@@ -7,10 +7,10 @@
 services:
   postgres:
     ports:
-      - "127.0.0.1:${E2E_POSTGRES_PORT:-55900}:5432"
+      - "127.0.0.1:${E2E_POSTGRES_PORT:-25900}:5432"
   anvil:
     ports:
-      - "127.0.0.1:${E2E_ANVIL_PORT:-55901}:8545"
+      - "127.0.0.1:${E2E_ANVIL_PORT:-25901}:8545"
 
   # The same receiver as in e2e/compose.e2e.yaml.
   webhook-receiver:
@@ -24,7 +24,7 @@ services:
     volumes:
       - ../../e2e/src/webhook-receiver.mts:/receiver/webhook-receiver.mts:ro
     ports:
-      - "127.0.0.1:${E2E_WEBHOOK_PORT:-55904}:8080"
+      - "127.0.0.1:${E2E_WEBHOOK_PORT:-25904}:8080"
     networks: [control]
     healthcheck:
       test:

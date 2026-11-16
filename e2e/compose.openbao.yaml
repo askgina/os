@@ -28,7 +28,7 @@ services:
     # The gates rotate the Transit key and read its versions as the operator, with the root
     # token from the `openbao-init` volume.
     ports:
-      - "127.0.0.1:${E2E_OPENBAO_PORT:-55905}:8200"
+      - "127.0.0.1:${E2E_OPENBAO_PORT:-25905}:8200"
     # `bao status` exits 0 only once unsealed: healthy means it serves keys.
     healthcheck:
       test: ["CMD", "bao", "status"]

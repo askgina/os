@@ -12,22 +12,22 @@ const ROOT = join(import.meta.dirname, "..", "..");
 export const stack = {
   /** The Compose project the helpers act on. The backup gate switches it to the restored copy. */
   project: process.env.E2E_PROJECT ?? "os-e2e",
-  origin: process.env.E2E_ORIGIN ?? "http://localhost:55902",
+  origin: process.env.E2E_ORIGIN ?? "http://localhost:25902",
   /** The signer's confirmation page, on its own origin. */
-  approveOrigin: process.env.APPROVE_ORIGIN ?? "http://localhost:55903",
-  postgresPort: Number(process.env.E2E_POSTGRES_PORT ?? 55900),
-  anvilUrl: process.env.E2E_ANVIL_URL ?? "http://127.0.0.1:55901",
+  approveOrigin: process.env.APPROVE_ORIGIN ?? "http://localhost:25903",
+  postgresPort: Number(process.env.E2E_POSTGRES_PORT ?? 25900),
+  anvilUrl: process.env.E2E_ANVIL_URL ?? "http://127.0.0.1:25901",
   /** The webhook receiver `e2e/compose.e2e.yaml` runs next to the stack, through its port. */
-  webhookReceiverUrl: `http://127.0.0.1:${Number(process.env.E2E_WEBHOOK_PORT ?? 55904)}`,
+  webhookReceiverUrl: `http://127.0.0.1:${Number(process.env.E2E_WEBHOOK_PORT ?? 25904)}`,
   /** OpenBao, with `E2E_OPENBAO=1`, through the port `e2e/compose.openbao.yaml` publishes. */
-  openBaoUrl: `http://127.0.0.1:${Number(process.env.E2E_OPENBAO_PORT ?? 55905)}`,
+  openBaoUrl: `http://127.0.0.1:${Number(process.env.E2E_OPENBAO_PORT ?? 25905)}`,
   /**
    * The fake Hyperliquid testnet venue, with `E2E_VENUE=1`, through the port
    * `e2e/compose.venue.yaml` publishes on the host's loopback.
    */
-  venueUrl: `http://127.0.0.1:${Number(process.env.E2E_VENUE_PORT ?? 55906)}`,
+  venueUrl: `http://127.0.0.1:${Number(process.env.E2E_VENUE_PORT ?? 25906)}`,
   /** The fake Hyperliquid mainnet venue, with `E2E_VENUE=1`, the same way. */
-  venueMainnetUrl: `http://127.0.0.1:${Number(process.env.E2E_VENUE_MAINNET_PORT ?? 55907)}`,
+  venueMainnetUrl: `http://127.0.0.1:${Number(process.env.E2E_VENUE_MAINNET_PORT ?? 25907)}`,
 };
 
 /** `E2E_REPLICAS=1` (`e2e/run.sh`): two server replicas, from `e2e/compose.replicas.yaml`. */

@@ -15,16 +15,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 export E2E_PROJECT="${E2E_PROJECT:-os-e2e}"
-export HTTP_PORT="${HTTP_PORT:-55902}"
+export HTTP_PORT="${HTTP_PORT:-25902}"
 export PUBLIC_ORIGIN="http://localhost:${HTTP_PORT}"
 export PUBLIC_HOST="localhost:${HTTP_PORT}"
 export OS_HOSTNAME="localhost"
 export E2E_ORIGIN="${PUBLIC_ORIGIN}"
 # The confirmation page: another port on the same host, as on any host without a subdomain.
-export APPROVE_HTTP_PORT="${APPROVE_HTTP_PORT:-55903}"
+export APPROVE_HTTP_PORT="${APPROVE_HTTP_PORT:-25903}"
 export APPROVE_ORIGIN="http://localhost:${APPROVE_HTTP_PORT}"
-export E2E_POSTGRES_PORT="${E2E_POSTGRES_PORT:-55900}"
-export E2E_ANVIL_PORT="${E2E_ANVIL_PORT:-55901}"
+export E2E_POSTGRES_PORT="${E2E_POSTGRES_PORT:-25900}"
+export E2E_ANVIL_PORT="${E2E_ANVIL_PORT:-25901}"
 export E2E_ANVIL_URL="http://127.0.0.1:${E2E_ANVIL_PORT}"
 
 tls="${E2E_TLS:-0}"
@@ -32,11 +32,11 @@ split="${E2E_SPLIT:-0}"
 export E2E_SPLIT="$split"
 export E2E_REPLICAS="${E2E_REPLICAS:-0}"
 export E2E_OPENBAO="${E2E_OPENBAO:-0}"
-export E2E_OPENBAO_PORT="${E2E_OPENBAO_PORT:-55905}"
+export E2E_OPENBAO_PORT="${E2E_OPENBAO_PORT:-25905}"
 # The fake Hyperliquid testnet and mainnet venues of the venue gates' stack
 # (e2e/compose.venue.yaml), on the loopback.
-export E2E_VENUE_PORT="${E2E_VENUE_PORT:-55906}"
-export E2E_VENUE_MAINNET_PORT="${E2E_VENUE_MAINNET_PORT:-55907}"
+export E2E_VENUE_PORT="${E2E_VENUE_PORT:-25906}"
+export E2E_VENUE_MAINNET_PORT="${E2E_VENUE_MAINNET_PORT:-25907}"
 # A variant whose own gates run on a stack of their own before the release gates: `replicas` or
 # `openbao`, or none.
 variant=""
