@@ -18,7 +18,7 @@ import { sweep } from "../../src/execution/index.ts";
 import { MAX_PENDING_PER_AGENT } from "../../src/execution/intents.ts";
 import type { WorkflowRuntime } from "../../src/execution/workflow-runtime.ts";
 import { FAILED_AUTH_PER_MINUTE } from "../../src/mcp/gateway.ts";
-import { TEST_CHAIN_ID, TEST_ORIGIN, type TestPerson } from "../support/context.ts";
+import { loggedLines, TEST_CHAIN_ID, TEST_ORIGIN, type TestPerson } from "../support/context.ts";
 import {
   anvil,
   createFixture,
@@ -245,6 +245,45 @@ describe("the MCP gateway's errors", () => {
     // Even a valid token is refused from that client now: the limit comes before the lookup.
     expect((await call(agent.token, "203.0.113.9")).status).toBe(429);
     expect((await call(agent.token, "203.0.113.10")).status).toBe(200);
+  });
+});
+
+describe("stored data", () => {
+  it("answers a stored value that no longer matches its schema as an internal error, and logs it", async () => {
+    const { client } = await agentClient("Damaged");
+    const { intentId } = await propose(client);
+    const [row] = await f.t.ctx.db.select().from(intents).where(eq(intents.id, intentId));
+
+    if (!row) throw new Error("no intent");
+
+    // Opens fine, but the display lacks every field a transfer's display has.
+    const damaged = await f.t.ctx.sealer.seal(f.workspaceId, `intents.presentation:${intentId}`, {
+      display: { kind: "transfer" },
+      simulation: null,
+    });
+
+    await f.t.ctx.db.update(intents).set({ presentation: damaged }).where(eq(intents.id, intentId));
+
+    try {
+      const response = await f.t.owner.browser.fetch(`/api/v1/intents/${intentId}`);
+
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({
+        error: { code: "internal", message: "something went wrong" },
+      });
+      expect(loggedLines(f.t.log)).toContainEqual(
+        expect.objectContaining({
+          message: "unhandled error",
+          name: "StoredDataError",
+          path: `/api/v1/intents/${intentId}`,
+        }),
+      );
+    } finally {
+      await f.t.ctx.db
+        .update(intents)
+        .set({ presentation: row.presentation })
+        .where(eq(intents.id, intentId));
+    }
   });
 });
 

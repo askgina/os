@@ -97,6 +97,32 @@ Success means:
   `apps/server/test/execution/mcp.test.ts`, "stops waiting on an intent when
   the agent drops the call" (fails without the fix, 6 of 6 local passes with
   it).
+- Observation: the refactor commit `510de59` landed without anyone reading it
+  path by path, so four reviewers then read all 225 files of it. No change was
+  wrong and no test was weakened. What they found, and what was done:
+  - Casts on values the server reads back from its own database became zod
+    decodes, and the HTTP error handler answers any zod failure as the
+    caller's `invalid_request` with the schema path, unlogged. Fixed: those
+    decodes go through `stored()` (`apps/server/src/db/stored.ts`), whose
+    `StoredDataError` is answered as `internal` and logged.
+  - Malformed passkey options from the server showed a JSON issue list.
+    Fixed: one plain sentence.
+  - The sweep detail's `assetDecimals` had no range. Fixed: 0 to 255, as the
+    stored intent display has.
+  - The plaintext scan behind the encryption gates skipped an object with no
+    prototype. No decoder returns one today. Fixed all the same.
+  - Some `SAFETY:` comments in the signer said more than was checked. Reworded.
+  - Left, on purpose: several checks got stricter (the signer refuses
+    non-EIP-1559 bytes from its vault, a malformed new wallet address and an
+    emptied stored transaction; WebAuthn client data that is an array is
+    refused as framed). Reading a stored intent now checks its display
+    strictly, so a display written by older code stops that intent from
+    signing, with a logged error.
+  - Not from the refactor, still open: a token with 37 to 255 decimals can be
+    proposed and signed, but every HTTP answer that shows it fails the API's
+    display schema (at most 36).
+  Evidence: `apps/server/test/execution/hardening.test.ts`, "answers a stored
+  value that no longer matches its schema as an internal error, and logs it".
 - Observation: two tests of the signer's pinned TLS failed once during
   verification because the lead's shell still exported
   `NODE_TLS_REJECT_UNAUTHORIZED=0` from a staging session. With it unset they

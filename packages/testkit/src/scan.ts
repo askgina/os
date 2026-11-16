@@ -44,7 +44,8 @@ const CborChildren = z
   .union([
     z.array(z.unknown()),
     z.instanceof(Map).transform((map) => [...map].flat()),
-    z.instanceof(Object).transform((object) => Object.values(object)),
+    // Any other object, one with no prototype included, so nothing a decoder returns goes unread.
+    z.looseObject({}).transform((object) => Object.values(object)),
   ])
   .catch([]);
 

@@ -39,19 +39,30 @@ const RequestOptions = z.custom<PublicKeyCredentialRequestOptionsJSON>(
   (value) => RequestOptionsCore.safeParse(value).success,
 );
 
+/** What a person reads when the server's options cannot start a prompt; nothing was sent. */
+const MALFORMED_OPTIONS = "The server sent passkey options this browser cannot use. Try again.";
+
 /**
  * The server builds WebAuthn options with @simplewebauthn/server and the contract carries them
  * as opaque JSON; they go to the browser library unchanged, which validates them itself. The
  * browser's answer is checked against the contract's schema before it is sent.
  */
 export async function createPasskey(options: WebAuthnOptions): Promise<RegistrationResponseValue> {
-  const response = await startRegistration({ optionsJSON: CreationOptions.parse(options) });
+  const decoded = CreationOptions.safeParse(options);
+
+  if (!decoded.success) throw new Error(MALFORMED_OPTIONS);
+
+  const response = await startRegistration({ optionsJSON: decoded.data });
 
   return RegistrationResponse.parse(response);
 }
 
 export async function signWithPasskey(options: WebAuthnOptions): Promise<AssertionResponseValue> {
-  const response = await startAuthentication({ optionsJSON: RequestOptions.parse(options) });
+  const decoded = RequestOptions.safeParse(options);
+
+  if (!decoded.success) throw new Error(MALFORMED_OPTIONS);
+
+  const response = await startAuthentication({ optionsJSON: decoded.data });
 
   return AssertionResponse.parse(response);
 }

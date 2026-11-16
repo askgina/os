@@ -168,7 +168,8 @@ type ApproverRow = { credential_id: string; user_id: UserId; public_key: string;
 
 /**
  * The `signatures` columns `storedSignature` reads (STRICT, db.ts). `signAndRecord` writes them
- * from its ApprovalId, the WalletRow's WalletId, the vault's checked Hex and its keccak256;
+ * from its ApprovalId, the WalletRow's WalletId, the vault's signed bytes (viem-serialized hex,
+ * whose content and signer `isSignedBy` checked) and their keccak256;
  * `destroyKey` (lifecycle.ts) empties `signed_transaction` to "".
  */
 type SignatureRow = {
@@ -268,8 +269,9 @@ export function createSignerCore(options: SignerCoreOptions) {
   // --- reads -------------------------------------------------------------------------------
 
   function findWorkspace(workspaceId: string): WorkspaceRow | undefined {
-    // SAFETY: `SELECT *` of the STRICT `workspaces` table returns exactly WorkspaceRow's columns
-    // (db.ts, versions 1 and 7), typed as its comment says; no row is undefined.
+    // SAFETY: `SELECT *` of the STRICT `workspaces` table returns every WorkspaceRow column
+    // (db.ts, versions 1 and 7), typed as its comment says, and a few the type leaves out; no
+    // row is undefined.
     return db.prepare("SELECT * FROM workspaces WHERE workspace_id = ?").get(workspaceId) as
       | WorkspaceRow
       | undefined;
@@ -363,8 +365,9 @@ export function createSignerCore(options: SignerCoreOptions) {
   }
 
   function findWallet(walletId: string): WalletRow | undefined {
-    // SAFETY: `SELECT *` of the STRICT `wallets` table returns exactly WalletRow's columns (db.ts,
-    // versions 1 and 7), typed as its comment says; no row is undefined.
+    // SAFETY: `SELECT *` of the STRICT `wallets` table returns every WalletRow column (db.ts,
+    // versions 1 and 7), typed as its comment says, and `created_at`, which the type leaves out;
+    // no row is undefined.
     return db.prepare("SELECT * FROM wallets WHERE wallet_id = ?").get(walletId) as
       | WalletRow
       | undefined;

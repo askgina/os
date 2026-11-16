@@ -57,6 +57,7 @@ import { type AuditInput, appendAudit } from "../audit.ts";
 import type { AppContext, Executor } from "../context.ts";
 import { agents, intents, venueOrders, wallets, workspaces } from "../db/schema.ts";
 import type { JsonValue } from "../db/sealed.ts";
+import { stored } from "../db/stored.ts";
 import { walletLifecycle } from "../directory/views.ts";
 import { HttpError } from "../http/errors.ts";
 import { approvalLink } from "../notify/content.ts";
@@ -93,6 +94,10 @@ export interface Presentation {
 const IntentApprovalDetail = z.object({ intentId: IntentId });
 
 type IntentApprovalDetail = z.infer<typeof IntentApprovalDetail>;
+
+function intentApprovalDetail(detail: JsonValue): IntentApprovalDetail {
+  return stored(IntentApprovalDetail, detail, "intent approval detail");
+}
 
 /**
  * A display as {@link recordProposal} sealed it. A token may declare any uint8 of decimals, more
@@ -132,12 +137,17 @@ export async function readIntent(
     ctx.sealer.open(row.workspaceId, presentationLocation(row.id), row.presentation),
   ]);
 
-  const sealed = SealedPresentation.parse(opened);
+  const sealed = stored(SealedPresentation, opened, "intent presentation");
+
   // Displays stored before venue intents existed were all transfers and carry no `kind`.
-  const display = StoredDisplay.parse({ kind: "transfer", ...sealed.display });
+  const display = stored(
+    StoredDisplay,
+    { kind: "transfer", ...sealed.display },
+    "intent presentation display",
+  );
 
   return {
-    intent: Intent.parse(intent),
+    intent: stored(Intent, intent, "intent payload"),
     presentation: { display, simulation: sealed.simulation },
   };
 }
@@ -180,7 +190,7 @@ async function venueOrderView(
 
   return {
     // Stored from the signer's answer, which its client parsed as a Cloid.
-    cloid: Cloid.parse(order.cloid),
+    cloid: stored(Cloid, order.cloid, "venue order cloid"),
     venueOrderId: order.venueOrderId,
     filledSize: order.filledSize,
     averagePrice: order.averagePrice,
@@ -1018,10 +1028,10 @@ export function approveIntentKind(venue: VenueHooks): ApprovalKindHandler<"appro
   return {
     kind: "approve-intent",
     async title(ctx, _approval, detail) {
-      return intentTitle(ctx, await intentRow(ctx, IntentApprovalDetail.parse(detail).intentId));
+      return intentTitle(ctx, await intentRow(ctx, intentApprovalDetail(detail).intentId));
     },
     async describe(ctx, _approval, detail) {
-      const row = await intentRow(ctx, IntentApprovalDetail.parse(detail).intentId);
+      const row = await intentRow(ctx, intentApprovalDetail(detail).intentId);
 
       const [intent, wallet] = await Promise.all([
         intentDetail(ctx, row),
@@ -1058,13 +1068,13 @@ export function approveIntentKind(venue: VenueHooks): ApprovalKindHandler<"appro
       return { kind: "approve-intent", intent, wallet, limits, venue: null };
     },
     async confirmationSubject(ctx, _approval, detail) {
-      const row = await intentRow(ctx, IntentApprovalDetail.parse(detail).intentId);
+      const row = await intentRow(ctx, intentApprovalDetail(detail).intentId);
       const { intent } = await readIntent(ctx, row);
 
       return { kind: "approve-intent", intent };
     },
     async execute(ctx, approval, authorization, detail) {
-      const parsed = IntentApprovalDetail.parse(detail);
+      const parsed = intentApprovalDetail(detail);
       const row = await intentRow(ctx, parsed.intentId);
       const { intent } = await readIntent(ctx, row);
 
@@ -1095,7 +1105,7 @@ export function mandateUseKind(): MandateUseHandler {
       const { mandateId } = use;
 
       if (mandateId === null) throw new Error("a mandate use without its mandate");
-      await executeIntent(ctx, use, IntentApprovalDetail.parse(detail), (intent, transaction) =>
+      await executeIntent(ctx, use, intentApprovalDetail(detail), (intent, transaction) =>
         ctx.signer.signUnderMandate(mandateId, { approvalId: use.id, intent, transaction }),
       );
     },
@@ -1112,7 +1122,7 @@ async function abandonIntent(
 ): Promise<void> {
   // Ended without a signature we stored: a reserved nonce goes back to the wallet.
   await releaseNonce(ctx, approval.id);
-  const row = await intentRow(ctx, IntentApprovalDetail.parse(detail).intentId);
+  const row = await intentRow(ctx, intentApprovalDetail(detail).intentId);
 
   if (status === "failed") {
     const code = approval.failureCode ?? "failed";

@@ -30,6 +30,7 @@ import { appendAudit } from "../audit.ts";
 import type { AppContext } from "../context.ts";
 import type { agents } from "../db/schema.ts";
 import { type VenueOrderStatus, venueOrders, wallets } from "../db/schema.ts";
+import { stored } from "../db/stored.ts";
 import { HttpError } from "../http/errors.ts";
 import { takeToken } from "../rate-limit.ts";
 import {
@@ -738,7 +739,7 @@ async function check(ctx: AppContext, f: Followed): Promise<Next | "unknown" | "
 
   try {
     // Stored from the signer's answer, which its client parsed as a Cloid.
-    status = await f.client.orderStatus(f.account, Cloid.parse(order.cloid));
+    status = await f.client.orderStatus(f.account, stored(Cloid, order.cloid, "venue order cloid"));
   } catch (error) {
     if (error instanceof VenueError) return "unreachable";
     throw error;

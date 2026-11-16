@@ -7,6 +7,8 @@ import { ApprovalFailure, type ApprovalKindHandler } from "../approvals/kinds.ts
 import { type AuditInput, appendAudit } from "../audit.ts";
 import type { AppContext } from "../context.ts";
 import { approvals, transactions } from "../db/schema.ts";
+import type { JsonValue } from "../db/sealed.ts";
+import { stored } from "../db/stored.ts";
 import { loadWallet, walletSummary } from "../directory/views.ts";
 import { HttpError } from "../http/errors.ts";
 import { engineOf } from "./approvals.ts";
@@ -45,6 +47,10 @@ const CancelDetail = z.object({
 });
 
 type CancelDetail = z.infer<typeof CancelDetail>;
+
+function cancelDetail(detail: JsonValue): CancelDetail {
+  return stored(CancelDetail, detail, "approval detail (cancel-transaction)");
+}
 
 /** The gas of a transfer of nothing from the wallet to itself. */
 const CANCEL_GAS = 21_000n;
@@ -209,14 +215,14 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
   return {
     kind: "cancel-transaction",
     async title(ctx, _approval, detail) {
-      const { targetApprovalId, intentId } = CancelDetail.parse(detail);
+      const { targetApprovalId, intentId } = cancelDetail(detail);
 
       if (intentId === null) return `Cancel sweep: ${await sweepTitle(ctx, targetApprovalId)}`;
 
       return `Cancel payment: ${await intentTitle(ctx, await getIntentRow(ctx, intentId))}`;
     },
     async describe(ctx, approval, detail) {
-      const { targetApprovalId, intentId } = CancelDetail.parse(detail);
+      const { targetApprovalId, intentId } = cancelDetail(detail);
       const { envelope } = approval;
 
       if (envelope.type !== "cancel-transaction") throw new Error("a cancel with another envelope");
@@ -255,7 +261,7 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
      * the signer signed them, and the cancel is asked for once more after the newest of them.
      */
     async execute(ctx, approval, authorization, detail) {
-      const { targetApprovalId } = CancelDetail.parse(detail);
+      const { targetApprovalId } = cancelDetail(detail);
       const { envelope } = approval;
 
       if (envelope.type !== "cancel-transaction") throw new Error("a cancel with another envelope");

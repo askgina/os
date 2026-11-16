@@ -23,6 +23,7 @@ import {
   wallets,
   workspaces,
 } from "../db/schema.ts";
+import { stored } from "../db/stored.ts";
 import { approvalLink, type DeclarativePush, lifecycleMessage, pushMessage } from "./content.ts";
 import { approvalRecipients, approvedBy, pendingFor, recipientNow } from "./recipients.ts";
 import { nextAllowedTime, reminderDueAt } from "./schedule.ts";
@@ -458,7 +459,7 @@ async function deliverPush(
           approvalId: approval.id,
           pendingCount,
           // Only kinds people decide on have push rows: a mandate's use never does.
-          kind: ApprovalKind.parse(approval.kind),
+          kind: stored(ApprovalKind, approval.kind, "approval kind"),
           operation: await operationOf(ctx, approval),
           workspaceName: workspace.name,
           requesterName: await requesterName(ctx, approval),
@@ -532,8 +533,10 @@ async function operationOf(
 
   if (!intent || !isVenueNetwork(intent.chainId)) return "payment";
 
-  const opened = Intent.parse(
+  const opened = stored(
+    Intent,
     await ctx.sealer.open(intent.workspaceId, `intents.payload:${intent.id}`, intent.payload),
+    "intent payload",
   );
 
   return opened.operation.type === "hyperliquid.order" ? "order" : "payment";

@@ -113,8 +113,9 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
 
   /** The wallets a deletion must name: every wallet of the workspace not destroyed, by id. */
   function walletsToDelete(workspaceId: string): WalletRow[] {
-    // SAFETY: `SELECT *` of the STRICT `wallets` table returns exactly WalletRow's columns (db.ts,
-    // versions 1 and 7), typed as WalletRow's comment (signer.ts) says.
+    // SAFETY: `SELECT *` of the STRICT `wallets` table returns every WalletRow column (db.ts,
+    // versions 1 and 7), typed as WalletRow's comment (signer.ts) says, and `created_at`, which
+    // the type leaves out.
     return db
       .prepare(
         "SELECT * FROM wallets WHERE workspace_id = ? AND state <> 'destroyed' ORDER BY wallet_id",

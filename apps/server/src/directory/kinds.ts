@@ -20,6 +20,8 @@ import {
   wallets,
   workspaces,
 } from "../db/schema.ts";
+import type { JsonValue } from "../db/sealed.ts";
+import { stored } from "../db/stored.ts";
 import { revokePasskey } from "../identity/passkeys.ts";
 import { mirrorWallet } from "../lifecycle/state.ts";
 import { AddApproverDetail, RemoveApproverDetail } from "./approvers.ts";
@@ -30,6 +32,19 @@ import { loadWallet, walletSummary } from "./views.ts";
 export const SetPolicyDetail = z.object({ policy: WalletPolicy });
 
 export type SetPolicyDetail = z.infer<typeof SetPolicyDetail>;
+
+/** A `set-policy` request's detail as the sealer opened it, decoded. */
+export function setPolicyDetail(detail: JsonValue): SetPolicyDetail {
+  return stored(SetPolicyDetail, detail, "approval detail (set-policy)");
+}
+
+function addApproverDetail(detail: JsonValue): AddApproverDetail {
+  return stored(AddApproverDetail, detail, "approval detail (add-approver)");
+}
+
+function removeApproverDetail(detail: JsonValue): RemoveApproverDetail {
+  return stored(RemoveApproverDetail, detail, "approval detail (remove-approver)");
+}
 
 /**
  * Run a call at the signer. A refusal the signer gave for a reason that will not change (a bad
@@ -91,19 +106,19 @@ async function revokeSignInOnceUnused(ctx: AppContext, tx: Executor, credentialI
 const addApprover: ApprovalKindHandler<"add-approver"> = {
   kind: "add-approver",
   async title(ctx, _approval, detail) {
-    const { user, label } = await personAndPasskey(ctx, AddApproverDetail.parse(detail));
+    const { user, label } = await personAndPasskey(ctx, addApproverDetail(detail));
 
     return `Let ${user.displayName} approve with the passkey "${label}"`;
   },
   async describe(ctx, _approval, detail) {
-    const added = AddApproverDetail.parse(detail);
+    const added = addApproverDetail(detail);
     const { user, label } = await personAndPasskey(ctx, added);
 
     return { kind: "add-approver", user, credentialId: added.credentialId, passkeyLabel: label };
   },
   confirmationSubject: envelopeOnly,
   async execute(ctx, approval, authorization, detail) {
-    const { credentialId, userId } = AddApproverDetail.parse(detail);
+    const { credentialId, userId } = addApproverDetail(detail);
 
     if (!(await alreadyApplied(ctx, approval.id))) {
       await atSigner(() => ctx.signer.addApprover(approval.workspaceId, { authorization }));
@@ -138,7 +153,7 @@ const addApprover: ApprovalKindHandler<"add-approver"> = {
     });
   },
   async abandon(ctx, approval, _status, detail) {
-    const { credentialId } = AddApproverDetail.parse(detail);
+    const { credentialId } = addApproverDetail(detail);
     await ctx.db
       .delete(approverCredentials)
       .where(
@@ -154,12 +169,12 @@ const addApprover: ApprovalKindHandler<"add-approver"> = {
 const removeApprover: ApprovalKindHandler<"remove-approver"> = {
   kind: "remove-approver",
   async title(ctx, _approval, detail) {
-    const { user, label } = await personAndPasskey(ctx, RemoveApproverDetail.parse(detail));
+    const { user, label } = await personAndPasskey(ctx, removeApproverDetail(detail));
 
     return `Stop ${user.displayName}'s passkey "${label}" from approving`;
   },
   async describe(ctx, _approval, detail) {
-    const removed = RemoveApproverDetail.parse(detail);
+    const removed = removeApproverDetail(detail);
     const { user, label } = await personAndPasskey(ctx, removed);
 
     return {
@@ -171,7 +186,7 @@ const removeApprover: ApprovalKindHandler<"remove-approver"> = {
   },
   confirmationSubject: envelopeOnly,
   async execute(ctx, approval, authorization, detail) {
-    const { credentialId, userId, afterwards, revokeSignIn } = RemoveApproverDetail.parse(detail);
+    const { credentialId, userId, afterwards, revokeSignIn } = removeApproverDetail(detail);
 
     if (!(await alreadyApplied(ctx, approval.id))) {
       await atSigner(() => ctx.signer.removeApprover(approval.workspaceId, authorization));
@@ -274,7 +289,7 @@ const removeApprover: ApprovalKindHandler<"remove-approver"> = {
     });
   },
   async abandon(ctx, approval, _status, detail) {
-    const { credentialId } = RemoveApproverDetail.parse(detail);
+    const { credentialId } = removeApproverDetail(detail);
     await ctx.db
       .update(approverCredentials)
       .set({ state: "active" })
@@ -291,13 +306,13 @@ const removeApprover: ApprovalKindHandler<"remove-approver"> = {
 const setPolicy: ApprovalKindHandler<"set-policy"> = {
   kind: "set-policy",
   async title(ctx, approval, detail) {
-    const { policy } = SetPolicyDetail.parse(detail);
+    const { policy } = setPolicyDetail(detail);
     const { wallet } = await loadWallet(ctx, approval.workspaceId, policy.walletId);
 
     return `Set revision ${policy.revision} of the policy of ${wallet.label}`;
   },
   async describe(ctx, approval, detail) {
-    const { policy } = SetPolicyDetail.parse(detail);
+    const { policy } = setPolicyDetail(detail);
     const { wallet, agentId } = await loadWallet(ctx, approval.workspaceId, policy.walletId);
 
     return {
@@ -308,10 +323,10 @@ const setPolicy: ApprovalKindHandler<"set-policy"> = {
     };
   },
   async confirmationSubject(_ctx, _approval, detail) {
-    return { kind: "set-policy", policy: SetPolicyDetail.parse(detail).policy };
+    return { kind: "set-policy", policy: setPolicyDetail(detail).policy };
   },
   async execute(ctx, approval, authorization, detail) {
-    const { policy } = SetPolicyDetail.parse(detail);
+    const { policy } = setPolicyDetail(detail);
 
     if (!(await alreadyApplied(ctx, approval.id))) {
       await atSigner(() => ctx.signer.setPolicy(policy.walletId, { policy, authorization }));

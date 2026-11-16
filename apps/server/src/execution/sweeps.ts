@@ -17,6 +17,8 @@ import { ApprovalFailure, type ApprovalKindHandler } from "../approvals/kinds.ts
 import { appendAudit } from "../audit.ts";
 import type { AppContext } from "../context.ts";
 import { wallets, workspaces } from "../db/schema.ts";
+import type { JsonValue } from "../db/sealed.ts";
+import { stored } from "../db/stored.ts";
 import { loadWallet, walletSummary } from "../directory/views.ts";
 import { HttpError } from "../http/errors.ts";
 import { engineOf } from "./approvals.ts";
@@ -47,12 +49,17 @@ import {
 const SweepDetail = z.object({
   sweep: Sweep,
   assetSymbol: z.string(),
-  assetDecimals: z.number(),
+  /** The token's own `decimals`, which may be any uint8. */
+  assetDecimals: z.number().int().min(0).max(255),
   /** The simulation's gas estimate, decimal, or the fallback when it failed. */
   gasEstimate: z.string(),
 });
 
 type SweepDetail = z.infer<typeof SweepDetail>;
+
+function sweepDetail(detail: JsonValue): SweepDetail {
+  return stored(SweepDetail, detail, "approval detail (sweep-wallet)");
+}
 
 /**
  * Open a request to sweep `asset` from the wallet to `to`. The amount is fixed now, from the
@@ -204,13 +211,13 @@ export async function requestSweep(
 const sweepWallet: ApprovalKindHandler<"sweep-wallet"> = {
   kind: "sweep-wallet",
   async title(_ctx, _approval, detail) {
-    const { sweep, assetSymbol, assetDecimals } = SweepDetail.parse(detail);
+    const { sweep, assetSymbol, assetDecimals } = sweepDetail(detail);
     const amount = formatUnits(BigInt(sweep.amount), assetDecimals);
 
     return `Empty ${amount} ${assetSymbol} from the wallet to ${sweep.to.slice(0, 6)}…${sweep.to.slice(-4)}`;
   },
   async describe(ctx, approval, detail) {
-    const { sweep, assetSymbol, assetDecimals } = SweepDetail.parse(detail);
+    const { sweep, assetSymbol, assetDecimals } = sweepDetail(detail);
     const { wallet, agentId } = await loadWallet(ctx, approval.workspaceId, sweep.walletId);
 
     const [treasury] = await ctx.db
@@ -247,10 +254,10 @@ const sweepWallet: ApprovalKindHandler<"sweep-wallet"> = {
     };
   },
   async confirmationSubject(_ctx, _approval, detail) {
-    return { kind: "sweep-wallet", sweep: SweepDetail.parse(detail).sweep };
+    return { kind: "sweep-wallet", sweep: sweepDetail(detail).sweep };
   },
   async execute(ctx, approval, authorization, detail) {
-    const { sweep, gasEstimate } = SweepDetail.parse(detail);
+    const { sweep, gasEstimate } = sweepDetail(detail);
 
     if (await transactionOf(ctx, approval.id)) return;
 

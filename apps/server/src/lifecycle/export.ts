@@ -13,7 +13,7 @@ import {
   transactions,
   wallets,
 } from "../db/schema.ts";
-import { SetPolicyDetail } from "../directory/kinds.ts";
+import { setPolicyDetail } from "../directory/kinds.ts";
 import { engineOf } from "../execution/approvals.ts";
 import { readIntent } from "../execution/intents.ts";
 import { openMandate } from "../execution/mandates.ts";
@@ -219,7 +219,7 @@ export async function writeRecord(
 
   for (const row of rows.policies) {
     if (row.envelope?.type !== "set-policy") continue;
-    const { policy } = SetPolicyDetail.parse(await engine.openDetail(row));
+    const { policy } = setPolicyDetail(await engine.openDetail(row));
     sections["policy-revision"].push({
       type: "policy-revision",
       approvalId: row.id,

@@ -66,8 +66,9 @@ const CANCEL_GAS = 21_000n;
 
 /**
  * A `signatures` row (STRICT, db.ts). `signAndRecord` (signer.ts) writes it from an ApprovalId,
- * the wallet's WalletId, the intent's or sweep's ChainId, the vault's checked Hex and its
- * keccak256; `destroyKey` (lifecycle.ts) empties `signed_transaction` to "".
+ * the wallet's WalletId, the intent's or sweep's ChainId, the vault's signed bytes
+ * (viem-serialized hex, whose content and signer `isSignedBy` checked) and their keccak256;
+ * `destroyKey` (lifecycle.ts) empties `signed_transaction` to "".
  */
 export type SignatureRow = {
   approval_id: ApprovalId;
@@ -81,7 +82,8 @@ export type SignatureRow = {
 
 /**
  * A `signature_attempts` row (STRICT, db.ts). `signAttempt` writes it from the SignatureRow's
- * ApprovalId, the vault's checked Hex and its keccak256, and a cancel envelope's ApprovalId; the
+ * ApprovalId, the vault's signed bytes (viem-serialized hex, whose content and signer
+ * `isSignedBy` checked) and their keccak256, and a cancel envelope's ApprovalId; the
  * CHECK on `kind` admits only these two; `destroyKey` empties `signed_transaction` to "".
  */
 type AttemptRow = {

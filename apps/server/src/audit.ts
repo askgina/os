@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { AppContext, Executor } from "./context.ts";
 import { auditEvents, workspaces } from "./db/schema.ts";
 import type { JsonValue } from "./db/sealed.ts";
+import { stored } from "./db/stored.ts";
 
 /**
  * The detail of an event, as the code that records it builds it: JSON fields. A field set to
@@ -145,7 +146,7 @@ export async function openAuditSealed(
     row.detail,
   );
 
-  return SealedDetail.parse(opened);
+  return stored(SealedDetail, opened, "audit event detail");
 }
 
 /** Open one event's sealed detail. */

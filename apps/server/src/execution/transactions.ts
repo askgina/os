@@ -29,6 +29,7 @@ import {
   wallets,
   workspaces,
 } from "../db/schema.ts";
+import { stored } from "../db/stored.ts";
 import { ChainError, chainAccess, type ReceiptState } from "./chains.ts";
 
 /**
@@ -97,7 +98,7 @@ const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
  * intent's or a sweep's, both parsed with that schema).
  */
 export function chainIdOf(row: TransactionRow): ChainId {
-  return ChainId.parse(row.chainId);
+  return stored(ChainId, row.chainId, "transaction chain id");
 }
 
 /**
@@ -105,7 +106,7 @@ export function chainIdOf(row: TransactionRow): ChainId {
  * its client parsed as a Hex32 before it was stored.
  */
 function storedHash(hash: string): ViemHex {
-  return Hex32.parse(hash);
+  return stored(Hex32, hash, "transaction hash");
 }
 
 /**
@@ -118,7 +119,7 @@ async function openSigned(
   location: string,
   sealed: Uint8Array,
 ): Promise<ViemHex> {
-  return Hex.parse(await ctx.sealer.open(workspaceId, location, sealed));
+  return stored(Hex, await ctx.sealer.open(workspaceId, location, sealed), "signed transaction");
 }
 
 /** The transaction an approval signed, or null when it has none (yet). */

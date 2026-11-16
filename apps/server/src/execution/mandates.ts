@@ -44,6 +44,8 @@ import {
   wallets,
   workspaces,
 } from "../db/schema.ts";
+import type { JsonValue } from "../db/sealed.ts";
+import { stored } from "../db/stored.ts";
 import { loadWallet, walletSummary } from "../directory/views.ts";
 import { HttpError } from "../http/errors.ts";
 import { engineOf } from "./approvals.ts";
@@ -69,6 +71,10 @@ export type MandateRow = typeof mandates.$inferSelect;
 const GrantDetail = z.object({ mandate: Mandate });
 
 type GrantDetail = z.infer<typeof GrantDetail>;
+
+function grantDetail(detail: JsonValue): GrantDetail {
+  return stored(GrantDetail, detail, "approval detail (grant-mandate)");
+}
 
 /** The mirror's status for one state the signer reported. */
 type Mirror = { status: "active" | "ended"; endedReason: MandateEndedReason | null };
@@ -481,14 +487,14 @@ async function agentName(ctx: AppContext, agentId: AgentId): Promise<string> {
 const grantMandate: ApprovalKindHandler<"grant-mandate"> = {
   kind: "grant-mandate",
   async title(ctx, approval, detail) {
-    const { mandate } = GrantDetail.parse(detail);
+    const { mandate } = grantDetail(detail);
     const { wallet } = await loadWallet(ctx, approval.workspaceId, mandate.walletId);
     const payments = mandate.maxUses === 1 ? "1 payment" : `${mandate.maxUses} payments`;
 
     return `Let ${await agentName(ctx, mandate.agentId)} make up to ${payments} from ${wallet.label} without asking`;
   },
   async describe(ctx, approval, detail) {
-    const { mandate } = GrantDetail.parse(detail);
+    const { mandate } = grantDetail(detail);
     const { wallet, agentId } = await loadWallet(ctx, approval.workspaceId, mandate.walletId);
     const [granted] = await ctx.db.select().from(mandates).where(eq(mandates.id, mandate.id));
     const state = granted ? (await refresh(ctx, granted)).state : null;
@@ -504,10 +510,10 @@ const grantMandate: ApprovalKindHandler<"grant-mandate"> = {
     };
   },
   async confirmationSubject(_ctx, _approval, detail) {
-    return { kind: "grant-mandate", mandate: GrantDetail.parse(detail).mandate };
+    return { kind: "grant-mandate", mandate: grantDetail(detail).mandate };
   },
   async execute(ctx, approval, authorization, detail) {
-    const { mandate } = GrantDetail.parse(detail);
+    const { mandate } = grantDetail(detail);
 
     const agentActive = async () => {
       const [agent] = await ctx.db
@@ -739,8 +745,10 @@ export async function openMandate(
   ctx: Pick<AppContext, "sealer">,
   row: MandateRow,
 ): Promise<Mandate> {
-  return Mandate.parse(
+  return stored(
+    Mandate,
     await ctx.sealer.open(row.workspaceId, mandateLocation(row.id), row.mandate),
+    "mandate",
   );
 }
 
@@ -761,7 +769,7 @@ export async function mandateSummary(
       .orderBy(asc(approvalAssertions.createdAt)),
   ]);
 
-  const mandate = Mandate.parse(sealed);
+  const mandate = stored(Mandate, sealed, "mandate");
 
   return {
     id: row.id,
