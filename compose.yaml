@@ -132,7 +132,7 @@ services:
       REPRICE_AUTO: ${REPRICE_AUTO:-1}
       REPRICE_AFTER_SECONDS: ${REPRICE_AFTER_SECONDS:-180}
       REPRICE_BUMP_PERCENT: ${REPRICE_BUMP_PERCENT:-12}
-      # Several replicas (specs/beyond-one-machine.md, milestone 4): how long a replica keeps an
+      # Several replicas (specs/beyond-one-machine.md): how long a replica keeps an
       # unwrapped data key (a shred is heard by every replica at once), and how many proxies
       # append to X-Forwarded-For before the server.
       DATA_KEY_CACHE_SECONDS: ${DATA_KEY_CACHE_SECONDS:-60}
@@ -175,7 +175,7 @@ services:
     stop_grace_period: 10s
     restart: unless-stopped
 
-  # The confirmation page and its relay to the signer's two confirm routes. It holds no key, and
+  # The confirmation page and its relay to the signer's confirm routes. It holds no key, and
   # its secret reaches no other signer route. Only Caddy reaches it; it reaches only the signer.
   approve:
     <<: *hardening

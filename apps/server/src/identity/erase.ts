@@ -190,7 +190,7 @@ async function waitingRemoval(ctx: AppContext, row: ApproverRow): Promise<Approv
 }
 
 /**
- * Erase the signed-in person, as `POST /api/v1/me/erase` does (D6). The signer stops accepting a
+ * Erase the signed-in person, as `POST /api/v1/me/erase` does. The signer stops accepting a
  * passkey only through a `remove-approver` request people approve, which also ends every mandate
  * that passkey granted. So while their passkeys approve anywhere, this opens one such request
  * per passkey and workspace (requested by them, the membership kept until erasure) and answers

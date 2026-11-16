@@ -1,8 +1,9 @@
 # The control plane on Kubernetes: the server, its public edge, the agent gateway and the
-# policies between them (specs/beyond-one-machine.md, milestone 5). Not deployable alone: an
-# overlay adds where the signer runs and where Postgres runs.
+# policies between them (specs/beyond-one-machine.md). Not deployable alone: an overlay adds
+# where the signer runs and where Postgres runs.
 #
 #   overlays/kind                 the CI and evaluation stack: everything in one cluster
+#   overlays/kind-ha              the same, with Postgres as a three-instance CloudNativePG cluster
 #   overlays/production-example   the signer and its confirmation page on their own host
 #
 # Images are the Compose ones (apps/*/Dockerfile), not published: build them, push them where

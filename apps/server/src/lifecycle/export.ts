@@ -44,8 +44,8 @@ export type RecordSink = (line: string) => void | Promise<void>;
 /**
  * Write a workspace's record (format {@link RECORD_FORMAT}) to `sink` as JSON Lines: a header,
  * the opened audit log with its chained fields and salts, intents, transactions without their
- * signed bytes, policy revisions, mandates with what the signer counts of them and their uses
- * (D11), the signer's decision log, and an `end` line. `workspace.exported` is appended first,
+ * signed bytes, policy revisions, mandates with what the signer counts of them and their uses,
+ * the signer's decision log, and an `end` line. `workspace.exported` is appended first,
  * so the record includes its own export. No token, session, sealed value, confirmation link,
  * push endpoint or signed transaction is written.
  */

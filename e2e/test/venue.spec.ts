@@ -1,5 +1,5 @@
 /**
- * The venue gates (`specs/non-evm-operations.md`, Milestone 6), against a stack of their own
+ * The venue gates (`specs/non-evm-operations.md`), against a stack of their own
  * (`e2e/run.sh`) whose server names two fake Hyperliquid venues, one for the testnet and one for
  * mainnet (`e2e/compose.venue.yaml`, TEST EQUIPMENT). Each fake recovers the signer of every
  * request with its own encoder, independent of the signer's, as its network's venue does, and
@@ -599,7 +599,7 @@ test("the agent cancels a resting order with no passkey, also while the workspac
   const approvalId = approvalIdOf(proposal);
   const link = await ada.confirmationLink(approvalId);
   const view = await ada.readConfirmation(link);
-  // The signer's page says, in its own words, that approving includes this cancel (D4).
+  // The signer's page says, in its own words, that approving includes this cancel.
   expect(lineValue(view, "Cancelling")).toContain("the agent may cancel this order");
   expect(lineValue(view, "Time in force")).toContain("good till cancelled");
   await ada.approveOnConfirmationPage(link, view);
@@ -826,7 +826,7 @@ test("a wallet whose approved policy names Hyperliquid mainnet places an order o
   }
 });
 
-test("an order is never signed under a mandate: with a live mandate, it still waits for a person (D7)", async () => {
+test("an order is never signed under a mandate: with a live mandate, it still waits for a person", async () => {
   const draft: MandateDraft = {
     agentId: trader.agentId,
     assets: [
@@ -1291,7 +1291,7 @@ const APPROVAL_EVENT_KEYS = [
   "workspaceId",
 ];
 
-test("an order's approval is announced to the webhook, signed, with no order field (D8)", async () => {
+test("an order's approval is announced to the webhook, signed, with no order field", async () => {
   const secret = await webhookSecret();
 
   // 0.00031 BTC at 64,321: values found in no identifier, time or link.

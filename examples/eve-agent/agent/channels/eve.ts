@@ -27,6 +27,6 @@ function basic(): ReturnType<typeof httpBasic> {
 export default eveChannel({
   auth: [(request: Request) => basic()(request)],
   // eve stores the session title as a plaintext run attribute, and by default the title is the
-  // first user message; a fixed title keeps the conversation out of it (askgina/os#17).
+  // first user message; a fixed title keeps the conversation out of it.
   onMessage: (ctx) => ({ auth: defaultEveAuth(ctx), title: "Agent session" }),
 });

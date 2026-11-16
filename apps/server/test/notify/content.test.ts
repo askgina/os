@@ -89,7 +89,7 @@ describe("what a push notification says", () => {
 
     expect(reminder.notification.title).toBe("Expiring soon: Approval in advance waiting");
 
-    // D8: a venue order is announced as an order, with nothing about the order itself.
+    // A venue order is announced as an order, with nothing about the order itself.
     const order = pushMessage({
       level: "summary",
       facts: { ...facts, operation: "order" },

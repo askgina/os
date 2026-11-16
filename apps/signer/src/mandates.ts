@@ -590,8 +590,8 @@ export function createMandateOperations(internals: MandateInternals) {
   }
 
   /**
-   * Every live mandate of the wallet ends with reason `requested`: people approved retiring it
-   * (owner decision D8). Runs inside the transaction that applies the retirement.
+   * Every live mandate of the wallet ends with reason `requested`: people approved retiring it.
+   * Runs inside the transaction that applies the retirement.
    */
   function revokeWalletMandates(walletId: string): MandateId[] {
     const at = now();
@@ -609,7 +609,7 @@ export function createMandateOperations(internals: MandateInternals) {
 
   /**
    * Every live mandate of the workspace ends with reason `requested`: people approved deleting
-   * it (owner decision D8). Runs inside the transaction that applies the deletion.
+   * it. Runs inside the transaction that applies the deletion.
    */
   function revokeWorkspaceMandates(workspaceId: string): MandateId[] {
     const at = now();

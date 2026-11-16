@@ -2154,7 +2154,7 @@ test("an approver speeds up a stuck payment with no passkey, and the agent that 
     const early = await kai.api.call("speedUp", { params: { intentId }, body: {} });
     expect(early.transaction?.attempts.map((attempt) => attempt.hash)).toEqual([original.hash]);
 
-    // The agent: its seven tools, none of which acts on a sent payment. Withdrawing it changes
+    // The agent: its tools, none of which acts on a sent payment. Withdrawing it changes
     // nothing once people approved it.
     expect(await payer.tools()).toEqual(AGENT_TOOLS);
     expect(await payer.call("cancel_intent", { intentId })).toEqual({

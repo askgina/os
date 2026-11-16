@@ -213,7 +213,7 @@ function decimalInput(name: string, value: string): string {
  * wallet policy's markets; the venue's metadata must still name it at the policy's index and not
  * list it as delisted (`market_metadata_mismatch`); the price and size must fit the market's
  * precision (`invalid_tick`); and the policy must allow it. A person always approves an order:
- * no mandate covers one (D7). Nothing is recorded when any check refuses.
+ * no mandate covers one. Nothing is recorded when any check refuses.
  */
 export async function proposeOrder(
   ctx: AppContext,
@@ -914,7 +914,7 @@ export async function reconcileOpenOrders(ctx: AppContext): Promise<number | nul
 
 /**
  * Cancel a posted venue order: the signer signs its cancel by client order id with no passkey,
- * also while the workspace is paused (D4), and the cancel is posted; the venue's own record of the
+ * also while the workspace is paused, and the cancel is posted; the venue's own record of the
  * order then says how it ended (`cancelled`, or `partially_filled` or `filled` when fills came
  * first). Refused with `not_cancellable` unless the order was posted and is not final.
  */

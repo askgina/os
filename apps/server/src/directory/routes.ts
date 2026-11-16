@@ -1011,7 +1011,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
         }),
     );
 
-    // Disabling is removal (D12): the agent's payments still waiting for people end too, and
+    // Disabling is removal: the agent's payments still waiting for people end too, and
     // the signer is told at once, so none of them can be approved and signed later.
     const payments = await ctx.db
       .select({ id: approvals.id, workspaceId: approvals.workspaceId })

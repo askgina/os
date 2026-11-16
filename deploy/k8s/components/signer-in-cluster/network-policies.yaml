@@ -1,4 +1,4 @@
-# FOR CI AND EVALUATION ONLY (decision D4). The signer takes requests from the server and from
+# FOR CI AND EVALUATION ONLY. The signer takes requests from the server and from
 # `approve`, and reaches nothing. `approve` takes requests from its edge and reaches only the
 # signer. The edge takes requests from anywhere on 8081 and reaches DNS and `approve`.
 apiVersion: networking.k8s.io/v1

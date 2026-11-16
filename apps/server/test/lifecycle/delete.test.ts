@@ -47,7 +47,7 @@ const secret = webhookSecret();
 beforeAll(async () => {
   f = await createFixture("lifecycle_delete");
   receiver = await startReceiver();
-  // The operator's webhook, so the D10 notices have somewhere to go.
+  // The operator's webhook, so the deletion notices have somewhere to go.
   f.t.ctx.config.notify.webhook = { url: receiver.url, secret };
 });
 
@@ -198,13 +198,13 @@ describe("deleting a workspace", () => {
       lifecycle: { state: "deleting", destroyAfter, deletedAt: null },
     });
     expect(deleting.wallets[0]?.lifecycle).toEqual({ state: "retiring", destroyAfter });
-    // The mandate ended when people approved, at the signer and in the mirror (D8).
+    // The mandate ended when people approved, at the signer and in the mirror.
     expect((await f.t.ctx.signer.getMandate(mandateId)).status).toBe("revoked");
     const [mirror] = await f.t.ctx.db.select().from(mandates).where(eq(mandates.id, mandateId));
     expect(mirror).toMatchObject({ status: "ended", endedReason: "revoked" });
     expect((await engineOf(f.t.ctx).row(policy.id)).status).toBe("cancelled");
 
-    // D10: announced now, and again a day before the keys go; the webhook gets the first.
+    // Announced now, and again a day before the keys go; the webhook gets the first.
     const notices = (await deliveriesOf(approvalId)).filter((row) =>
       row.event.startsWith("lifecycle."),
     );
@@ -283,7 +283,7 @@ describe("deleting a workspace", () => {
       body: { label: "Treasury" },
     });
 
-    // A sweep signed and sent, not yet followed to its block: finalize must wait for it (D7).
+    // A sweep signed and sent, not yet followed to its block: finalize must wait for it.
     const sweepRequest = await api().call("requestSweep", {
       params: { workspaceId: ws, walletId: agent.walletId },
       body: { chainId: TEST_CHAIN_ID, asset: "native", to: treasury.address },

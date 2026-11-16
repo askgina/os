@@ -286,7 +286,7 @@ export class OwsVault implements Vault {
 /**
  * The wallet's secret (its mnemonic) from the OWS vault, unlocked with the owner passphrase. A
  * module function and not a `Vault` method, so nothing the HTTP routes reach can call it: only the
- * admin CLI on the signer host (`export-wallet`, owner decision D4).
+ * admin CLI on the signer host (`export-wallet`).
  */
 export function exportOwsWalletSecret(
   options: { vaultPath: string; passphraseFile: string },

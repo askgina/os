@@ -20,7 +20,7 @@ spec:
       owner: os
   enableSuperuserAccess: false
   postgresql:
-    # Quorum commit: each commit waits for any one standby (decision D6 (a)). `required` keeps
+    # Quorum commit: each commit waits for any one standby. `required` keeps
     # waiting while no standby can answer, rather than committing on the primary alone, so a
     # failover never loses an acknowledged commit, and writes pause while two instances are down.
     synchronous:

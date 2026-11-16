@@ -41,7 +41,7 @@ export interface ApproveConfig {
   port: number;
   approveOrigin: string;
   signerUrl: string;
-  /** Reaches the signer's two confirm routes and nothing else. This service holds no other secret. */
+  /** Reaches the signer's confirm routes and nothing else. This service holds no other secret. */
   signerSecret: Uint8Array;
   /** Mutual TLS to the signer, set exactly when SIGNER_URL is `https:`. */
   signerTls: SignerTls | null;

@@ -177,7 +177,7 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
     return intentDetail(ctx, await getIntentRow(ctx, row.id));
   });
 
-  // Approving an order includes the right to cancel it (D4): no passkey, also while paused.
+  // Approving an order includes the right to cancel it: no passkey, also while paused.
   handle(app, ctx, "cancelOrder", async ({ params, session }) => {
     const row = await getIntentRow(ctx, params.intentId);
     await requireMember(ctx, session, row.workspaceId, "approver");

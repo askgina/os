@@ -32,7 +32,7 @@ import { type Vault, VaultError } from "./vault.ts";
  * the next finalize completes.
  */
 
-/** `SIGNER_MIN_DESTROY_DELAY_SECONDS` unless set: seven days (owner decision D2). */
+/** `SIGNER_MIN_DESTROY_DELAY_SECONDS` unless set: seven days. */
 export const DEFAULT_MIN_DESTROY_DELAY_SECONDS = 604_800;
 
 /** `SIGNER_MAX_DESTROY_DELAY_SECONDS` unless set: 90 days. */
@@ -158,7 +158,7 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
    * Why the signer would refuse `envelope` because of where its workspace or wallet stands, or
    * null. The same rules decide applying and signing, and the confirmation page's `superseded`.
    * While a deletion waits only a `cancel-transaction` may still be approved, so a transaction
-   * that is stuck can be cleared before its key is destroyed (owner decision D7).
+   * that is stuck can be cleared before its key is destroyed.
    */
   function refusal(envelope: Envelope): LifecycleRefusal | null {
     const workspace = internals.findWorkspace(envelope.workspaceId);
@@ -253,7 +253,7 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
 
   /**
    * Apply a `retire-wallet` envelope: the wallet signs nothing from now on, and every live
-   * mandate of it ends with reason `requested` in the same transaction (owner decision D8).
+   * mandate of it ends with reason `requested` in the same transaction.
    */
   function retireWallet(walletId: string, authorization: Authorization): Promise<WalletState> {
     const wallet = internals.findWallet(walletId);
@@ -412,8 +412,8 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
 
   /**
    * Once `destroyAfter` has passed: destroy every key of the workspace, remove its approvers,
-   * confirmations, assertions and possession challenges, blank the text of its mandates (owner
-   * decision D9), and mark it `deleted`. Used nonces, approvals, spends, policies, mandate ids,
+   * confirmations, assertions and possession challenges, blank the text of its mandates, and
+   * mark it `deleted`. Used nonces, approvals, spends, policies, mandate ids,
    * hashes, grantors and uses, and the decision log stay, so nothing of it can be replayed. A
    * repeat returns the state.
    */
@@ -472,8 +472,8 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
 
   /**
    * Read a wallet's key from the key store for the operator, recorded as
-   * `export-wallet-by-operator`. Only the admin CLI on the signer host calls it (owner decision
-   * D4: no HTTP route); `exportSecret` reads the key store itself. Runs under the write lock, so a
+   * `export-wallet-by-operator`. Only the admin CLI on the signer host calls it (no HTTP route
+   * does); `exportSecret` reads the key store itself. Runs under the write lock, so a
    * finalize cannot destroy the key halfway. A destroyed wallet has no key (`wallet_retired`).
    */
   function exportWalletByOperator(

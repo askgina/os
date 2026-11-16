@@ -884,7 +884,7 @@ async function executeIntent(
   if (await transactionOf(ctx, approval.id)) return;
   const { intent, presentation } = await readIntent(ctx, row);
 
-  // A venue intent is signed through its own route, and never under a mandate (D7).
+  // A venue intent is signed through its own route, and never under a mandate.
   if (isVenueIntent(intent)) {
     throw new ApprovalFailure("invalid_request", "a venue intent is never a transaction");
   }

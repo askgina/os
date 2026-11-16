@@ -51,7 +51,7 @@ function policyTemplate(
 }
 
 /**
- * A workspace's configuration as a template (D11): its name, admin threshold, notification
+ * A workspace's configuration as a template: its name, admin threshold, notification
  * content level, members and roles, and per wallet its kind, label, agent name and policy (the
  * policy the control plane mirrors from the signer). No key, address, token, mandate or history.
  * Wallets that are retiring or destroyed and agents that are disabled are left out.

@@ -1,5 +1,5 @@
 # The CI and evaluation stack on kind: the control plane, the signer and its confirmation page in
-# the cluster (decision D4 allows that for CI and evaluation only), one Postgres and a local
+# the cluster (acceptable for CI and evaluation only), one Postgres and a local
 # chain. e2e/run-k8s.sh builds the images, loads them into kind, creates the Secrets with
 # deploy/k8s/make-secrets.sh, applies this overlay and publishes the two origins on localhost
 # with `kubectl port-forward`.

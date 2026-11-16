@@ -1,8 +1,8 @@
-# Decision D8 (specs/beyond-one-machine.md): while the signed webhook (NOTIFY_WEBHOOK_URL) or
-# Web Push (WEB_PUSH_ENABLED) is configured, the server may open TCP 443 to any address. A
-# NetworkPolicy cannot name a host; the server's own checks stay the limit: the webhook is one
-# fixed URL and WEB_PUSH_ENDPOINT_HOSTS lists the push services. Leave this component out
-# while neither is configured.
+# Server egress for notifications (specs/beyond-one-machine.md): while the signed webhook
+# (NOTIFY_WEBHOOK_URL) or Web Push (WEB_PUSH_ENABLED) is configured, the server may open TCP 443
+# to any address. A NetworkPolicy cannot name a host; the server's own checks stay the limit:
+# the webhook is one fixed URL and WEB_PUSH_ENDPOINT_HOSTS lists the push services. Leave this
+# component out while neither is configured.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 

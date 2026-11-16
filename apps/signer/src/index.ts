@@ -93,7 +93,7 @@ export interface SignerOptions {
   /** Shared with the control plane; authenticates every control-scope route. */
   requestSecret: Uint8Array;
   /**
-   * Shared with the `approve` service; authenticates the two confirm-scope routes and nothing
+   * Shared with the `approve` service; authenticates the confirm-scope routes and nothing
    * else. At least 32 bytes, and not the request secret.
    */
   confirmSecret: Uint8Array;

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Creates the Secrets of a cluster that holds every trust domain (overlays/kind: CI and
-# evaluation only, decision D4) from one run of deploy/init/init.mjs, the files Compose's `init`
+# evaluation only) from one run of deploy/init/init.mjs, the files Compose's `init`
 # writes, in a throwaway container with no network. Apply the overlay first, so the namespaces
 # exist. Prints init.mjs's file names and the Secret names, never a value; on failure, the step.
 #

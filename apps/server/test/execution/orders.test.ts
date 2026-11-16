@@ -215,7 +215,7 @@ describe("proposing an order", () => {
     expect(after).toHaveLength(before.length);
   });
 
-  it("opens a request people approve, even while a mandate covers the agent's transfers (D7)", async () => {
+  it("opens a request people approve, even while a mandate covers the agent's transfers", async () => {
     const draft: MandateDraft = {
       agentId: trader.id,
       assets: [

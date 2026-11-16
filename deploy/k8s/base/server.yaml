@@ -14,7 +14,7 @@ metadata:
     os.askgina/role: server
 spec:
   # Two replicas: rate limits, the setup token and shred notices are shared through Postgres
-  # (specs/beyond-one-machine.md, milestone 4), so either may take any request.
+  # (specs/beyond-one-machine.md), so either may take any request.
   replicas: 2
   # Runs are not pinned to a workflow bundle, so two versions never run side by side: an
   # upgrade stops every old pod before the first new one starts. A rolling update would not

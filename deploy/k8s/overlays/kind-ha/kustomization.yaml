@@ -1,5 +1,5 @@
 # The kind stack of overlays/kind with Postgres as a three-instance CloudNativePG cluster
-# (components/postgres-cnpg, decision D6) instead of one Postgres: the gate of
+# (components/postgres-cnpg) instead of one Postgres: the gate of
 # e2e/test/kubernetes-ha.spec.ts, run by `e2e/run-k8s.sh --ha`, which installs the operator
 # first and fills in the Kubernetes API's addresses of components/postgres-cnpg at apply time.
 # Everything else is overlays/kind's: keep the two in step.

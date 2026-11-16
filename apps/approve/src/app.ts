@@ -70,7 +70,7 @@ export function readPageFiles(directory = join(import.meta.dirname, "..", "publi
 }
 
 export interface ApproveAppOptions {
-  /** The signer's two confirm routes, with this service's secret. */
+  /** The signer's confirm routes, with this service's secret. */
   confirm: ConfirmClient;
   files: PageFiles;
   /** The confirmation page's origin. Over HTTPS, browsers are told to stay on HTTPS. */

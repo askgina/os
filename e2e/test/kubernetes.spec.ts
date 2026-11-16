@@ -1,5 +1,5 @@
 /**
- * The Kubernetes gate (specs/beyond-one-machine.md, milestone 5), against the kind stack that
+ * The Kubernetes gate (specs/beyond-one-machine.md), against the kind stack that
  * `e2e/run-k8s.sh` starts from `deploy/k8s/overlays/kind` and publishes with
  * `kubectl port-forward` on the origins the Compose gates use. It checks that both server
  * replicas are ready and alone in their pods, that the isolation probe passes and is not blind,

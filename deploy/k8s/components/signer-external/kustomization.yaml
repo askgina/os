@@ -1,4 +1,4 @@
-# Production (decision D4): the signer, its confirmation page and that page's edge run on their
+# Production: the signer, its confirmation page and that page's edge run on their
 # own host (deploy/split/signer.compose.yaml), joined to the cluster only by mutual TLS.
 #
 # Before applying, replace:

@@ -13,7 +13,7 @@ const systemActor = { type: "system", id: null } as const;
 
 /**
  * Requests that stay open when a retirement or deletion is applied: a cancel of a stuck
- * transaction is how people clear what finalize waits for (D7), and the signer still accepts it.
+ * transaction is how people clear what finalize waits for, and the signer still accepts it.
  */
 const KEPT_WHILE_RETIRING = ["cancel-transaction"] as const;
 
@@ -87,7 +87,7 @@ const retireWallet: ApprovalKindHandler<"retire-wallet"> = {
         { except: approval.id, keep: KEPT_WHILE_RETIRING },
       ),
     );
-    // The signer revoked the wallet's mandates in the step that applied this (D8).
+    // The signer revoked the wallet's mandates in the step that applied this.
     await endMandateMirrors(ctx, workspaceId, walletId);
   },
 };

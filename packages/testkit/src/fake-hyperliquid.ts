@@ -3,8 +3,8 @@
  * no funds, talks to no network and must never be deployed or pointed at by a real wallet.
  *
  * It behaves like the venue's `POST /exchange` and `POST /info` closely enough to prove the
- * signer's signatures end to end without calling the real venue (specs/non-evm-operations.md,
- * Milestone 6). Its point is that it verifies on its own: it recomputes every signing hash with
+ * signer's signatures end to end without calling the real venue (specs/non-evm-operations.md).
+ * Its point is that it verifies on its own: it recomputes every signing hash with
  * `@msgpack/msgpack` (through `./msgpack.ts`) and viem from the JSON it receives, and never
  * imports the signer's encoder. The venue's own SDK vectors prove this module
  * (`packages/testkit/test/fake-hyperliquid.test.ts`).

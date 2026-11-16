@@ -82,8 +82,7 @@ What it shows:
 Any OpenAI-compatible chat completions endpoint: set `MODEL_BASE_URL`, `MODEL_API_KEY` and
 `MODEL_ID`. Nothing is tied to a vendor. eve needs the context window stated because it would
 otherwise look the model up in the AI Gateway's catalog: `agent/agent.ts` reads it from
-`MODEL_CONTEXT_WINDOW_TOKENS` (default 64000), but `compose.yaml` does not pass that variable to
-the container, so add it under the `agent` service's `environment` to change it.
+`MODEL_CONTEXT_WINDOW_TOKENS`, which `compose.yaml` passes through; unset or empty means 64000.
 
 ## Limits
 

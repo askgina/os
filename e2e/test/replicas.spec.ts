@@ -1,7 +1,7 @@
 /**
  * The gates of two server replicas only (`E2E_REPLICAS=1 e2e/run.sh`, CI `stack (replicas)`):
  * two server containers on one database, behind both edges, as specs/beyond-one-machine.md
- * (milestone 4) asks. They run in order on a fresh stack and share its installation;
+ * asks. They run in order on a fresh stack and share its installation;
  * `release-gates.spec.ts` then runs on another fresh stack with the same two replicas.
  */
 import { setTimeout as delay } from "node:timers/promises";

@@ -13,7 +13,7 @@ import { z } from "zod";
 import { entryHash, sealedDetailDigest } from "../audit.ts";
 
 /**
- * A workspace record (Milestone 5 of `specs/workspace-lifecycle.md`): JSON Lines, a header, then
+ * A workspace record, as the export writes it: JSON Lines, a header, then
  * the sections below in this order, each sorted by its key, then an `end` line with the count of
  * each section. Everything in it was opened from sealed columns; nothing in it is a secret.
  */
@@ -128,7 +128,7 @@ export const PolicyRevisionLine = z.strictObject({
   policy: Opened,
 });
 
-/** A mandate as granted, with what this control plane and the signer last knew of it (D11). */
+/** A mandate as granted, with what this control plane and the signer last knew of it. */
 export const MandateLine = z.strictObject({
   type: z.literal("mandate"),
   mandateId: Id,

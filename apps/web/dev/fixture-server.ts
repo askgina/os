@@ -1964,7 +1964,7 @@ function checkDestroyAfter(destroyAfter: number): void {
   }
 }
 
-/** Whether a sent transaction of the workspace, or of one wallet, is not mined yet (D7). */
+/** Whether a sent transaction of the workspace, or of one wallet, is not mined yet. */
 function unmined(workspace: Workspace, walletId?: string): boolean {
   return [...state.intents.values()].some(
     (intent) =>
@@ -2031,7 +2031,7 @@ function waitingLifecycle(workspace: Workspace, walletId: string | null): Approv
 /**
  * Finishes what is due, as the server's sweeper does: destroys the key of each retiring wallet
  * whose time came, and makes each workspace being deleted a tombstone, unless a sent transaction
- * of it is not mined yet (D7). The tombstone keeps ids and the logs; its members, invites and
+ * of it is not mined yet. The tombstone keeps ids and the logs; its members, invites and
  * agent tokens are gone, so it is gone for its members.
  */
 function finalizeDue(): void {
@@ -3563,7 +3563,7 @@ const handlers: Handlers = {
       );
     }
 
-    // Approving the order included the right to cancel it: no passkey, also while paused (D4).
+    // Approving the order included the right to cancel it: no passkey, also while paused.
     const filled = order.filledSize !== null && order.filledSize !== "0";
     intent.order = { ...order, canCancel: false };
     intent.status = filled ? "partially_filled" : "cancelled";

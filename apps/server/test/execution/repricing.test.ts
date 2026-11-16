@@ -247,7 +247,8 @@ async function localHashes(payment: Payment) {
 
 /**
  * A cancel approved with the owner's passkey and signed by the signer, stored as the control
- * plane stores one. Milestone 4 opens the request; here the envelope goes to the signer directly.
+ * plane stores one. The control plane opens the request through `requestCancel`; here the
+ * envelope goes to the signer directly.
  */
 async function cancelOf(payment: Payment): Promise<AttemptResponse> {
   const row = await transactionRow(payment.approvalId);

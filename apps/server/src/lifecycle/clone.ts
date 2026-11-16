@@ -25,7 +25,7 @@ export type CloneInput = CloneOptions &
   ({ sourceId: WorkspaceId } | { template: WorkspaceTemplate });
 
 /**
- * Make a new workspace from a template (D11): through the existing directory paths, so the person
+ * Make a new workspace from a template: through the existing directory paths, so the person
  * cloning is its first member, owner and approver at the signer; a new treasury and new agents
  * (new keys, new addresses, new tokens shown once); one `set-policy` request per wallet with a
  * policy, for the new workspace's approvers to approve on the confirmation page; the notification

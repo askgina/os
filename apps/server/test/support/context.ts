@@ -132,7 +132,7 @@ export interface TestContext {
   clock: TestClock;
   log: RecordingLogger;
   signer: Signer;
-  /** The `approve` service's view of the in-process signer: its two confirm routes. */
+  /** The `approve` service's view of the in-process signer: its confirm routes. */
   confirm: ConfirmClient;
   authenticator: SoftAuthenticator;
   /** The first owner, created through the real setup flow and signed in. */

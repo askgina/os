@@ -552,7 +552,7 @@ export const OrderDisplay = z.strictObject({
   notionalUsd: z.string(),
   timeInForce: HyperliquidTimeInForce,
   reduceOnly: z.boolean(),
-  /** Approving an order includes the right to cancel it, for the agent too (D4). */
+  /** Approving an order includes the right to cancel it, for the agent too. */
   cancellableByAgent: z.literal(true),
 });
 

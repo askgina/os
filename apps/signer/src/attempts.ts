@@ -749,8 +749,9 @@ export function createAttemptOperations(internals: AttemptInternals) {
           throw new SignerFailure("envelope_mismatch");
         }
 
-        // Allowed while the workspace is being deleted and the wallet retiring (owner decision
-        // D7); refused once the key is destroyed.
+        // Allowed while the workspace is being deleted and the wallet retiring, so a stuck
+        // transaction can be cleared before the deletion finishes; refused once the key is
+        // destroyed.
         const assertKeyKept = () => {
           internals.assertNotDeleted(envelope.workspaceId);
 

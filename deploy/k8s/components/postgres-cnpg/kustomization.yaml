@@ -1,5 +1,5 @@
 # Postgres as a three-instance CloudNativePG cluster with synchronous replication that is
-# required, not preferred (decision D6 (a), specs/beyond-one-machine.md, milestone 6): a commit
+# required, not preferred (specs/beyond-one-machine.md): a commit
 # returns only once a second instance has it, so losing the primary loses no commit, and while
 # no standby is there to confirm, writes wait instead of going on alone.
 #

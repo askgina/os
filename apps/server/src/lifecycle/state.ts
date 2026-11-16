@@ -172,7 +172,7 @@ export async function hasUnfinishedRuns(
 }
 
 /**
- * Whether a transaction of the subject could still be mined (D7): one on its way (`signed`,
+ * Whether a transaction of the subject could still be mined: one on its way (`signed`,
  * `broadcast`, `stuck`), or one given up on (`rejected`) while no later transaction of its
  * wallet on its chain has used its account nonce. A destroyed key cannot replace either.
  */

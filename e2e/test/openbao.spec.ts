@@ -1,6 +1,6 @@
 /**
  * The gates of a control plane whose key-encryption key lives in OpenBao Transit only
- * (`E2E_OPENBAO=1 e2e/run.sh`, CI `stack (openbao)`; specs/beyond-one-machine.md, milestone 3):
+ * (`E2E_OPENBAO=1 e2e/run.sh`, CI `stack (openbao)`; specs/beyond-one-machine.md):
  * `KEY_PROVIDER=openbao`, no keyring file, an AppRole limited to deploy/openbao/policy.hcl, and
  * no cached data keys (`e2e/compose.openbao.yaml`). They run in order on a fresh stack and share
  * its installation; `release-gates.spec.ts` then runs on another fresh stack of the same kind.

@@ -686,7 +686,7 @@ export async function revokeAgentMandates(
 /**
  * End the mirror of every live mandate of one wallet, or of the whole workspace when `walletId`
  * is null, once a retirement or deletion was applied: the signer revoked them in that same step
- * (reason `requested`, shown as `revoked`, D8). Returns how many this call ended.
+ * (reason `requested`, shown as `revoked`). Returns how many this call ended.
  */
 export async function endMandateMirrors(
   ctx: AppContext,

@@ -53,7 +53,7 @@ const MIN_PUSH_TTL_SECONDS = 60;
 
 const PUSH_TARGET = "push:";
 
-/** How long before keys are destroyed the second lifecycle notice goes out (D10). */
+/** How long before keys are destroyed the second lifecycle notice goes out. */
 export const DUE_SOON_SECONDS = 86_400;
 
 type DeliveryRow = typeof notificationDeliveries.$inferSelect;
@@ -177,7 +177,7 @@ export async function enqueueApprovalNotifications(
 }
 
 /**
- * Write the notices of a scheduled retirement or deletion (D10), in the transaction that mirrors
+ * Write the notices of a scheduled retirement or deletion, in the transaction that mirrors
  * it: `lifecycle.scheduled` now, and `lifecycle.due_soon` 24 hours before the keys are
  * destroyed when that is still ahead, each to the webhook and to every device of each person
  * who can approve (the reminder only where reminders are on). A cancelled or finished
@@ -510,7 +510,7 @@ async function deliverPush(
 }
 
 /**
- * For an `approve-intent` request: a venue order, or a payment (D8). Only a venue intent can be
+ * For an `approve-intent` request: a venue order, or a payment. Only a venue intent can be
  * an order, so only its sealed payload (`intents.payload:<intentId>`) is opened, for its
  * operation's type and nothing else.
  */

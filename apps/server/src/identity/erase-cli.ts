@@ -21,7 +21,7 @@ type EraseResult =
 
 /**
  * `node apps/server/src/identity/erase-cli.ts --user <usr_id>`: erase a person as the operator,
- * for someone who asks and cannot sign in to do it themselves (decision D6, see
+ * for someone who asks and cannot sign in to do it themselves (see
  * `src/identity/erase.ts`). Run it where the server runs, with the server's configuration. Its
  * result is the last JSON line on stdout, after the log line an erasure writes:
  *

@@ -38,7 +38,7 @@ const REMOVED_AGENT_NAME = "Removed agent";
 
 /**
  * Why a due retirement or deletion was not finished this round. The next round tries again.
- * - `unmined_transactions`, `unfinished_runs`: see `DeletionBlocker` (D7).
+ * - `unmined_transactions`, `unfinished_runs`: see `DeletionBlocker`.
  * - `destroy_not_due`: the signer's clock says it is not time yet.
  * - `not_scheduled`: the signer no longer holds it as scheduled (cancelled); the mirror is
  *   brought up to date.
@@ -67,7 +67,7 @@ export async function finalizeIfDue(
 
 /**
  * Finish every retirement and deletion whose destroy time passed: wait while a transaction could
- * still be mined (D7), end what still waits for people, wait for runs to finish, record the
+ * still be mined, end what still waits for people, wait for runs to finish, record the
  * event, have the signer destroy the keys, then, for a workspace, shred its data keys and leave
  * a tombstone. Every step is safe to repeat, so a crash anywhere is finished by a later round.
  * One subject that fails does not stop the others.
@@ -282,7 +282,7 @@ async function finalizeWorkspace(
   });
 
   if (counts !== null) {
-    // D5: the shredded keys stay readable in every keyring backup taken before a rotation.
+    // The shredded keys stay readable in every keyring backup taken before a rotation.
     ctx.log.warn("rotate the keyring now: see deploy/README.md, Backups and restoring", {
       event: "lifecycle.rotate_keyring",
       workspaceId,

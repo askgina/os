@@ -1,5 +1,5 @@
 /**
- * The HA Postgres gate (specs/beyond-one-machine.md, milestone 6), against the kind stack that
+ * The HA Postgres gate (specs/beyond-one-machine.md), against the kind stack that
  * `e2e/run-k8s.sh --ha` starts from `deploy/k8s/overlays/kind-ha`: the kind stack with Postgres
  * as the CloudNativePG cluster `os-db` of three instances, quorum commit to one standby and
  * `dataDurability: required`.

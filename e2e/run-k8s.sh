@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The control plane on Kubernetes, proven on kind (specs/beyond-one-machine.md, milestone 5):
+# The control plane on Kubernetes, proven on kind (specs/beyond-one-machine.md):
 # build the images, start a throwaway kind cluster, load the images into it, apply
 # deploy/k8s/overlays/kind, create its Secrets, wait for every workload, publish the two origins
 # with `kubectl port-forward`, run e2e/test/kubernetes.spec.ts, and delete the cluster again. On
@@ -7,7 +7,7 @@
 # every container.
 #   ./e2e/run-k8s.sh           build, start, test, delete
 #   ./e2e/run-k8s.sh --keep    leave the cluster running afterwards, for looking around
-#   ./e2e/run-k8s.sh --ha      the same with Postgres as a CloudNativePG cluster (milestone 6):
+#   ./e2e/run-k8s.sh --ha      the same with Postgres as a CloudNativePG cluster:
 #                              installs the operator, applies deploy/k8s/overlays/kind-ha and runs
 #                              e2e/test/kubernetes-ha.spec.ts instead
 # Needs docker, kind, kubectl, curl and sha256sum on PATH; the versions CI pins are in

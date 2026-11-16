@@ -1,7 +1,7 @@
 # An example production overlay: the control plane in the cluster, the signer and its
-# confirmation page on their own host (components/signer-external, decision D4), Postgres as a
+# confirmation page on their own host (components/signer-external), Postgres as a
 # three-instance CloudNativePG cluster with synchronous replication required
-# (components/postgres-cnpg, decision D6; install the operator first, as that component says).
+# (components/postgres-cnpg; install the operator first, as that component says).
 # Copy it, then replace every example value: the origins, the signer host's name and address
 # (components/signer-external), the Kubernetes API's addresses (components/postgres-cnpg), the
 # egress addresses in egress.yaml, and the image digests.
@@ -15,7 +15,7 @@ resources:
 components:
   - ../../components/signer-external
   - ../../components/postgres-cnpg
-  # While NOTIFY_WEBHOOK_URL or WEB_PUSH_ENABLED is set (decision D8):
+  # While NOTIFY_WEBHOOK_URL or WEB_PUSH_ENABLED is set:
   # - ../../components/notifications-egress
 # Your own builds of apps/server/Dockerfile, pinned by digest. The zeros are placeholders.
 images:
@@ -30,7 +30,7 @@ configMapGenerator:
     literals:
       - PUBLIC_ORIGIN=https://os.example.com
       - WEBAUTHN_RP_ID=os.example.com
-      # On the signer host, under WEBAUTHN_RP_ID (decision D7).
+      # On the signer host, under WEBAUTHN_RP_ID.
       - APPROVE_ORIGIN=https://approve.os.example.com
       # A load balancer in front of the edge adds a second X-Forwarded-For entry.
       - FORWARDED_HOPS=2

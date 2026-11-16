@@ -165,7 +165,7 @@ describe("retiring a wallet", () => {
       destroyAfter: firstDestroyAfter,
     });
     expect((await f.t.ctx.signer.getWallet(agent.walletId)).state).toBe("retiring");
-    // Its mandate ends now (D8); the other wallet's does not.
+    // Its mandate ends now; the other wallet's does not.
     expect((await f.t.ctx.signer.getMandate(retiredMandate)).status).toBe("revoked");
     expect((await f.t.ctx.signer.getMandate(otherMandate)).status).toBe("active");
     expect(await newestEventAbout(ws, agent.walletId)).toBe("wallet.retiring");
@@ -216,7 +216,7 @@ describe("retiring a wallet", () => {
     expect((await f.t.ctx.signer.getMandate(otherMandate)).status).toBe("expired");
   });
 
-  it("waits for a given-up transaction until a later one of its wallet used its nonce (D7)", async () => {
+  it("waits for a given-up transaction until a later one of its wallet used its nonce", async () => {
     const ws = await f.newWorkspace("Rejected nonce");
     const agent = await fundedAgent(ws, "Nonce");
 

@@ -1,4 +1,4 @@
-# FOR CI AND EVALUATION ONLY (decision D4, specs/beyond-one-machine.md). Production runs the
+# FOR CI AND EVALUATION ONLY (specs/beyond-one-machine.md). Production runs the
 # signer and its confirmation page on their own host (components/signer-external): in a cluster,
 # Secrets sit unencrypted in etcd by default and cluster administrators reach every node, the
 # signer's keys and the confirmation page included.

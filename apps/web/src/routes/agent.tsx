@@ -302,7 +302,8 @@ function scriptedAgentCommand(url: string, token: string | undefined): string {
   return [
     `MCP_URL=${url} \\`,
     `AGENT_TOKEN=${token ?? "'<agent token>'"} \\`,
-    "node examples/scripted-agent/src/main.ts",
+    "TRANSFER_TO='<recipient address>' \\",
+    "node examples/scripted-agent/src/agent.ts",
   ].join("\n");
 }
 

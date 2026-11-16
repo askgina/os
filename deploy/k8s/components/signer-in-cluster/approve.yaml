@@ -1,4 +1,4 @@
-# FOR CI AND EVALUATION ONLY (decision D4). The confirmation page (`approve`) and its edge.
+# FOR CI AND EVALUATION ONLY. The confirmation page (`approve`) and its edge.
 # `approve` holds only its copy of the confirm secret (Secret `os-approve-secrets`, file
 # confirm-request-secret) and reaches the signer and nothing else, not even DNS: it finds the
 # signer through the SIGNER_SERVICE_* variables Kubernetes gives every pod in this namespace.

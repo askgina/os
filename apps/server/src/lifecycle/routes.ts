@@ -282,7 +282,7 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
     return walletSummary(current, agentId);
   });
 
-  // --- export and clone (D11) -----------------------------------------------------------------
+  // --- export and clone -----------------------------------------------------------------------
 
   handle(app, ctx, "exportTemplate", async ({ session, params }) => {
     const workspaceId = workspaceIdFromPath(params.workspaceId);

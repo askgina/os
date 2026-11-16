@@ -141,7 +141,7 @@ if (domain === "all") {
 }
 
 if (signer) {
-  // The confirm secret lets the `approve` service reach the signer's two confirmation routes and
+  // The confirm secret lets the `approve` service reach the signer's confirm routes and
   // nothing else, so it is never the request secret.
   ensure(SIGNER, "confirm-request-secret", NODE_UID, () => b64());
   // The `approve` service gets the confirm secret and nothing else. Its copy is not a secret of

@@ -45,7 +45,7 @@ import { encodeMsgpack, jsonToMsgpack, MsgpackMap, msgpackToJson } from "./venue
  * action per approval, and records it. There is no route that takes an action, typed data, a
  * message or a hash from the caller.
  *
- * Approving an order includes the right to cancel it (owner decision D4): the signer signs
+ * Approving an order includes the right to cancel it: the signer signs
  * `cancelByCloid` for an order it signed, with no passkey, also while the workspace is paused.
  *
  * Testnet and mainnet are signed alike (decided 2026-11-16: mainnet is supported). The network
@@ -487,7 +487,7 @@ export function createVenueOperations(internals: VenueInternals) {
   /**
    * Sign the cancel of an order this signer signed, by the order's approval id. Needs no passkey
    * and is allowed while the workspace is paused or being deleted and while the wallet is
-   * retiring (owner decision D4): a cancel moves nothing and only removes what people approved.
+   * retiring: a cancel moves nothing and only removes what people approved.
    * Within a cancel's own expiry the same cancel is returned, so retries post identical bytes;
    * after it, a new cancel with a larger nonce. Refused once the key is destroyed.
    */
@@ -504,7 +504,7 @@ export function createVenueOperations(internals: VenueInternals) {
         const order = venueSignatureOf(approvalId);
 
         // Only what this database signed in this workspace: after a restore, an order signed
-        // after the backup is unknown here and cannot be cancelled through the signer (D9).
+        // after the backup is unknown here and cannot be cancelled through the signer.
         if (!approval || approval.workspace_id !== workspaceId || !order) {
           throw new SignerFailure("not_found");
         }

@@ -1,6 +1,6 @@
 # Overlay for `stack (openbao)` (`E2E_OPENBAO=1 e2e/run.sh`), on top of compose.yaml and
 # e2e/compose.e2e.yaml: the server keeps its key-encryption key in OpenBao Transit instead of the
-# keyring file (specs/beyond-one-machine.md, milestone 3). Never use it for a real deployment:
+# keyring file (specs/beyond-one-machine.md). Never use it for a real deployment:
 # its unseal key and root token sit in a volume next to OpenBao.
 #
 # OpenBao runs as a real server, not in development mode, so its keys survive a restart and the

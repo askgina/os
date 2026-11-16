@@ -40,7 +40,7 @@ export interface PushFacts {
   kind: ApprovalKind;
   /**
    * For `approve-intent`: whether the intent is a payment (a transfer, a contract call or a
-   * venue withdrawal) or a venue order (D8), so an order is not announced as a payment. Null for
+   * venue withdrawal) or a venue order, so an order is not announced as a payment. Null for
    * every other kind. No order field (market, side, size, price, notional) has a place here.
    */
   operation: "payment" | "order" | null;

@@ -1,4 +1,4 @@
-# FOR CI AND EVALUATION ONLY (decision D4, specs/beyond-one-machine.md): the signer, the
+# FOR CI AND EVALUATION ONLY (specs/beyond-one-machine.md): the signer, the
 # confirmation page (`approve`) and its edge in the namespace `os-signer` of the same cluster.
 # Whoever administers the cluster then holds every wallet. Production uses signer-external.
 apiVersion: kustomize.config.k8s.io/v1alpha1
