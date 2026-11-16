@@ -405,6 +405,22 @@ marked **Eric's** below.
   counted it only when a signed-in person read the request or the inbox afterwards; the
   approval's own run now asks the signer too (`apps/server/workflows/approval.ts`).
 
+- Outcome (2026-11-16, by hand, once): a payment a real model chose settled. Fresh stacks (os at
+  `dc985b6`, the fork at `63a9eb0`, model `gpt-6-luna`), same instruction. The model called
+  `askgina-os__propose_transfer` (intent `int_01m7gyj8zrhtvpnrcs6f1t656s`, 01:11:55Z); the owner
+  opened the confirmation page on a phone and approved with a passkey (page 01:12:48Z, submit
+  01:12:55Z); the transaction confirmed at 01:13:02Z (tx
+  `0x689b50ce…c74c1b`, payee balance up by 0.001 ETH).
+  What the logs of this stack say about the earlier expiries: a first request on it
+  (`int_01m7gstz6kt2xxyrxagcbqda2m`) also expired, and its confirmation page was never loaded
+  and no passkey assertion reached the signer; the push had been handed to the push service.
+  So that request was not approved and lost; it was never opened. The owner's approval that
+  did land beforehand was the wallet-limits one, a separate request. Whether the notification
+  displayed on the phone is not proven.
+  Limits: one run by hand; a local chain; one machine; not a CI gate. The model, asked again
+  after the first request had expired, answered that it was still awaiting approval without
+  checking, and proposed again only when told it had lapsed.
+
 - Outcome: research done; nothing built.
   Evidence: [research/busy-fork.md](./research/busy-fork.md).
   Remaining: every milestone below (owner decisions taken 2026-11-15, except the calls that stay
