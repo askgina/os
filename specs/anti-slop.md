@@ -62,7 +62,9 @@ Success means:
       warnings. Agents changed six in product source where the change was
       local (a build-up loop into a map, one extraction) and left the rest
       with a reason each; equipment, scripts and examples were left by rule.
-- [ ] Milestone 5: `bun run lint:slop` in the CI `check` job; `ci` green.
+- [x] (2026-11-16 10:40Z) Milestone 5: `bun run lint:slop` runs in the CI
+      `check` job after `bun run check`; `ci` green on every job at `510de59`
+      ([run 43848540131](https://github.com/askgina/os/actions/runs/43848540131)).
 
 ## Surprises & Discoveries
 
