@@ -2,7 +2,7 @@
 
 - Branch: main
 - Ticket: [askgina/os#28](https://github.com/askgina/os/issues/28), on the map [askgina/os#18](https://github.com/askgina/os/issues/18)
-- Status: In progress
+- Status: Ready for Review
 - Owner: lead agent, under the repository owner's instruction of 2026-11-16 ("setup anti-slop + refactor")
 
 This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`,
@@ -161,7 +161,20 @@ Success means:
 
 ## Outcomes & Retrospective
 
-- Outcome: none yet.
+- Outcome: the rules are vendored, run in CI, and the tree passes them. The
+  first measurement was 10,610 findings; `bun run lint:slop` now exits 0 with
+  no errors and 189 code-smell warnings, which never fail CI. About 870
+  type assertions went away (most by decoding with zod, 114 kept with a
+  `SAFETY:` comment naming the evidence). `ci` is green on every job at
+  `510de59` ([run 43848540131](https://github.com/askgina/os/actions/runs/43848540131)).
+- What was not done: the 189 warnings (long functions, loops, long parameter
+  lists) were triaged, not removed; the `SAFETY:` comments were sampled, not
+  each read by a person; `get_intent` in `apps/server/src/mcp/gateway.ts`
+  reads its cancel signal from the wrong place (found by a slice agent, a
+  bug that predates this plan, left unfixed here).
+- Lesson: a shell variable left from a staging session
+  (`NODE_TLS_REJECT_UNAUTHORIZED=0`) made two certificate tests fail and
+  looked like a broken refactor. Unset it before trusting a local failure.
 
 ## Context and Orientation
 
@@ -370,3 +383,5 @@ touching signing or wire code.
 ## Revision Notes
 
 - 2026-11-16: created with Milestone 1 done and the first measurement.
+- 2026-11-16: Milestones 2 to 5 done, outcomes written, status Ready for
+  Review.
