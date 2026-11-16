@@ -5,6 +5,7 @@ import type { Client } from "@modelcontextprotocol/client";
 import { and, eq } from "drizzle-orm";
 import { parseTransaction } from "viem";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   approvals,
   approverCredentials,
@@ -284,6 +285,7 @@ describe("stored data", () => {
       });
 
       expect(listed.items.map((intent) => intent.id)).not.toContain(intentId);
+      expect(listed.unreadable).toBe(1);
       expect(listed.items.length).toBeGreaterThan(0);
       expect(loggedLines(f.t.log)).toContainEqual(
         expect.objectContaining({
@@ -298,6 +300,36 @@ describe("stored data", () => {
         .set({ presentation: row.presentation })
         .where(eq(intents.id, intentId));
     }
+  });
+
+  it("shows a payment in a token that declares more decimals than most do", async () => {
+    const { client } = await agentClient("Many decimals");
+    const { intentId } = await propose(client);
+    const [row] = await f.t.ctx.db.select().from(intents).where(eq(intents.id, intentId));
+
+    if (!row) throw new Error("no intent");
+
+    const location = `intents.presentation:${intentId}`;
+
+    const opened = z
+      .object({ display: z.record(z.string(), z.json()), simulation: z.json() })
+      .parse(await f.t.ctx.sealer.open(f.workspaceId, location, row.presentation));
+
+    // A token's `decimals` is a uint8: 255 is the most a contract can declare.
+    const wide = await f.t.ctx.sealer.seal(f.workspaceId, location, {
+      ...opened,
+      display: { ...opened.display, assetDecimals: 255 },
+    });
+
+    await f.t.ctx.db.update(intents).set({ presentation: wide }).where(eq(intents.id, intentId));
+
+    const detail = await f.t.owner.browser.api.call("getIntent", { params: { intentId } });
+
+    expect(detail.display).toMatchObject({ kind: "transfer", assetDecimals: 255 });
+
+    const answer = toolJson(await client.callTool({ name: "list_intents", arguments: {} }));
+
+    expect(answer).toMatchObject({ unreadable: 0 });
   });
 });
 

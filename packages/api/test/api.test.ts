@@ -174,7 +174,7 @@ const examples: Record<RouteName, RouteExample> = {
   },
   listIntents: {
     query: { cursor: "c1", mandateId: f.MANDATE },
-    response: { items: [f.intentSummary], nextCursor: null },
+    response: { items: [f.intentSummary], nextCursor: null, unreadable: 0 },
   },
   getIntent: { response: f.intentDetail },
   speedUp: { body: {}, response: f.intentDetail },

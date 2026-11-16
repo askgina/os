@@ -594,6 +594,7 @@ export const mandateDetail: MandateDetail = {
   ...mandateSummary,
   intents: [{ ...intentSummary, status: "confirmed", approvalId: null, mandateId: MANDATE }],
   intentsCursor: null,
+  intentsUnreadable: 0,
 };
 
 export const grantApprovalDetail: ApprovalDetail = {

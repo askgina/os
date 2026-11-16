@@ -47,11 +47,13 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
     await requireMember(ctx, session, workspaceId);
     const { row, state } = await loadMandate(ctx, workspaceId, params.mandateId);
     const { rows, nextCursor } = await listIntentRows(ctx, { workspaceId, mandateId: row.id });
+    const { items, unreadable } = await intentSummaries(ctx, rows);
 
     return {
       ...(await mandateSummary(ctx, row, state)),
-      intents: await intentSummaries(ctx, rows),
+      intents: items,
       intentsCursor: nextCursor,
+      intentsUnreadable: unreadable,
     };
   });
 
@@ -144,7 +146,7 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
       cursor: query.cursor,
     });
 
-    return { items: await intentSummaries(ctx, rows), nextCursor };
+    return { ...(await intentSummaries(ctx, rows)), nextCursor };
   });
 
   handle(app, ctx, "getIntent", async ({ params, session }) => {

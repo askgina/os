@@ -18,6 +18,7 @@ import type { Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../context.ts";
 import { agents, wallets, workspaces } from "../db/schema.ts";
+import { StoredDataError } from "../db/stored.ts";
 import { chainAccess } from "../execution/chains.ts";
 import {
   getIntentRow,
@@ -552,7 +553,30 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
           limit: limit ?? 20,
         });
 
-        return json({ intents: await Promise.all(rows.map((row) => intentView(ctx, row))) });
+        // One intent whose stored details cannot be read is left out and counted, so the agent
+        // still gets its list and learns that something is missing.
+        const views = await Promise.all(
+          rows.map(async (row) => {
+            try {
+              return await intentView(ctx, row);
+            } catch (error) {
+              if (!(error instanceof StoredDataError)) throw error;
+              ctx.log.error(
+                "an intent left out of an agent's list: its stored data could not be read",
+                {
+                  intentId: row.id,
+                  message: error.message,
+                },
+              );
+
+              return null;
+            }
+          }),
+        );
+
+        const shown = views.filter((view) => view !== null);
+
+        return json({ intents: shown, unreadable: views.length - shown.length });
       }),
   );
 

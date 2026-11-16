@@ -129,11 +129,17 @@ Success means:
     words (the API answers 500 with detail `stored_data_invalid`), and a list
     leaves an unreadable payment out, logged, instead of failing whole. The
     page cannot show the payment itself, since the display is what was lost.
-  - Not from the refactor, still open: a token with 37 to 255 decimals can be
-    proposed and signed, but every HTTP answer that shows it fails the API's
-    display schema (at most 36).
+    A list that leaves payments out says how many (`unreadable` on
+    `listIntents`, `intentsUnreadable` on a mandate, `unreadable` on the
+    agent's `list_intents`), and the web app shows a notice above the list.
+  - Not from the refactor, fixed afterwards: a token with 37 to 255 decimals
+    could be proposed and signed, but every HTTP answer that showed it failed
+    the API's display schema (at most 36). The API now shows any uint8 of
+    decimals. The signer's operator-written asset labels still take 0 to 36;
+    a token beyond that is shown by the signer in base units.
   - Evidence: `apps/server/test/execution/hardening.test.ts`, "answers a stored
-    value that no longer matches its schema as an internal error, and logs it".
+    value that no longer matches its schema as an internal error, and logs it"
+    and "shows a payment in a token that declares more decimals than most do".
 - Observation: two tests of the signer's pinned TLS failed once during
   verification because the lead's shell still exported
   `NODE_TLS_REJECT_UNAUTHORIZED=0` from a staging session. With it unset they

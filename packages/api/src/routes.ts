@@ -42,6 +42,7 @@ import {
   RegistrationResponse,
   Role,
   SessionInfo,
+  UnreadableCount,
   WalletDetail,
   WalletSummary,
   WorkspaceDetail,
@@ -435,7 +436,7 @@ export const routes = {
   listIntents: list(
     "/api/v1/workspaces/:workspaceId/intents",
     z.strictObject({ cursor: Cursor.optional(), mandateId: MandateId.optional() }),
-    page(IntentSummary),
+    page(IntentSummary).extend({ unreadable: UnreadableCount }),
   ),
   getIntent: get("/api/v1/intents/:intentId", IntentDetail),
   /**

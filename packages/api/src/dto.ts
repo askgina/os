@@ -70,6 +70,15 @@ export const Cursor = z.string().min(1).max(256);
 export const page = <T extends z.ZodType>(item: T) =>
   z.strictObject({ items: z.array(item), nextCursor: Cursor.nullable() });
 
+/** A token's own `decimals`. Its contract declares it as a uint8, so any of 0 to 255 is shown. */
+export const TokenDecimals = z.number().int().min(0).max(255);
+
+/**
+ * How many of a list's rows are left out because their stored details can no longer be read.
+ * The list says so in place of failing as a whole; the server's log names each one.
+ */
+export const UnreadableCount = z.number().int().min(0);
+
 export const apiErrorStatus: Record<ApiErrorCode, number> = {
   invalid_request: 400,
   unauthenticated: 401,
@@ -293,7 +302,7 @@ export const AssetBalance = z.strictObject({
   chainId: ChainId,
   asset: AssetRef,
   symbol: z.string(),
-  decimals: z.number().int().min(0).max(36),
+  decimals: TokenDecimals,
   amount: Amount,
 });
 
@@ -520,7 +529,7 @@ export const TransferDisplay = z.strictObject({
   /** For example "Send 250 USDC". */
   title: z.string(),
   assetSymbol: z.string(),
-  assetDecimals: z.number().int().min(0).max(36),
+  assetDecimals: TokenDecimals,
   /** Base units, as in the intent. */
   amount: Amount,
   /** The same amount in whole units, for example "250" or "0.015". */
@@ -789,7 +798,7 @@ export const MandateAssetView = z.strictObject({
   asset: AssetRef,
   /** How the asset is shown; null when its chain is not configured here or the token could not be read. */
   symbol: z.string().nullable(),
-  decimals: z.number().int().min(0).max(36).nullable(),
+  decimals: TokenDecimals.nullable(),
   /** `min(maxTotal, maxUses × maxPerAction)` in base units: the most that can leave the wallet under it. */
   worstCase: Amount,
   /** The wallet policy's caps for this asset, which still apply to every payment; null when the policy lists none. */
@@ -848,6 +857,8 @@ export const MandateDetail = MandateSummary.extend({
   intents: z.array(IntentSummary),
   /** Pass to `listIntents` with this `mandateId` for the next page. */
   intentsCursor: Cursor.nullable(),
+  /** Payments of that first page left out of `intents`. */
+  intentsUnreadable: UnreadableCount,
 });
 
 export type MandateDetail = z.infer<typeof MandateDetail>;
@@ -973,7 +984,7 @@ export const ApprovalSubject = z.discriminatedUnion("kind", [
     sweepHash: Digest,
     /** How the asset is shown, read from the chain by the server. */
     assetSymbol: z.string(),
-    assetDecimals: z.number().int().min(0).max(36),
+    assetDecimals: TokenDecimals,
     /**
      * Why the server expects the signer to accept the destination: it is on the wallet's
      * allowlist, or it is the workspace's treasury. Null when neither holds: the signer will

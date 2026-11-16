@@ -1,12 +1,10 @@
 import {
   type ApprovalSubject,
   type IntentDetail,
-  type IntentDisplay,
+  IntentDisplay,
   type IntentStatus,
   type IntentSummary,
-  OrderDisplay,
   Simulation,
-  TransferDisplay,
   type VenueOrderView,
   type WalletSummary,
 } from "@askgina/os-api";
@@ -99,16 +97,6 @@ function intentApprovalDetail(detail: JsonValue): IntentApprovalDetail {
   return stored(IntentApprovalDetail, detail, "intent approval detail");
 }
 
-/**
- * A display as {@link recordProposal} sealed it. A token may declare any uint8 of decimals, more
- * than the API's display admits, so reading one back admits them all; an API answer still
- * checks the display it shows.
- */
-const StoredDisplay = z.discriminatedUnion("kind", [
-  TransferDisplay.extend({ assetDecimals: z.number().int().min(0).max(255) }),
-  OrderDisplay,
-]);
-
 /** What {@link recordProposal} seals as an intent's presentation, its display as stored. */
 const SealedPresentation = z.object({
   display: z.record(z.string(), z.json()),
@@ -141,7 +129,7 @@ export async function readIntent(
 
   // Displays stored before venue intents existed were all transfers and carry no `kind`.
   const display = stored(
-    StoredDisplay,
+    IntentDisplay,
     { kind: "transfer", ...sealed.display },
     "intent presentation display",
   );
@@ -227,13 +215,14 @@ export async function intentSummary(ctx: AppContext, row: IntentRow): Promise<In
 }
 
 /**
- * The summaries of a list's rows. A row whose stored details cannot be read is left out and
- * logged, so one damaged intent does not take the whole list with it.
+ * The summaries of a list's rows. A row whose stored details cannot be read is left out,
+ * counted and logged, so one damaged intent does not take the whole list with it and the
+ * reader still learns that something is missing.
  */
 export async function intentSummaries(
   ctx: AppContext,
   rows: IntentRow[],
-): Promise<IntentSummary[]> {
+): Promise<{ items: IntentSummary[]; unreadable: number }> {
   const summaries = await Promise.all(
     rows.map(async (row) => {
       try {
@@ -250,7 +239,9 @@ export async function intentSummaries(
     }),
   );
 
-  return summaries.filter((summary) => summary !== null);
+  const items = summaries.filter((summary) => summary !== null);
+
+  return { items, unreadable: summaries.length - items.length };
 }
 
 export async function intentDetail(ctx: AppContext, row: IntentRow): Promise<IntentDetail> {

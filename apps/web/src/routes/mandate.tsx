@@ -12,6 +12,7 @@ import {
   linkClass,
   PageHeader,
   TechBlock,
+  UnreadableNotice,
   useNow,
 } from "@/components/common.tsx";
 import {
@@ -228,9 +229,15 @@ function Payments({
         </div>
       </CardHeader>
       <CardContent className="grid grid-cols-1 gap-3">
-        {detail.intents.length === 0 ? (
+        <UnreadableNotice
+          count={
+            detail.intentsUnreadable +
+            (older.data?.pages.reduce((sum, page) => sum + page.unreadable, 0) ?? 0)
+          }
+        />
+        {detail.intents.length === 0 && detail.intentsUnreadable === 0 ? (
           <EmptyState title="No payment was made under it yet." />
-        ) : (
+        ) : detail.intents.length === 0 && more.length === 0 ? null : (
           <ul className="divide-y rounded-md border">
             {[...detail.intents, ...more].map((intent) => (
               <Payment key={intent.id} intent={intent} workspaceId={workspaceId} now={now} />

@@ -15,6 +15,7 @@ import {
   Loading,
   linkClass,
   PageHeader,
+  UnreadableNotice,
   useNow,
 } from "@/components/common.tsx";
 import { MandatesCard } from "@/components/mandate.tsx";
@@ -334,6 +335,7 @@ function RecentIntents({ workspaceId, agentId }: { workspaceId: string; agentId:
       <CardContent>
         {intents.isPending ? <Loading /> : null}
         {intents.isError ? <ErrorState error={intents.error} /> : null}
+        {intents.data ? <UnreadableNotice count={intents.data.unreadable} /> : null}
         {intents.data && mine.length === 0 ? (
           <EmptyState title="This agent has asked for nothing yet.">
             Requests appear here as soon as it proposes one.

@@ -3323,7 +3323,7 @@ const handlers: Handlers = {
         return summary;
       });
 
-    return { ...mandateSummary(record), intents, intentsCursor: null };
+    return { ...mandateSummary(record), intents, intentsCursor: null, intentsUnreadable: 0 };
   },
   revokeMandate: ({ params, userId }) => {
     const id = signedIn(userId);
@@ -3436,7 +3436,7 @@ const handlers: Handlers = {
         return summary;
       });
 
-    return { items, nextCursor: null };
+    return { items, nextCursor: null, unreadable: 0 };
   },
   getIntent: ({ params, userId }) => {
     signedIn(userId);

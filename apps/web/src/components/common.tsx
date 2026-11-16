@@ -83,6 +83,21 @@ export function FormError({
   );
 }
 
+/** Says that a list left out rows whose saved details can no longer be read; nothing when none. */
+export function UnreadableNotice({ count }: { count: number }) {
+  if (count === 0) return null;
+
+  return (
+    <Alert tone="warning">
+      <AlertTriangle aria-hidden />
+      <p>
+        {count === 1 ? "1 request is" : `${count} requests are`} not shown here: the saved details
+        can no longer be read. The server's log names each one.
+      </p>
+    </Alert>
+  );
+}
+
 export function EmptyState({
   icon,
   title,
