@@ -157,7 +157,7 @@ function canonicalDecimal(text: string): string | null {
 }
 
 /** A venue's decimal text times 10^8, exactly; null when it is not a plain decimal that fits. */
-function scaled(text: string): bigint | null {
+export function scaled(text: string): bigint | null {
   const match = /^(\d{1,20})(?:\.(\d{1,8}))?$/.exec(text);
 
   if (!match) return null;
@@ -167,7 +167,8 @@ function scaled(text: string): bigint | null {
   );
 }
 
-const unscaled = (value: bigint) => formatUnits(value, SCALE);
+/** A value times 10^8 as a plain decimal, the inverse of {@link scaled}. */
+export const unscaled = (value: bigint) => formatUnits(value, SCALE);
 
 /** Whether a price and a size fit the market's precision at the venue. */
 function fitsTick(price: string, size: string, szDecimals: number): boolean {
@@ -186,7 +187,8 @@ function fitsTick(price: string, size: string, szDecimals: number): boolean {
 
 // --- proposing --------------------------------------------------------------------------------
 
-function venueNetwork(ctx: AppContext, network: string): VenueNetwork {
+/** `network` as a configured venue network; refused (`venue_not_configured`) otherwise. */
+export function venueNetwork(ctx: AppContext, network: string): VenueNetwork {
   if (!isVenueNetwork(network)) {
     throw new HttpError("invalid_request", "this network is not a venue", "venue_not_configured");
   }
@@ -196,7 +198,8 @@ function venueNetwork(ctx: AppContext, network: string): VenueNetwork {
   return network;
 }
 
-function decimalInput(name: string, value: string): string {
+/** An agent's decimal input in canonical form; refused unless above zero with at most 8 decimals. */
+export function decimalInput(name: string, value: string): string {
   const decimal = canonicalDecimal(value);
 
   if (decimal === null) {

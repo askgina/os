@@ -187,9 +187,11 @@ a release gate through the public proxy
 web journey against the fixture server
 ([`apps/web/test/journey.e2e.ts`](apps/web/test/journey.e2e.ts)).
 
-The tools are `whoami`, `get_balances`, `propose_transfer`, `propose_contract_call`,
-`propose_order`, `get_intent`, `list_intents` and `cancel_intent` (the list in code is
-`MCP_TOOL_NAMES` in [`apps/server/src/mcp/gateway.ts`](apps/server/src/mcp/gateway.ts)).
+The tools are `whoami`, `get_balances`, `get_markets`, `get_prices`, `get_order_book`,
+`get_candles`, `preview_order`, `get_venue_account`, `get_venue_fills`, `propose_transfer`,
+`propose_contract_call`, `propose_order`, `get_intent`, `list_intents` and `cancel_intent` (the
+list in code is `MCP_TOOL_NAMES` in
+[`apps/server/src/mcp/gateway.ts`](apps/server/src/mcp/gateway.ts)).
 
 - `whoami` lists the agent's live mandates, with what is left of them, and the venue markets its
   wallet may trade.
@@ -203,6 +205,11 @@ The tools are `whoami`, `get_balances`, `propose_transfer`, `propose_contract_ca
   agent speed a payment up or cancel it.
 - `propose_order` proposes a limit order on Hyperliquid (see below). A person always approves it,
   and `cancel_intent` also cancels the agent's own order at the venue.
+- `get_markets`, `get_prices`, `get_order_book`, `get_candles` and `preview_order` read the
+  venue's perpetual markets, mid prices, a book, price history, and what an order would fill at
+  now. `get_venue_account` and `get_venue_fills` read the account, positions, resting orders and
+  recent fills of a wallet the agent may propose from, each order and fill tied to the agent's own
+  intent that placed it. They only read, and only from a venue the server is configured for.
 
 Examples:
 
@@ -279,6 +286,13 @@ signer encodes and signs the order itself, once per approval, inside the wallet'
 notional caps, and the server posts it to the venue and follows it. The agent, or any owner or
 approver, can cancel that order with no passkey, also while the workspace is paused.
 
+The agent can also read the venue through the server, which an agent on the `agents` network
+cannot reach itself: markets, mid prices, a book, candles, a preview of what an order would fill
+at, and the account and fills of a wallet it may propose from. The server sends these reads only
+to the host `VENUES_FILE` names for the network in the call, and lets them use at most half of
+the venue's request allowance, 240 units a minute for one agent, so order handling keeps the
+rest. What the agent reads is the venue's report, which nothing here checks.
+
 Limits: on mainnet, orders and withdrawals move real funds. What bounds them is the same on both
 networks: a passkey approval of every order on the confirmation page, the markets in the wallet's
 rules, the per-order and per-day notional caps, and the submit window. The notional caps limit new
@@ -323,7 +337,7 @@ the audit logs still verify. The operator can erase a person who cannot sign in
 
 | If this is compromised       | The attacker can                                                                                                                                                                                                                                       | The attacker cannot                                                                                                                                                                                                                   |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| An agent or its token        | Propose operations; spend inside its live mandates; cancel its own venue orders                                                                                                                                                                        | Approve, sign, change limits, reach the signer; pay outside a mandate's list or caps; speed up or cancel a payment                                                                                                                    |
+| An agent or its token        | Propose operations; spend inside its live mandates; cancel its own venue orders; read the venue account and fills of the wallets it may use                                                                                                            | Approve, sign, change limits, reach the signer; pay outside a mandate's list or caps; speed up or cancel a payment                                                                                                                    |
 | The control plane's database | Read names, ids, statuses, addresses, limits                                                                                                                                                                                                           | Read sealed content; forge an approval                                                                                                                                                                                                |
 | The control plane itself     | Ask the signer; show a person a misleading card; have the signer sign transfers that fit a live mandate; raise a sent payment's network fee up to the ceiling people approved; ask for a deletion and show false balances beside it; cancel a deletion | Get an approval the signer accepts; change the confirmation page; exceed limits or a mandate; reuse an approval; change a stuck payment's recipient, amount or nonce; destroy a key without passkeys or before its time; export a key |
 | The confirmation service     | Show a person a misleading page                                                                                                                                                                                                                        | Sign or read a key; reach any signer route but the confirmation routes; approve unaided                                                                                                                                               |
@@ -347,7 +361,8 @@ Limits worth knowing before you rely on this:
   when. Grant mandates with short lives and tight caps, and revoke them when they are not needed.
 - An approved venue order can lose more than its notional cap. What bounds the loss is the
   account's value at the venue, which the signer cannot see. A compromised control plane can also
-  report false fills and balances.
+  report false fills and balances, and show an agent false prices to steer what it proposes; a
+  person still approves every order on the confirmation page.
 - Deleting a workspace destroys keys whatever their wallets hold. The balances the web app shows
   come from the control plane and are partial; the signer sees none. A deletion people were
   misled into loses funds, and a compromised control plane can delay any deletion by cancelling
@@ -367,25 +382,26 @@ which runs every job on every push to `main` and on every pull request. Release 
 end-to-end tests in [`e2e/test/`](e2e/test) that run against the whole stack built from this
 repository ([`e2e/README.md`](e2e/README.md)).
 
-| Capability                                                              | Evidence                                                                                                                                                                                  |
-| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Native-coin transfers on EVM chains, one passkey approval for each      | CI: release gates and the browser gate (`release-gates.spec.ts`, `browser.spec.ts`) in jobs `stack (amd64)` and `stack (arm64)`, against a local chain. By hand: a synced phone passkey.  |
-| ERC-20 transfers and allowlisted contract calls                         | CI: server tests against a local chain (`apps/server/test/execution/engine.test.ts`) and signer unit tests. The release gates check that a contract call waits for an approval.           |
-| The confirmation page over HTTPS                                        | CI: the browser gate in job `stack (tls)`, with Caddy's local certificate authority. Unproven: a certificate from a public authority.                                                     |
-| Adding an approver, with proof of possession of the new passkey         | CI: `browser.spec.ts`, `release-gates.spec.ts`.                                                                                                                                           |
-| Mandates for one agent's transfers                                      | CI: release gates and the browser gate.                                                                                                                                                   |
-| Repricing or cancelling a stuck transaction                             | CI: release gates, against a local chain only.                                                                                                                                            |
-| Webhook notifications                                                   | CI: unit tests (`apps/server/test/notify/`) and release gates.                                                                                                                            |
-| Web Push notifications                                                  | CI: unit tests, and the service worker under the production Content-Security-Policy. By hand: a push on a real phone opened the approval.                                                 |
-| Retiring a wallet, deleting a workspace, keys destroyed after a delay   | CI: `lifecycle.spec.ts` in jobs `stack (amd64)` and `stack (arm64)`.                                                                                                                      |
-| Exporting, copying and importing a workspace; erasing a person          | CI: `lifecycle.spec.ts` in jobs `stack (amd64)` and `stack (arm64)`.                                                                                                                      |
-| Hyperliquid limit orders and USDC withdrawals, testnet and mainnet      | CI: the encoder against the venue SDK's signed vectors (`apps/signer/test/`), release gates against a fake venue in both modes (`venue.spec.ts`). Unproven: the real testnet; real funds. |
-| The signer and its confirmation page on their own host, over mutual TLS | CI: job `stack (split)` (`split.spec.ts`, then every release gate) with both halves on one machine. Unproven: two hosts with different administrators.                                    |
-| Key-encryption keys in OpenBao Transit instead of a keyring file        | CI: job `stack (openbao)` (`openbao.spec.ts`, then every release gate), and the World's ciphertext test on both providers in job `test`.                                                  |
-| Two server replicas on one Postgres                                     | CI: job `stack (replicas)` (`replicas.spec.ts`, then every release gate).                                                                                                                 |
-| Kubernetes (Kustomize manifests in `deploy/k8s/`)                       | CI: job `k8s`, on a throwaway kind cluster (`kubernetes.spec.ts`). Unproven: any other cluster.                                                                                           |
-| Highly available Postgres (CloudNativePG, three instances)              | CI: job `k8s-ha`, on kind; the primary is deleted during a payment (`kubernetes-ha.spec.ts`).                                                                                             |
-| A hardware security key as the passkey                                  | Unproven.                                                                                                                                                                                 |
+| Capability                                                                           | Evidence                                                                                                                                                                                                               |
+| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Native-coin transfers on EVM chains, one passkey approval for each                   | CI: release gates and the browser gate (`release-gates.spec.ts`, `browser.spec.ts`) in jobs `stack (amd64)` and `stack (arm64)`, against a local chain. By hand: a synced phone passkey.                               |
+| ERC-20 transfers and allowlisted contract calls                                      | CI: server tests against a local chain (`apps/server/test/execution/engine.test.ts`) and signer unit tests. The release gates check that a contract call waits for an approval.                                        |
+| The confirmation page over HTTPS                                                     | CI: the browser gate in job `stack (tls)`, with Caddy's local certificate authority. Unproven: a certificate from a public authority.                                                                                  |
+| Adding an approver, with proof of possession of the new passkey                      | CI: `browser.spec.ts`, `release-gates.spec.ts`.                                                                                                                                                                        |
+| Mandates for one agent's transfers                                                   | CI: release gates and the browser gate.                                                                                                                                                                                |
+| Repricing or cancelling a stuck transaction                                          | CI: release gates, against a local chain only.                                                                                                                                                                         |
+| Webhook notifications                                                                | CI: unit tests (`apps/server/test/notify/`) and release gates.                                                                                                                                                         |
+| Web Push notifications                                                               | CI: unit tests, and the service worker under the production Content-Security-Policy. By hand: a push on a real phone opened the approval.                                                                              |
+| Retiring a wallet, deleting a workspace, keys destroyed after a delay                | CI: `lifecycle.spec.ts` in jobs `stack (amd64)` and `stack (arm64)`.                                                                                                                                                   |
+| Exporting, copying and importing a workspace; erasing a person                       | CI: `lifecycle.spec.ts` in jobs `stack (amd64)` and `stack (arm64)`.                                                                                                                                                   |
+| Hyperliquid limit orders and USDC withdrawals, testnet and mainnet                   | CI: the encoder against the venue SDK's signed vectors (`apps/signer/test/`), release gates against a fake venue in both modes (`venue.spec.ts`). Unproven: the real testnet; real funds.                              |
+| Agent reads of the venue: markets, prices, books, candles, previews, accounts, fills | CI: server tests against a fake venue (`apps/server/test/execution/venue-reads.test.ts`, `mcp-venue-reads.test.ts`) and release gates from the `agents` network (`venue.spec.ts`). Unproven: the real venue's answers. |
+| The signer and its confirmation page on their own host, over mutual TLS              | CI: job `stack (split)` (`split.spec.ts`, then every release gate) with both halves on one machine. Unproven: two hosts with different administrators.                                                                 |
+| Key-encryption keys in OpenBao Transit instead of a keyring file                     | CI: job `stack (openbao)` (`openbao.spec.ts`, then every release gate), and the World's ciphertext test on both providers in job `test`.                                                                               |
+| Two server replicas on one Postgres                                                  | CI: job `stack (replicas)` (`replicas.spec.ts`, then every release gate).                                                                                                                                              |
+| Kubernetes (Kustomize manifests in `deploy/k8s/`)                                    | CI: job `k8s`, on a throwaway kind cluster (`kubernetes.spec.ts`). Unproven: any other cluster.                                                                                                                        |
+| Highly available Postgres (CloudNativePG, three instances)                           | CI: job `k8s-ha`, on kind; the primary is deleted during a payment (`kubernetes-ha.spec.ts`).                                                                                                                          |
+| A hardware security key as the passkey                                               | Unproven.                                                                                                                                                                                                              |
 
 Not in this release: mandates for contract calls or orders, other chains and venues, a bundled
 agent runtime, cloud KMS key management. Open design questions and what is planned are tracked

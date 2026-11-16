@@ -43,6 +43,7 @@ import {
   databaseUrl,
   docker,
   execIn,
+  fromAgentsNetwork,
   setupToken,
   stack,
   waitUntilHealthy,
@@ -95,12 +96,22 @@ const WORKSPACE_NAME = `Trading desk ${run}`;
 /** The only mandate recipient; the mandate gate never pays it. */
 const PAYEE = "0x000000000000000000000000000000000000b0b0";
 
-/** Exactly the tools an agent gets: none signs, approves, administers, speeds up or cancels. */
+/**
+ * Exactly the tools an agent gets: none signs, approves, administers or speeds up; the agent's
+ * one cancel is of its own proposal or order.
+ */
 const AGENT_TOOLS = [
   "cancel_intent",
   "get_balances",
+  "get_candles",
   "get_intent",
+  "get_markets",
+  "get_order_book",
+  "get_prices",
+  "get_venue_account",
+  "get_venue_fills",
   "list_intents",
+  "preview_order",
   "propose_contract_call",
   "propose_order",
   "propose_transfer",
@@ -240,6 +251,16 @@ async function proposeOrder(agent: AgentConnection, order: OrderInput): Promise<
 
 function approvalIdOf(proposal: Proposal): string {
   return String(proposal.approvalUrl).split("/").at(-1) ?? "";
+}
+
+/** A person approves an order on the signer's page; the intent once the venue's answer decided it. */
+async function approveOrder(proposal: Proposal): Promise<IntentDetail> {
+  const approvalId = approvalIdOf(proposal);
+  const link = await ada.confirmationLink(approvalId);
+  await ada.approveOnConfirmationPage(link, await ada.readConfirmation(link));
+  await ada.api.call("collectApproval", { params: { approvalId }, body: {} });
+
+  return settles(proposal.intentId);
 }
 
 /**
@@ -487,13 +508,193 @@ test("a fresh installation, and an agent's wallet allowed to trade BTC on the Hy
   });
 });
 
-test("an agent has exactly eight tools, and sees the two venues the server is configured with", async () => {
+test("an agent has exactly fifteen tools, and sees the two venues the server is configured with", async () => {
   expect(await trader.agent.tools()).toEqual(AGENT_TOOLS);
   const me = await trader.agent.call("whoami");
   expect(me.venues).toEqual([
     { network: TESTNET, name: "Hyperliquid testnet" },
     { network: MAINNET, name: "Hyperliquid mainnet" },
   ]);
+});
+
+test("an agent on the agents network reads each configured venue's own prices", async () => {
+  await setVenueUniverse(UNIVERSE, "mainnet");
+  await setVenueBook(BTC, "70000", "71000", "mainnet");
+  await setVenueBook(BTC, "63000", "64000");
+
+  // The agent's container reaches the MCP gateway and nothing else; the server reads each venue.
+  const script = `
+    const call = (name, args) => fetch("http://agent-gateway/mcp", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + ${JSON.stringify(trader.token)},
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "mcp-protocol-version": "2025-06-18",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+      signal: AbortSignal.timeout(15000),
+    }).then((r) => r.json()).then((m) => JSON.parse(m.result.content[0].text), (e) => String(e));
+    (async () => {
+      console.log(JSON.stringify({
+        testnet: await call("get_prices", { network: ${JSON.stringify(TESTNET)}, coins: ["BTC"] }),
+        mainnet: await call("get_prices", { network: ${JSON.stringify(MAINNET)}, coins: ["BTC"] }),
+        internet: await fetch("https://example.com/", { signal: AbortSignal.timeout(4000) }).then((r) => r.status, () => "unreachable"),
+      }));
+    })();`;
+
+  const { output } = await fromAgentsNetwork(script);
+  const seen = JSON.parse(output.trim().split("\n").at(-1) ?? "{}");
+  expect(seen.testnet).toMatchObject({ network: TESTNET, prices: [{ coin: "BTC", mid: "63500" }] });
+  expect(seen.mainnet).toMatchObject({ network: MAINNET, prices: [{ coin: "BTC", mid: "70500" }] });
+  expect(seen.internet).toBe("unreachable");
+});
+
+test("an agent prices an order from the book, and reads the position and the fill it caused", async () => {
+  const buyer = await newTrader("Buyer", {
+    timeInForce: ["Gtc", "Ioc"],
+    perOrderUsd: "50",
+    perDayUsd: "200",
+    submitWindowSeconds: 300,
+  });
+
+  await setVenueBook(BTC, "63000", "64000");
+
+  const preview = await buyer.agent.call("preview_order", {
+    network: TESTNET,
+    coin: "BTC",
+    side: "buy",
+    size: "0.0002",
+  });
+
+  expect(preview).toMatchObject({
+    network: TESTNET,
+    fullyCovered: true,
+    averagePrice: "64000",
+    bestPrice: "64000",
+    mid: "63500",
+    notionalUsd6: "12800000",
+    levelsUsed: 1,
+  });
+
+  // The agent proposes at the price the preview gave, and a person approves it.
+  const proposal = await proposeOrder(buyer.agent, {
+    side: "buy",
+    size: "0.0002",
+    limitPrice: String(preview.averagePrice),
+    timeInForce: "Ioc",
+    memo: "at the previewed price",
+  });
+
+  expect((await approveOrder(proposal)).status).toBe("filled");
+
+  const account = await buyer.agent.call("get_venue_account", { network: TESTNET });
+  expect(account).toMatchObject({
+    network: TESTNET,
+    walletId: buyer.wallet.id,
+    positions: [{ coin: "BTC", side: "long", size: "0.0002", entryPrice: "64000" }],
+    openOrders: [],
+    omitted: 0,
+  });
+
+  const fills = await buyer.agent.call("get_venue_fills", { network: TESTNET });
+  expect(fills).toMatchObject({
+    fills: [
+      {
+        coin: "BTC",
+        side: "buy",
+        price: "64000",
+        size: "0.0002",
+        taker: true,
+        intentId: proposal.intentId,
+      },
+    ],
+    omitted: 0,
+  });
+});
+
+test("an agent cannot read the venue account of a wallet it may not use", async () => {
+  const neighbour = await newTrader("Neighbour", {
+    timeInForce: ["Ioc"],
+    perOrderUsd: "50",
+    perDayUsd: "200",
+    submitWindowSeconds: 300,
+  });
+
+  const nobody = `wal_${"0".repeat(26)}`;
+
+  for (const tool of ["get_venue_account", "get_venue_fills"]) {
+    const theirs = await toolRefusal(
+      trader.agent.call(tool, { network: TESTNET, walletId: neighbour.wallet.id }),
+    );
+
+    // The same answer as for a wallet that does not exist.
+    expect(theirs).toEqual({ code: "not_found", detail: null });
+    expect(
+      await toolRefusal(trader.agent.call(tool, { network: TESTNET, walletId: nobody })),
+    ).toEqual(theirs);
+  }
+
+  // The neighbour reads its own.
+  expect(await neighbour.agent.call("get_venue_account", { network: TESTNET })).toMatchObject({
+    walletId: neighbour.wallet.id,
+  });
+});
+
+test("an agent that spends the read budget is refused, and another agent's order and cancel still go through", async () => {
+  const reader = await newTrader("Reader", {
+    timeInForce: ["Ioc"],
+    perOrderUsd: "50",
+    perDayUsd: "200",
+    submitWindowSeconds: 300,
+  });
+
+  const desk = await newTrader("Desk", {
+    timeInForce: ["Gtc"],
+    perOrderUsd: "50",
+    perDayUsd: "200",
+    submitWindowSeconds: 300,
+  });
+
+  // Fills are never answered from a cache, and each is admitted at its worst case, 120, and keeps
+  // 20 of it: within a few reads less than 120 of the agent's 240 a minute is left.
+  let refusal: { code: string | null; detail: string | null } | null = null;
+
+  for (let call = 0; call < 30 && refusal === null; call += 1) {
+    try {
+      await reader.agent.call("get_venue_fills", { network: TESTNET });
+    } catch (error) {
+      if (!(error instanceof ToolRefused)) throw error;
+      refusal = { code: error.code, detail: error.detail };
+    }
+  }
+
+  expect(refusal).toEqual({ code: "rate_limited", detail: "venue_budget" });
+
+  // Another agent's order is posted, rests, and its cancel reaches the venue.
+  const proposal = await proposeOrder(desk.agent, {
+    side: "buy",
+    size: "0.0002",
+    limitPrice: "50000",
+    timeInForce: "Gtc",
+    memo: "rest while another agent's reads are refused",
+  });
+
+  expect((await approveOrder(proposal)).status).toBe("placed");
+  const { cloid } = await signedOnce(approvalIdOf(proposal));
+  expect(await desk.agent.call("cancel_intent", { intentId: proposal.intentId })).toMatchObject({
+    status: "cancelled",
+  });
+  expect(
+    (await requestsFor(cloid)).map((request) => [request.actionType, request.accepted]),
+  ).toEqual([
+    ["order", true],
+    ["cancelByCloid", true],
+  ]);
+  // And another agent still reads.
+  expect(await desk.agent.call("get_venue_fills", { network: TESTNET, limit: 1 })).toMatchObject({
+    walletId: desk.wallet.id,
+  });
 });
 
 test("an order proposal becomes exactly one order at the venue after a passkey approval on the signer's page", async () => {

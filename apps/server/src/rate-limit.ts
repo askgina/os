@@ -12,25 +12,59 @@ import { rateLimits } from "./db/schema.ts";
 const refilled = (perMinute: number, burst: number) =>
   sql`least(${burst}::float8, ${rateLimits.tokens} + greatest(0, extract(epoch FROM now() - ${rateLimits.at})) * ${perMinute}::float8 / 60)`;
 
-/**
- * Take one token from `bucket`. False when it has none, and then nothing changes. One statement:
- * concurrent takes from any number of replicas serialize on the bucket's row.
- */
+/** Take one token from `bucket`. False when it has none, and then nothing changes. */
 export async function takeToken(
   db: Executor,
   bucket: string,
   perMinute: number,
   burst = perMinute,
 ): Promise<boolean> {
+  return takeTokens(db, bucket, perMinute, burst, 1);
+}
+
+/**
+ * Take `cost` tokens from `bucket`. False when it holds fewer, and then nothing changes; a cost
+ * above `burst` is never taken. One statement: concurrent takes from any number of replicas
+ * serialize on the bucket's row, so none overdraws it.
+ */
+export async function takeTokens(
+  db: Executor,
+  bucket: string,
+  perMinute: number,
+  burst: number,
+  cost: number,
+): Promise<boolean> {
   const { rows } = await db.execute(sql`
     INSERT INTO ${rateLimits} (bucket, tokens, at)
-    VALUES (${bucket}, ${burst}::float8 - 1, now())
+    SELECT ${bucket}::text, ${burst}::float8 - ${cost}::float8, now()
+    WHERE ${burst}::float8 >= ${cost}::float8
     ON CONFLICT (bucket) DO UPDATE
-      SET tokens = ${refilled(perMinute, burst)} - 1, at = greatest(${rateLimits.at}, now())
-      WHERE ${refilled(perMinute, burst)} >= 1
+      SET tokens = ${refilled(perMinute, burst)} - ${cost}::float8,
+        at = greatest(${rateLimits.at}, now())
+      WHERE ${refilled(perMinute, burst)} >= ${cost}::float8
     RETURNING ${rateLimits.tokens}`);
 
   return rows.length > 0;
+}
+
+/**
+ * Take `cost` tokens from `bucket` without a check, for a cost known only afterwards. The bucket
+ * may go below zero; the refill pays that back before the next take succeeds. A negative cost
+ * gives tokens back, never past `burst`.
+ */
+export async function chargeTokens(
+  db: Executor,
+  bucket: string,
+  perMinute: number,
+  burst: number,
+  cost: number,
+): Promise<void> {
+  await db.execute(sql`
+    INSERT INTO ${rateLimits} (bucket, tokens, at)
+    VALUES (${bucket}, least(${burst}::float8, ${burst}::float8 - ${cost}::float8), now())
+    ON CONFLICT (bucket) DO UPDATE
+      SET tokens = least(${burst}::float8, ${refilled(perMinute, burst)} - ${cost}::float8),
+        at = greatest(${rateLimits.at}, now())`);
 }
 
 /** Whether `bucket` has a token now, without taking it. */

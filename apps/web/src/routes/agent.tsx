@@ -139,8 +139,9 @@ export function AgentPage() {
           <div>
             <CardTitle>Connect the agent</CardTitle>
             <CardDescription>
-              Any MCP client works. The agent can propose payments and read their outcome; it cannot
-              approve, sign or change anything.
+              Any MCP client works. The agent can propose payments and orders and read their
+              outcome, and read prices and its wallets' accounts at a venue this server is set up
+              for; it cannot approve, sign or change anything.
             </CardDescription>
           </div>
         </CardHeader>

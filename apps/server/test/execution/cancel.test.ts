@@ -303,7 +303,7 @@ describe("speeding up a payment", () => {
       ]);
       const { tools } = await payment.client.listTools();
       expect(tools.map((tool) => tool.name).sort()).toEqual([...MCP_TOOL_NAMES].sort());
-      expect(tools).toHaveLength(8);
+      expect(tools).toHaveLength(15);
 
       await mine(payment.workspaceId, payment.approvalId, 1);
       await followUntilDone(payment.approvalId);

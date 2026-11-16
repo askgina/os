@@ -58,9 +58,11 @@ tests in [`e2e/test/`](../e2e/test/) that `./e2e/run.sh` runs against the whole 
 ## Trust boundaries
 
 1. **Agent → control plane.** An agent reaches only Caddy and the MCP gateway. Its tools
-   (`whoami`, `get_balances`, `propose_transfer`, `propose_contract_call`, `propose_order`,
-   `get_intent`, `list_intents`, `cancel_intent`) can propose, read and withdraw its own intents
-   while they wait, and cancel its own order at a venue. None signs, approves, administers, or
+   (`whoami`, `get_balances`, `get_markets`, `get_prices`, `get_order_book`, `get_candles`,
+   `preview_order`, `get_venue_account`, `get_venue_fills`, `propose_transfer`,
+   `propose_contract_call`, `propose_order`, `get_intent`, `list_intents`, `cancel_intent`) can
+   propose, read and withdraw its own intents while they wait, cancel its own order at a venue,
+   and have the server read a configured venue for it. None signs, approves, administers, or
    speeds up or cancels a sent transaction (plan, "MCP tools";
    [`gateway.ts`](../apps/server/src/mcp/gateway.ts), `MCP_TOOL_NAMES`).
 2. **Browser → control plane.** People sign in with passkeys. Sessions are rows behind an
@@ -103,15 +105,20 @@ tests in [`e2e/test/`](../e2e/test/) that `./e2e/run.sh` runs against the whole 
    signer signed to Hyperliquid's API for that network, testnet or mainnet, and reads order and
    account state from it
    ([`apps/server/src/execution/venues/hyperliquid.ts`](../apps/server/src/execution/venues/hyperliquid.ts)).
-   The signer never talks to the venue, and nothing the venue answers reaches the signer. See
-   "Venue orders".
+   An agent's read tools make it read too: only from the origin `VENUES_FILE` names for the
+   network in the call, only at `/info`, with a body the server builds from enumerated and
+   pattern-checked inputs; the agent chooses no address and no URL. Every venue request follows
+   no redirect and reads at most 4 MiB of answer. The signer never talks to the venue, and nothing
+   the venue answers reaches the signer. See "Venue orders".
 
 ## Attacker positions
 
 ### A malicious or prompt-injected agent
 
 - **Can:** propose any operation it likes, with any memo; read its own wallet's state and its own
-  intents; fill the approval inbox with proposals.
+  intents; fill the approval inbox with proposals; have the server read the venue for it, within
+  its read budget (see "Venue orders"), including the venue account and fills of every wallet it
+  may propose from.
 - **Stopped by:** a person must approve each intent with a passkey, unless a live mandate people
   granted that agent covers it (see "Mandates"); the signer checks the policy
   (requesters, chains, recipients, contract allowlist, per-transaction and daily caps, fee
@@ -135,7 +142,10 @@ tests in [`e2e/test/`](../e2e/test/) that `./e2e/run.sh` runs against the whole 
 
 ### A stolen agent token
 
-- **Can:** everything the agent can, from anywhere that reaches the MCP gateway.
+- **Can:** everything the agent can, from anywhere that reaches the MCP gateway. That includes
+  reading the positions, resting orders and fills at the venue of every wallet that agent may
+  propose from (`get_venue_account`, `get_venue_fills`). The venue publishes the same for any
+  address to anyone who asks it.
 - **Stopped by:** the same approval and policy checks. Tokens are stored as SHA-256 hashes only
   (`agents` table), so reading the database does not yield them.
 - **Not stopped:** proposals that a person approves without noticing they did not come from the
@@ -719,9 +729,33 @@ Approving an order includes the right to cancel that one order. The signer signs
 `cancel_intent` or an owner or approver presses "Cancel order"; a cancel moves nothing. No
 mandate covers an order or a withdrawal, so each one waits for a passkey.
 
+**What an agent reads of the venue.** Seven tools make the server read the venue for an agent:
+markets, mid prices, a book, candles, a preview of an order against the book, and the account
+and fills of a wallet the agent may propose from; any other wallet is answered as one that does
+not exist ([`venue-reads.ts`](../apps/server/src/mcp/venue-reads.ts)). A row whose market name
+does not fit the pattern orders use, or whose numbers are not plain decimals, is left out and
+counted, so no text the venue wrote reaches the agent.
+
+- **What stops reads from starving order handling:** the read budget. Reads may use 600 units of
+  the venue's request weight a minute on each network and 240 for each agent, half of the 1,200
+  the venue allows each client address; a read past either is refused (`venue_budget`) before
+  anything is sent, and order handling takes from no budget
+  ([`reads.ts`](../apps/server/src/execution/venues/reads.ts)). A read whose weight depends on
+  its answer (fills, candles) is admitted at the most that answer can weigh and gives back the
+  rest afterwards, so reads made at once cannot overdraw a bucket. The buckets are in Postgres
+  and shared by every replica.
+- **What it does not stop:** a venue that lowers its limits or weighs reads differently; other
+  software that shares the server's outbound address; agents that together spend the network's
+  600, which refuses every agent's reads, not orders, for up to a minute. Replicas that reach the
+  venue from several addresses get a budget stricter than they need.
+- **What an agent reads is the venue's report, unverified.** A compromised control plane, or
+  anyone on the path to the venue, can show an agent false prices, books or fills and so steer
+  what it proposes. A person still approves every order on the confirmation page, which shows the
+  limit price and no market price: the signer never talks to the venue.
+
 | If this is compromised                                | It can                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | It cannot                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| An agent's token                                      | Propose orders in the markets its wallet's policy lists, each waiting for a passkey; propose withdrawals where the policy allows them; cancel its own orders at the venue; read the fills and account the venue reports                                                                                                                                                                                                                                                                                                                                  | Get an order signed with no person; trade a market the policy does not list or exceed its caps; withdraw to an address other than the wallet's own; cancel another agent's order                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| An agent's token                                      | Propose orders in the markets its wallet's policy lists, each waiting for a passkey; propose withdrawals where the policy allows them; cancel its own orders at the venue; read the venue's markets, prices, books and candles, and the account, positions, resting orders and fills of every wallet it may propose from, within the read budget                                                                                                                                                                                                         | Get an order signed with no person; trade a market the policy does not list or exceed its caps; withdraw to an address other than the wallet's own; cancel another agent's order                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | The control plane                                     | On mainnet as on testnet: not post a signed request, or post it at any moment until its `expiresAfter`; hold a signed withdrawal, which has no expiry of its own, until the venue's nonce rule refuses it (about two days, by the venue's documentation) and then post or drop it; have the signer cancel any order it signed, at any time, also while paused; skip the metadata check, so people may approve an index whose coin changed; report false fills, positions, account value and liquidations to people and agents; read sealed order content | Get a signature over a Hyperliquid action the signer did not build from an approved intent: no route takes an action, typed data, a message or a hash; change the market index, side, size, limit price, time in force, reduce-only flag, client order id, nonce or expiry of an approved order; set a priority fee or a builder (the signer fixes `grouping` to `na` and sets no builder); get two orders from one approval (a second post fails on the venue's nonce rule); exceed a cap; extend the submit window; withdraw to any address but the wallet's own; get anything signed, on mainnet or testnet, without a person's approval, or for a network other than the one the wallet's approved policy names |
 | One approver's passkey                                | Approve an order or a withdrawal where the wallet's threshold is 1, as for a payment                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Approve anything outside the policy's venue rules                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | The `approve` service                                 | Show a person one order and relay their approval for another waiting order                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Get anything signed beyond what an approved intent and the policy allow                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |

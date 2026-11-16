@@ -12,14 +12,19 @@
  *
  *   GET  /healthz              200 once listening
  *   POST /exchange             order, cancelByCloid, withdraw3 (its network's signatures only)
- *   POST /info                 meta, orderStatus, clearinghouseState, openOrders and
- *                              userNonFundingLedgerUpdates (the withdrawals it took)
+ *   POST /info                 meta, orderStatus, clearinghouseState, openOrders, userFills,
+ *                              userNonFundingLedgerUpdates (the withdrawals it took),
+ *                              metaAndAssetCtxs, allMids, l2Book, candleSnapshot and userFees
  *   POST /control/accounts     {"address", "usdc"}: create an account or set its balance
  *   PUT  /control/meta         {"universe": [{"name", "szDecimals", "maxLeverage", "isDelisted"?}]}
- *   PUT  /control/book         {"asset", "bid", "ask"}: best prices, null for an empty side
+ *   PUT  /control/book         {"asset", "bid", "ask"}: best prices, null for an empty side; or
+ *                              {"asset", "bids", "asks"}: levels [{"px", "sz", "n"?}]
+ *   PUT  /control/candles      {"coin", "interval", "candles": [{"t", "T", "o", "h", "l", "c", "v"}]}
  *   POST /control/fill         {"user", "cloid"}: fill a resting order at its limit price
  *   PUT  /control/clock        {"offsetMs"}: move the venue's clock
- *   POST /control/failures     {"endpoint"?, "mode": "error"|"http"|"drop", "response"?, "status"?, "count"?}
+ *   POST /control/failures     {"endpoint"?, "infoType"?, "mode": "error"|"http"|"drop"|
+ *                              "redirect"|"oversize", "response"?, "status"?, "location"?,
+ *                              "bytes"?, "count"?}
  *   POST /control/reset        forget everything
  *   GET  /control/exchange     every /exchange request with its answer, signer and acceptance
  *   GET  /control/orders       every order kept, by cloid
@@ -88,6 +93,7 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (answer.location !== undefined) response.setHeader("location", answer.location);
   response.writeHead(answer.status, { "content-type": answer.contentType }).end(answer.body);
 });
 

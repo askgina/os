@@ -7,28 +7,29 @@ It holds no wallet key and cannot approve anything. The design treats it as some
 ## How it fits
 
 - People reach it through Caddy at `PUBLIC_ORIGIN`: the UI built from `apps/web`, the API defined in [`packages/api`](../../packages/api/README.md), and `/healthz` and `/readyz`.
-- Agents use only `/mcp`, with an agent token: through the public edge, or, from a container on the internal `agents` network, through the agent gateway (`deploy/Caddyfile.agents`). The tools are listed in `MCP_TOOL_NAMES` in `src/mcp/gateway.ts`. None signs, approves or administers.
+- Agents use only `/mcp`, with an agent token: through the public edge, or, from a container on the internal `agents` network, through the agent gateway (`deploy/Caddyfile.agents`). The tools are listed in `MCP_TOOL_NAMES` in `src/mcp/gateway.ts`. None signs, approves or administers. Seven of them read a configured venue for the agent: markets, prices, a book, candles, an order preview, and the account and fills of a wallet the agent may use.
 - It calls the signer at `SIGNER_URL` with a request signature (`SIGNER_HMAC_SECRET_FILE`), over mutual TLS when the signer runs on its own host. The contract is [`packages/protocol`](../../packages/protocol/README.md).
-- It reaches the chains in `CHAINS_FILE` to read and broadcast, and the venues in `VENUES_FILE` to post signed orders.
+- It reaches the chains in `CHAINS_FILE` to read and broadcast, and the venues in `VENUES_FILE` to post signed orders and, for the agents' read tools, to read them within a read budget (`src/execution/venues/reads.ts`; `deploy/README.md`, "Agent reads of the venue").
 - What people and agents type is stored sealed with per-workspace data keys ([`packages/keys`](../../packages/keys/README.md)); the workflow runtime stores its data encrypted through [`packages/world`](../../packages/world/README.md).
 
 ## Layout
 
-| Path                    | What it holds                                                                                                                                                          |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/main.ts`           | Boot: configuration, migrations, key provider, signer client, the public listener and the loopback listener for workflow deliveries, background work, shutdown.        |
-| `src/config.ts`         | Every setting, read and checked once at boot.                                                                                                                          |
-| `src/cli.ts`            | The operator command `setup-token`.                                                                                                                                    |
-| `src/http/`             | The public app and the internal app, the route binding for `packages/api`, error mapping, and serving the built UI.                                                    |
-| `src/identity/`         | Passkeys, sessions, setup of the first owner, and erasing a person (`erase-cli.ts` is the operator's form of it).                                                      |
-| `src/directory/`        | Workspaces, members and roles, agents, wallets, approvers and the audit log's views.                                                                                   |
-| `src/execution/`        | The approval engine and the intents, transactions, mandates, sweeps, orders, reprices and cancels it runs; chains, the Hyperliquid venue client, the workflow runtime. |
-| `src/lifecycle/`        | Retiring wallets, deleting workspaces, templates, cloning, exporting a workspace's record, and `verify-record.ts`.                                                     |
-| `src/notify/`           | The outbox that sends the operator's webhook and Web Push notifications.                                                                                               |
-| `src/mcp/gateway.ts`    | The MCP gateway: agent tokens, the tools, per-agent rate limits.                                                                                                       |
-| `src/db/`               | The schema (`schema.ts`), sealed columns (`sealed.ts`), the SQL migrations and the code that applies them.                                                             |
-| `src/audit.ts`          | The hash-chained audit log.                                                                                                                                            |
-| `workflows/approval.ts` | One workflow run per approval request: it waits for the decision, applies it, and follows a transaction until it is final.                                             |
+| Path                     | What it holds                                                                                                                                                          |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/main.ts`            | Boot: configuration, migrations, key provider, signer client, the public listener and the loopback listener for workflow deliveries, background work, shutdown.        |
+| `src/config.ts`          | Every setting, read and checked once at boot.                                                                                                                          |
+| `src/cli.ts`             | The operator command `setup-token`.                                                                                                                                    |
+| `src/http/`              | The public app and the internal app, the route binding for `packages/api`, error mapping, and serving the built UI.                                                    |
+| `src/identity/`          | Passkeys, sessions, setup of the first owner, and erasing a person (`erase-cli.ts` is the operator's form of it).                                                      |
+| `src/directory/`         | Workspaces, members and roles, agents, wallets, approvers and the audit log's views.                                                                                   |
+| `src/execution/`         | The approval engine and the intents, transactions, mandates, sweeps, orders, reprices and cancels it runs; chains, the Hyperliquid venue client, the workflow runtime. |
+| `src/lifecycle/`         | Retiring wallets, deleting workspaces, templates, cloning, exporting a workspace's record, and `verify-record.ts`.                                                     |
+| `src/notify/`            | The outbox that sends the operator's webhook and Web Push notifications.                                                                                               |
+| `src/mcp/gateway.ts`     | The MCP gateway: agent tokens, the tools, per-agent rate limits.                                                                                                       |
+| `src/mcp/venue-reads.ts` | The agent's venue read tools: what each answers and the strict shapes the venue's rows must fit.                                                                       |
+| `src/db/`                | The schema (`schema.ts`), sealed columns (`sealed.ts`), the SQL migrations and the code that applies them.                                                             |
+| `src/audit.ts`           | The hash-chained audit log.                                                                                                                                            |
+| `workflows/approval.ts`  | One workflow run per approval request: it waits for the decision, applies it, and follows a transaction until it is final.                                             |
 
 An approval's workflow run collects the decision from the signer by itself: 5 seconds after it starts, then at doubling intervals of at most two minutes, until a decision or the expiry. Nobody needs to come back to the page.
 

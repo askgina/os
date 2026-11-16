@@ -1,9 +1,9 @@
 # Let an agent read the venue it trades on: markets, prices, its account
 
-- Branch: `feature/port-read-only-mcp`
-- Status: Draft, parked (2026-11-16). Nothing is built and nothing is planned to be. See the
-  first entry of `Decision Log`. One part stays worth doing on its own: hardening the venue
-  client (Milestone 1's refusal of redirects and its cap on answer size).
+- Branch: `feat/venue-account-reads`
+- Status: In Progress (2026-11-16). Milestones 1 to 5 are written and their server tests pass
+  when run one file at a time; the release gates of Milestone 4 have not run until CI runs them.
+  Nothing was run against the venue itself.
 - Owner(s): the repository owner
 - Created: 2026-11-16
 - Last Updated: 2026-11-16
@@ -87,14 +87,17 @@ Success means:
 - [x] (2026-11-16) Research: what Gina Read is, what this repository has, and what fits
       ([research report](research/agent-read-tools.md)).
 - [x] (2026-11-16) Define the approach and the validation plan (this file).
-- [x] (2026-11-16) Parked before any owner decision; see `Decision Log`.
-- [ ] Owner decisions D1 to D5 (not asked for while the plan is parked).
-- [ ] Milestone 1: the venue client reads markets, books, candles and fills, and refuses
+- [x] (2026-11-16) Parked before any owner decision, then taken up again the same day; see
+      `Decision Log`.
+- [x] (2026-11-16) Owner decisions D1 to D5: the owner asked for the plan to be built as
+      written, so each stands at its recommended option.
+- [x] (2026-11-16) Milestone 1: the venue client reads markets, books, candles and fills, and refuses
       redirects and oversized answers.
-- [ ] Milestone 2: the read budget.
-- [ ] Milestone 3: the seven MCP tools.
-- [ ] Milestone 4: release gates.
-- [ ] Milestone 5: documentation.
+- [x] (2026-11-16) Milestone 2: the read budget.
+- [x] (2026-11-16) Milestone 3: the seven MCP tools. `get_venue_account` also returns, for each
+      position, its margin mode, return on equity, maximum leverage and funding paid.
+- [ ] Milestone 4: release gates. Written; unproven until CI runs them.
+- [x] (2026-11-16) Milestone 5: documentation.
 - [ ] Record outcomes, risks and follow-up work.
 
 ## Surprises & Discoveries
@@ -138,6 +141,16 @@ Owner decisions. Each is open; the plan is written for the recommended option.
   redirects and reads answers of any size (Milestone 1), and no hosted read can see a wallet
   held here, so `get_venue_account` and `get_venue_fills` are the tools to build first if an
   agent on the `agents` network needs to see its own positions.
+  Date/Author: 2026-11-16, the lead.
+- Decision: build the plan after all, in full.
+  Rationale: the owner does not want that plugin to depend on a hosted endpoint at all. Its
+  market and account views then have one possible source, the system the person runs, which is
+  this one. That removes the duplication the parking rested on.
+  Date/Author: 2026-11-16, the lead.
+- Decision: `get_venue_account` carries four more facts for each position than the table in
+  Milestone 3 lists: `leverageType`, `returnOnEquity`, `maxLeverage` and the three funding sums.
+  Rationale: the venue reports them in the same answer, and a client that draws a position
+  needs them.
   Date/Author: 2026-11-16, the lead.
 
 - Decision D1 (open): which of Gina Read's data families come across. Recommended: (a) the

@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import { buffer } from "node:stream/consumers";
 import type { PolicyDraft } from "@askgina/os-api";
 import {
   Address,
@@ -6,6 +8,7 @@ import {
   type WalletId,
   type WorkspaceId,
 } from "@askgina/os-protocol";
+import type { FakeHyperliquid } from "@askgina/os-testkit/fake-hyperliquid";
 import {
   type CallToolRequestParams,
   type CallToolResult,
@@ -75,6 +78,72 @@ export function draftFor(agentId: AgentId, overrides: Partial<PolicyDraft> = {})
     fees: { maxPerTxWei: "100000000000000000" },
     approvals: { threshold: 1, ttlSeconds: 3_600 },
     ...overrides,
+  };
+}
+
+/** A fake venue on a loopback port: what a test points `VENUES_FILE`'s `apiUrl` at. */
+export interface ServedVenue {
+  apiUrl: string;
+  /** Every request it received, oldest first, recorded as it arrives. */
+  requests: { method: string; path: string; body: string }[];
+  /** Answer nothing until the function this returns is called; requests are still recorded. */
+  hold(): () => void;
+  close(): Promise<void>;
+}
+
+/** What `server.address()` is for a server listening on a TCP port. */
+const ListeningAddress = z.object({ port: z.number() });
+
+/**
+ * The testkit's fake Hyperliquid served over HTTP on loopback, so the server's own client reaches
+ * it as it would the venue: a dropped answer closes the connection unanswered, and a redirect
+ * carries its `location`.
+ */
+export async function serveVenue(venue: FakeHyperliquid): Promise<ServedVenue> {
+  const requests: ServedVenue["requests"] = [];
+  let held = Promise.resolve();
+
+  const server = createServer(async (request, response) => {
+    const body = (await buffer(request)).toString("utf8");
+    const path = new URL(request.url ?? "/", "http://fake-hyperliquid").pathname;
+    const method = request.method ?? "GET";
+    requests.push({ method, path, body });
+    await held;
+    const answer = await venue.handle({ method, path, body });
+
+    if (answer.kind === "drop") {
+      response.destroy();
+
+      return;
+    }
+
+    if (answer.location !== undefined) response.setHeader("location", answer.location);
+    response.writeHead(answer.status, { "content-type": answer.contentType });
+    response.end(answer.status === 204 ? undefined : answer.body);
+  });
+
+  const { promise, resolve } = Promise.withResolvers<void>();
+  server.listen(0, "127.0.0.1", resolve);
+  await promise;
+
+  return {
+    apiUrl: `http://127.0.0.1:${ListeningAddress.parse(server.address()).port}`,
+    requests,
+    hold() {
+      const gate = Promise.withResolvers<void>();
+      held = gate.promise;
+
+      return () => {
+        held = Promise.resolve();
+        gate.resolve();
+      };
+    },
+    async close() {
+      const closed = Promise.withResolvers<void>();
+      server.close(() => closed.resolve());
+      server.closeAllConnections();
+      await closed.promise;
+    },
   };
 }
 

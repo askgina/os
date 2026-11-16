@@ -34,6 +34,7 @@ import { attemptViews, transactionOf } from "../execution/transactions.ts";
 import { HttpError } from "../http/errors.ts";
 import { approvalLink } from "../notify/content.ts";
 import { clientOf, hasToken, takeToken } from "../rate-limit.ts";
+import { registerVenueReads } from "./venue-reads.ts";
 
 type AgentRow = typeof agents.$inferSelect;
 
@@ -73,7 +74,7 @@ const TERMINAL: readonly IntentRow["status"][] = [
 // Tool inputs are published as JSON Schema, which the protocol package's custom validators
 // cannot be turned into; these are the same rules written as plain patterns. Each transform
 // then decodes with the protocol's schema, which accepts everything the pattern let through.
-const WalletIdInput = z
+export const WalletIdInput = z
   .string()
   .regex(/^wal_[0-9a-hjkmnp-tv-z]{26}$/)
   .transform((value) => WalletId.parse(value));
@@ -103,6 +104,13 @@ const EvmAddress = z
 export const MCP_TOOL_NAMES = [
   "whoami",
   "get_balances",
+  "get_markets",
+  "get_prices",
+  "get_order_book",
+  "get_candles",
+  "preview_order",
+  "get_venue_account",
+  "get_venue_fills",
   "propose_transfer",
   "propose_contract_call",
   "propose_order",
@@ -114,7 +122,7 @@ export const MCP_TOOL_NAMES = [
 const APPROVAL_NOTE =
   'If a mandate a person approved in advance covers the proposal (see whoami), it is signed and sent with no person asked: the answer says authorizedBy "mandate", its mandateId, status approved, and approvalUrl and expiresAt null. Otherwise (authorizedBy "person") nothing is sent yet: a person must approve the proposal with their passkey first, at approvalUrl, before expiresAt. Either way, call get_intent with the returned intentId and waitSeconds (up to 50) to wait for the outcome; repeat until the status is final (confirmed, reverted, stuck, rejected, expired, cancelled, denied, failed or voided). A stuck transaction is still valid: the server raises its fee by itself, and people may speed it up or cancel it (you cannot), so it can still become confirmed or reverted, or voided when a cancel people approved was mined in its place (nothing moved; a network fee was paid). get_intent lists every attempt at the same nonce, and stuckReason says why it is not mined yet. Two proposals racing for the last of a mandate\'s budget can both start approved: the signer signs one and the other ends denied with a counter code such as mandate_over_window_cap, and your next proposal then waits for a person.';
 
-function json<T>(value: T) {
+export function json<T>(value: T) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value) }],
     structuredContent: value,
@@ -127,7 +135,7 @@ function json<T>(value: T) {
  * `internal` refusal, because its message can carry internals (a viem error carries the RPC
  * URL, which often holds an API key); only the error's kind is logged.
  */
-async function answer<T>(ctx: AppContext, tool: string, run: () => Promise<T>) {
+export async function answer<T>(ctx: AppContext, tool: string, run: () => Promise<T>) {
   try {
     return await run();
   } catch (error) {
@@ -155,7 +163,8 @@ async function answer<T>(ctx: AppContext, tool: string, run: () => Promise<T>) {
   }
 }
 
-async function walletsFor(ctx: AppContext, agent: AgentRow) {
+/** The wallets an agent may use: its own, and any treasury whose rules name it as a requester. */
+export async function walletsFor(ctx: AppContext, agent: AgentRow) {
   const rows = await ctx.db
     .select()
     .from(wallets)
@@ -604,6 +613,8 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
         return json({ intentId: row.id, status });
       }),
   );
+
+  registerVenueReads(server, ctx, agent);
 
   return server;
 }

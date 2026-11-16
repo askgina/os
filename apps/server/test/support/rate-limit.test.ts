@@ -9,7 +9,7 @@ import * as schema from "../../src/db/schema.ts";
 import { rateLimits } from "../../src/db/schema.ts";
 import { finalizeIfDue } from "../../src/lifecycle/finalize.ts";
 import { FAILED_AUTH_PER_MINUTE, mountMcp } from "../../src/mcp/gateway.ts";
-import { takeToken } from "../../src/rate-limit.ts";
+import { chargeTokens, takeToken, takeTokens } from "../../src/rate-limit.ts";
 import { createTestContext, TEST_ORIGIN, type TestContext } from "./context.ts";
 
 const REQUESTS_PER_MINUTE = 120;
@@ -171,5 +171,85 @@ describe("limits every replica shares", () => {
     expect(await finalizeIfDue(a.ctx)).toEqual({ finalized: 0, skipped: 0 });
     expect(await finalizeIfDue(b.ctx)).toBeNull();
     expect(await finalizeIfDue(a.ctx)).toBeNull();
+  });
+});
+
+describe("weighted takes and charges", () => {
+  /** What the bucket holds as stored, before any refill. */
+  const stored = async (bucket: string) => {
+    const [row] = await t.ctx.db
+      .select({ tokens: rateLimits.tokens })
+      .from(rateLimits)
+      .where(eq(rateLimits.bucket, bucket));
+
+    return row?.tokens;
+  };
+
+  /** The bucket's refill restarts `seconds` ago, from what it holds. */
+  const elapsed = async (bucket: string, seconds: number) => {
+    await t.ctx.db
+      .update(rateLimits)
+      .set({ at: sql`now() - make_interval(secs => ${seconds})` })
+      .where(eq(rateLimits.bucket, bucket));
+  };
+
+  it("takes a cost only when the bucket holds all of it, and otherwise changes nothing", async () => {
+    expect(await takeTokens(t.ctx.db, "test:weighted", 60, 60, 41)).toBe(true);
+    await freeze("test:weighted");
+    expect(await stored("test:weighted")).toBe(19);
+    expect(await takeTokens(t.ctx.db, "test:weighted", 60, 60, 20)).toBe(false);
+    expect(await stored("test:weighted")).toBe(19);
+    expect(await takeTokens(t.ctx.db, "test:weighted", 60, 60, 19)).toBe(true);
+    expect(await stored("test:weighted")).toBe(0);
+    // A cost above the burst is never taken, and a refused take creates no bucket.
+    expect(await takeTokens(t.ctx.db, "test:too-heavy", 60, 10, 11)).toBe(false);
+    expect(await stored("test:too-heavy")).toBeUndefined();
+  });
+
+  it("a charge may take a bucket below zero, and no take succeeds until the refill paid it back", async () => {
+    expect(await takeTokens(t.ctx.db, "test:charged", 60, 60, 60)).toBe(true);
+    await freeze("test:charged");
+    await chargeTokens(t.ctx.db, "test:charged", 60, 60, 30);
+    expect(await stored("test:charged")).toBe(-30);
+    expect(await takeTokens(t.ctx.db, "test:charged", 60, 60, 1)).toBe(false);
+    // At one token a second, 30 seconds bring it back to zero, 31 to one token.
+    await elapsed("test:charged", 30);
+    expect(await takeTokens(t.ctx.db, "test:charged", 60, 60, 1)).toBe(false);
+    await elapsed("test:charged", 31);
+    expect(await takeTokens(t.ctx.db, "test:charged", 60, 60, 1)).toBe(true);
+    // A charge to a bucket nobody used yet starts it from the burst.
+    await chargeTokens(t.ctx.db, "test:charged-new", 60, 60, 25);
+    expect(await stored("test:charged-new")).toBe(35);
+  });
+
+  it("a negative charge gives tokens back, never past the burst", async () => {
+    expect(await takeTokens(t.ctx.db, "test:refund", 60, 60, 50)).toBe(true);
+    await freeze("test:refund");
+    expect(await stored("test:refund")).toBe(10);
+    await chargeTokens(t.ctx.db, "test:refund", 60, 60, -30);
+    expect(await stored("test:refund")).toBe(40);
+    expect(await takeTokens(t.ctx.db, "test:refund", 60, 60, 40)).toBe(true);
+    expect(await stored("test:refund")).toBe(0);
+    await chargeTokens(t.ctx.db, "test:refund", 60, 60, -100);
+    expect(await stored("test:refund")).toBe(60);
+    // A refund to a bucket nobody used yet leaves it full.
+    await chargeTokens(t.ctx.db, "test:refund-new", 60, 60, -5);
+    expect(await stored("test:refund-new")).toBe(60);
+  });
+
+  it("weighted takes from two database connections at once never overdraw the bucket", async () => {
+    const { ctx } = replica();
+    await chargeTokens(t.ctx.db, "test:weighted-race", 50, 50, 0);
+    await freeze("test:weighted-race");
+
+    const takes = await Promise.all(
+      Array.from({ length: 20 }, (_, i) =>
+        takeTokens(i % 2 === 0 ? ctx.db : t.ctx.db, "test:weighted-race", 50, 50, 7),
+      ),
+    );
+
+    // 7 × 7 = 49 of 50.
+    expect(takes.filter(Boolean)).toHaveLength(7);
+    expect(await stored("test:weighted-race")).toBe(1);
   });
 });

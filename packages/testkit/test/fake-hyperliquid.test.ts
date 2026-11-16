@@ -631,6 +631,125 @@ describe("the fake venue's rules", () => {
       marginSummary: { accountValue: "1010" },
       assetPositions: [],
     });
+
+    // Both fills, newest first, neither of which took liquidity.
+    const fills = await post(venue, "/info", {
+      type: "userFills",
+      user: SDK_ADDRESS,
+      aggregateByTime: true,
+    });
+
+    expect(fills.body).toEqual([
+      expect.objectContaining({
+        coin: "ETH",
+        side: "A",
+        px: "1700",
+        sz: "0.1",
+        oid: 2,
+        crossed: false,
+        closedPnl: "10",
+        startPosition: "0.1",
+        dir: "Close Long",
+      }),
+      expect.objectContaining({
+        coin: "ETH",
+        side: "B",
+        px: "1600",
+        sz: "0.1",
+        oid: 1,
+        crossed: false,
+        closedPnl: "0.0",
+        startPosition: "0.0",
+        dir: "Open Long",
+      }),
+    ]);
+  });
+
+  it("answers the market reads from the levels, candles and fills a test sets", async () => {
+    const venue = seeded();
+
+    venue.setBook(ETH, {
+      bids: [
+        { px: "1650", sz: "2" },
+        { px: "1660", sz: "1", n: 4 },
+      ],
+      asks: [{ px: "1670", sz: "3" }],
+    });
+
+    // An order crosses the best level, which comes first whatever order the levels were given in.
+    const ioc = await post(
+      venue,
+      "/exchange",
+      await signL1(order("Ioc", { p: "1670" }), NOW, null),
+    );
+
+    expect(ioc.body).toEqual(
+      ok("order", [{ filled: { totalSz: "0.1", avgPx: "1670", oid: 1, cloid: CLOID_A } }]),
+    );
+
+    expect((await post(venue, "/info", { type: "l2Book", coin: "ETH" })).body).toEqual({
+      coin: "ETH",
+      time: NOW,
+      levels: [
+        [
+          { px: "1660", sz: "1", n: 4 },
+          { px: "1650", sz: "2", n: 1 },
+        ],
+        [{ px: "1670", sz: "3", n: 1 }],
+      ],
+    });
+
+    expect((await post(venue, "/info", { type: "l2Book", coin: "NOPE" })).body).toBeNull();
+    expect((await post(venue, "/info", { type: "allMids" })).body).toEqual({ ETH: "1665" });
+    const contexts = await post(venue, "/info", { type: "metaAndAssetCtxs" });
+
+    expect(contexts.body).toEqual([
+      { universe: expect.any(Array) },
+      expect.arrayContaining([
+        expect.objectContaining({
+          markPx: "1665",
+          midPx: "1665",
+          openInterest: "0.1",
+          dayNtlVlm: "167",
+        }),
+      ]),
+    ]);
+
+    venue.setCandles("ETH", "1m", [
+      { t: NOW - 60_000, T: NOW - 1, o: "1660", h: "1671", l: "1659", c: "1665", v: "2.5" },
+      { t: NOW - 120_000, T: NOW - 60_001, o: "1650", h: "1661", l: "1649", c: "1660", v: "1" },
+    ]);
+
+    const candles = await post(venue, "/info", {
+      type: "candleSnapshot",
+      req: { coin: "ETH", interval: "1m", startTime: NOW - 60_000, endTime: NOW },
+    });
+
+    expect(candles.body).toEqual([
+      {
+        t: NOW - 60_000,
+        T: NOW - 1,
+        s: "ETH",
+        i: "1m",
+        o: "1660",
+        h: "1671",
+        l: "1659",
+        c: "1665",
+        v: "2.5",
+        n: 1,
+      },
+    ]);
+
+    expect(
+      (await post(venue, "/info", { type: "userFees", user: SDK_ADDRESS })).body,
+    ).toMatchObject({
+      userCrossRate: "0.00045",
+      activeReferralDiscount: "0.0",
+    });
+
+    expect((await post(venue, "/info", { type: "userFills", user: SDK_ADDRESS })).body).toEqual([
+      expect.objectContaining({ px: "1670", crossed: true, dir: "Open Long" }),
+    ]);
   });
 
   it("answers 422 to a request it cannot read, as the venue does", async () => {
@@ -641,7 +760,7 @@ describe("the fake venue's rules", () => {
     const trailingZero = await signL1(order("Gtc", { p: "1670.10" }), NOW, null);
     expect((await post(venue, "/exchange", trailingZero)).status).toBe(422);
     expect((await postText(venue, "/exchange", "{")).status).toBe(422);
-    expect((await post(venue, "/info", { type: "allMids" })).status).toBe(422);
+    expect((await post(venue, "/info", { type: "spotMeta" })).status).toBe(422);
     expect(venue.orders()).toEqual([]);
   });
 
@@ -741,6 +860,58 @@ describe("the fake venue's rules", () => {
       status: "err",
       response: `Invalid nonce: duplicate nonce ${NOW}`,
     });
+  });
+
+  it("fails on request: a redirect, an oversized answer, or a failure of one info request type", async () => {
+    const venue = seeded();
+    const location = "http://elsewhere.invalid/exchange";
+    venue.failNext({ mode: "redirect", location });
+    const body = await signL1(order("Gtc"), NOW, null);
+
+    // A client that follows no redirect gets a TypeError, as from fetch.
+    await expect(
+      venue.fetch("http://fake-hyperliquid/exchange", {
+        method: "POST",
+        body: JSON.stringify(body),
+        redirect: "error",
+      }),
+    ).rejects.toThrow("fetch failed");
+
+    const manual = await venue.fetch("http://fake-hyperliquid/info", {
+      method: "POST",
+      body: JSON.stringify({ type: "meta" }),
+    });
+
+    // The failure was for /exchange; /info answers as usual.
+    expect(manual.status).toBe(200);
+    expect(venue.orders()).toEqual([]);
+
+    venue.failNext({ endpoint: "info", mode: "redirect", location });
+
+    const redirected = await venue.fetch("http://fake-hyperliquid/info", {
+      method: "POST",
+      body: JSON.stringify({ type: "meta" }),
+      redirect: "manual",
+    });
+
+    expect(redirected.status).toBe(302);
+    expect(redirected.headers.get("location")).toBe(location);
+
+    venue.failNext({ endpoint: "info", mode: "oversize", bytes: 1_000 });
+
+    const oversized = await venue.fetch("http://fake-hyperliquid/info", {
+      method: "POST",
+      body: JSON.stringify({ type: "meta" }),
+    });
+
+    const text = await oversized.text();
+    expect(text).toHaveLength(1_000);
+    expect(JSON.parse(text)).toEqual([]);
+
+    venue.failNext({ endpoint: "info", infoType: "userFees", mode: "http", status: 500 });
+    expect((await post(venue, "/info", { type: "meta" })).status).toBe(200);
+    expect((await post(venue, "/info", { type: "userFees", user: SDK_ADDRESS })).status).toBe(500);
+    expect((await post(venue, "/info", { type: "userFees", user: SDK_ADDRESS })).status).toBe(200);
   });
 
   it("is controlled over HTTP: seed an account, read the orders and the log, reset", async () => {

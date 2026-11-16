@@ -31,12 +31,12 @@ async function rawMcp(headers: Record<string, string>, url = `${TEST_ORIGIN}/mcp
 }
 
 describe("the MCP gateway", () => {
-  it("offers exactly the eight agent tools", async () => {
+  it("offers exactly the fifteen agent tools", async () => {
     const client = await f.mcp(f.agent.token);
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual([...MCP_TOOL_NAMES].sort());
-    expect(tools).toHaveLength(8);
-    expect(MCP_TOOL_NAMES).toHaveLength(8);
+    expect(tools).toHaveLength(15);
+    expect(MCP_TOOL_NAMES).toHaveLength(15);
   });
 
   it("tools/list carries annotations", async () => {
@@ -44,9 +44,17 @@ describe("the MCP gateway", () => {
     const { tools } = await client.listTools();
     const annotations = Object.fromEntries(tools.map((tool) => [tool.name, tool.annotations]));
     const proposes = { readOnlyHint: false, destructiveHint: false, idempotentHint: false };
+    const readsVenue = { readOnlyHint: true, openWorldHint: true };
     expect(annotations).toEqual({
       whoami: { readOnlyHint: true },
       get_balances: { readOnlyHint: true },
+      get_markets: readsVenue,
+      get_prices: readsVenue,
+      get_order_book: readsVenue,
+      get_candles: readsVenue,
+      preview_order: readsVenue,
+      get_venue_account: readsVenue,
+      get_venue_fills: readsVenue,
       get_intent: { readOnlyHint: true },
       list_intents: { readOnlyHint: true },
       propose_transfer: proposes,

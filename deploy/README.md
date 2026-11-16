@@ -473,7 +473,9 @@ withdrawal of USDC from the wallet's Hyperliquid account to the wallet's own add
 `propose_transfer` on the venue's network (`hyperliquid:testnet` or `hyperliquid:mainnet`). A
 person approves each one on the confirmation page; the signer builds and signs the request, and
 the server posts it to the venue and follows it (`docs/architecture.md`, "A venue order, end to
-end"; `specs/non-evm-operations.md`).
+end"; `specs/non-evm-operations.md`). Seven read tools let an agent see the venue through the
+server: `get_markets`, `get_prices`, `get_order_book`, `get_candles`, `preview_order`,
+`get_venue_account` and `get_venue_fills` (see "Agent reads of the venue" below).
 
 Status: **testnet and mainnet supported, off by default.** A venue is on only when you list it
 in `VENUES_FILE` and people approve, with passkeys, wallet rules that name that network; there
@@ -524,11 +526,13 @@ Then mount it into the server with an override, and start the stack with it
 
 The split layout's control host inherits the setting from `compose.yaml`; the Kubernetes
 manifests do not set it. The server reaches the venue over the `chain` network, which has
-internet access. Then an owner adds venue rules to the wallet's policy in the web app, choosing
-the network when both are configured, and people approve the new policy on the confirmation
-page like any policy change. The web app offers the networks in `VENUES_FILE` (and the network of
-rules already in force, so the editor shows what the policy says), and the server refuses a
-policy draft that names any other (`venue_not_configured`). The rules a new policy starts from
+internet access; on Kubernetes, the server's egress policy must allow the venue's addresses
+(`deploy/k8s/overlays/production-example/egress.yaml` has a placeholder entry for it). Then an
+owner adds venue rules to the wallet's policy in the web app, choosing the network when both are
+configured, and people approve the new policy on the confirmation page like any policy change.
+The web app offers the networks in `VENUES_FILE` (and the network of rules already in force, so
+the editor shows what the policy says), and the server refuses a policy draft that names any
+other (`venue_not_configured`). The rules a new policy starts from
 name the first configured network (testnet before mainnet) and allow immediate or cancel only,
 a 60-second submit window and no withdrawals; the owner fills in the markets and caps.
 
@@ -546,6 +550,30 @@ venue, is accepted with either network. A file that is not such an array (`VENUE
 a JSON array of { network, apiUrl }`), that has more than two entries, or that names a network
 twice, stops it too.
 
+**Agent reads of the venue.** The read tools are on when `VENUES_FILE` lists a network, and
+refuse a network it does not list (`venue_not_configured`). The server sends each read only to
+the `apiUrl` of the network in the call, at `/info`, with a body it builds itself; the agent
+names no address or URL. Every venue request, orders included, follows no redirect and reads at
+most 4 MiB of answer; anything else is `venue_unreachable`. So that reads never take the request
+allowance order handling needs, they have a budget of the venue's request weight: 600 units a
+minute for each network and 240 for each agent, half of the 1,200 the venue allows one client
+address. A read past it is refused with `rate_limited`, detail `venue_budget`, and nothing is
+sent; order handling takes from no budget. The weights are the venue's (2 for mids, a book or an
+account; 20 for markets, candles, resting orders, fills or a fee rate; one more for every 60
+candles or 20 fills an answer holds). A fills read is admitted at the most its answer can weigh
+(120, for the venue's 2,000 fills) and a candles read at what its time range allows, so reads
+made at once never overdraw a bucket; each gives back the unused part once its answer is in. So
+one agent has at most two fills reads on their way at a time. The buckets are rows in
+`os.rate_limits`, shared by every replica, and assume the replicas reach the venue from one
+address. Each process reuses an answer of markets for 15 seconds, of mids or a book for 1
+second, of candles for 5 seconds (a candles read with no end time asks up to the start of the
+current 5-second window, so such reads share it) and of a fee rate for 10 minutes, at most 200
+answers; account state, resting orders and fills are always read afresh. Nothing to set: the
+numbers are constants in `apps/server/src/execution/venues/reads.ts`. What an agent reads is the
+venue's report, not verified. Proven in CI against fake venues only
+(`apps/server/test/execution/venue-reads.test.ts`, `mcp-venue-reads.test.ts`, and
+`e2e/test/venue.spec.ts`); unproven against the real venue.
+
 **Funding the account.** This system builds no deposit. The account is funded from outside it,
 by a transfer from another funded account on the same network, or by an ordinary EVM payment to
 the venue's bridge that people approve. Hyperliquid's testnet faucet pays only addresses that
@@ -562,6 +590,7 @@ most, the network), never the request or its fields:
 | `venue.status`  | `venue reconcile failed` (error)                           | `error`: the error's name. Orders older than an hour are read every 5 minutes                                                                       |
 | `venue.cancel`  | `venue cancel posted`                                      | `outcome`: `accepted` or `refused`; the order's status is read right after                                                                          |
 | `venue.account` | `venue account not read`, `venue account not shown` (warn) | `network`: the wallet page could not read the account at the venue, or could not show what it answered                                              |
+| `venue.read`    | `venue read refused` (warn)                                | `read` (which venue read), `network`, `code`: `venue_budget`, `venue_unreachable` or `venue_stale`; never a market name an agent typed              |
 
 The signer's decision log records `sign-venue` for each order or withdrawal it signed or refused
 and `cancel-venue-order` for each cancel. A cancel needs no passkey and is allowed while the

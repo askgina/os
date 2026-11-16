@@ -1,12 +1,9 @@
-import { createServer, type IncomingMessage, type Server } from "node:http";
-import { buffer } from "node:stream/consumers";
 import { ApiErrorBody, type MandateDraft, type PolicyDraft, routes } from "@askgina/os-api";
 import type { AgentId, ApprovalId, IntentId } from "@askgina/os-protocol";
 import { FakeHyperliquid } from "@askgina/os-testkit/fake-hyperliquid";
 import type { Client } from "@modelcontextprotocol/client";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { z } from "zod";
 import { approvals, intents, venueOrders } from "../../src/db/schema.ts";
 import { engineOf } from "../../src/execution/approvals.ts";
 import { TEST_CHAIN_ID, type TestPerson } from "../support/context.ts";
@@ -15,6 +12,8 @@ import {
   draftFor,
   type Fixture,
   intentIdOf,
+  type ServedVenue,
+  serveVenue,
   type TestAgent,
   type ToolArguments,
   toolJson,
@@ -47,42 +46,13 @@ const posted = (type: string) =>
     .filter((entry) => entry.accepted && entry.actionType === type)
     .map((entry) => entry.body);
 
-let server: Server;
+let served: ServedVenue;
 
 let bob: TestPerson;
 
 let trader: TestAgent;
 
 let client: Client;
-
-const read = async (request: IncomingMessage) => (await buffer(request)).toString("utf8");
-
-/** What `server.address()` is for a server listening on a TCP port. */
-const ListeningAddress = z.object({ port: z.number() });
-
-async function startVenue(): Promise<string> {
-  server = createServer(async (request, response) => {
-    const body = await read(request);
-
-    try {
-      const answer = await venue.fetch(`http://fake-hyperliquid${request.url ?? "/"}`, {
-        method: request.method ?? "POST",
-        headers: { "content-type": "application/json" },
-        body,
-      });
-
-      response.writeHead(answer.status, { "content-type": "application/json" });
-      response.end(await answer.text());
-    } catch {
-      response.destroy();
-    }
-  });
-  const { promise, resolve } = Promise.withResolvers<void>();
-  server.listen(0, "127.0.0.1", resolve);
-  await promise;
-
-  return `http://127.0.0.1:${ListeningAddress.parse(server.address()).port}`;
-}
 
 /** The fixture's EVM policy plus Hyperliquid testnet rules: BTC, ETH, a renamed and a delisted market. */
 function venueDraft(agentId: AgentId): PolicyDraft {
@@ -151,13 +121,13 @@ async function status(intentId: IntentId) {
 }
 
 beforeAll(async () => {
-  const apiUrl = await startVenue();
+  served = await serveVenue(venue);
   f = await createFixture(
     "exec_orders",
     1,
     {},
     {
-      venues: [{ network: "hyperliquid:testnet", apiUrl }],
+      venues: [{ network: "hyperliquid:testnet", apiUrl: served.apiUrl }],
     },
   );
   bob = await f.addApprover(f.workspaceId, "Bob Approver");
@@ -169,7 +139,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await f?.close();
-  server?.close();
+  await served?.close();
 });
 
 beforeEach(() => {
@@ -362,6 +332,28 @@ describe("after approval", () => {
     expect(next.done).toBe(false);
     expect(await status(row.id)).toBe("placed");
     expect(posted("order")).toHaveLength(sent + 1);
+  });
+
+  it("takes a redirected post for an unknown outcome, sends nothing to the redirect's target, and resolves it by the order's status", async () => {
+    const elsewhere = await serveVenue(new FakeHyperliquid({ network: "testnet" }));
+
+    try {
+      const sent = posted("order").length;
+      const row = await approvedOrder();
+      const location = `${elsewhere.apiUrl}/exchange`;
+      venue.failNext({ endpoint: "exchange", mode: "redirect", location });
+      expect(await followUp(row.approvalId)).toEqual({ done: false, waitSeconds: 5 });
+      expect(await status(row.id)).toBe("submitted");
+      expect(posted("order")).toHaveLength(sent);
+      // The next round asks the venue for the order by its client order id, learns it has none,
+      // and posts the identical request once more.
+      expect((await followUp(row.approvalId)).done).toBe(false);
+      expect(await status(row.id)).toBe("placed");
+      expect(posted("order")).toHaveLength(sent + 1);
+      expect(elsewhere.requests).toEqual([]);
+    } finally {
+      await elsewhere.close();
+    }
   });
 
   it("ends an order expired when its submit window passed before it was posted", async () => {

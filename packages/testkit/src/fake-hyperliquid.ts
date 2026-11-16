@@ -28,8 +28,15 @@
  *   (`tickRejected`, `minTradeNtlRejected`, …) so `orderStatus` finds them by cloid.
  * - A withdrawal pays the bridge's 1 USDC out of its amount and must be larger than it.
  * - `/info` answers `meta`, `orderStatus` (by order id or cloid), `clearinghouseState`,
- *   `openOrders` and `userNonFundingLedgerUpdates`, whose entries here are the withdrawals
- *   taken, each with its nonce, from `startTime` (to `endTime`, when given) in milliseconds.
+ *   `openOrders`, `userFills` and `userNonFundingLedgerUpdates`, whose entries here are the
+ *   withdrawals taken, each with its nonce, from `startTime` (to `endTime`, when given) in
+ *   milliseconds. `userFills` lists the account's fills newest first, at most 2,000; every fill
+ *   here fills a whole order at one time, so `aggregateByTime` changes nothing.
+ * - Market reads: `metaAndAssetCtxs` (the metadata and each asset's context, see
+ *   `#assetContext`), `allMids` (the midpoint of each book with both sides), `l2Book` (at most
+ *   20 levels a side, null for a market it does not list), `candleSnapshot` (the candles a test
+ *   set, opening from `startTime` to `endTime`, at most 5,000) and `userFees` (the base rates,
+ *   {@link FAKE_TAKER_RATE} taker, for every account).
  *
  * Where it is stricter than the venue, so a request it accepts is one the venue would accept:
  * an action's keys must be exactly the venue's fields in the venue's order (the order the SDK
@@ -45,11 +52,13 @@
  *
  * Simplifications: one cross-margin account per address at leverage min(20, maxLeverage); a
  * position's mark is its entry price (no unrealised profit); no fees except the withdrawal's;
- * no funding, liquidation, trigger orders or partial fills.
+ * no funding, liquidation, trigger orders or partial fills. A position's and a fill's market name
+ * is the asset's name in the metadata when it is read.
  *
  * Control (for the gates; `/control/*` over HTTP, or the methods of the same name in process):
- * seed an account, set the asset metadata and the book, fill a resting order, move the clock,
- * make the next requests fail, and read every exchange request, order, cancel and withdrawal.
+ * seed an account, set the asset metadata, a book and candles, fill a resting order, move the
+ * clock, make the next requests fail, and read every exchange request, order, cancel and
+ * withdrawal.
  */
 import {
   type Address,
@@ -70,8 +79,68 @@ export interface FakeAsset {
   name: string;
   szDecimals: number;
   maxLeverage: number;
+  onlyIsolated?: boolean;
   isDelisted?: boolean;
 }
+
+/** One level of a book: a price, the size resting at it, and how many orders (default 1). */
+export interface FakeLevel {
+  px: string;
+  sz: string;
+  n?: number;
+}
+
+/**
+ * A book a test sets. `bids` and `asks` are its levels, in any order; `bid` and `ask` are a
+ * one-level side of {@link FAKE_LEVEL_SIZE}. A side named neither way is empty.
+ */
+export interface FakeBook {
+  bid?: string | null;
+  ask?: string | null;
+  bids?: readonly FakeLevel[];
+  asks?: readonly FakeLevel[];
+}
+
+/** One candle a test sets, as the venue writes it: `t` opens and `T` closes it, in milliseconds. */
+export interface FakeCandle {
+  t: number;
+  T: number;
+  o: string;
+  h: string;
+  l: string;
+  c: string;
+  v: string;
+  n?: number;
+}
+
+/** The venue's 14 candle intervals. */
+export const FAKE_CANDLE_INTERVALS = [
+  "1m",
+  "3m",
+  "5m",
+  "15m",
+  "30m",
+  "1h",
+  "2h",
+  "4h",
+  "8h",
+  "12h",
+  "1d",
+  "3d",
+  "1w",
+  "1M",
+] as const;
+
+/** The size of the one level `bid` or `ask` sets. */
+export const FAKE_LEVEL_SIZE = "1000";
+
+/**
+ * What `userFees` answers for every account: the venue's base taker and maker rates and no
+ * referral discount. The fills here pay no fee all the same.
+ */
+export const FAKE_TAKER_RATE = "0.00045";
+
+const FAKE_MAKER_RATE = "0.00015";
 
 export interface FakeHyperliquidOptions {
   /** Which network's signatures it accepts. Default testnet. */
@@ -97,17 +166,46 @@ export const DEFAULT_FAKE_UNIVERSE: readonly FakeAsset[] = [
 /** The largest request body read; a venue request is a few hundred bytes. */
 export const FAKE_HYPERLIQUID_MAX_BODY_BYTES = 64 * 1024;
 
+/** The size of an `oversize` failure's answer unless it names one: 5 MiB. */
+export const FAKE_HYPERLIQUID_OVERSIZE_BYTES = 5 * 1024 * 1024;
+
+/** The most fills `userFills` answers, as the venue. */
+const FILLS_ANSWERED = 2_000;
+
+/** The most levels a side `l2Book` answers, as the venue. */
+const BOOK_LEVELS_ANSWERED = 20;
+
+/** The most candles `candleSnapshot` answers, as the venue. */
+const CANDLES_ANSWERED = 5_000;
+
+const DAY_MS = 86_400_000;
+
+/**
+ * Which requests a failure applies to: an endpoint (default `exchange`) and, on `info`, only the
+ * requests of one `type` when `infoType` names it.
+ */
+export interface FailureTarget {
+  endpoint?: "exchange" | "info";
+  infoType?: string;
+  count?: number;
+}
+
 /**
  * A failure the next matching requests get instead of the normal answer.
  * - `error`: `/exchange` answers `{"status":"err","response": response}` and does nothing.
  * - `http`: answers HTTP `status` and does nothing.
  * - `drop`: no answer, the connection is dropped; on `/exchange` the action is applied first,
  *   as when the venue took an order and the response was lost.
+ * - `redirect`: answers HTTP 302 to `location` and does nothing.
+ * - `oversize`: answers HTTP 200 with a JSON body of `bytes` bytes (default
+ *   {@link FAKE_HYPERLIQUID_OVERSIZE_BYTES}), an empty array padded with spaces, and does nothing.
  */
 export type FakeFailure =
-  | { endpoint?: "exchange"; mode: "error"; response: string; count?: number }
-  | { endpoint?: "exchange" | "info"; mode: "http"; status: number; count?: number }
-  | { endpoint?: "exchange" | "info"; mode: "drop"; count?: number };
+  | { endpoint?: "exchange"; infoType?: never; mode: "error"; response: string; count?: number }
+  | (FailureTarget & { mode: "http"; status: number })
+  | (FailureTarget & { mode: "drop" })
+  | (FailureTarget & { mode: "redirect"; location: string })
+  | (FailureTarget & { mode: "oversize"; bytes?: number });
 
 export interface FakeHttpRequest {
   method: string;
@@ -116,8 +214,9 @@ export interface FakeHttpRequest {
   body: string;
 }
 
+/** An answer; `location` is the target of a redirect. */
 export type FakeHttpAnswer =
-  | { kind: "answer"; status: number; contentType: string; body: string }
+  | { kind: "answer"; status: number; contentType: string; body: string; location?: string }
   | { kind: "drop" };
 
 /** One request to `/exchange`, oldest first. */
@@ -771,6 +870,25 @@ interface Account {
   nonces: number[];
 }
 
+/** One fill: a whole order at its limit price. */
+interface FillRecord {
+  user: Address;
+  asset: number;
+  oid: number;
+  /** The venue's trade id. */
+  tid: number;
+  isBuy: boolean;
+  px: string;
+  sz: string;
+  time: number;
+  /** The position's signed size before the fill. */
+  startPosition: bigint;
+  /** The profit the fill realised by closing a position, in the 10^8 scale. */
+  closedPnl: bigint;
+  /** Whether it took liquidity: an order that crossed the book when it came in. */
+  crossed: boolean;
+}
+
 interface OrderState extends FakeOrder {
   sizeFx: bigint;
   priceFx: bigint;
@@ -778,9 +896,17 @@ interface OrderState extends FakeOrder {
   reservedMargin: bigint;
 }
 
+/** A level in the 10^8 scale. */
+interface Level {
+  px: bigint;
+  sz: bigint;
+  n: number;
+}
+
+/** Bids best (highest) first, asks best (lowest) first. */
 interface Book {
-  bid: bigint | null;
-  ask: bigint | null;
+  bids: Level[];
+  asks: Level[];
 }
 
 type QueuedFailure = FakeFailure & { remaining: number };
@@ -805,6 +931,7 @@ interface MetaEntry {
   name: string;
   szDecimals: number;
   maxLeverage: number;
+  onlyIsolated?: true;
   isDelisted?: true;
 }
 
@@ -813,6 +940,7 @@ interface AssetFields {
   name?: unknown;
   szDecimals?: unknown;
   maxLeverage?: unknown;
+  onlyIsolated?: unknown;
   isDelisted?: unknown;
 }
 
@@ -838,6 +966,9 @@ function readAsset(fields: AssetFields): FakeAsset {
   const isDelisted = z.boolean().optional().safeParse(fields.isDelisted);
 
   if (!isDelisted.success) throw new TypeError("isDelisted: expected a boolean");
+  const onlyIsolated = z.boolean().optional().safeParse(fields.onlyIsolated);
+
+  if (!onlyIsolated.success) throw new TypeError("onlyIsolated: expected a boolean");
 
   const asset: FakeAsset = {
     name: name.data,
@@ -845,9 +976,42 @@ function readAsset(fields: AssetFields): FakeAsset {
     maxLeverage: maxLeverage.data,
   };
 
+  if (onlyIsolated.data !== undefined) asset.onlyIsolated = onlyIsolated.data;
+
   if (isDelisted.data !== undefined) asset.isDelisted = isDelisted.data;
 
   return asset;
+}
+
+/** A book side a test set, best first: bids from the highest price, asks from the lowest. */
+function readLevels(levels: readonly FakeLevel[], name: string, bids: boolean): Level[] {
+  const read = levels.map((level) => {
+    const px = toFixed(level.px);
+    const sz = toFixed(level.sz);
+    const n = level.n ?? 1;
+
+    if (px === null || px === 0n) throw new TypeError(`${name}: expected a price`);
+
+    if (sz === null || sz === 0n) throw new TypeError(`${name}: expected a size`);
+
+    if (!Number.isSafeInteger(n) || n < 1) throw new TypeError(`${name}: expected an order count`);
+
+    return { px, sz, n };
+  });
+
+  return read.toSorted((a, b) => {
+    const order = bids ? b.px - a.px : a.px - b.px;
+
+    return order > 0n ? 1 : order < 0n ? -1 : 0;
+  });
+}
+
+/** The best bid and ask's midpoint, rounded down to 8 decimals; null with a side empty. */
+function midOf(book: Book | undefined): bigint | null {
+  const bid = book?.bids[0];
+  const ask = book?.asks[0];
+
+  return bid === undefined || ask === undefined ? null : (bid.px + ask.px) / 2n;
 }
 
 /** An `/info` request: the fields any request type reads. */
@@ -857,6 +1021,17 @@ const InfoRequest = z.object({
   oid: z.unknown().optional(),
   startTime: z.unknown().optional(),
   endTime: z.unknown().optional(),
+  aggregateByTime: z.unknown().optional(),
+  coin: z.unknown().optional(),
+  req: z.unknown().optional(),
+});
+
+/** `candleSnapshot`'s `req`. */
+const CandleRequest = z.object({
+  coin: z.string(),
+  interval: z.enum(FAKE_CANDLE_INTERVALS),
+  startTime: Uint,
+  endTime: Uint.optional(),
 });
 
 /** The fields a `/control/*` request reads; a body that is not a JSON object has none. */
@@ -875,6 +1050,14 @@ const ControlFields = z
     mode: z.unknown().optional(),
     response: z.unknown().optional(),
     status: z.unknown().optional(),
+    location: z.unknown().optional(),
+    bytes: z.unknown().optional(),
+    infoType: z.unknown().optional(),
+    bids: z.unknown().optional(),
+    asks: z.unknown().optional(),
+    coin: z.unknown().optional(),
+    interval: z.unknown().optional(),
+    candles: z.unknown().optional(),
     count: z.unknown().optional(),
   })
   .catch({});
@@ -887,7 +1070,27 @@ const ControlUniverse = z.array(
     name: z.unknown().optional(),
     szDecimals: z.unknown().optional(),
     maxLeverage: z.unknown().optional(),
+    onlyIsolated: z.unknown().optional(),
     isDelisted: z.unknown().optional(),
+  }),
+);
+
+/** `/control/book`'s levels. */
+const ControlLevels = z
+  .array(z.object({ px: z.string(), sz: z.string(), n: z.number().optional() }))
+  .optional();
+
+/** `/control/candles`'s candles. */
+const ControlCandles = z.array(
+  z.object({
+    t: z.number(),
+    T: z.number(),
+    o: z.string(),
+    h: z.string(),
+    l: z.string(),
+    c: z.string(),
+    v: z.string(),
+    n: z.number().optional(),
   }),
 );
 
@@ -905,6 +1108,34 @@ function venueError(response: string): FakeHttpAnswer {
 
 function unreadable(problem: string): FakeHttpAnswer {
   return text(422, `Failed to deserialize the JSON body into the target type: ${problem}`);
+}
+
+/** The answer an injected failure gives instead of the normal one. */
+function failureAnswer(failure: QueuedFailure): FakeHttpAnswer {
+  switch (failure.mode) {
+    case "error":
+      return venueError(failure.response);
+    case "http":
+      return text(failure.status, "fake venue: injected failure");
+    case "redirect":
+      return {
+        kind: "answer",
+        status: 302,
+        contentType: "text/plain",
+        body: "",
+        location: failure.location,
+      };
+    case "oversize":
+      // An empty array padded with spaces: valid JSON, read only if its size is not checked.
+      return {
+        kind: "answer",
+        status: 200,
+        contentType: "application/json",
+        body: `[${" ".repeat(Math.max(0, (failure.bytes ?? FAKE_HYPERLIQUID_OVERSIZE_BYTES) - 2))}]`,
+      };
+    case "drop":
+      return { kind: "drop" };
+  }
 }
 
 function publicOrder(order: OrderState): FakeOrder {
@@ -925,9 +1156,13 @@ export class FakeHyperliquid {
   #orders: OrderState[] = [];
   #cancels: FakeCancel[] = [];
   #withdrawals: FakeWithdrawal[] = [];
+  #fills: FillRecord[] = [];
+  /** By `coin|interval`, oldest first. */
+  #candles = new Map<string, FakeCandle[]>();
   #log: ExchangeRecord[] = [];
   #failures: QueuedFailure[] = [];
   #nextOid = 1;
+  #nextTid = 1;
   /** Requests are handled one at a time, as the venue orders actions in blocks. */
   #queue: Promise<unknown> = Promise.resolve();
 
@@ -953,7 +1188,9 @@ export class FakeHyperliquid {
 
   /**
    * A `fetch` that reaches this venue in process, whatever the origin: give it to a client as
-   * its `fetch`. A dropped connection rejects with a `TypeError`, as `fetch` does.
+   * its `fetch`. A dropped connection rejects with a `TypeError`, as `fetch` does. A redirect is
+   * never followed: with `redirect: "error"` it rejects with a `TypeError`, as `fetch` does;
+   * otherwise the 302 answer is returned with its `location`.
    */
   readonly fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const request = input instanceof Request ? input : null;
@@ -972,6 +1209,14 @@ export class FakeHyperliquid {
       throw new TypeError("fetch failed", {
         cause: new Error("the fake venue dropped the connection"),
       });
+    }
+
+    if (answer.location !== undefined) {
+      if ((init?.redirect ?? request?.redirect) === "error") {
+        throw new TypeError("fetch failed", { cause: new Error("unexpected redirect") });
+      }
+
+      return new Response(null, { status: answer.status, headers: { location: answer.location } });
     }
 
     const noBody = answer.status === 204 || answer.status === 205 || answer.status === 304;
@@ -1003,20 +1248,48 @@ export class FakeHyperliquid {
     this.#universe = universe.map(readAsset);
   }
 
-  /** The best bid and ask of an asset; null for an empty side. Orders that cross fill. */
-  setBook(asset: number, book: { bid: string | null; ask: string | null }): void {
+  /**
+   * An asset's book (see {@link FakeBook}). An order that crosses the best level of the other
+   * side fills, whatever the size there; `l2Book` and the mids answer from the levels.
+   */
+  setBook(asset: number, book: FakeBook): void {
     if (!Uint.safeParse(asset).success) throw new TypeError("asset: expected an asset index");
 
-    const side = (value: string | null, name: string): bigint | null => {
-      if (value === null) return null;
-      const fixed = toFixed(value);
+    const side = (
+      levels: readonly FakeLevel[] | undefined,
+      best: string | null | undefined,
+      name: string,
+      bids: boolean,
+    ) => {
+      if (levels !== undefined) return readLevels(levels, name, bids);
 
-      if (fixed === null || fixed === 0n) throw new TypeError(`${name}: expected a price`);
-
-      return fixed;
+      return best === undefined || best === null
+        ? []
+        : readLevels([{ px: best, sz: FAKE_LEVEL_SIZE }], name, bids);
     };
 
-    this.#books.set(asset, { bid: side(book.bid, "bid"), ask: side(book.ask, "ask") });
+    this.#books.set(asset, {
+      bids: side(book.bids, book.bid, "bid", true),
+      asks: side(book.asks, book.ask, "ask", false),
+    });
+  }
+
+  /** A market's candles of one interval, as `candleSnapshot` answers them. */
+  setCandles(coin: string, interval: string, candles: readonly FakeCandle[]): void {
+    if (!z.enum(FAKE_CANDLE_INTERVALS).safeParse(interval).success) {
+      throw new TypeError("interval: expected one of the venue's intervals");
+    }
+
+    for (const candle of candles) {
+      if (!Uint.safeParse(candle.t).success || !Uint.safeParse(candle.T).success) {
+        throw new TypeError("t, T: expected milliseconds");
+      }
+    }
+
+    this.#candles.set(
+      `${coin}|${interval}`,
+      candles.map((candle) => ({ ...candle })).toSorted((a, b) => a.t - b.t),
+    );
   }
 
   /** Fills a resting order completely at its limit price. Null when no such open order exists. */
@@ -1026,7 +1299,7 @@ export class FakeHyperliquid {
 
     if (order === undefined || order.status !== "open" || account === undefined) return null;
     order.reservedMargin = 0n;
-    this.#fill(account, order);
+    this.#fill(account, order, false);
 
     return publicOrder(order);
   }
@@ -1051,10 +1324,18 @@ export class FakeHyperliquid {
       throw new TypeError("response: expected the venue's error text");
     }
 
+    if (failure.mode === "redirect" && !z.url().safeParse(failure.location).success) {
+      throw new TypeError("location: expected a URL");
+    }
+
+    if (failure.mode === "oversize" && !Uint.optional().safeParse(failure.bytes).success) {
+      throw new TypeError("bytes: expected a size in bytes");
+    }
+
     this.#failures.push({ ...failure, remaining: count });
   }
 
-  /** Forgets everything: accounts, nonces, orders, books, records, failures and the offset. */
+  /** Forgets everything: accounts, nonces, orders, fills, books, records, failures and the offset. */
   reset(): void {
     this.#offsetMs = 0;
     this.setUniverse(this.#initialUniverse);
@@ -1063,9 +1344,12 @@ export class FakeHyperliquid {
     this.#orders = [];
     this.#cancels = [];
     this.#withdrawals = [];
+    this.#fills = [];
+    this.#candles.clear();
     this.#log = [];
     this.#failures = [];
     this.#nextOid = 1;
+    this.#nextTid = 1;
   }
 
   exchangeLog(): ExchangeRecord[] {
@@ -1106,8 +1390,12 @@ export class FakeHyperliquid {
     }
   }
 
-  #takeFailure(endpoint: "exchange" | "info"): QueuedFailure | undefined {
-    const failure = this.#failures.find((entry) => (entry.endpoint ?? "exchange") === endpoint);
+  #takeFailure(endpoint: "exchange" | "info", infoType?: string): QueuedFailure | undefined {
+    const failure = this.#failures.find(
+      (entry) =>
+        (entry.endpoint ?? "exchange") === endpoint &&
+        (entry.infoType === undefined || entry.infoType === infoType),
+    );
 
     if (failure === undefined) return undefined;
     failure.remaining -= 1;
@@ -1132,12 +1420,12 @@ export class FakeHyperliquid {
 
     this.#log.push(record);
     const failure = this.#takeFailure("exchange");
-    let answer: FakeHttpAnswer;
 
-    if (failure?.mode === "error") answer = venueError(failure.response);
-    else if (failure?.mode === "http")
-      answer = text(failure.status, "fake venue: injected failure");
-    else answer = await this.#apply(body, record);
+    // A dropped answer is lost after the action was applied; any other failure applies nothing.
+    const answer =
+      failure === undefined || failure.mode === "drop"
+        ? await this.#apply(body, record)
+        : failureAnswer(failure);
 
     if (answer.kind === "answer") {
       record.status = answer.status;
@@ -1337,8 +1625,8 @@ export class FakeHyperliquid {
     }
 
     const book = this.#books.get(wire.a);
-    const bestBid = book?.bid ?? null;
-    const bestAsk = book?.ask ?? null;
+    const bestBid = book?.bids[0]?.px ?? null;
+    const bestAsk = book?.asks[0]?.px ?? null;
 
     const crosses = wire.b
       ? bestAsk !== null && priceFx >= bestAsk
@@ -1370,7 +1658,7 @@ export class FakeHyperliquid {
     const ids = cloid === null ? { oid: order.oid } : { oid: order.oid, cloid: wire.c };
 
     if (crosses) {
-      this.#fill(account, order);
+      this.#fill(account, order, true);
 
       return { filled: { totalSz: wire.s, avgPx: wire.p, ...ids } };
     }
@@ -1380,12 +1668,17 @@ export class FakeHyperliquid {
     return { resting: ids };
   }
 
-  /** Fills an order completely at its limit price and moves the account's position. */
-  #fill(account: Account, order: OrderState): void {
+  /**
+   * Fills an order completely at its limit price, moves the account's position and records the
+   * fill; `crossed` when the order took liquidity as it came in.
+   */
+  #fill(account: Account, order: OrderState, crossed: boolean): void {
     const now = this.now();
     const signed = order.isBuy ? order.sizeFx : -order.sizeFx;
     const price = order.priceFx;
     const position = account.positions.get(order.asset);
+    const startPosition = position?.szi ?? 0n;
+    let closedPnl = 0n;
 
     if (position === undefined || position.szi === 0n) {
       account.positions.set(order.asset, { szi: signed, entryPx: price });
@@ -1398,7 +1691,8 @@ export class FakeHyperliquid {
 
       if (order.sizeFx < closed) closed = order.sizeFx;
       const pnl = (closed * (price - position.entryPx)) / SCALE;
-      account.usdc += position.szi > 0n ? pnl : -pnl;
+      closedPnl = position.szi > 0n ? pnl : -pnl;
+      account.usdc += closedPnl;
       position.szi += signed;
 
       if (position.szi === 0n) account.positions.delete(order.asset);
@@ -1409,6 +1703,19 @@ export class FakeHyperliquid {
     order.filledSize = order.size;
     order.status = "filled";
     order.statusTimestamp = now;
+    this.#fills.push({
+      user: account.address,
+      asset: order.asset,
+      oid: order.oid,
+      tid: this.#nextTid++,
+      isBuy: order.isBuy,
+      px: order.limitPx,
+      sz: order.size,
+      time: now,
+      startPosition,
+      closedPnl,
+      crossed,
+    });
   }
 
   #cancel(
@@ -1469,25 +1776,98 @@ export class FakeHyperliquid {
   // --- info ------------------------------------------------------------------------------------
 
   #info(body: string): FakeHttpAnswer {
-    const failure = this.#takeFailure("info");
-
-    if (failure?.mode === "drop") return { kind: "drop" };
-
-    if (failure?.mode === "http") return text(failure.status, "fake venue: injected failure");
     let request: unknown;
 
     try {
       request = JSON.parse(body);
     } catch {
-      return unreadable("expected a JSON object");
+      request = undefined;
     }
 
     const read = InfoRequest.safeParse(request);
+    const infoType = z.string().safeParse(read.data?.type);
+    const failure = this.#takeFailure("info", infoType.success ? infoType.data : undefined);
+
+    if (failure !== undefined) return failureAnswer(failure);
 
     if (!read.success) return unreadable("expected a JSON object");
     const fields = read.data;
 
     if (fields.type === "meta") return json(200, { universe: this.#universe.map(metaEntry) });
+
+    if (fields.type === "metaAndAssetCtxs") {
+      return json(200, [
+        { universe: this.#universe.map(metaEntry) },
+        this.#universe.map((_, asset) => this.#assetContext(asset)),
+      ]);
+    }
+
+    if (fields.type === "allMids") {
+      return json(
+        200,
+        Object.fromEntries(
+          this.#universe.flatMap((asset, index) => {
+            const mid = midOf(this.#books.get(index));
+
+            return mid === null ? [] : [[asset.name, formatFixed(mid)]];
+          }),
+        ),
+      );
+    }
+
+    if (fields.type === "l2Book") {
+      const coin = z.string().safeParse(fields.coin);
+
+      if (!coin.success) return unreadable("coin: expected a market name");
+      const asset = this.#universe.findIndex((entry) => entry.name === coin.data);
+
+      // The venue answers null for a market it does not list.
+      if (asset < 0) return json(200, null);
+      const book = this.#books.get(asset);
+
+      const wire = (side: Level[] | undefined) =>
+        (side ?? []).slice(0, BOOK_LEVELS_ANSWERED).map((level) => ({
+          px: formatFixed(level.px),
+          sz: formatFixed(level.sz),
+          n: level.n,
+        }));
+
+      return json(200, {
+        coin: coin.data,
+        time: this.now(),
+        levels: [wire(book?.bids), wire(book?.asks)],
+      });
+    }
+
+    if (fields.type === "candleSnapshot") {
+      const req = CandleRequest.safeParse(fields.req);
+
+      if (!req.success) return unreadable("req: expected coin, interval and startTime");
+      const { coin, interval, startTime, endTime } = req.data;
+
+      return json(
+        200,
+        (this.#candles.get(`${coin}|${interval}`) ?? [])
+          .filter(
+            (candle) => candle.t >= startTime && (endTime === undefined || candle.t <= endTime),
+          )
+          .slice(-CANDLES_ANSWERED)
+          .map((candle) => ({ ...candle, s: coin, i: interval, n: candle.n ?? 1 })),
+      );
+    }
+
+    if (fields.type === "userFees") {
+      if (!AddressText.safeParse(fields.user).success)
+        return unreadable("user: expected an address");
+
+      return json(200, {
+        dailyUserVlm: [],
+        feeSchedule: { cross: FAKE_TAKER_RATE, add: FAKE_MAKER_RATE },
+        userCrossRate: FAKE_TAKER_RATE,
+        userAddRate: FAKE_MAKER_RATE,
+        activeReferralDiscount: "0.0",
+      });
+    }
 
     if (fields.type === "orderStatus") {
       const user = AddressText.safeParse(fields.user);
@@ -1561,6 +1941,18 @@ export class FakeHyperliquid {
       );
     }
 
+    if (fields.type === "userFills") {
+      const user = AddressText.safeParse(fields.user);
+
+      if (!user.success) return unreadable("user: expected an address");
+
+      if (!z.boolean().optional().safeParse(fields.aggregateByTime).success) {
+        return unreadable("aggregateByTime: expected a boolean");
+      }
+
+      return json(200, this.#userFills(user.data.toLowerCase()));
+    }
+
     if (fields.type === "userNonFundingLedgerUpdates") {
       // Only withdrawals move this fake's ledger.
       const user = AddressText.safeParse(fields.user);
@@ -1599,6 +1991,75 @@ export class FakeHyperliquid {
     }
 
     return unreadable(`unknown variant \`${String(fields.type)}\``);
+  }
+
+  /**
+   * An asset's context as `metaAndAssetCtxs` answers it. The mark and oracle prices are the mid
+   * (the best ask or bid with a side empty, else 0); funding is 0; open interest is the longs'
+   * size; the day's volume is the notional of the fills of the last 24 hours.
+   */
+  #assetContext(asset: number) {
+    const book = this.#books.get(asset);
+    const mid = midOf(book);
+    const mark = mid ?? book?.asks[0]?.px ?? book?.bids[0]?.px ?? 0n;
+    let openInterest = 0n;
+    let dayVolume = 0n;
+
+    for (const account of this.#accounts.values()) {
+      const size = account.positions.get(asset)?.szi ?? 0n;
+
+      if (size > 0n) openInterest += size;
+    }
+
+    for (const fill of this.#fills) {
+      if (fill.asset !== asset || fill.time < this.now() - DAY_MS) continue;
+      dayVolume += ((toFixed(fill.px) ?? 0n) * (toFixed(fill.sz) ?? 0n)) / SCALE;
+    }
+
+    const bid = book?.bids[0]?.px;
+    const ask = book?.asks[0]?.px;
+
+    return {
+      funding: "0.0",
+      openInterest: formatFixed(openInterest),
+      prevDayPx: formatFixed(mark),
+      dayNtlVlm: formatFixed(dayVolume),
+      premium: "0.0",
+      oraclePx: formatFixed(mark),
+      markPx: formatFixed(mark),
+      midPx: mid === null ? null : formatFixed(mid),
+      impactPxs:
+        bid === undefined || ask === undefined ? null : [formatFixed(bid), formatFixed(ask)],
+    };
+  }
+
+  /** The account's fills as the venue lists them, newest first; `user` is a lower-case address. */
+  #userFills(user: string) {
+    return this.#fills
+      .filter((fill) => fill.user === user)
+      .reverse()
+      .slice(0, FILLS_ANSWERED)
+      .map((fill) => {
+        // A buy from flat or long opens a long; a sell from flat or short opens a short.
+        const opening = fill.isBuy ? fill.startPosition >= 0n : fill.startPosition <= 0n;
+
+        return {
+          coin: this.#universe[fill.asset]?.name ?? `asset ${fill.asset}`,
+          px: fill.px,
+          sz: fill.sz,
+          side: fill.isBuy ? "B" : "A",
+          time: fill.time,
+          startPosition: formatFixed(fill.startPosition),
+          dir: `${opening ? "Open" : "Close"} ${fill.isBuy === opening ? "Long" : "Short"}`,
+          closedPnl: formatFixed(fill.closedPnl),
+          hash: `0x${fill.tid.toString(16).padStart(64, "0")}`,
+          oid: fill.oid,
+          crossed: fill.crossed,
+          fee: "0.0",
+          tid: fill.tid,
+          feeToken: "USDC",
+        };
+      });
   }
 
   /** `user` is a lower-case address. */
@@ -1697,11 +2158,29 @@ export class FakeHyperliquid {
       if (method === "PUT" && path === "/control/book") {
         const bid = fields.bid ?? null;
         const ask = fields.ask ?? null;
+        const bids = ControlLevels.safeParse(fields.bids);
+        const asks = ControlLevels.safeParse(fields.asks);
 
-        this.setBook(Number(fields.asset), {
+        if (!bids.success || !asks.success) return text(400, "bids, asks: expected levels");
+
+        const book: FakeBook = {
           bid: bid === null ? null : String(bid),
           ask: ask === null ? null : String(ask),
-        });
+        };
+
+        if (bids.data !== undefined) book.bids = bids.data;
+
+        if (asks.data !== undefined) book.asks = asks.data;
+        this.setBook(Number(fields.asset), book);
+
+        return text(204, "");
+      }
+
+      if (method === "PUT" && path === "/control/candles") {
+        const candles = ControlCandles.safeParse(fields.candles);
+
+        if (!candles.success) return text(400, "candles: expected an array of candles");
+        this.setCandles(String(fields.coin), String(fields.interval), candles.data);
 
         return text(204, "");
       }
@@ -1747,6 +2226,8 @@ function metaEntry(asset: FakeAsset): MetaEntry {
     maxLeverage: asset.maxLeverage,
   };
 
+  if (asset.onlyIsolated === true) entry.onlyIsolated = true;
+
   if (asset.isDelisted === true) entry.isDelisted = true;
 
   return entry;
@@ -1763,10 +2244,24 @@ function controlFailure(fields: ControlFields): FakeFailure | null {
     return { endpoint, mode: "error", response: response.data, count };
   }
 
-  if (fields.mode === "http")
-    return { endpoint, mode: "http", status: Number(fields.status), count };
+  const target: FailureTarget = { endpoint, count };
+  const infoType = z.string().safeParse(fields.infoType);
 
-  if (fields.mode === "drop") return { endpoint, mode: "drop", count };
+  if (infoType.success) target.infoType = infoType.data;
+
+  if (fields.mode === "http") return { ...target, mode: "http", status: Number(fields.status) };
+
+  if (fields.mode === "drop") return { ...target, mode: "drop" };
+
+  if (fields.mode === "redirect") {
+    return { ...target, mode: "redirect", location: String(fields.location) };
+  }
+
+  if (fields.mode === "oversize") {
+    return fields.bytes === undefined
+      ? { ...target, mode: "oversize" }
+      : { ...target, mode: "oversize", bytes: Number(fields.bytes) };
+  }
 
   return null;
 }
