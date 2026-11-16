@@ -415,11 +415,27 @@ marked **Eric's** below.
   (`int_01m7gstz6kt2xxyrxagcbqda2m`) also expired, and its confirmation page was never loaded
   and no passkey assertion reached the signer; the push had been handed to the push service.
   So that request was not approved and lost; it was never opened. The owner's approval that
-  did land beforehand was the wallet-limits one, a separate request. Whether the notification
-  displayed on the phone is not proven.
+  did land beforehand was the wallet-limits one, a separate request.
+  A second payment on the same stacks (intent `int_01m7gyqzwnqkw8ffer6mckjt24`, "Acme invoice
+  2218", proposed 01:15:02Z) was reached through the notification alone: no link was given to the
+  owner, the push was handed to the push service at 01:15:04Z, the owner reports that the
+  notification showed on the phone and that he tapped it, the confirmation page loaded at
+  01:15:40Z, the passkey was submitted at 01:15:46Z and the transaction confirmed at 01:15:53Z
+  (tx `0x90176ad9…b86146`). In this run the model read the first payment's status with
+  `get_intent` before it proposed. The signing step started 2.4 s after the passkey, between two
+  of the run's own looks (35 s and 75 s after it started), so the approval was counted when the
+  app read the request, not by the run's own check.
   Limits: one run by hand; a local chain; one machine; not a CI gate. The model, asked again
   after the first request had expired, answered that it was still awaiting approval without
   checking, and proposed again only when told it had lapsed.
+  That was fixed in the fork (`e79e626`): the bot's standing instruction and its `wallet` skill
+  now have it call `get_intent` before it says anything about an earlier proposal. Checked once
+  by hand on the same stacks, with the bot rebuilt from the changed template: a request for
+  "Acme invoice 2219" was left to expire (`int_01m7gz35yfmc2bs8zdwqrn8xb5`, 01:21:09Z to
+  01:36:09Z); asked in the same words to pay it, the model called `get_intent`, said the earlier
+  proposal had expired, and proposed again (`int_01m7gzz5j46qzx6hr53c2p7td6`). One run on one
+  model; the fork's gates use a scripted model and do not cover it. Both stacks were torn down
+  at 01:37Z, which ended the staging agent's token.
 
 - Outcome: research done; nothing built.
   Evidence: [research/busy-fork.md](./research/busy-fork.md).

@@ -44,7 +44,7 @@ Success means:
 - [x] (2026-11-15) Milestone 4: web app manifest, service worker, notification settings, return path after sign-in (commit `98cc6a1`). CI run 43710836888 green on check, test, ui (five projects) and stack amd64/arm64/tls, including a browser gate that the built app serves `/manifest.webmanifest` and `/sw.js` and that the worker activates under the Content-Security-Policy (activation on the stacks without TLS only).
 - [x] (2026-11-15) Milestone 5: expiry reminders and quiet hours (same commit and run as Milestone 3). The webhook is not held by quiet hours.
 - [x] (2026-11-15) Milestone 6: ntfy sidecar example (`examples/ntfy-sidecar`, its own Compose overlay), docs, threat model, two webhook release gates (commits `b03f277`, `ec28864`). CI run 43709103267 green at `3bf1a7b` on check, test, ui and stack amd64/arm64/tls. No release gate turns Web Push on: push delivery is tested against a local stand-in push service in the server tests only. The sidecar's overlay has not been started against a real ntfy server.
-- [ ] Manual staging check: a real phone receives a push and opens the approval. Not done: needs the owner's phone and a staging build.
+- [x] (2026-11-16) Manual staging check: a real phone receives a push and opens the approval. Done once on staging at `dc985b6`: the owner's phone showed the notification, he tapped it and approved with a passkey, and the payment confirmed 51 s after it was proposed (approval `apr_01m7gyqzwqb7pb2pyc7y7eb84d`; the run is recorded in [busy-fork.md](./busy-fork.md)). That it showed is the owner's report; the logs hold the hand-over to the push service and the page load.
 
 ## Surprises & Discoveries
 
@@ -103,9 +103,10 @@ Decisions D1 to D7 were taken by the owner on 2026-11-15: Eric chose the recomme
   switches, reminders and quiet hours; a workspace owner sets how much a notification reveals.
   Evidence: `apps/server/test/notify/*`, `apps/web/test/{sw,push,quiet-hours,return-path}.test.ts`,
   `examples/ntfy-sidecar/test/bridge.test.ts`, the two webhook release gates and the browser gate.
-  Unproven: no real phone has received a push; no release gate turns Web Push on (delivery is
-  tested against a local stand-in push service; subscription and delivery are simulated in the UI
-  journey); a real tap on a notification; the sidecar's Compose overlay against a real ntfy server.
+  Unproven: no release gate turns Web Push on (delivery is tested against a local stand-in push
+  service; subscription and delivery are simulated in the UI journey); the sidecar's Compose
+  overlay against a real ntfy server. A real phone received a push and a real tap opened the
+  approval once, by hand, on 2026-11-16 (one phone, one browser).
   Known limits: a device subscribed after a request opens gets nothing for that request; the
   subscription failure count is recorded and not acted on; reminders go to push devices only.
   Remaining: the manual phone check. Older sections of this file still name the drafted migration
