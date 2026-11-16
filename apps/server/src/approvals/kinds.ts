@@ -26,6 +26,7 @@ export function isRequest(row: ApprovalRow): row is RequestRow {
 }
 
 type EnvelopeOf<K extends ApprovalKind> = Extract<Envelope, { type: K }>;
+
 type HeaderField = "v" | "type" | "approvalId" | "workspaceId" | "nonce" | "issuedAt" | "expiresAt";
 
 /**

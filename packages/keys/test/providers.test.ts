@@ -15,10 +15,15 @@ import {
 import { startTransitStub, type TransitStub } from "./support/transit-stub.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "os-keys-providers-"));
+
 const keyringFile = join(dir, "keyring.json");
+
 writeFileSync(keyringFile, JSON.stringify(LocalKeyring.generate("k1")), { mode: 0o600 });
+
 const tokenFile = join(dir, "token");
+
 let stub: TransitStub;
+
 const built: KeyProvider[] = [];
 
 beforeAll(async () => {
@@ -35,6 +40,7 @@ afterAll(async () => {
 function build(env: NodeJS.ProcessEnv, keyringFileVariable = "KEYRING_FILE"): KeyProvider {
   const provider = keyProviderFromEnv(env, { keyringFileVariable });
   built.push(provider);
+
   return provider;
 }
 
@@ -45,6 +51,7 @@ function configError(env: NodeJS.ProcessEnv): KeyProviderConfigError {
     if (error instanceof KeyProviderConfigError) return error;
     throw error;
   }
+
   throw new Error("expected a configuration error");
 }
 
@@ -85,6 +92,7 @@ describe("keyProviderFromEnv", () => {
 
   test("the Transit settings reach the provider", async () => {
     const custom = await startTransitStub({ mount: "kv/transit", key: "server-kek" });
+
     try {
       const provider = build({
         ...openbao(),
@@ -96,6 +104,7 @@ describe("keyProviderFromEnv", () => {
         OPENBAO_KUBERNETES_JWT_FILE: join(dir, "jwt"),
         OPENBAO_TIMEOUT_MS: "500",
       });
+
       writeFileSync(join(dir, "jwt"), custom.kubernetesJwt, { mode: 0o600 });
       await provider.ready();
       expect(provider.activeKekId()).toBe("bao:kv/transit/server-kek@1");

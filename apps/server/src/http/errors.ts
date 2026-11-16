@@ -27,5 +27,6 @@ export function fromSignerError(error: unknown): HttpError {
       error.code === "policy_denied" ? error.detail : error.code,
     );
   }
+
   return new HttpError("internal", "the signer could not complete the request");
 }

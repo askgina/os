@@ -3,11 +3,14 @@ import { describe, expect, it } from "vitest";
 import { b64url, fromB64url, SoftAuthenticator, tamperClientData } from "../src/testing/index.ts";
 
 const RP_ID = "localhost";
+
 const ORIGIN = "http://localhost:3000";
+
 const challenge = b64url(new Uint8Array(32).fill(1));
 
 function flagsAndCounter(authenticatorData: string) {
   const bytes = fromB64url(authenticatorData);
+
   return {
     flags: bytes[32] ?? 0,
     counter: new DataView(bytes.buffer, bytes.byteOffset).getUint32(33),
@@ -16,13 +19,16 @@ function flagsAndCounter(authenticatorData: string) {
 
 async function registered(device: SoftAuthenticator) {
   const { response, credential } = device.register({ rpId: RP_ID, challenge, origin: ORIGIN });
+
   const result = await verifyRegistrationResponse({
     response,
     expectedChallenge: challenge,
     expectedOrigin: ORIGIN,
     expectedRPID: RP_ID,
   });
+
   if (!result.verified) throw new Error("registration did not verify");
+
   return { credential, info: result.registrationInfo };
 }
 
@@ -43,6 +49,7 @@ describe("soft authenticator", () => {
     const second = device.authenticate({ credentialId: id, challenge, origin: ORIGIN });
     expect(flagsAndCounter(first.response.authenticatorData).counter).toBe(1);
     expect(flagsAndCounter(second.response.authenticatorData).counter).toBe(2);
+
     const result = await verifyAuthenticationResponse({
       response: second,
       expectedChallenge: challenge,
@@ -51,15 +58,18 @@ describe("soft authenticator", () => {
       credential: { id, publicKey: info.credential.publicKey, counter: 1 },
       requireUserVerification: true,
     });
+
     expect(result.verified).toBe(true);
 
     const synced = new SoftAuthenticator({ incrementCounter: false });
     const s = await registered(synced);
+
     const a = synced.authenticate({
       credentialId: b64url(s.credential.id),
       challenge,
       origin: ORIGIN,
     });
+
     expect(flagsAndCounter(a.response.authenticatorData).counter).toBe(0);
   });
 

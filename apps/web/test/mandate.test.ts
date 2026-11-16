@@ -25,8 +25,11 @@ import {
 } from "../src/lib/mandate.ts";
 
 const AGENT = "agt_01jd0000000000000000000002";
+
 const PAYEE = "0x1111111111111111111111111111111111111111";
+
 const OTHER = "0x2222222222222222222222222222222222222222";
+
 const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
 
 describe("the worst case", () => {
@@ -59,7 +62,9 @@ describe("the worst case", () => {
       notAfter: 1_700_604_000,
       purpose: "",
     };
+
     const [limit] = mandate.assets;
+
     if (!limit) throw new Error("no asset");
     expect(
       worstCase(
@@ -198,6 +203,7 @@ describe("what the codes mean", () => {
     for (const code of [...MANDATE_GRANT_REFUSALS, "agent_disabled"]) {
       expect(explainMandateRefusal(code), code).not.toBe(generic);
     }
+
     expect(explainMandateRefusal("over_per_tx_cap")).not.toBe(explainCode("over_per_tx_cap"));
     // A code about something else keeps its usual meaning.
     expect(explainMandateRefusal("workspace_paused")).toBe(explainCode("workspace_paused"));
@@ -207,6 +213,7 @@ describe("what the codes mean", () => {
 
 describe("the editor's draft", () => {
   const NOW = 1_800_000_000;
+
   const form = (patch: Partial<MandateForm> = {}): MandateForm => ({
     agentId: AGENT,
     recipients: `${PAYEE.toUpperCase().replace("0X", "0x")}\n${OTHER}, ${PAYEE}`,
@@ -266,6 +273,7 @@ describe("the editor's draft", () => {
       if (error instanceof MandateFormError) return error.message;
       throw error;
     }
+
     return null;
   };
 
@@ -289,6 +297,7 @@ describe("the editor's draft", () => {
 
   it("checks each asset's caps are complete and in order", () => {
     const [eth, usdc] = form().assets;
+
     if (!eth || !usdc) throw new Error("no assets");
     expect(
       refusal({ assets: [{ ...eth, maxPerAction: "", maxPerWindow: "", maxTotal: "" }] }),
@@ -314,13 +323,16 @@ describe("the editor's draft", () => {
 
   it("takes base units for a token whose decimals are unknown", () => {
     const [eth] = form().assets;
+
     if (!eth) throw new Error("no asset");
+
     const draft = mandateDraft(
       form({
         assets: [{ ...eth, decimals: null, maxPerAction: "5", maxPerWindow: "10", maxTotal: "20" }],
       }),
       NOW,
     );
+
     expect(draft.assets[0]?.maxPerAction).toBe("5");
   });
 });

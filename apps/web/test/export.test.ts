@@ -73,12 +73,15 @@ describe("reading a template file", () => {
         { ...TEMPLATE.wallets[1], policy: { ...TEMPLATE.wallets[0]?.policy, requesters: ["w2"] } },
       ],
     };
+
     const result = readTemplateFile(JSON.stringify(strayRequester));
     expect(result.ok).toBe(false);
+
     if (!result.ok) {
       expect(result.problem).toMatch(/^This file is not a workspace template this server can read/);
       expect(result.problem).toContain("(at wallets.0.policy.requesters)");
     }
+
     const otherFormat = readTemplateFile(JSON.stringify({ ...TEMPLATE, format: "something/v2" }));
     expect(otherFormat.ok).toBe(false);
     const extraField = readTemplateFile(JSON.stringify({ ...TEMPLATE, keys: ["0xabc"] }));

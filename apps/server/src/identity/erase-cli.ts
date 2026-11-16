@@ -34,33 +34,43 @@ export async function main(
   print: (line: object) => void = (line) => process.stdout.write(`${JSON.stringify(line)}\n`),
 ): Promise<number> {
   let user: string | undefined;
+
   try {
     user = parseArgs({ args: [...argv], options: { user: { type: "string" } }, strict: true })
       .values.user;
   } catch {
     user = undefined;
   }
+
   const userId = UserId.safeParse(user);
+
   if (!userId.success) {
     process.stderr.write(USAGE);
+
     return 1;
   }
+
   try {
     const approving = await checkErasable(ctx, userId.data);
+
     if (approving.length > 0) {
       print({
         ok: false,
         code: "still_approving",
         workspaces: [...new Set(approving.map((row) => row.workspaceId))],
       });
+
       return 3;
     }
+
     const { alreadyErased } = await eraseUser(ctx, userId.data, "operator");
     print({ ok: true, userId: userId.data, alreadyErased });
+
     return 0;
   } catch (error) {
     if (!(error instanceof HttpError)) throw error;
     print({ ok: false, code: error.code, detail: error.detail ?? null, message: error.message });
+
     return 2;
   }
 }
@@ -70,6 +80,7 @@ if (import.meta.main) {
   const pool = new pg.Pool({ connectionString: config.databaseUrl, max: 2 });
   const provider = keyProviderFromEnv(process.env, { keyringFileVariable: "KEYRING_FILE" });
   const keys = new DataKeyStore({ pool, provider });
+
   try {
     process.exitCode = await main(process.argv.slice(2), {
       db: drizzle(pool, { schema }),

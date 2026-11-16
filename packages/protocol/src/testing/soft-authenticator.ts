@@ -9,7 +9,9 @@ import type {
 import { cborEncode } from "./cbor.ts";
 
 export const b64url = (b: Uint8Array): string => Buffer.from(b).toString("base64url");
+
 export const fromB64url = (s: string): Uint8Array => new Uint8Array(Buffer.from(s, "base64url"));
+
 const sha256 = (b: Uint8Array): Uint8Array =>
   new Uint8Array(createHash("sha256").update(b).digest());
 
@@ -54,6 +56,7 @@ function flagsByte(f: Flags, extra: number): number {
 function u32be(n: number): Uint8Array {
   const b = new Uint8Array(4);
   new DataView(b.buffer).setUint32(0, n >>> 0);
+
   return b;
 }
 
@@ -61,6 +64,7 @@ export function coseEc2(pub: KeyObject): Uint8Array {
   const jwk = pub.export({ format: "jwk" });
   const x = fromB64url(jwk.x as string);
   const y = fromB64url(jwk.y as string);
+
   // kty: EC2(2), alg: ES256(-7), crv: P-256(1), x, y (CTAP2 canonical order)
   return cborEncode(
     new Map<number, number | Uint8Array>([
@@ -76,10 +80,12 @@ export function coseEc2(pub: KeyObject): Uint8Array {
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
   let o = 0;
+
   for (const p of parts) {
     out.set(p, o);
     o += p.length;
   }
+
   return out;
 };
 
@@ -121,6 +127,7 @@ export class SoftAuthenticator {
   } {
     const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
     const id = new Uint8Array(randomBytes(32));
+
     const cred: SoftCredential = {
       id,
       rpId: args.rpId,
@@ -129,10 +136,12 @@ export class SoftAuthenticator {
       publicKey,
       signCount: args.signCount ?? 0,
     };
+
     this.credentials.set(b64url(id), cred);
     const flags = { ...this.defaults, ...args.flags };
     const cosePub = coseEc2(publicKey);
     const credIdLen = new Uint8Array([id.length >> 8, id.length & 0xff]);
+
     const authData = concat(
       sha256(new TextEncoder().encode(args.rpIdHashOf ?? args.rpId)),
       Uint8Array.of(flagsByte(flags, 0x40)),
@@ -142,14 +151,18 @@ export class SoftAuthenticator {
       id,
       cosePub,
     );
+
     const attestationObject = cborEncode({ fmt: "none", attStmt: {}, authData });
+
     const clientDataJSON = this.clientData(
       "webauthn.create",
       args.challenge,
       args.origin ?? `https://${args.rpId}`,
       args.crossOrigin ?? false,
     );
+
     const spki = publicKey.export({ format: "der", type: "spki" });
+
     return {
       credential: cred,
       response: {
@@ -174,15 +187,19 @@ export class SoftAuthenticator {
     args: { credentialId: string; challenge: string } & CallOverrides,
   ): AuthenticationResponseJSON {
     const cred = this.credentials.get(args.credentialId);
+
     if (!cred) throw new Error(`soft authenticator: unknown credential ${args.credentialId}`);
+
     if (args.signCount !== undefined) cred.signCount = args.signCount;
     else if (this.incrementCounter) cred.signCount += 1;
     const flags = { ...this.defaults, ...args.flags };
+
     const authData = concat(
       sha256(new TextEncoder().encode(args.rpIdHashOf ?? cred.rpId)),
       Uint8Array.of(flagsByte(flags, 0)),
       u32be(cred.signCount),
     );
+
     const clientDataJSON = this.clientData(
       args.clientDataType ?? "webauthn.get",
       args.challenge,
@@ -190,7 +207,9 @@ export class SoftAuthenticator {
       args.crossOrigin ?? false,
       args.topOrigin,
     );
+
     const signature = sign("sha256", concat(authData, sha256(clientDataJSON)), cred.privateKey);
+
     return {
       id: b64url(cred.id),
       rawId: b64url(cred.id),
@@ -213,6 +232,7 @@ export function tamperClientData(
   patch: Record<string, unknown>,
 ): AuthenticationResponseJSON {
   const cd = JSON.parse(Buffer.from(r.response.clientDataJSON, "base64url").toString("utf8"));
+
   return {
     ...r,
     response: {

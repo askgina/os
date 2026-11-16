@@ -23,15 +23,20 @@ import {
 import { referenceMsgpackEncode } from "../src/msgpack.ts";
 
 const sdkKey = privateKeyToAccount(vectors.privateKey as Hex);
+
 const SDK_ADDRESS = sdkKey.address.toLowerCase();
+
 const stranger = privateKeyToAccount(`0x${"11".repeat(32)}`);
+
 const DAY_MS = 86_400_000;
 
 const notFound = (address: string) => `User or API Wallet ${address} does not exist.`;
+
 const venueError = (pattern: RegExp) => ({
   status: "err",
   response: expect.stringMatching(pattern),
 });
+
 const ok = (type: "order" | "cancel", statuses: unknown[]) => ({
   status: "ok",
   response: { type, data: { statuses } },
@@ -64,24 +69,29 @@ function sdkBody(
 /** The vectors' `r` and `s` are hex strings, as the SDK writes them (leading zeros dropped). */
 function signed(body: SdkRequest): SignedAction {
   const { r, s, v } = body.signature;
+
   return { ...body, signature: { r: r as Hex, s: s as Hex, v } };
 }
 
 const generated = vectors.generated.output;
+
 const orderVector = sdkBody(
   generated.order.action,
   generated.order.nonce,
   generated.order.testnet,
   generated.order.expiresAfter,
 );
+
 const cancelVector = sdkBody(
   generated.cancel.action,
   generated.cancel.nonce,
   generated.cancel.testnet,
   generated.cancel.expiresAfter,
 );
+
 /** The SDK's `withdraw_from_bridge` action, as `sign_user_signed_action` completes it. */
 const withdraw = vectors.sdkTests.withdraw;
+
 const withdrawAction = {
   destination: withdraw.destination,
   amount: withdraw.amount,
@@ -90,7 +100,9 @@ const withdrawAction = {
   signatureChainId: "0x66eee",
   hyperliquidChain: "Testnet",
 };
+
 const withdrawVector = sdkBody(withdrawAction, withdraw.time, withdraw.testnet, null);
+
 const [dummyVector, gtcVector, gtcCloidVector] = vectors.sdkTests.signatures;
 
 function venueAt(time: number, network: FakeNetwork = "testnet") {
@@ -103,8 +115,10 @@ async function post(venue: FakeHyperliquid, path: string, body: unknown) {
     headers: { "content-type": "application/json" },
     body: typeof body === "string" ? body : JSON.stringify(body),
   });
+
   const isJson = response.headers.get("content-type")?.startsWith("application/json") ?? false;
   const answer: unknown = isJson ? await response.json() : await response.text();
+
   return { status: response.status, body: answer };
 }
 
@@ -117,6 +131,7 @@ describe("the venue SDK's own signed requests", () => {
     const check = vectors.sdkTests.connectionId;
     expect(l1ActionHash(check.action, check.nonce, null, null)).toBe(check.connectionId);
     expect(generated.check_ioc_connection_id).toBe(check.connectionId);
+
     for (const vector of [generated.order, generated.cancel]) {
       expect(bytesToHex(referenceMsgpackEncode(vector.action))).toBe(`0x${vector.msgpack}`);
       expect(l1ActionHash(vector.action, vector.nonce, null, vector.expiresAfter)).toBe(
@@ -127,6 +142,7 @@ describe("the venue SDK's own signed requests", () => {
 
   it("recover to the SDK key on the network they were signed for, and to another on the other", async () => {
     const cases: { body: SdkRequest; network: FakeNetwork }[] = [];
+
     for (const vector of vectors.sdkTests.signatures) {
       for (const network of ["mainnet", "testnet"] as const) {
         cases.push({
@@ -135,6 +151,7 @@ describe("the venue SDK's own signed requests", () => {
         });
       }
     }
+
     cases.push(
       { body: orderVector, network: "testnet" },
       {
@@ -149,11 +166,13 @@ describe("the venue SDK's own signed requests", () => {
       { body: cancelVector, network: "testnet" },
     );
     expect(cases).toHaveLength(9);
+
     for (const { body, network } of cases) {
       const other = network === "mainnet" ? "testnet" : "mainnet";
       expect(await recoverExchangeSigner(signed(body), network)).toBe(SDK_ADDRESS);
       expect(await recoverExchangeSigner(signed(body), other)).not.toBe(SDK_ADDRESS);
     }
+
     expect(await recoverExchangeSigner(signed(withdrawVector), "testnet")).toBe(SDK_ADDRESS);
     expect(dummyVector?.action.type).toBe("dummy");
   });
@@ -202,12 +221,14 @@ describe("the venue SDK's own signed requests", () => {
   it("are refused when the same order was signed for mainnet", async () => {
     const venue = venueAt(generated.order.nonce);
     venue.seedAccount(SDK_ADDRESS, "1000");
+
     const mainnet = sdkBody(
       generated.order.action,
       generated.order.nonce,
       generated.order.mainnet,
       generated.order.expiresAfter,
     );
+
     const answer = await post(venue, "/exchange", mainnet);
     const signer = lastRecord(venue)?.signer;
     expect(signer).not.toBe(SDK_ADDRESS);
@@ -222,9 +243,11 @@ describe("the venue SDK's own signed requests", () => {
     const original = JSON.stringify(orderVector);
     let mutations = 0;
     let bySignature = 0;
+
     for (let index = 0; index < original.length; index++) {
       const char = original.charAt(index);
       let replacement: string;
+
       if (/[0-9]/.test(char)) replacement = String((Number(char) + 1) % 10);
       else if (/[a-f]/.test(char)) {
         replacement = char === "f" ? "a" : String.fromCharCode(char.charCodeAt(0) + 1);
@@ -234,18 +257,22 @@ describe("the venue SDK's own signed requests", () => {
       mutations++;
       const record = lastRecord(venue);
       expect(record?.accepted, `byte ${index}: ${mutated}`).toBe(false);
+
       if (answer.status !== 200) {
         expect(answer.status, `byte ${index}`).toBe(422);
         continue;
       }
+
       expect(answer.body, `byte ${index}`).toMatchObject({ status: "err" });
       const signer = record?.signer ?? null;
+
       if (signer !== null) {
         expect(signer).not.toBe(SDK_ADDRESS);
         expect(answer.body).toEqual({ status: "err", response: notFound(signer) });
         bySignature++;
       }
     }
+
     expect(venue.orders()).toEqual([]);
     expect(mutations).toBeGreaterThan(150);
     // Nearly every changed byte of r, s, the nonce, the expiry and the action's values still
@@ -265,11 +292,13 @@ describe("the venue SDK's own signed requests", () => {
     expect((await post(venue, "/exchange", body)).body).toEqual(
       ok("order", [{ resting: { oid: 1, cloid } }]),
     );
+
     const status = await post(venue, "/info", {
       type: "orderStatus",
       user: SDK_ADDRESS,
       oid: cloid,
     });
+
     expect(status.body).toEqual({
       status: "order",
       order: {
@@ -336,8 +365,11 @@ const AGENT_TYPES = {
 } as const;
 
 const NOW = 1_794_787_200_000;
+
 const ETH = 4;
+
 const CLOID_A = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
 const CLOID_B = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 async function signL1(
@@ -347,13 +379,16 @@ async function signL1(
   account = sdkKey,
 ) {
   const connectionId = l1ActionHash(action, nonce, null, expiresAfter);
+
   const signature = await account.signTypedData({
     domain: { name: "Exchange", version: "1", chainId: 1337, verifyingContract: zeroAddress },
     types: AGENT_TYPES,
     primaryType: "Agent",
     message: { source: "b", connectionId },
   });
+
   const { r, s, yParity } = parseSignature(signature);
+
   return { action, nonce, signature: { r, s, v: 27 + yParity }, vaultAddress: null, expiresAfter };
 }
 
@@ -366,6 +401,7 @@ async function signWithdraw(amount: string, time: number) {
     time,
     destination: SDK_ADDRESS,
   };
+
   const signature = await sdkKey.signTypedData({
     domain: {
       name: "HyperliquidSignTransaction",
@@ -384,7 +420,9 @@ async function signWithdraw(amount: string, time: number) {
     primaryType: "HyperliquidTransaction:Withdraw",
     message: { hyperliquidChain: "Testnet", destination: SDK_ADDRESS, amount, time: BigInt(time) },
   });
+
   const { r, s, yParity } = parseSignature(signature);
+
   return {
     action,
     nonce: time,
@@ -422,6 +460,7 @@ function cancel(cloid: string) {
 function seeded(usdc = "1000") {
   const venue = venueAt(NOW);
   venue.seedAccount(SDK_ADDRESS, usdc);
+
   return venue;
 }
 
@@ -453,18 +492,22 @@ describe("the fake venue's rules", () => {
 
   it("refuses a nonce outside (T − 2 days, T + 1 day) and one lower than all of the 100 highest", async () => {
     const venue = seeded();
+
     for (const nonce of [NOW - 2 * DAY_MS, NOW + DAY_MS]) {
       const answer = await post(venue, "/exchange", await signL1(cancel(CLOID_B), nonce, null));
       expect(answer.body).toEqual(venueError(/^Invalid nonce/));
     }
+
     for (let step = 1; step <= 100; step++) {
       const answer = await post(
         venue,
         "/exchange",
         await signL1(cancel(CLOID_B), NOW + step, null),
       );
+
       expect(answer.body).toMatchObject({ status: "ok" });
     }
+
     const low = await post(venue, "/exchange", await signL1(cancel(CLOID_B), NOW, null));
     expect(low.body).toEqual(venueError(/^Invalid nonce/));
     const high = await post(venue, "/exchange", await signL1(cancel(CLOID_B), NOW + 101, null));
@@ -474,6 +517,7 @@ describe("the fake venue's rules", () => {
   it("applies the perpetual tick, lot, notional, margin and time-in-force rules", async () => {
     const venue = seeded();
     const cloid = (n: number) => `0x${n.toString(16).padStart(32, "0")}`;
+
     const cases: [action: unknown, status: unknown][] = [
       [
         order("Gtc", { p: "1670.15", c: cloid(16) }),
@@ -497,34 +541,42 @@ describe("the fake venue's rules", () => {
         { error: "Insufficient margin to place order. asset=4" },
       ],
     ];
+
     let nonce = NOW;
+
     for (const [action, expected] of cases) {
       const answer = await post(venue, "/exchange", await signL1(action, nonce++, null));
       expect(answer.body).toEqual(ok("order", [expected]));
     }
+
     // A refused order is kept with the venue's historical status; one it could not read is not.
     const tick = await post(venue, "/info", {
       type: "orderStatus",
       user: SDK_ADDRESS,
       oid: cloid(16),
     });
+
     expect(tick.body).toMatchObject({ status: "order", order: { status: "tickRejected" } });
+
     const lot = await post(venue, "/info", {
       type: "orderStatus",
       user: SDK_ADDRESS,
       oid: cloid(17),
     });
+
     expect(lot.body).toEqual({ status: "unknownOid" });
   });
 
   it("fills across the book at the limit price, rests otherwise, and cancels by cloid", async () => {
     const venue = seeded();
     venue.setBook(ETH, { bid: "1660", ask: "1670" });
+
     const alo = await post(
       venue,
       "/exchange",
       await signL1(order("Alo", { c: CLOID_B }), NOW, null),
     );
+
     expect(alo.body).toEqual(
       ok("order", [
         { error: "Post only order would have immediately matched, bbo was 1660@1670. asset=4" },
@@ -638,6 +690,7 @@ describe("the fake venue's rules", () => {
 
   it("answers meta from the metadata a test sets", async () => {
     const venue = seeded();
+
     const put = await venue.fetch("http://fake-hyperliquid/control/meta", {
       method: "PUT",
       body: JSON.stringify({
@@ -647,6 +700,7 @@ describe("the fake venue's rules", () => {
         ],
       }),
     });
+
     expect(put.status).toBe(204);
     expect((await post(venue, "/info", { type: "meta" })).body).toEqual({
       universe: [

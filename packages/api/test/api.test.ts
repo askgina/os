@@ -212,8 +212,10 @@ describe("route contract", () => {
     (name) => {
       const route = routes[name];
       const example = examples[name];
+
       if (route.body === null) expect(example.body).toBeUndefined();
       else expect(route.body.parse(example.body)).toEqual(example.body);
+
       if (route.query === null) expect(example.query).toBeUndefined();
       else expect(route.query.parse(example.query)).toEqual(example.query);
       expect(route.response.parse(example.response)).toEqual(example.response);
@@ -224,6 +226,7 @@ describe("route contract", () => {
     for (const route of Object.values(routes)) {
       const names = paramNames(route.path);
       expect(new Set(names).size).toBe(names.length);
+
       if (route.method !== "POST") expect(route.body).toBeNull();
     }
   });
@@ -241,6 +244,7 @@ describe("route contract", () => {
       routes.createAgent.body,
       routes.createTreasury.body,
     ] as const;
+
     for (const hostile of ["Pay\u202eevil", "line\nbreak", "tab\there", "mark\u200f", "\u2066x"]) {
       expect(names[0].safeParse({ name: hostile }).success).toBe(false);
       expect(names[1].safeParse({ name: hostile }).success).toBe(false);
@@ -258,6 +262,7 @@ describe("route contract", () => {
           .success,
       ).toBe(false);
     }
+
     expect(names[0].safeParse({ name: "Ops — café 東京" }).success).toBe(true);
   });
 
@@ -303,6 +308,7 @@ describe("route contract", () => {
   it("a push subscription is an https endpoint of at most 2048 characters with well-formed keys", () => {
     const body = routes.addPushSubscription.body;
     const input = f.pushSubscriptionInput;
+
     const refused = [
       { ...input, endpoint: "http://fcm.googleapis.com/fcm/send/x" },
       { ...input, endpoint: "javascript:alert(1)" },
@@ -314,6 +320,7 @@ describe("route contract", () => {
       { ...input, label: "Phone\u202e" },
       { ...input, expirationTime: null },
     ];
+
     for (const value of refused) expect(body.safeParse(value).success).toBe(false);
     // Some browsers pad their keys.
     const padded = { p256dh: `${input.keys.p256dh}=`, auth: `${input.keys.auth}==` };
@@ -347,6 +354,7 @@ describe("route contract", () => {
       }).success,
     ).toBe(false);
     const transaction = f.transactionInfo;
+
     for (const broken of [
       { ...transaction, attempts: [] },
       { ...transaction, stuckReason: "gas_too_low" },
@@ -359,16 +367,20 @@ describe("route contract", () => {
 
   it("a lifecycle state that contradicts itself does not parse, and a deletion names its wallets", () => {
     expect(ApprovalDetail.parse(f.deleteApprovalDetail)).toEqual(f.deleteApprovalDetail);
+
     const wallet = (lifecycle: unknown) =>
       WalletSummary.safeParse({ ...f.wallet, lifecycle }).success;
+
     expect(wallet({ state: "retiring", destroyAfter: 1_700_604_800 })).toBe(true);
     expect(wallet({ state: "destroyed", destroyAfter: 1_700_604_800 })).toBe(true);
     expect(wallet({ state: "held", destroyAfter: null })).toBe(true);
     expect(wallet({ state: "retiring", destroyAfter: null })).toBe(false);
     expect(wallet({ state: "held", destroyAfter: 1_700_604_800 })).toBe(false);
     expect(wallet({ state: "removed", destroyAfter: null })).toBe(false);
+
     const workspace = (lifecycle: unknown) =>
       WorkspaceSummary.safeParse({ ...f.workspaceSummary, lifecycle }).success;
+
     expect(workspace({ state: "deleting", destroyAfter: 1_700_604_800, deletedAt: null })).toBe(
       true,
     );
@@ -393,11 +405,14 @@ describe("route contract", () => {
     const template = f.workspaceTemplate;
     expect(WorkspaceTemplate.parse(template)).toEqual(template);
     const [agentWallet, treasury] = template.wallets;
+
     if (!agentWallet?.policy || !treasury) throw new Error("fixture changed");
+
     const withPolicy = (requesters: string[]) => ({
       ...template,
       wallets: [{ ...agentWallet, policy: { ...agentWallet.policy, requesters } }, treasury],
     });
+
     // A requester is a ref of a template wallet with an agent, never an id or the treasury.
     expect(WorkspaceTemplate.safeParse(withPolicy(["w2"])).success).toBe(false);
     expect(WorkspaceTemplate.safeParse(withPolicy([f.AGENT])).success).toBe(false);
@@ -447,14 +462,17 @@ type Seen = { url: string; init: RequestInit };
 
 function fakeClient(status: number, payload: string | null, headers?: Record<string, string>) {
   const seen: Seen[] = [];
+
   const client = createApiClient({
     baseUrl: "https://os.example.com/",
     ...(headers ? { headers } : {}),
     fetch: (async (input: string | URL | Request, init: RequestInit = {}) => {
       seen.push({ url: String(input), init });
+
       return new Response(payload, { status });
     }) as typeof globalThis.fetch,
   });
+
   return { client, seen };
 }
 
@@ -471,17 +489,21 @@ describe("api client", () => {
       const params = Object.fromEntries(paramNames(route.path).map((p) => [p, `${p}-${hostile}`]));
       await client.call(name, { params, body: example.body, query: example.query } as never);
       const sent = seen[0];
+
       if (!sent) throw new Error("no request");
       const url = new URL(sent.url);
       expect(url.origin).toBe("https://os.example.com");
       expect(url.pathname).not.toContain(":");
       expect(url.hash).toBe("");
       let expected: string = route.path;
+
       for (const [key, value] of Object.entries(params)) {
         expected = expected.replace(`:${key}`, encodeURIComponent(value));
       }
+
       expect(url.pathname).toBe(expected);
       expect(sent.init.method).toBe(route.method);
+
       if (route.body === null) {
         expect(sent.init.body).toBeUndefined();
       } else {
@@ -511,9 +533,11 @@ describe("api client", () => {
   it("surfaces an error body as ApiError with code, status and detail", async () => {
     const body = { error: { code: "signer_refused", message: "refused", detail: "nonce_reused" } };
     const { client } = fakeClient(422, JSON.stringify(body));
+
     const error = await client
       .call("getApproval", { params: { approvalId: f.APPROVAL } })
       .catch((e: unknown) => e);
+
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({
       code: "signer_refused",

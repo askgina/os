@@ -20,20 +20,26 @@ let chosen: LanguageModel | undefined;
 
 function choose(): LanguageModel {
   if (chosen) return chosen;
+
   if (process.env.OFFLINE_MODEL === "1") {
     chosen = offlineModel;
+
     return chosen;
   }
+
   const baseURL = process.env.MODEL_BASE_URL;
   const modelId = process.env.MODEL_ID;
+
   if (!baseURL || !modelId) {
     throw new Error("no model configured: set MODEL_BASE_URL and MODEL_ID, or OFFLINE_MODEL=1");
   }
+
   chosen = createOpenAICompatible({
     name: "operator",
     baseURL,
     ...(process.env.MODEL_API_KEY ? { apiKey: process.env.MODEL_API_KEY } : {}),
   }).chatModel(modelId);
+
   return chosen;
 }
 

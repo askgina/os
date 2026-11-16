@@ -9,6 +9,7 @@
 import { MockLanguageModelV4 } from "ai/test";
 
 type Part = Record<string, unknown>;
+
 type Message = { role: string; content: unknown };
 
 const usage = {
@@ -18,7 +19,9 @@ const usage = {
 
 function textOf(content: unknown): string {
   if (typeof content === "string") return content;
+
   if (!Array.isArray(content)) return "";
+
   return content
     .map((part: Part) => (part.type === "text" && typeof part.text === "string" ? part.text : ""))
     .join(" ");
@@ -38,11 +41,14 @@ function respond(prompt: readonly Message[]): Part[] {
   const lastUser = prompt.findLastIndex((message) => message.role === "user");
   const request = textOf(prompt[lastUser]?.content);
   const toolResult = prompt.slice(lastUser + 1).find((message) => message.role === "tool");
+
   if (toolResult) {
     const output = JSON.stringify(toolResult.content);
     const url = /"approvalUrl":"([^"]+)"/.exec(output)?.[1];
     const mandate = /"mandateId":"(mnd_[^"]+)"/.exec(output)?.[1];
+
     if (url) return reply(`I proposed it. Nothing is sent until a person approves it here: ${url}`);
+
     return reply(
       mandate
         ? `I proposed it. A mandate people approved in advance covers it (${mandate}), so it is being sent without asking again.`
@@ -52,6 +58,7 @@ function respond(prompt: readonly Message[]): Part[] {
 
   const to = /0x[0-9a-fA-F]{40}/.exec(request)?.[0];
   const amount = /\b(?:pay|send)\s+([0-9]+(?:\.[0-9]+)?)/i.exec(request)?.[1];
+
   if (!to || !amount)
     return reply("I can only propose transfers: say 'pay <amount> to <address>'.");
 
@@ -60,12 +67,14 @@ function respond(prompt: readonly Message[]): Part[] {
     0,
     280,
   );
+
   const input = {
     chainId: process.env.OFFLINE_CHAIN_ID || "eip155:31337",
     to,
     amount,
     memo,
   };
+
   return [
     { type: "stream-start", warnings: [] },
     {
@@ -83,6 +92,7 @@ export const offlineModel = new MockLanguageModelV4({
   modelId: "smoke-test",
   doStream: async (options) => {
     const parts = respond(options.prompt as unknown as Message[]);
+
     return {
       stream: new ReadableStream({
         start(controller) {

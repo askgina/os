@@ -9,10 +9,12 @@ import { AssetRef, ChainId } from "./primitives.ts";
  * `api.hyperliquid-testnet.xyz` as testnet.
  */
 export const VenueNetwork = z.enum(["hyperliquid:testnet", "hyperliquid:mainnet"]);
+
 export type VenueNetwork = z.infer<typeof VenueNetwork>;
 
 /** Where an intent acts: an EVM chain or a venue network. */
 export const Network = z.union([ChainId, VenueNetwork]);
+
 export type Network = z.infer<typeof Network>;
 
 export function isVenueNetwork(value: unknown): value is VenueNetwork {
@@ -43,12 +45,14 @@ export const Decimal = z
     /^(?:0|[1-9][0-9]{0,19})(?:\.[0-9]{0,7}[1-9])?$/,
     "expected a canonical decimal such as 0.0147 or 100",
   );
+
 export type Decimal = z.infer<typeof Decimal>;
 
 export const PositiveDecimal = Decimal.refine(
   (value) => value !== "0",
   "must be greater than zero",
 );
+
 export type PositiveDecimal = z.infer<typeof PositiveDecimal>;
 
 /** Hyperliquid's client order id: 16 bytes as 0x-prefixed lowercase hex. */
@@ -56,6 +60,7 @@ export const Cloid = z.custom<`0x${string}`>(
   (value) => typeof value === "string" && /^0x[0-9a-f]{32}$/.test(value),
   "expected 16 bytes of lowercase hex with a 0x prefix",
 );
+
 export type Cloid = z.infer<typeof Cloid>;
 
 /**
@@ -63,6 +68,7 @@ export type Cloid = z.infer<typeof Cloid>;
  * (10^-6 USD) of order notional at a venue.
  */
 export const SpendAsset = z.union([AssetRef, z.literal("usd6")]);
+
 export type SpendAsset = z.infer<typeof SpendAsset>;
 
 /** The highest perpetual asset index a policy, an intent or the signer accepts. */
@@ -77,13 +83,17 @@ export function decimalToScaled(value: Decimal, scale: number): bigint {
   if (!Decimal.safeParse(value).success) {
     throw new TypeError(`not a canonical decimal: ${JSON.stringify(value)}`);
   }
+
   if (!Number.isSafeInteger(scale) || scale < 0) {
     throw new RangeError(`scale must be a non-negative integer, got ${scale}`);
   }
+
   const [whole = "0", fraction = ""] = value.split(".");
+
   if (fraction.length > scale) {
     throw new RangeError(`${value} has more than ${scale} fraction digits`);
   }
+
   return BigInt(whole) * 10n ** BigInt(scale) + BigInt(fraction.padEnd(scale, "0") || "0");
 }
 
@@ -95,7 +105,9 @@ export function orderNotionalUsd6(size: Decimal, limitPx: Decimal): bigint {
   const product =
     decimalToScaled(size, DECIMAL_FRACTION_DIGITS) *
     decimalToScaled(limitPx, DECIMAL_FRACTION_DIGITS);
+
   // `product` is scaled by 10^16; micro-USD is 10^6, so divide by 10^10 and round up.
   const divisor = 10n ** BigInt(2 * DECIMAL_FRACTION_DIGITS - 6);
+
   return (product + divisor - 1n) / divisor;
 }

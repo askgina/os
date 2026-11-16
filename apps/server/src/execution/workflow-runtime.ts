@@ -33,6 +33,7 @@ let generated: Promise<Generated> | undefined;
 export function loadGenerated(): Promise<Generated> {
   generated ??= (async () => {
     let manifestText: string;
+
     try {
       manifestText = await readFile(join(GENERATED_DIR, "manifest.json"), "utf8");
     } catch {
@@ -40,20 +41,26 @@ export function loadGenerated(): Promise<Generated> {
         "the workflow bundle is missing; run `bun run build:workflows` in apps/server",
       );
     }
+
     const manifest = JSON.parse(manifestText) as {
       workflows: Record<string, Record<string, { workflowId: string }>>;
     };
+
     const entry = manifest.workflows["workflows/approval.ts"]?.approval;
+
     if (entry === undefined) throw new Error("the workflow bundle has no approval workflow");
     const flow = (await import(join(GENERATED_DIR, "flow.mjs"))) as { POST: DeliveryHandler };
+
     const webhook = (await import(join(GENERATED_DIR, "webhook.mjs"))) as {
       POST: DeliveryHandler;
     };
+
     return { flow: flow.POST, webhook: webhook.POST, approvalWorkflowId: entry.workflowId };
   })();
   generated.catch(() => {
     generated = undefined;
   });
+
   return generated;
 }
 
@@ -66,9 +73,12 @@ export async function migrateWorld(pool: Pool): Promise<void> {
   const packageDir = dirname(
     dirname(fileURLToPath(import.meta.resolve("@workflow/world-postgres"))),
   );
+
   const client = await pool.connect();
+
   try {
     await client.query("SELECT pg_advisory_lock(hashtextextended('askgina.os.world-migrate', 0))");
+
     try {
       await migrate(drizzle(client), {
         migrationsFolder: join(packageDir, "src", "drizzle", "migrations"),
@@ -76,6 +86,7 @@ export async function migrateWorld(pool: Pool): Promise<void> {
         migrationsSchema: "workflow_drizzle",
       });
       const utils = await makeWorkerUtils({ pgPool: pool });
+
       try {
         await utils.migrate();
       } finally {
@@ -114,7 +125,9 @@ const runtimes = new WeakMap<AppContext, WorkflowRuntime>();
  */
 export function workflowRuntime(ctx: AppContext): WorkflowRuntime {
   const existing = runtimes.get(ctx);
+
   if (existing) return existing;
+
   const world = createEncryptedWorld({
     postgres: {
       pool: ctx.pool,
@@ -129,21 +142,26 @@ export function workflowRuntime(ctx: AppContext): WorkflowRuntime {
     },
     dataKeys: ctx.keys,
   });
+
   setWorld(world);
+
   const runtime: WorkflowRuntime = {
     world,
     async startRun(input) {
       const { approvalWorkflowId } = await loadGenerated();
+
       const run = await start(
         { workflowId: approvalWorkflowId } as never,
         [{ approvalId: input.approvalId, expiresAt: input.expiresAt }],
         { [TENANT_START_OPTION]: input.workspaceId } as never,
       );
+
       return run.runId;
     },
     async wake(approvalId, runId) {
       try {
         await resumeHook(`apr:${approvalId}:${runId}`, { approvalId });
+
         return true;
       } catch {
         // The run has not created its hook yet, or it already finished. Either way the run reads
@@ -152,6 +170,8 @@ export function workflowRuntime(ctx: AppContext): WorkflowRuntime {
       }
     },
   };
+
   runtimes.set(ctx, runtime);
+
   return runtime;
 }

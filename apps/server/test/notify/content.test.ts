@@ -11,9 +11,13 @@ import {
 import { baseEnv, pushConfig } from "./support.ts";
 
 const ORIGIN = "https://os.example.com";
+
 const workspaceId = newId("ws");
+
 const approvalId = newId("apr");
+
 const link = approvalLink(ORIGIN, workspaceId, approvalId);
+
 const facts: PushFacts = {
   approvalId,
   pendingCount: 1,
@@ -22,6 +26,7 @@ const facts: PushFacts = {
   workspaceName: "Acme ops",
   requesterName: "Invoice payer",
 };
+
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8");
 
 describe("what a push notification says", () => {
@@ -39,24 +44,29 @@ describe("what a push notification says", () => {
         app_badge: "1",
       },
     });
+
     const text = JSON.stringify(
       pushMessage({ level: "count", facts: { ...facts, pendingCount: 3 }, link, reminder: true }),
     );
+
     for (const name of ["Acme", "Invoice", "Payment", "approve-intent"]) {
       expect(text).not.toContain(name);
     }
+
     expect(JSON.parse(text).notification).toMatchObject({
       title: "Expiring soon: Approval waiting",
       body: "3 requests need your passkey",
       app_badge: "3",
       tag: `approval-${approvalId}`,
     });
+
     const many = pushMessage({
       level: "count",
       facts: { ...facts, pendingCount: 140 },
       link,
       reminder: false,
     });
+
     expect(many.notification).toMatchObject({
       body: "99+ requests need your passkey",
       app_badge: "99",
@@ -71,13 +81,16 @@ describe("what a push notification says", () => {
       navigate: link,
       tag: `approval-${approvalId}`,
     });
+
     const reminder = pushMessage({
       level: "summary",
       facts: { ...facts, kind: "grant-mandate" },
       link,
       reminder: true,
     });
+
     expect(reminder.notification.title).toBe("Expiring soon: Approval in advance waiting");
+
     // D8: a venue order is announced as an order, with nothing about the order itself.
     const order = pushMessage({
       level: "summary",
@@ -85,10 +98,12 @@ describe("what a push notification says", () => {
       link,
       reminder: false,
     });
+
     expect(order.notification).toMatchObject({
       title: "Order waiting",
       body: "Invoice payer in Acme ops",
     });
+
     const counted = JSON.stringify(
       pushMessage({
         level: "count",
@@ -97,6 +112,7 @@ describe("what a push notification says", () => {
         reminder: false,
       }),
     );
+
     expect(JSON.parse(counted).notification.title).toBe("Approval waiting");
     expect(counted).not.toContain("Order");
 
@@ -110,6 +126,7 @@ describe("what a push notification says", () => {
       link,
       reminder: false,
     });
+
     const body = hostile.notification.body;
     expect(body).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
     expect(body.startsWith("URGENT approve now refund in Ünïcode wörkspace")).toBe(true);
@@ -121,6 +138,7 @@ describe("what a push notification says", () => {
     const origin = `https://${"o".repeat(108)}.example.com`;
     expect(origin.length).toBe(128);
     const longLink = approvalLink(origin, workspaceId, approvalId);
+
     const wide = {
       ...facts,
       pendingCount: 1_000,
@@ -128,6 +146,7 @@ describe("what a push notification says", () => {
       requesterName: "東".repeat(64),
       workspaceName: `"\\${"😀".repeat(62)}`,
     };
+
     for (const level of ["count", "summary"] as const) {
       for (const reminder of [false, true]) {
         const message = pushMessage({ level, facts: wide, link: longLink, reminder });
@@ -136,6 +155,7 @@ describe("what a push notification says", () => {
         expect(message.notification.title.length).toBeGreaterThan(0);
       }
     }
+
     // With room to spare nothing is cut for bytes.
     expect(
       pushMessage({
@@ -154,6 +174,7 @@ describe("what a push notification says", () => {
       link,
       reminder: false,
     }).notification;
+
     const url = new URL(navigate);
     expect(url.origin).toBe(ORIGIN);
     expect(url.pathname).toMatch(/^\/w\/[A-Za-z0-9_]+\/approvals\/[A-Za-z0-9_]+$/);
@@ -173,6 +194,7 @@ describe("what a push notification says", () => {
       link,
       dueSoon: false,
     };
+
     const counted = lifecycleMessage({ ...base, level: "count" }).notification;
     expect(counted).toMatchObject({
       title: "Keys scheduled for destruction",
@@ -186,12 +208,14 @@ describe("what a push notification says", () => {
     expect(summary.title).toBe("In 24 hours: Workspace deletion scheduled");
     expect(summary.body).toBe("Keys destroyed 2027-01-15 08:00 UTC in Acme ops");
     expect(summary.tag).toBe(counted.tag);
+
     const long = lifecycleMessage({
       ...base,
       level: "summary",
       kind: "retire-wallet",
       workspaceName: "\u{1F600}".repeat(200),
     });
+
     expect(new TextEncoder().encode(JSON.stringify(long)).length).toBeLessThanOrEqual(
       PUSH_PAYLOAD_MAX_BYTES,
     );

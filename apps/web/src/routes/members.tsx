@@ -30,6 +30,7 @@ import { enrollApproverCommand } from "@/lib/operator.ts";
 import { useWorkspaceId } from "@/routes/workspace.tsx";
 
 const ROLE_NAMES: Record<Role, string> = { owner: "Owner", approver: "Approver", viewer: "Viewer" };
+
 const ROLE_HINTS: Record<Role, string> = {
   owner: "Changes everything, approves",
   approver: "Approves payments and changes",
@@ -43,6 +44,7 @@ export function MembersPage() {
   const [opened, setOpened] = useState<ApprovalSummary[]>([]);
   // Invites revoked on this page: the link card must stop showing a link that no longer works.
   const [revoked, setRevoked] = useState<string[]>([]);
+
   if (!workspace.data) return null;
   const data = workspace.data;
   const isOwner = data.role === "owner";
@@ -125,6 +127,7 @@ function MemberRow({
 }) {
   const [confirmRemove, setConfirmRemove] = useState(false);
   const params = { workspaceId, userId: member.user.id };
+
   const setRole = useMutation({
     mutationFn: (role: Role) => api.call("setMemberRole", { params, body: { role } }),
     onSuccess: async ({ approvals }) => {
@@ -132,6 +135,7 @@ function MemberRow({
       await queryClient.invalidateQueries({ queryKey: keys.workspace(workspaceId) });
     },
   });
+
   const remove = useMutation({
     mutationFn: () => api.call("removeMember", { params }),
     onSuccess: async ({ approvals }) => {
@@ -140,7 +144,9 @@ function MemberRow({
       await queryClient.invalidateQueries({ queryKey: keys.workspace(workspaceId) });
     },
   });
+
   const selectId = `role-${member.user.id}`;
+
   return (
     <li className="grid grid-cols-1 gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
       <div className="min-w-0">
@@ -236,6 +242,7 @@ function PendingPasskeyHelp({
   signerAdminCommand: string | undefined;
 }) {
   let command: string | null = null;
+
   try {
     command = enrollApproverCommand(signerAdminCommand, {
       workspaceId,
@@ -246,6 +253,7 @@ function PendingPasskeyHelp({
   } catch {
     // Offer no command rather than one that could run something else on the signer's host.
   }
+
   return (
     <div className="grid grid-cols-1 gap-2 rounded-md border bg-muted p-3 text-sm">
       <p className="flex items-center gap-2 font-medium">
@@ -303,15 +311,19 @@ function OpenInvites({
   onRevoked: (inviteId: string) => void;
 }) {
   const invites = useInvites(workspaceId);
+
   const revoke = useMutation({
     mutationFn: (inviteId: string) =>
       api.call("revokeInvite", { params: { workspaceId, inviteId } }),
     onSuccess: (_result, inviteId) => {
       onRevoked(inviteId);
+
       return queryClient.invalidateQueries({ queryKey: keys.invites(workspaceId) });
     },
   });
+
   const items: InviteSummary[] = invites.data?.items ?? [];
+
   return (
     <Card>
       <CardHeader>
@@ -357,10 +369,12 @@ function OpenInvites({
 function InviteCard({ workspaceId, revoked }: { workspaceId: string; revoked: string[] }) {
   const [role, setRole] = useState<Role>("approver");
   const now = useNow();
+
   const invite = useMutation({
     mutationFn: () => api.call("createInvite", { params: { workspaceId }, body: { role } }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.invites(workspaceId) }),
   });
+
   return (
     <Card>
       <CardHeader>
@@ -422,12 +436,15 @@ function InviteCard({ workspaceId, revoked }: { workspaceId: string; revoked: st
 
 function ThresholdCard({ workspace }: { workspace: WorkspaceDetail }) {
   const navigate = useNavigate();
+
   // The signer refuses an admin threshold below any wallet's own approval threshold.
   const lowest = Math.max(
     1,
     ...workspace.wallets.map((wallet) => wallet.policy?.approvals.threshold ?? 1),
   );
+
   const [value, setValue] = useState(String(workspace.adminThreshold));
+
   const request = useMutation({
     mutationFn: () =>
       api.call("requestAdminThreshold", {
@@ -440,6 +457,7 @@ function ThresholdCard({ workspace }: { workspace: WorkspaceDetail }) {
         params: { workspaceId: workspace.id, approvalId: approval.id },
       }),
   });
+
   return (
     <Card>
       <CardHeader>

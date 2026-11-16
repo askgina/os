@@ -73,14 +73,18 @@ import {
 } from "./fixtures.ts";
 
 const WALLET_ADDRESS = "0x5555555555555555555555555555555555555555" as const;
+
 const TREASURY = "0x6666666666666666666666666666666666666666" as const;
+
 const UNLISTED_CHAIN = "eip155:999" as const;
+
 const UINT256_MAX = (1n << 256n) - 1n;
 
 const CHAINS: ChainLabel[] = [
   { chainId: BASE, name: "Base", nativeSymbol: "ETH" },
   { chainId: MAINNET, name: "Ethereum", nativeSymbol: "ETH" },
 ];
+
 const USDC: AssetLabel = { chainId: BASE, asset: TOKEN, symbol: "USDC", decimals: 6 };
 
 const envelopeOnly: ConfirmationSubject = { kind: "envelope-only" };
@@ -176,6 +180,7 @@ function sweepEnvelope(subject: Sweep): SweepWalletEnvelope {
 function value(view: RenderedConfirmation, label: string): string {
   const found = view.lines.filter((line) => line.label === label);
   expect(found, `lines labelled "${label}"`).toHaveLength(1);
+
   return found[0]?.value ?? "";
 }
 
@@ -186,12 +191,15 @@ function values(view: RenderedConfirmation, label: string): string[] {
 /** Read a rendered amount such as "1,234.5 USDC" back into base units. */
 function parseAmount(text: string, decimals: number): { amount: bigint; unit: string } {
   const match = /^((?:\d{1,3})(?:,\d{3})*)(?:\.(\d*[1-9]))? (.+)$/.exec(text);
+
   if (match === null) throw new Error(`not an amount: ${text}`);
   const [, whole = "", fraction = "", unit = ""] = match;
   expect(fraction.length).toBeLessThanOrEqual(decimals);
+
   const amount =
     BigInt(whole.replaceAll(",", "")) * 10n ** BigInt(decimals) +
     BigInt(fraction.padEnd(decimals, "0") || "0");
+
   return { amount, unit };
 }
 
@@ -221,6 +229,7 @@ describe("checkSubject", () => {
     expect(
       checkSubject(mandateEnvelope(mandate()), { kind: "grant-mandate", mandate: mandate() }),
     ).toBe(null);
+
     for (const envelope of [
       addApprover(),
       removeApprover(),
@@ -237,6 +246,7 @@ describe("checkSubject", () => {
   it("checkSubject refuses an intent whose hash is not the envelope's", () => {
     const approved = intent();
     const envelope = envelopeFor(approved);
+
     // Same workspace, wallet, agent and chain: only the hash can tell these apart.
     const swaps: Intent[] = [
       intent({ operation: { type: "evm.transfer", to: BOB, valueWei: "250000000000000000" } }),
@@ -245,6 +255,7 @@ describe("checkSubject", () => {
       intent({ memo: "pay invoice 43" }),
       intent({ createdAt: T0 + 1 }),
     ];
+
     for (const swapped of swaps) {
       expect(checkSubject(envelope, { kind: "approve-intent", intent: swapped })).toBe(
         "intent_mismatch",
@@ -259,6 +270,7 @@ describe("checkSubject", () => {
       intent({ agentId: OTHER_AGENT }),
       intent({ chainId: MAINNET }),
     ];
+
     for (const other of cases) {
       // The envelope names the other intent's hash but this envelope's own fields.
       const envelope = approveIntent({ intentHash: intentHash(other) });
@@ -276,6 +288,7 @@ describe("checkSubject", () => {
         valueWei: "1",
       },
     });
+
     expect(checkSubject(approveIntent(), { kind: "approve-intent", intent: zeroRecipient })).toBe(
       "intent_mismatch",
     );
@@ -286,6 +299,7 @@ describe("checkSubject", () => {
     const envelope = policyEnvelope(next);
     const other = policy({ fees: { maxPerTxWei: "20000000000000000" } });
     expect(checkSubject(envelope, { kind: "set-policy", policy: other })).toBe("envelope_mismatch");
+
     // Hash matches, but the policy belongs to another wallet or workspace than the envelope.
     for (const foreign of [
       policy({ walletId: `wal_${"0".repeat(25)}9` }),
@@ -296,6 +310,7 @@ describe("checkSubject", () => {
         "envelope_mismatch",
       );
     }
+
     // Hash matches, but the policy replaces another revision than the envelope says.
     const second = policy({ revision: 2, previousHash: DIGEST_A });
     const wrongPrevious = setPolicy({ policyHash: policyHash(second), previousPolicyHash: null });
@@ -307,6 +322,7 @@ describe("checkSubject", () => {
   it("refuses a sweep that is not the envelope's", () => {
     const approved = sweep();
     const envelope = sweepEnvelope(approved);
+
     for (const other of [
       sweep({ to: ALICE }),
       sweep({ amount: "2000000000000000001" }),
@@ -317,6 +333,7 @@ describe("checkSubject", () => {
         "envelope_mismatch",
       );
     }
+
     const otherChain = sweep({ chainId: MAINNET });
     const fieldsDiffer = { ...envelope, sweepHash: sweepHash(otherChain) };
     expect(checkSubject(fieldsDiffer, { kind: "sweep-wallet", sweep: otherChain })).toBe(
@@ -326,6 +343,7 @@ describe("checkSubject", () => {
 
   it("refuses a mandate that is not the envelope's", () => {
     const envelope = mandateEnvelope(mandate());
+
     for (const other of [
       mandate({ assets: [mandateAsset({ maxTotal: "1000000001" })] }),
       mandate({ recipients: [ALICE, BOB] }),
@@ -337,6 +355,7 @@ describe("checkSubject", () => {
         "envelope_mismatch",
       );
     }
+
     // The envelope names the other mandate's hash, but its own id, wallet, agent and workspace.
     for (const other of [
       mandate({ id: `mnd_${"0".repeat(25)}9` }),
@@ -349,6 +368,7 @@ describe("checkSubject", () => {
         "envelope_mismatch",
       );
     }
+
     // A mandate that fails its schema is refused, not thrown on.
     const empty = { ...mandate(), recipients: [] };
     expect(checkSubject(envelope, { kind: "grant-mandate", mandate: empty })).toBe(
@@ -364,6 +384,7 @@ describe("checkSubject", () => {
       { kind: "grant-mandate", mandate: mandate() },
       envelopeOnly,
     ];
+
     const envelopes: Envelope[] = [
       envelopeFor(intent()),
       policyEnvelope(policy()),
@@ -377,9 +398,11 @@ describe("checkSubject", () => {
       retireWallet(),
       deleteWorkspace(),
     ];
+
     for (const envelope of envelopes) {
       const accepted = subjects.filter((subject) => checkSubject(envelope, subject) === null);
       expect(accepted, envelope.type).toHaveLength(1);
+
       for (const subject of subjects) {
         if (accepted.includes(subject)) continue;
         expect(checkSubject(envelope, subject)).toBe("envelope_mismatch");
@@ -403,6 +426,7 @@ describe("checkSubject", () => {
 describe("payments", () => {
   it("a transfer's lines show exactly the intent's recipient, amount and chain", () => {
     const recipients = [ALICE, BOB, ...EIP55.map((address) => address.toLowerCase())] as const;
+
     const amounts = [
       1n,
       999n,
@@ -412,6 +436,7 @@ describe("payments", () => {
       1_234_567_890_123_456_789_012_345n,
       UINT256_MAX,
     ];
+
     const tokens: { label: AssetLabel; token: `0x${string}` }[] = [
       { label: USDC, token: TOKEN },
       {
@@ -428,9 +453,11 @@ describe("payments", () => {
         token: "0x7777777777777777777777777777777777777777",
       },
     ];
+
     const assets = tokens.map((entry) => entry.label);
     const unknownToken = "0x8888888888888888888888888888888888888888" as const;
     let checked = 0;
+
     for (const [index, to] of recipients.entries()) {
       for (const amount of amounts) {
         const cases: { subject: Intent; decimals: number; unit: string; chain: string }[] = [
@@ -478,6 +505,7 @@ describe("payments", () => {
             chain: "Base (eip155:8453)",
           },
         ];
+
         for (const { subject, decimals, unit, chain } of cases) {
           const view = renderIntent(subject, { assets, currentPolicy: null });
           const shown = parseAmount(value(view, "Amount"), decimals);
@@ -485,6 +513,7 @@ describe("payments", () => {
           expect(value(view, "To")).toBe(to);
           const checksummed = value(view, "To, checksummed (EIP-55)");
           expect(checksummed.toLowerCase()).toBe(to);
+
           if (index >= 2) expect(checksummed).toBe(EIP55[index - 2]);
           expect(value(view, "Network")).toBe(chain);
           expect(
@@ -499,6 +528,7 @@ describe("payments", () => {
         }
       }
     }
+
     expect(checked).toBe(recipients.length * amounts.length * 6);
   });
 
@@ -507,6 +537,7 @@ describe("payments", () => {
       spent24h: 1_500_000_000_000_000_000n,
       approvals: { collected: 1, required: 2 },
     });
+
     expect(view.title).toBe("Send 0.25 ETH");
     expect(view.lines).toEqual([
       { label: "Amount", value: "0.25 ETH", kind: "amount" },
@@ -538,6 +569,7 @@ describe("payments", () => {
     const subject = intent({
       operation: { type: "evm.erc20.transfer", token: TOKEN, to: BOB, amount: "1500000" },
     });
+
     const view = renderIntent(subject, { currentPolicy: null });
     expect(view.title).toBe("Send 1.5 USDC");
     expect(value(view, "Amount")).toBe("1.5 USDC");
@@ -552,6 +584,7 @@ describe("payments", () => {
   it("an unknown token is shown in base units with unknown_token", () => {
     const unlisted = "0x9999999999999999999999999999999999999999" as const;
     const lookalike = `0x333333333333333333333333333333333333333${"4"}` as const;
+
     const cases: { token: `0x${string}`; assets: AssetLabel[] }[] = [
       { token: unlisted, assets: [USDC] },
       // Named for another chain only.
@@ -561,16 +594,19 @@ describe("payments", () => {
       // Named twice: the signer cannot know which name is right.
       { token: TOKEN, assets: [USDC, { ...USDC, symbol: "USDT" }] },
     ];
+
     for (const { token, assets } of cases) {
       const subject = intent({
         operation: { type: "evm.erc20.transfer", token, to: BOB, amount: "1234567" },
       });
+
       const policyWithToken = policy({
         assets: [
           ...policy().assets,
           { chainId: BASE, asset: token, maxPerTx: "5000000", maxPerDay: "9000000" },
         ].sort((a, b) => (`${a.chainId}|${a.asset}` < `${b.chainId}|${b.asset}` ? -1 : 1)),
       });
+
       const view = renderIntent(subject, { assets, currentPolicy: policyWithToken });
       expect(view.warnings).toContain("unknown_token");
       expect(view.title).toBe("Send 1,234,567 base units of an unknown token");
@@ -599,6 +635,7 @@ describe("payments", () => {
         ),
         "Amount",
       );
+
     expect(tokenAt(18, UINT256_MAX)).toBe(
       "115,792,089,237,316,195,423,570,985,008,687,907,853,269,984,665,640,564,039,457.584007913129639935 TKN",
     );
@@ -622,6 +659,7 @@ describe("payments", () => {
     const call = intent({
       operation: { type: "evm.call", to: ROUTER, valueWei: "0", data: "0xa9059cbb" },
     });
+
     const view = renderIntent(call);
     expect(value(view, "Value sent with the call")).toBe("0 ETH");
     expect(values(view, "Spent in the last 24 hours")).toEqual([]);
@@ -630,9 +668,11 @@ describe("payments", () => {
 
   it("a contract call shows the target, value, selector and full calldata, and warns", () => {
     const data = `0xa9059cbb${"00".repeat(12)}${BOB.slice(2)}${"0".repeat(63)}1` as const;
+
     const subject = intent({
       operation: { type: "evm.call", to: ROUTER, valueWei: "10000000000000000", data },
     });
+
     const view = renderIntent(subject);
     expect(view.title).toBe("Call a contract");
     expect(view.warnings).toEqual(["raw_contract_call"]);
@@ -656,6 +696,7 @@ describe("payments", () => {
       intent({ operation: { type: "evm.transfer", to: BOB, valueWei: "1" } }),
       { currentPolicy: allowlisted },
     );
+
     expect(value(inside, "Recipient allowlist")).toBe("on the wallet's allowlist");
     expect(inside.warnings).toEqual([]);
   });
@@ -695,6 +736,7 @@ describe("payments", () => {
 describe("venue orders and withdrawals", () => {
   const venuePolicy = (rules: Partial<HyperliquidRules> = {}) =>
     policy({ venues: { hyperliquid: hyperliquidRules(rules) } });
+
   const order = (changes: Partial<HyperliquidOrderOperation> = {}) =>
     venueIntent({
       operation: {
@@ -708,6 +750,7 @@ describe("venue orders and withdrawals", () => {
         ...changes,
       },
     });
+
   const renderOrder = (subject: Intent = order(), overrides: Partial<RenderInput> = {}) =>
     renderIntent(subject, { currentPolicy: venuePolicy(), ...overrides });
 
@@ -716,6 +759,7 @@ describe("venue orders and withdrawals", () => {
       spent24h: 100_000_000n,
       approvals: { collected: 1, required: 2 },
     });
+
     expect(view.title).toBe("Buy 0.01 BTC perpetual");
     expect(view.lines).toEqual([
       { label: "Market", value: "BTC perpetual, as named in the wallet's policy", kind: "text" },
@@ -764,6 +808,7 @@ describe("venue orders and withdrawals", () => {
 
   it("changing any field of the order changes a line", () => {
     const base = JSON.stringify(renderOrder().lines);
+
     const changes: [string, Partial<HyperliquidOrderOperation>][] = [
       ["asset", { asset: 4, size: "0.001" }],
       ["isBuy", { isBuy: false }],
@@ -772,9 +817,11 @@ describe("venue orders and withdrawals", () => {
       ["tif", { tif: "Gtc" }],
       ["reduceOnly", { reduceOnly: true }],
     ];
+
     for (const [field, change] of changes) {
       expect(JSON.stringify(renderOrder(order(change)).lines), field).not.toBe(base);
     }
+
     expect(renderOrder(order({ isBuy: false })).title).toBe("Sell 0.01 BTC perpetual");
     expect(value(renderOrder(order({ asset: 4, size: "0.001" })), "Size")).toBe("0.001 ETH");
     expect(value(renderOrder(order({ tif: "Gtc" })), "Time in force")).toBe(
@@ -817,6 +864,7 @@ describe("venue orders and withdrawals", () => {
         "none: the wallet's policy has no rules for this venue",
       );
     }
+
     expect(value(renderOrder(order(), { currentPolicy: policy() }), "Venue rules")).toBe(
       "none for this network: the signer would refuse this",
     );
@@ -882,6 +930,7 @@ describe("venue orders and withdrawals", () => {
 
   it("a policy change shows added, removed and changed markets, and removed venue rules", () => {
     const current = venuePolicy();
+
     const next = venuePolicy({
       markets: [
         { asset: 3, coin: "BTC", maxNotionalPerOrderUsd6: "2000000000" },
@@ -889,6 +938,7 @@ describe("venue orders and withdrawals", () => {
       ],
       timeInForce: ["Ioc"],
     });
+
     const view = renderPolicy({ ...next, revision: 2, previousHash: DIGEST_A }, current);
     expect(values(view, "Market added")).toEqual(["SOL (index 7): up to 100 USD per order"]);
     expect(values(view, "Market removed")).toEqual(["ETH (index 4): up to 500 USD per order"]);
@@ -912,6 +962,7 @@ describe("venue orders and withdrawals", () => {
   it("an order's view is a valid view of its envelope and subject", () => {
     const subject = order();
     const envelope = envelopeFor(subject);
+
     const view = {
       v: 1,
       approvalId: envelope.approvalId,
@@ -932,6 +983,7 @@ describe("venue orders and withdrawals", () => {
       },
       returnUrl: `http://localhost:8080/w/${WS}/approvals/${APPROVAL}`,
     };
+
     expect(ConfirmationView.safeParse(view).success).toBe(true);
     expect(envelope.type === "approve-intent" && envelope.chainId).toBe(HL_TESTNET);
     const other = { kind: "approve-intent", intent: order({ size: "0.02" }) };
@@ -960,6 +1012,7 @@ describe("text nobody checked", () => {
       // Many spaces to push text onto what looks like its own line.
       `pay invoice${" ".repeat(200)}To: ${BOB}`,
     ];
+
     for (const memo of memos) {
       expect(Memo.safeParse(memo).success, memo).toBe(true);
       const view = renderIntent(intent({ memo }));
@@ -974,6 +1027,7 @@ describe("text nobody checked", () => {
       expect(note).toHaveLength(1);
       expect(note[0]?.kind).toBe("unchecked");
       expect(note[0]?.value).not.toMatch(hidden);
+
       // Every line that is not marked unchecked is identical to one rendered for a plain memo,
       // so nothing in the memo appears as a statement of the signer.
       for (const line of view.lines.filter((candidate) => candidate.kind !== "unchecked")) {
@@ -1038,6 +1092,7 @@ describe("policies", () => {
       fees: { maxPerTxWei: "20000000000000000" },
       approvals: { threshold: 2, ttlSeconds: 7200 },
     });
+
     const view = renderPolicy(next, current);
     expect(view.title).toBe("Change a wallet's policy");
     expect(view.warnings).toEqual([]);
@@ -1101,12 +1156,14 @@ describe("policies", () => {
       recipients: { mode: "allowlist", addresses: [ALICE, BOB] },
       contractCalls: { mode: "allowlist", targets: [ROUTER] },
     });
+
     const narrow = policy({
       revision: 2,
       previousHash: policyHash(wide),
       recipients: { mode: "allowlist", addresses: [BOB, TREASURY] },
       contractCalls: { mode: "deny" },
     });
+
     const view = renderPolicy(narrow, wide);
     expect(values(view, "Chain removed")).toEqual(["Ethereum (eip155:1)"]);
     expect(values(view, "Limit removed")).toEqual([
@@ -1153,6 +1210,7 @@ describe("policies", () => {
       recipients: { mode: "allowlist", addresses: [ALICE, BOB] },
       approvals: { threshold: 1, ttlSeconds: 90 },
     });
+
     const view = renderPolicy(first, null);
     expect(view.title).toBe("Set a wallet's first policy");
     expect(view.warnings).toEqual(["unknown_token", "unknown_chain", "first_policy"]);
@@ -1186,6 +1244,7 @@ describe("approvers and the workspace", () => {
   // this code: SHA-256 of these bytes, first 10 bytes, Crockford base32.
   const COSE_KEY =
     "pQECAyYgASFYIAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gIlggISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A";
+
   const COSE_KEY_LAST_BIT_FLIPPED =
     "pQECAyYgASFYIAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gIlggISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0E";
 
@@ -1234,6 +1293,7 @@ describe("approvers and the workspace", () => {
     const view = render(setAdminThreshold({ adminThreshold: 3 }), envelopeOnly, {
       adminThreshold: 1,
     });
+
     expect(view.title).toBe("Change the approvals needed for workspace changes");
     expect(value(view, "Approvals needed for workspace changes")).toBe("1 → 3");
   });
@@ -1270,9 +1330,11 @@ describe("sweeps", () => {
 
   it("a token sweep shows the token, and an unlisted destination warns", () => {
     const subject = sweep({ asset: TOKEN, amount: "1000000", to: ALICE });
+
     const allowlisted = renderSweep(subject, {
       currentPolicy: policy({ recipients: { mode: "allowlist", addresses: [ALICE] } }),
     });
+
     expect(allowlisted.title).toBe("Move 1 USDC out of the wallet");
     expect(value(allowlisted, "Token contract")).toBe(TOKEN);
     expect(value(allowlisted, "Destination")).toBe("on the wallet's recipient allowlist");
@@ -1291,6 +1353,7 @@ describe("sweeps", () => {
       treasuries: [WALLET_ADDRESS],
       currentPolicy: policy({ recipients: { mode: "allowlist", addresses: [WALLET_ADDRESS] } }),
     });
+
     expect(value(view, "Destination")).toBe("the wallet itself");
     expect(view.warnings).toEqual(["recipient_not_allowlisted"]);
   });
@@ -1300,6 +1363,7 @@ describe("cancels", () => {
   const target = (operation: Operation, attempts = 1, cancelling = false) => ({
     cancelTarget: { operation, attempts, cancelling },
   });
+
   const transfer: Operation = { type: "evm.transfer", to: ALICE, valueWei: "250000000000000000" };
 
   it("names what it would stop from the signer's record, its nonce and its own fee ceiling, and says it is an attempt", () => {
@@ -1323,6 +1387,7 @@ describe("cancels", () => {
 
   it("every field of the envelope changes what is shown", () => {
     const base = render(cancelTransaction(), envelopeOnly, target(transfer)).lines;
+
     for (const change of [
       { targetApprovalId: `apr_01jd000000000000000000000f` as const },
       { chainId: MAINNET },
@@ -1342,6 +1407,7 @@ describe("cancels", () => {
       envelopeOnly,
       target({ type: "evm.erc20.transfer", token: TOKEN, to: BOB, amount: "1500000" }, 3, true),
     );
+
     expect(token.title).toBe("Try to cancel sending 1.5 USDC");
     expect(value(token, "To")).toBe(BOB);
     expect(value(token, "Token contract")).toBe(TOKEN);
@@ -1353,6 +1419,7 @@ describe("cancels", () => {
       envelopeOnly,
       target({ type: "evm.call", to: ROUTER, valueWei: "0", data: "0xa9059cbb0000" }),
     );
+
     expect(call.title).toBe("Try to cancel a contract call");
     expect(value(call, "Contract it would call")).toBe(ROUTER);
     expect(value(call, "Function selector")).toBe("0xa9059cbb");
@@ -1370,12 +1437,15 @@ describe("retiring and deleting", () => {
     label: "Operations",
     address: WALLET_ADDRESS,
   };
+
   const treasury: SignerWalletRecord = {
     walletId: OTHER_WALLET,
     label: "Treasury",
     address: OTHER_WALLET_ADDRESS,
   };
+
   const records = [operations, treasury];
+
   const lifecycle = (envelope: Envelope, overrides: Partial<RenderInput> = {}) =>
     render(envelope, envelopeOnly, { wallet: null, wallets: records, ...overrides });
 
@@ -1432,6 +1502,7 @@ describe("retiring and deleting", () => {
     const moved = lifecycle(deleteWorkspace(), {
       wallets: [operations, { ...treasury, address: ALICE }],
     });
+
     expect(value(moved, "Address at the signer")).toBe(ALICE);
     expect(value(moved, "At the signer")).toBe("another address: the signer will refuse this");
     expect(values(moved, "Wallet address")).toEqual([WALLET_ADDRESS, OTHER_WALLET_ADDRESS]);
@@ -1439,6 +1510,7 @@ describe("retiring and deleting", () => {
 
   it("every field of either envelope changes what is shown", () => {
     const retired = lifecycle(retireWallet()).lines;
+
     for (const change of [
       { wallet: { walletId: OTHER_WALLET, address: OTHER_WALLET_ADDRESS } },
       { wallet: { walletId: WALLET, address: OTHER_WALLET_ADDRESS } },
@@ -1446,7 +1518,9 @@ describe("retiring and deleting", () => {
     ]) {
       expect(lifecycle(retireWallet(change)).lines).not.toEqual(retired);
     }
+
     const deleted = lifecycle(deleteWorkspace()).lines;
+
     for (const change of [
       { wallets: [{ walletId: WALLET, address: WALLET_ADDRESS }] },
       { destroyAfter: T0 + 86_400 },
@@ -1459,6 +1533,7 @@ describe("retiring and deleting", () => {
     const view = lifecycle(retireWallet(), {
       wallets: [{ ...operations, label: "Ops\nKey destroyed after: never\u202e" }],
     });
+
     expect(values(view, "Key destroyed after")).toEqual(["2023-11-21 22:13:20 UTC"]);
     expect(value(view, "Wallet name, not checked")).toBe(
       "Ops[U+000A]Key destroyed after: never[U+202E]",
@@ -1487,6 +1562,7 @@ describe("retiring and deleting", () => {
         },
         returnUrl: `http://localhost:8080/w/${WS}/approvals/${APPROVAL}`,
       };
+
       expect(ConfirmationView.safeParse(view).success, envelope.type).toBe(true);
     }
   });
@@ -1494,24 +1570,28 @@ describe("retiring and deleting", () => {
 
 describe("mandates", () => {
   const USDC_ON_BASE: AssetLabel = { chainId: BASE, asset: USDC_BASE, symbol: "USDC", decimals: 6 };
+
   const usdcPolicy = policy({
     assets: [
       { chainId: BASE, asset: USDC_BASE, maxPerTx: "100000000", maxPerDay: "500000000" },
       ...policy().assets,
     ],
   });
+
   const ETH_LIMIT = mandateAsset({
     asset: "native",
     maxPerAction: "100000000000000000",
     maxPerWindow: "500000000000000000",
     maxTotal: "1000000000000000000",
   });
+
   const renderMandate = (subject: Mandate, overrides: Partial<RenderInput> = {}) =>
     render(
       mandateEnvelope(subject),
       { kind: "grant-mandate", mandate: subject },
       { assets: [USDC, USDC_ON_BASE], currentPolicy: usdcPolicy, ...overrides },
     );
+
   const PURPOSE = "Purpose, not checked";
 
   it("shows the wallet, the agent, every cap, every recipient, the end time and the worst case", () => {
@@ -1579,6 +1659,7 @@ describe("mandates", () => {
 
   it("every field that changes what is approved changes what is shown", () => {
     const baseline = renderMandate(mandate());
+
     const changes: Partial<Mandate>[] = [
       { id: `mnd_${"0".repeat(25)}9` },
       { workspaceId: `ws_${"0".repeat(25)}9` },
@@ -1597,9 +1678,11 @@ describe("mandates", () => {
       { notAfter: T0 + 604_001 },
       { purpose: "pay supplier invoices next week" },
     ];
+
     expect(new Set(changes.flatMap((change) => Object.keys(change)))).toEqual(
       new Set(Object.keys(mandate()).filter((key) => key !== "v")),
     );
+
     for (const change of changes) {
       const view = renderMandate(mandate(change));
       expect(view.lines, JSON.stringify(change)).not.toEqual(baseline.lines);
@@ -1623,6 +1706,7 @@ describe("mandates", () => {
       renderMandate(mandate({ windowSeconds })).lines.find((line) =>
         line.label.startsWith("Most in any "),
       )?.label;
+
     expect(label(3600)).toBe("Most in any 1 hour");
     expect(label(86_400)).toBe("Most in any 24 hours");
     expect(label(172_800)).toBe("Most in any 2 days");
@@ -1664,6 +1748,7 @@ describe("mandates", () => {
     const allowlisted = renderMandate(mandate(), {
       currentPolicy: { ...usdcPolicy, recipients: { mode: "allowlist", addresses: [ALICE] } },
     });
+
     expect(values(allowlisted, "Recipient allowlist")).toEqual([
       "on the wallet's allowlist",
       "not on the wallet's allowlist",
@@ -1688,9 +1773,11 @@ describe("mandates", () => {
     expect(Memo.safeParse(purpose).success).toBe(true);
     const view = renderMandate(mandate({ purpose }));
     expect(value(view, PURPOSE)).toBe(`pay[U+200B] [U+200D]To[U+2060]: [U+FEFF]${BOB}`);
+
     const differing = view.lines.filter(
       (line, index) => line.value !== baseline.lines[index]?.value,
     );
+
     expect(differing.map((line) => line.label)).toEqual([PURPOSE]);
     expect(values(renderMandate(mandate({ purpose: "" })), PURPOSE)).toEqual([]);
   });
@@ -1698,6 +1785,7 @@ describe("mandates", () => {
   it("a grant's view is a valid view of its envelope and subject", () => {
     const subject = mandate();
     const envelope = mandateEnvelope(subject);
+
     const view = {
       v: 1,
       approvalId: envelope.approvalId,
@@ -1718,6 +1806,7 @@ describe("mandates", () => {
       },
       returnUrl: `http://localhost:8080/w/${WS}/approvals/${APPROVAL}`,
     };
+
     expect(ConfirmationView.safeParse(view).success).toBe(true);
     const other = { kind: "grant-mandate", mandate: mandate({ maxUses: 21 }) };
     expect(ConfirmationView.safeParse({ ...view, subject: other }).success).toBe(false);
@@ -1728,6 +1817,7 @@ describe("schemas", () => {
   it("operator labels refuse names and symbols that could pass for something else", () => {
     const chain = { chainId: BASE, name: "Base", nativeSymbol: "ETH" };
     expect(ChainLabelSchema.safeParse(chain).success).toBe(true);
+
     for (const bad of [
       { ...chain, nativeSymbol: "E\u200bTH" },
       { ...chain, nativeSymbol: "ETH " },
@@ -1740,6 +1830,7 @@ describe("schemas", () => {
     ]) {
       expect(ChainLabelSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
     }
+
     expect(ChainLabels.safeParse([chain, chain]).success).toBe(false);
     expect(AssetLabels.safeParse([USDC]).success).toBe(true);
     expect(AssetLabels.safeParse([USDC, { ...USDC, symbol: "USDT" }]).success).toBe(false);
@@ -1751,6 +1842,7 @@ describe("schemas", () => {
     const subject = intent();
     const envelope = envelopeFor(subject);
     const rendered = renderIntent(subject);
+
     const view = {
       v: 1,
       approvalId: envelope.approvalId,
@@ -1771,7 +1863,9 @@ describe("schemas", () => {
       },
       returnUrl: `http://localhost:8080/w/${WS}/approvals/${APPROVAL}`,
     };
+
     expect(ConfirmationView.safeParse(view).success).toBe(true);
+
     for (const bad of [
       { ...view, kind: "add-approver" },
       { ...view, expiresAt: envelope.expiresAt + 1 },

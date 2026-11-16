@@ -23,19 +23,24 @@ describe("the approve service's configuration", () => {
     SIGNER_URL: "http://signer:8787",
     APPROVE_SIGNER_SECRET_FILE: secretFile,
   };
+
   const tlsFiles = {
     APPROVE_TLS_CERT_FILE: cert("approve.crt"),
     APPROVE_TLS_KEY_FILE: cert("approve.key"),
     APPROVE_TLS_PEER_CERT_FILE: cert("signer.crt"),
   };
+
   const split: Record<string, string> = { ...base, SIGNER_URL: "https://signer:8787", ...tlsFiles };
+
   const refusal = (environment: Record<string, string>) => {
     try {
       loadConfig(environment);
     } catch (error) {
       if (!(error instanceof ConfigError)) throw error;
+
       return error.message;
     }
+
     return null;
   };
 
@@ -57,6 +62,7 @@ describe("the approve service's configuration", () => {
   it("refuses an https: signer without all three files", () => {
     const https = { ...base, SIGNER_URL: "https://signer:8787" };
     expect(refusal(https)).toBe("APPROVE_TLS_*: an https SIGNER_URL needs all three");
+
     for (const name of Object.keys(tlsFiles)) {
       const { [name]: _dropped, ...two } = split;
       expect(refusal(two)).toBe("APPROVE_TLS_*: an https SIGNER_URL needs all three");
@@ -67,6 +73,7 @@ describe("the approve service's configuration", () => {
     expect(refusal({ ...split, SIGNER_URL: "http://signer:8787" })).toBe(
       "APPROVE_TLS_*: set only with an https SIGNER_URL",
     );
+
     for (const [name, path] of Object.entries(tlsFiles)) {
       expect(refusal({ ...base, [name]: path })).toBe(
         "APPROVE_TLS_*: set only with an https SIGNER_URL",

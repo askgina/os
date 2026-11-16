@@ -89,25 +89,33 @@ function parseKeyringFile(value: unknown): KeyringFile {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("keyring: the keyring file must be a JSON object");
   }
+
   const { active, keys } = value as Record<string, unknown>;
+
   if (typeof active !== "string" || active === "") {
     throw new Error("keyring: `active` must be a non-empty string");
   }
+
   if (typeof keys !== "object" || keys === null || Array.isArray(keys)) {
     throw new Error("keyring: `keys` must be an object of KEK id to base64 key");
   }
+
   const out: Record<string, string> = {};
+
   for (const [id, key] of Object.entries(keys)) {
     if (!FILE_KEK_ID.test(id)) {
       throw new Error("keyring: every KEK id must match [A-Za-z0-9_-]+");
     }
+
     if (typeof key !== "string") throw new Error(`keyring: KEK ${id} is not a base64 string`);
     out[id] = key;
   }
+
   return { active, keys: out };
 }
 
 const IV_BYTES = 12;
+
 const TAG_BYTES = 16;
 
 export class LocalKeyring implements KeyProvider {
@@ -116,23 +124,29 @@ export class LocalKeyring implements KeyProvider {
 
   constructor(file: KeyringFile) {
     this.#keys = new Map();
+
     for (const [id, b64] of Object.entries(file.keys)) {
       // Buffer.from silently skips characters outside the alphabet, so a typo could still
       // decode to 32 bytes of a different key. Require canonical base64.
       const key = Buffer.from(b64, "base64");
+
       if (key.length !== 32 || key.toString("base64") !== b64) {
         throw new Error(`keyring: KEK ${id} is not 32 bytes of canonical base64`);
       }
+
       this.#keys.set(id, key);
     }
+
     if (!this.#keys.has(file.active)) {
       throw new Error(`keyring: active KEK ${file.active} is not in the keyring`);
     }
+
     this.#active = file.active;
   }
 
   static fromFile(path: string): LocalKeyring {
     let parsed: unknown;
+
     try {
       parsed = JSON.parse(readFileSync(path, "utf8"));
     } catch (cause) {
@@ -141,6 +155,7 @@ export class LocalKeyring implements KeyProvider {
       const kind = cause instanceof SyntaxError ? "not valid JSON" : "unreadable";
       throw new Error(`keyring: the keyring file is ${kind}`);
     }
+
     return new LocalKeyring(parseKeyringFile(parsed));
   }
 
@@ -159,7 +174,9 @@ export class LocalKeyring implements KeyProvider {
 
   #kek(kekId: string): Buffer {
     const kek = this.#keys.get(kekId);
+
     if (!kek) throw new KeyProviderRefusedError(`keyring: unknown KEK ${kekId}`, { kekId });
+
     return kek;
   }
 
@@ -168,17 +185,21 @@ export class LocalKeyring implements KeyProvider {
     const cipher = createCipheriv("aes-256-gcm", this.#kek(kekId), iv);
     cipher.setAAD(aad);
     const body = Buffer.concat([cipher.update(dataKey), cipher.final()]);
+
     return Buffer.concat([iv, body, cipher.getAuthTag()]);
   }
 
   async unwrap(kekId: string, wrapped: Uint8Array, aad: Uint8Array): Promise<Uint8Array> {
     const buf = Buffer.from(wrapped);
+
     if (buf.length !== IV_BYTES + 32 + TAG_BYTES) {
       throw new KeyProviderRefusedError("keyring: malformed wrapped key", { kekId });
     }
+
     const decipher = createDecipheriv("aes-256-gcm", this.#kek(kekId), buf.subarray(0, IV_BYTES));
     decipher.setAAD(aad);
     decipher.setAuthTag(buf.subarray(buf.length - TAG_BYTES));
+
     try {
       return new Uint8Array(
         Buffer.concat([

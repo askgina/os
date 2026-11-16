@@ -53,29 +53,41 @@ import {
 } from "./venues/hyperliquid.ts";
 
 type AgentRow = typeof agents.$inferSelect;
+
 type VenueOrderRow = typeof venueOrders.$inferSelect;
+
 type Next = { done: boolean; waitSeconds: number };
 
 /** How long the follow-up of a posted order watches it; the reconcile sweeper takes over after. */
 export const ORDER_WATCH_SECONDS = 3_600;
+
 /** How often the reconcile sweeper looks at orders the follow-up stopped watching. */
 export const RECONCILE_INTERVAL_SECONDS = 300;
+
 /** How long to wait before asking an unreachable venue again. */
 const RETRY_SECONDS = 5;
+
 const MAX_WATCH_WAIT_SECONDS = 60;
+
 /** At most this many orders per reconcile round. */
 const RECONCILE_BATCH = 100;
+
 /** Hyperliquid perpetual prices: at most 5 significant figures and 6 − szDecimals decimals. */
 const PRICE_SIGNIFICANT_FIGURES = 5;
+
 const PERP_PRICE_DECIMALS = 6;
+
 /** USDC at Hyperliquid has 6 decimals. */
 const USDC_DECIMALS = 6;
+
 /** Venue sizes and prices are compared exactly at this scale. */
 const SCALE = 8;
 
 /** A request the venue may still act on: not posted yet, or posted and not final. */
 const OPEN: readonly VenueOrderStatus[] = ["signed", "submitted", "placed"];
+
 const CANCELLABLE: readonly VenueOrderStatus[] = ["submitted", "placed"];
+
 /** The intent's status for each of its venue request's. */
 const INTENT_STATUS: Record<VenueOrderStatus, IntentStatus> = {
   signed: "signed",
@@ -98,6 +110,7 @@ const clients = new WeakMap<AppContext["config"], Map<VenueNetwork, HyperliquidC
 /** The client for a configured venue network; refused when `VENUES_FILE` does not name it. */
 export function venueClient(ctx: AppContext, network: string): HyperliquidClient {
   const entry = ctx.config.venues.find((venue) => venue.network === network);
+
   if (!entry) {
     throw new HttpError(
       "invalid_request",
@@ -105,16 +118,21 @@ export function venueClient(ctx: AppContext, network: string): HyperliquidClient
       "venue_not_configured",
     );
   }
+
   let byNetwork = clients.get(ctx.config);
+
   if (!byNetwork) {
     byNetwork = new Map();
     clients.set(ctx.config, byNetwork);
   }
+
   let client = byNetwork.get(entry.network);
+
   if (!client) {
     client = createHyperliquidClient({ apiUrl: entry.apiUrl });
     byNetwork.set(entry.network, client);
   }
+
   return client;
 }
 
@@ -123,17 +141,21 @@ export function venueClient(ctx: AppContext, network: string): HyperliquidClient
 /** A plain decimal ("0.010", "65000.") in canonical form ("0.01", "65000"), or null. */
 function canonicalDecimal(text: string): string | null {
   const match = /^(\d{1,20})(?:\.(\d{0,20}))?$/.exec(text.trim());
+
   if (!match) return null;
   const whole = (match[1] ?? "0").replace(/^0+(?=\d)/, "");
   const fraction = (match[2] ?? "").replace(/0+$/, "");
   const value = fraction.length > 0 ? `${whole}.${fraction}` : whole;
+
   return PositiveDecimal.safeParse(value).success ? value : null;
 }
 
 /** A venue's decimal text times 10^8, exactly; null when it is not a plain decimal that fits. */
 function scaled(text: string): bigint | null {
   const match = /^(\d{1,20})(?:\.(\d{1,8}))?$/.exec(text);
+
   if (!match) return null;
+
   return (
     BigInt(match[1] ?? "0") * 10n ** BigInt(SCALE) + BigInt((match[2] ?? "").padEnd(SCALE, "0"))
   );
@@ -144,11 +166,15 @@ const unscaled = (value: bigint) => formatUnits(value, SCALE);
 /** Whether a price and a size fit the market's precision at the venue. */
 function fitsTick(price: string, size: string, szDecimals: number): boolean {
   const fractionOf = (value: string) => value.split(".")[1]?.length ?? 0;
+
   if (fractionOf(size) > szDecimals) return false;
+
   // An integer price is always allowed, whatever its significant figures.
   if (!price.includes(".")) return true;
+
   if (fractionOf(price) > PERP_PRICE_DECIMALS - szDecimals) return false;
   const significant = price.replace(".", "").replace(/^0+/, "");
+
   return significant.length <= PRICE_SIGNIFICANT_FIGURES;
 }
 
@@ -158,18 +184,22 @@ function venueNetwork(ctx: AppContext, network: string): VenueNetwork {
   if (!isVenueNetwork(network)) {
     throw new HttpError("invalid_request", "this network is not a venue", "venue_not_configured");
   }
+
   venueClient(ctx, network);
+
   return network;
 }
 
 function decimalInput(name: string, value: string): string {
   const decimal = canonicalDecimal(value);
+
   if (decimal === null) {
     throw new HttpError(
       "invalid_request",
       `${name} must be a decimal number greater than zero with at most 8 decimals`,
     );
   }
+
   return decimal;
 }
 
@@ -202,6 +232,7 @@ export async function proposeOrder(
   const reduceOnly = input.reduceOnly ?? false;
   const basis = await proposalBasis(ctx, agent, input.walletId);
   const rules = basis.policy.venues?.hyperliquid;
+
   if (rules === undefined || rules.network !== network) {
     throw new HttpError(
       "policy_denied",
@@ -209,7 +240,9 @@ export async function proposeOrder(
       "venue_not_allowed",
     );
   }
+
   const market = rules.markets.find((candidate) => candidate.coin === input.coin);
+
   if (market === undefined) {
     throw new HttpError(
       "policy_denied",
@@ -217,15 +250,19 @@ export async function proposeOrder(
       "market_not_allowed",
     );
   }
+
   const universe = await venueClient(ctx, network)
     .meta()
     .catch((error: unknown) => {
       if (error instanceof VenueError) {
         throw new HttpError("internal", "the venue could not be read", "venue_unreachable");
       }
+
       throw error;
     });
+
   const perp = universe[market.asset];
+
   // The index is what is signed; the policy's name for it must still be the venue's.
   if (perp === undefined || perp.name !== market.coin || perp.isDelisted) {
     throw new HttpError(
@@ -234,6 +271,7 @@ export async function proposeOrder(
       "market_metadata_mismatch",
     );
   }
+
   if (!fitsTick(limitPrice, size, perp.szDecimals)) {
     throw new HttpError(
       "invalid_request",
@@ -241,6 +279,7 @@ export async function proposeOrder(
       "invalid_tick",
     );
   }
+
   const intent = VenueIntent.parse({
     v: PROTOCOL_VERSION,
     id: newId("int"),
@@ -260,7 +299,9 @@ export async function proposeOrder(
     memo: input.memo,
     createdAt: ctx.now(),
   });
+
   checkPolicy(basis, intent);
+
   const display: OrderDisplay = {
     kind: "order",
     title: `${input.side === "buy" ? "Buy" : "Sell"} ${size} ${market.coin} at ${limitPrice}`,
@@ -275,6 +316,7 @@ export async function proposeOrder(
     reduceOnly,
     cancellableByAgent: true,
   };
+
   return recordProposal(ctx, agent, {
     basis,
     intent,
@@ -302,6 +344,7 @@ export async function proposeVenueWithdrawal(
   },
 ): Promise<ProposalResult> {
   const network = venueNetwork(ctx, input.chainId);
+
   if (input.mandateId !== undefined) {
     throw new HttpError(
       "policy_denied",
@@ -309,13 +352,16 @@ export async function proposeVenueWithdrawal(
       "mandate_operation_not_allowed",
     );
   }
+
   if (input.asset !== "usdc") {
     throw new HttpError("invalid_request", 'a venue withdrawal moves USDC: set asset to "usdc"');
   }
+
   const amount = decimalInput("amount", input.amount);
   const base = toBaseUnits(amount, USDC_DECIMALS);
   const basis = await proposalBasis(ctx, agent, input.walletId);
   const { wallet } = basis;
+
   if (input.to.toLowerCase() !== wallet.address.toLowerCase()) {
     throw new HttpError(
       "invalid_request",
@@ -323,6 +369,7 @@ export async function proposeVenueWithdrawal(
       "withdrawal_not_own_address",
     );
   }
+
   const intent = VenueIntent.parse({
     v: PROTOCOL_VERSION,
     id: newId("int"),
@@ -334,7 +381,9 @@ export async function proposeVenueWithdrawal(
     memo: input.memo,
     createdAt: ctx.now(),
   });
+
   checkPolicy(basis, intent);
+
   const display: TransferDisplay = {
     kind: "transfer",
     title: `Withdraw ${amount} USDC from ${VENUE_NETWORK_NAMES[network]}`,
@@ -346,6 +395,7 @@ export async function proposeVenueWithdrawal(
     token: null,
     rawCall: false,
   };
+
   return recordProposal(ctx, agent, {
     basis,
     intent,
@@ -361,6 +411,7 @@ async function orderRow(ctx: AppContext, approvalId: string): Promise<VenueOrder
     .select()
     .from(venueOrders)
     .where(eq(venueOrders.approvalId, approvalId as VenueOrderRow["approvalId"]));
+
   return row;
 }
 
@@ -379,6 +430,7 @@ async function executeVenueIntent(
   if (await orderRow(ctx, approval.id)) return;
   await moveIntent(ctx, row, ["pending_approval"], "approved");
   let signed: SignVenueResponse;
+
   try {
     signed = await ctx.signer.signVenue({ intent, authorization });
   } catch (error) {
@@ -388,8 +440,10 @@ async function executeVenueIntent(
         "the signer refused to sign",
       );
     }
+
     throw error;
   }
+
   const body = JSON.stringify(signed.request);
   const sealed = await ctx.sealer.seal(row.workspaceId, bodyLocation(approval.id), body);
   await ctx.db.transaction(async (tx) => {
@@ -407,6 +461,7 @@ async function executeVenueIntent(
       })
       .onConflictDoNothing()
       .returning({ approvalId: venueOrders.approvalId });
+
     if (stored) {
       await moveIntent(ctx, row, ["approved", "pending_approval"], "signed", { executor: tx });
     }
@@ -435,6 +490,7 @@ async function record(
   options: { from?: readonly VenueOrderStatus[]; failureCode?: string } = {},
 ): Promise<boolean> {
   const now = new Date(ctx.now() * 1000);
+
   return ctx.db.transaction(async (tx) => {
     const [updated] = await tx
       .update(venueOrders)
@@ -446,13 +502,16 @@ async function record(
         ),
       )
       .returning({ approvalId: venueOrders.approvalId });
+
     if (!updated) return false;
+
     if (to !== order.status) {
       await moveIntent(ctx, intent, ["signed", "submitted", "placed"], INTENT_STATUS[to], {
         executor: tx,
         ...(options.failureCode === undefined ? {} : { failureCode: options.failureCode }),
       });
     }
+
     return true;
   });
 }
@@ -469,14 +528,17 @@ interface Followed {
 
 async function followed(ctx: AppContext, order: VenueOrderRow): Promise<Followed> {
   const intent = await getIntentRow(ctx, order.intentId);
+
   const [{ intent: parsed }, [wallet], body] = await Promise.all([
     readIntent(ctx, intent),
     ctx.db.select({ address: wallets.address }).from(wallets).where(eq(wallets.id, order.walletId)),
     ctx.sealer.open(intent.workspaceId, bodyLocation(order.approvalId), order.request),
   ]);
+
   if (!("operation" in parsed) || !isVenueNetwork(parsed.chainId) || !wallet) {
     throw new Error("a venue request without its venue intent or wallet");
   }
+
   return {
     order,
     intent,
@@ -498,21 +560,26 @@ function fromStatus(
   const original = scaled(status.originalSize);
   const remaining = scaled(status.remaining);
   const filled = original !== null && remaining !== null ? original - remaining : null;
+
   const facts: Facts = {
     venueOrderId: status.venueOrderId,
     ...(filled === null ? {} : { filledSize: unscaled(filled) }),
   };
+
   if (status.status === "filled") {
     return { to: "filled", facts: { ...facts, filledSize: operation.size } };
   }
+
   if (status.status === "canceled" || status.status.endsWith("Canceled")) {
     const byVenue = status.status !== "canceled";
+
     return {
       to: filled !== null && filled > 0n ? "partially_filled" : "cancelled",
       facts: { ...facts, venueError: byVenue ? status.status : null },
       ...(byVenue ? { failureCode: "venue_cancelled" } : {}),
     };
   }
+
   if (/rejected$/i.test(status.status)) {
     return {
       to: "failed",
@@ -520,6 +587,7 @@ function fromStatus(
       failureCode: "venue_refused",
     };
   }
+
   // `open`, and anything this server does not know yet, is watched as resting.
   return { to: "placed", facts };
 }
@@ -527,6 +595,7 @@ function fromStatus(
 /** Record what the venue answered a posted request with. */
 async function recordAnswer(ctx: AppContext, f: Followed, answer: ExchangeAnswer): Promise<Next> {
   const { order, intent, operation } = f;
+
   if (answer.kind === "refused") {
     // A request past its window is refused for that reason, whatever words the venue uses.
     const late = expired(ctx, order) || /expire/i.test(answer.text);
@@ -536,39 +605,46 @@ async function recordAnswer(ctx: AppContext, f: Followed, answer: ExchangeAnswer
       intent,
       late ? "expired" : "failed",
       { venueError: answer.text },
-      {
-        ...(late ? {} : { failureCode: "venue_refused" }),
-      },
+      late ? {} : { failureCode: "venue_refused" },
     );
+
     return { done: true, waitSeconds: 0 };
   }
+
   if (operation.type === "hyperliquid.withdraw") {
     if (answer.kind !== "accepted") return { done: false, waitSeconds: RETRY_SECONDS };
     await record(ctx, order, intent, "accepted", {});
+
     return { done: true, waitSeconds: 0 };
   }
+
   switch (answer.kind) {
     case "resting":
       await record(ctx, order, intent, "placed", { venueOrderId: answer.venueOrderId });
+
       return { done: false, waitSeconds: RETRY_SECONDS };
     case "filled": {
       const total = scaled(answer.totalSize);
       const complete = total !== null && total >= (scaled(operation.size) ?? 0n);
+
       // An immediate-or-cancel order's rest is cancelled at once; any other rests on the book.
       const to: VenueOrderStatus = complete
         ? "filled"
         : operation.tif === "Ioc"
           ? "partially_filled"
           : "placed";
+
       await record(ctx, order, intent, to, {
         venueOrderId: answer.venueOrderId,
         filledSize: answer.totalSize,
         averagePrice: answer.averagePrice,
       });
+
       return to === "placed"
         ? { done: false, waitSeconds: RETRY_SECONDS }
         : { done: true, waitSeconds: 0 };
     }
+
     case "accepted":
       // Not an answer to an order: what happened is read back by its client order id.
       return { done: false, waitSeconds: RETRY_SECONDS };
@@ -578,6 +654,7 @@ async function recordAnswer(ctx: AppContext, f: Followed, answer: ExchangeAnswer
 /** Post the stored request, byte for byte, and record the answer. */
 async function post(ctx: AppContext, f: Followed): Promise<Next> {
   let answer: ExchangeAnswer;
+
   try {
     answer = await f.client.post(f.body);
   } catch (error) {
@@ -588,14 +665,17 @@ async function post(ctx: AppContext, f: Followed): Promise<Next> {
       network: f.order.network,
       outcome: "unreachable",
     });
+
     return { done: false, waitSeconds: RETRY_SECONDS };
   }
+
   ctx.log.info("venue request posted", {
     event: "venue.post",
     approvalId: f.order.approvalId,
     network: f.order.network,
     outcome: answer.kind,
   });
+
   return recordAnswer(ctx, f, answer);
 }
 
@@ -615,12 +695,14 @@ async function checkWithdrawal(
 ): Promise<Next | "unknown" | "unreachable"> {
   const { order, intent } = f;
   let nonces: number[];
+
   try {
     nonces = await f.client.withdrawalNonces(f.account, order.actionNonce - LEDGER_LOOKBACK_MS);
   } catch (error) {
     if (error instanceof VenueError) return "unreachable";
     throw error;
   }
+
   const found = nonces.includes(order.actionNonce);
   ctx.log.info("venue withdrawal read", {
     event: "venue.status",
@@ -628,8 +710,10 @@ async function checkWithdrawal(
     network: order.network,
     status: found ? "accepted" : "unknown",
   });
+
   if (!found) return "unknown";
   await record(ctx, order, intent, "accepted", {});
+
   return { done: true, waitSeconds: 0 };
 }
 
@@ -639,28 +723,40 @@ async function checkWithdrawal(
  */
 async function check(ctx: AppContext, f: Followed): Promise<Next | "unknown" | "unreachable"> {
   const { order, intent, operation } = f;
+
   if (operation.type === "hyperliquid.withdraw") return checkWithdrawal(ctx, f);
+
   if (order.cloid === null) return "unknown";
   let status: OrderStatusAnswer;
+
   try {
     status = await f.client.orderStatus(f.account, order.cloid as Cloid);
   } catch (error) {
     if (error instanceof VenueError) return "unreachable";
     throw error;
   }
+
   ctx.log.info("venue order read", {
     event: "venue.status",
     approvalId: order.approvalId,
     network: order.network,
     status: status.found ? status.status : "unknown",
   });
+
   if (!status.found) return "unknown";
   const next = fromStatus(operation, status);
-  await record(ctx, order, intent, next.to, next.facts, {
-    ...(next.failureCode === undefined ? {} : { failureCode: next.failureCode }),
-  });
+  await record(
+    ctx,
+    order,
+    intent,
+    next.to,
+    next.facts,
+    next.failureCode === undefined ? {} : { failureCode: next.failureCode },
+  );
+
   if (next.to !== "placed") return { done: true, waitSeconds: 0 };
   const elapsed = order.submittedAt ? ctx.now() - order.submittedAt.getTime() / 1000 : 0;
+
   return {
     done: false,
     waitSeconds: Math.min(
@@ -682,30 +778,40 @@ async function check(ctx: AppContext, f: Followed): Promise<Next | "unknown" | "
  */
 async function advance(ctx: AppContext, order: VenueOrderRow, watch: boolean): Promise<Next> {
   let f: Followed;
+
   try {
     f = await followed(ctx, order);
   } catch (error) {
     // The venue was removed from VENUES_FILE after signing: nothing can be posted any more.
     if (!(error instanceof HttpError)) throw error;
+
     if (OPEN.includes(order.status) && expired(ctx, order) && order.status !== "placed") {
       const intent = await getIntentRow(ctx, order.intentId);
       await record(ctx, order, intent, "expired", {});
+
       return { done: true, waitSeconds: 0 };
     }
+
     return { done: !watch, waitSeconds: MAX_WATCH_WAIT_SECONDS };
   }
+
   const watchedFor = order.submittedAt ? ctx.now() - order.submittedAt.getTime() / 1000 : 0;
+
   if (watch && order.status !== "signed" && watchedFor > ORDER_WATCH_SECONDS) {
     return { done: true, waitSeconds: 0 };
   }
+
   switch (order.status) {
     case "signed": {
       if (expired(ctx, order)) {
         await record(ctx, order, f.intent, "expired", {}, { from: ["signed"] });
+
         return { done: true, waitSeconds: 0 };
       }
+
       // Recorded before posting, so a crash after the post is followed by a look, not a guess.
       const now = new Date(ctx.now() * 1000);
+
       if (
         !(await record(
           ctx,
@@ -718,25 +824,37 @@ async function advance(ctx: AppContext, order: VenueOrderRow, watch: boolean): P
       ) {
         return { done: false, waitSeconds: 0 };
       }
+
       return post(ctx, { ...f, order: { ...order, status: "submitted", submittedAt: now } });
     }
+
     case "submitted": {
       const seen = await check(ctx, f);
+
       if (seen === "unreachable") return { done: false, waitSeconds: RETRY_SECONDS };
+
       if (seen !== "unknown") return seen;
+
       if (f.operation.type === "hyperliquid.order" && expired(ctx, order)) {
         await record(ctx, order, f.intent, "expired", {});
+
         return { done: true, waitSeconds: 0 };
       }
+
       return post(ctx, f);
     }
+
     case "placed": {
       const seen = await check(ctx, f);
+
       if (seen === "unreachable") return { done: false, waitSeconds: RETRY_SECONDS };
+
       // A resting order the venue no longer knows is not one this server can follow further.
       if (seen === "unknown") return { done: true, waitSeconds: 0 };
+
       return seen;
     }
+
     default:
       return { done: true, waitSeconds: 0 };
   }
@@ -744,7 +862,9 @@ async function advance(ctx: AppContext, order: VenueOrderRow, watch: boolean): P
 
 async function followUpVenueIntent(ctx: AppContext, approval: ApprovalRow): Promise<Next | null> {
   const order = await orderRow(ctx, approval.id);
+
   if (!order) return null;
+
   return advance(ctx, order, true);
 }
 
@@ -757,6 +877,7 @@ export async function reconcileOpenOrders(ctx: AppContext): Promise<number | nul
   if (!(await takeToken(ctx.db, "sweep:venue-reconcile", 60 / RECONCILE_INTERVAL_SECONDS, 1))) {
     return null;
   }
+
   const due = await ctx.db
     .select()
     .from(venueOrders)
@@ -767,6 +888,7 @@ export async function reconcileOpenOrders(ctx: AppContext): Promise<number | nul
       ),
     )
     .limit(RECONCILE_BATCH);
+
   for (const order of due) {
     await advance(ctx, order, false).catch((error: unknown) => {
       ctx.log.error("venue reconcile failed", {
@@ -776,6 +898,7 @@ export async function reconcileOpenOrders(ctx: AppContext): Promise<number | nul
       });
     });
   }
+
   return due.length;
 }
 
@@ -793,18 +916,23 @@ export async function cancelVenueOrder(
   actor: { type: "agent" | "user"; id: string },
 ): Promise<void> {
   const order = row.approvalId === null ? undefined : await orderRow(ctx, row.approvalId);
+
   if (!order || order.cloid === null || !CANCELLABLE.includes(order.status)) {
     throw new HttpError("conflict", "this order cannot be cancelled now", "not_cancellable");
   }
+
   const f = await followed(ctx, order);
+
   const signed = await ctx.signer
     .cancelVenueOrder(order.approvalId, row.workspaceId)
     .catch((error: unknown) => {
       if (error instanceof SignerError && !RETRYABLE_SIGNER_CODES.includes(error.code)) {
         throw new HttpError("signer_refused", "the signer refused the cancel", error.code);
       }
+
       throw new HttpError("internal", "the signer could not be reached", "retry_later");
     });
+
   await appendAudit(ctx, {
     workspaceId: row.workspaceId,
     actor,
@@ -812,12 +940,14 @@ export async function cancelVenueOrder(
     subject: { type: "intent", id: row.id },
   });
   let answer: ExchangeAnswer;
+
   try {
     answer = await f.client.post(JSON.stringify(signed.request));
   } catch (error) {
     if (!(error instanceof VenueError)) throw error;
     throw new HttpError("internal", "the venue could not be reached", "venue_unreachable");
   }
+
   ctx.log.info("venue cancel posted", {
     event: "venue.cancel",
     approvalId: order.approvalId,
@@ -825,6 +955,7 @@ export async function cancelVenueOrder(
     outcome: answer.kind,
   });
   const seen = await check(ctx, f);
+
   if (seen === "unreachable" && answer.kind === "accepted") {
     // The venue accepted the cancel; how much filled before it is the last known size.
     const filled = order.filledSize === null ? null : scaled(order.filledSize);
@@ -848,8 +979,10 @@ export async function cancelIntentOrOrder(
   actor: { type: "agent" | "user"; id: string },
 ): Promise<IntentStatus> {
   const order = row.approvalId === null ? undefined : await orderRow(ctx, row.approvalId);
+
   if (!order || !CANCELLABLE.includes(order.status)) return cancelIntent(ctx, row);
   await cancelVenueOrder(ctx, row, actor);
+
   return (await getIntentRow(ctx, row.id)).status;
 }
 
@@ -870,26 +1003,33 @@ export async function walletVenueAccount(
   venueSpent: WalletState["venueSpent"],
 ): Promise<VenueAccount | null> {
   const configured = ctx.config.venues.map((venue) => venue.network);
+
   if (configured.length === 0) return null;
   const rules = policy?.venues?.hyperliquid;
+
   let network: VenueNetwork | null =
     rules !== undefined && configured.includes(rules.network) ? rules.network : null;
+
   if (network === null) {
     const [used] = await ctx.db
       .select({ network: venueOrders.network })
       .from(venueOrders)
       .where(and(eq(venueOrders.walletId, wallet.id), inArray(venueOrders.network, configured)))
       .limit(1);
+
     network = used?.network ?? null;
   }
+
   if (network === null) return null;
   const client = venueClient(ctx, network);
   let reported: VenueAccount["reported"] = null;
+
   try {
     const [state, open] = await Promise.all([
       client.accountState(wallet.address),
       client.openOrders(wallet.address),
     ]);
+
     const parsed = VenueAccount.shape.reported.safeParse({
       accountValueUsd: state.accountValue,
       withdrawableUsd: state.withdrawable,
@@ -912,12 +1052,14 @@ export async function walletVenueAccount(
         cloid: order.cloid,
       })),
     });
+
     if (parsed.success) reported = parsed.data;
     else ctx.log.warn("venue account not shown", { event: "venue.account", network });
   } catch (error) {
     if (!(error instanceof VenueError)) throw error;
     ctx.log.warn("venue account not read", { event: "venue.account", network });
   }
+
   return {
     network,
     spentTodayUsd6: venueSpent.find((entry) => entry.chainId === network)?.amount ?? "0",
@@ -934,12 +1076,15 @@ export const venueHooks: VenueHooks = {
   followUp: followUpVenueIntent,
   async describe(ctx, intent, wallet) {
     const rules = wallet.policy?.venues?.hyperliquid;
+
     if (rules === undefined || rules.network !== intent.chainId) return null;
     const { operation } = intent;
+
     const market =
       operation.type === "hyperliquid.order"
         ? rules.markets.find((candidate) => candidate.asset === operation.asset)
         : undefined;
+
     const [state, accountValue] = await Promise.all([
       ctx.signer.getWallet(wallet.id).catch(() => null),
       (async () => {
@@ -950,6 +1095,7 @@ export const venueHooks: VenueHooks = {
         }
       })(),
     ]);
+
     return {
       network: intent.chainId,
       maxPerOrderUsd6: market?.maxNotionalPerOrderUsd6 ?? null,

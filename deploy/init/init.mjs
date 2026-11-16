@@ -25,22 +25,33 @@ import {
 import { join } from "node:path";
 
 const SERVER = "/secrets/server";
+
 const SIGNER = "/secrets/signer";
+
 const APPROVE = "/secrets/approve";
+
 const DB = "/secrets/db";
+
 const IMPORT = "/import";
+
 // Users the services run as: `node` in node:26-slim and `postgres` in postgres:18-alpine.
 const NODE_UID = 1000;
+
 const POSTGRES_UID = 70;
 
 const DOMAINS = ["all", "control", "signer"];
+
 const domainArgument = process.argv.slice(2).find((arg) => arg.startsWith("--domain="));
+
 const domain = domainArgument === undefined ? "all" : domainArgument.slice("--domain=".length);
+
 if (!DOMAINS.includes(domain)) {
   process.stderr.write(`${JSON.stringify({ event: "refused", reason: "unknown --domain" })}\n`);
   process.exit(2);
 }
+
 const control = domain === "all" || domain === "control";
+
 const signer = domain === "all" || domain === "signer";
 
 const b64 = () => randomBytes(32).toString("base64");
@@ -48,6 +59,7 @@ const b64 = () => randomBytes(32).toString("base64");
 function ensure(dir, name, uid, make) {
   const path = join(dir, name);
   let created = false;
+
   if (!existsSync(path)) {
     // Write to a temporary name and rename, so a crash never leaves a half-written secret that a
     // later run would keep.
@@ -56,6 +68,7 @@ function ensure(dir, name, uid, make) {
     renameSync(tmp, path);
     created = true;
   }
+
   chownSync(path, uid, uid);
   chmodSync(path, 0o400);
   chownSync(dir, uid, uid);
@@ -66,6 +79,7 @@ function ensure(dir, name, uid, make) {
 /** A copy that is not a secret of its own: written again whenever it is missing or differs. */
 function follow(dir, name, uid, bytes) {
   const path = join(dir, name);
+
   if (existsSync(path) && !readFileSync(path).equals(bytes)) rmSync(path);
   ensure(dir, name, uid, () => bytes);
 }
@@ -73,10 +87,12 @@ function follow(dir, name, uid, bytes) {
 /** A file the operator put in /import for this host. Its absence stops the start. */
 function imported(name) {
   const path = join(IMPORT, name);
+
   if (!existsSync(path)) {
     process.stderr.write(`${JSON.stringify({ event: "missing", file: path })}\n`);
     process.exit(1);
   }
+
   return readFileSync(path);
 }
 
@@ -96,11 +112,13 @@ if (control) {
     }),
   );
 }
+
 if (domain === "all") {
   // The request secret is shared: generate it once and copy it, so both sides always agree.
   // If only one volume was lost, the surviving copy is reused rather than replaced.
   ensure(SERVER, "signer-request-secret", NODE_UID, () => {
     const other = join(SIGNER, "signer-request-secret");
+
     return existsSync(other) ? readFileSync(other) : b64();
   });
   ensure(SIGNER, "signer-request-secret", NODE_UID, () =>
@@ -114,12 +132,14 @@ if (domain === "all") {
   // it takes the signer's from /import, and follows it when the signer's host made a new one.
   // Once installed, /import may drop it.
   const copied = join(IMPORT, "signer-request-secret");
+
   if (existsSync(copied)) {
     follow(SERVER, "signer-request-secret", NODE_UID, readFileSync(copied));
   } else {
     ensure(SERVER, "signer-request-secret", NODE_UID, () => imported("signer-request-secret"));
   }
 }
+
 if (signer) {
   // The confirm secret lets the `approve` service reach the signer's two confirmation routes and
   // nothing else, so it is never the request secret.
@@ -136,9 +156,11 @@ if (signer) {
   ensure(SIGNER, "token-key", NODE_UID, () => b64());
   ensure(SIGNER, "vault-passphrase", NODE_UID, () => b64());
 }
+
 if (control) {
   ensure(DB, "postgres-password", POSTGRES_UID, () => {
     const other = join(SERVER, "postgres-password");
+
     return existsSync(other) ? readFileSync(other) : randomBytes(32).toString("hex");
   });
   // The server runs as a different user than Postgres, so it gets its own copy.
@@ -151,6 +173,7 @@ if (domain === "signer") {
   for (const name of ["signer.crt", "signer.key", "control.crt", "approve.crt"]) {
     follow(SIGNER, name, NODE_UID, imported(name));
   }
+
   for (const name of ["approve.crt", "approve.key", "signer.crt"]) {
     follow(APPROVE, name, NODE_UID, imported(name));
   }

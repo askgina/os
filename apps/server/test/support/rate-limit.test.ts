@@ -16,8 +16,11 @@ import { createTestContext, TEST_ORIGIN, type TestContext } from "./context.ts";
 const REQUESTS_PER_MINUTE = 120;
 
 let t: TestContext;
+
 const pools: pg.Pool[] = [];
+
 let token: string;
+
 let agentId: string;
 
 /**
@@ -27,14 +30,17 @@ let agentId: string;
 function replica(config: Partial<Config> = {}): { ctx: AppContext; app: Hono } {
   const pool = new pg.Pool({ connectionString: t.ctx.config.databaseUrl, max: 4 });
   pools.push(pool);
+
   const ctx: AppContext = {
     ...t.ctx,
     config: { ...t.ctx.config, ...config },
     pool,
     db: drizzle(pool, { schema }),
   };
+
   const app = new Hono();
   mountMcp(app, ctx);
+
   return { ctx, app };
 }
 
@@ -69,13 +75,16 @@ beforeAll(async () => {
   t = await createTestContext({ label: "rate_limit" });
   const api = t.owner.browser.api;
   const workspace = await api.call("createWorkspace", { body: { name: "Limits" } });
+
   const created = await api.call("createAgent", {
     params: { workspaceId: workspace.id as WorkspaceId },
     body: { name: "Busy" },
   });
+
   token = created.token;
   agentId = created.agent.id;
 });
+
 afterAll(async () => {
   await Promise.all(pools.map((pool) => pool.end()));
   await t?.close();
@@ -86,10 +95,12 @@ describe("limits every replica shares", () => {
     const [a, b] = [replica(), replica()];
     expect((await call(a.app, token)).status).toBe(200);
     await freeze(`agent:${agentId}`);
+
     for (let i = 1; i < REQUESTS_PER_MINUTE; i += 1) {
       const response = await call(i % 2 === 0 ? a.app : b.app, token);
       expect(response.status, `request ${i + 1}`).toBe(200);
     }
+
     for (const app of [a.app, b.app]) {
       const over = await call(app, token);
       expect(over.status).toBe(429);
@@ -104,9 +115,11 @@ describe("limits every replica shares", () => {
     const client = "192.0.2.44";
     expect((await call(a.app, wrongToken, client)).status).toBe(401);
     await freeze(`auth-fail:${client}`);
+
     for (let i = 1; i < FAILED_AUTH_PER_MINUTE; i += 1) {
       expect((await call(i % 2 === 0 ? a.app : b.app, wrongToken, client)).status).toBe(401);
     }
+
     // Even a valid token is refused from that client now, on both replicas.
     expect((await call(a.app, token, client)).status).toBe(429);
     expect((await call(b.app, token, client)).status).toBe(429);
@@ -118,12 +131,15 @@ describe("limits every replica shares", () => {
       const { app } = replica({ forwardedHops: hops });
       await t.ctx.db.delete(rateLimits).where(sql`${rateLimits.bucket} LIKE 'auth-fail:%'`);
       expect((await call(app, wrongToken, forwardedFor)).status).toBe(401);
+
       const rows = await t.ctx.db
         .select({ bucket: rateLimits.bucket })
         .from(rateLimits)
         .where(sql`${rateLimits.bucket} LIKE 'auth-fail:%'`);
+
       return rows.map((row) => row.bucket);
     };
+
     // Behind a load balancer and the bundled proxy: the balancer appended the client.
     expect(await charged(2, "203.0.113.9, 198.51.100.7, 10.0.0.2")).toEqual([
       "auth-fail:198.51.100.7",
@@ -136,11 +152,13 @@ describe("limits every replica shares", () => {
 
   it("concurrent takes from many connections never hand out more than the bucket holds", async () => {
     const { ctx } = replica();
+
     const takes = await Promise.all(
       Array.from({ length: 30 }, (_, i) =>
         takeToken(i % 2 === 0 ? ctx.db : t.ctx.db, "test:burst", 1, 10),
       ),
     );
+
     expect(takes.filter(Boolean)).toHaveLength(10);
   });
 

@@ -41,6 +41,7 @@ function subscriptionSummary(row: typeof pushSubscriptions.$inferSelect): PushSu
 async function isP256Point(raw: Uint8Array<ArrayBuffer>): Promise<boolean> {
   try {
     await crypto.subtle.importKey("raw", raw, { name: "ECDH", namedCurve: "P-256" }, false, []);
+
     return true;
   } catch {
     return false;
@@ -65,10 +66,12 @@ async function preferencesOf(ctx: AppContext, userId: UserId): Promise<Notificat
     )
     .where(eq(memberships.userId, userId))
     .orderBy(asc(memberships.createdAt), asc(memberships.workspaceId));
+
   const [person] = await ctx.db
     .select({ quietHours: users.quietHours })
     .from(users)
     .where(eq(users.id, userId));
+
   return { workspaces: rows, quietHours: person?.quietHours ?? null };
 }
 
@@ -79,6 +82,7 @@ async function preferencesOf(ctx: AppContext, userId: UserId): Promise<Notificat
 export function registerNotify(app: Hono, ctx: AppContext): void {
   handle(app, ctx, "getPushConfig", async () => {
     const webPush = ctx.config.notify.webPush;
+
     return {
       enabled: webPush !== null,
       applicationServerKey:
@@ -92,11 +96,13 @@ export function registerNotify(app: Hono, ctx: AppContext): void {
       .from(pushSubscriptions)
       .where(eq(pushSubscriptions.userId, session.user.id))
       .orderBy(asc(pushSubscriptions.createdAt), asc(pushSubscriptions.id));
+
     return { items: rows.map(subscriptionSummary) };
   });
 
   handle(app, ctx, "addPushSubscription", async ({ session, body }) => {
     const webPush = ctx.config.notify.webPush;
+
     if (webPush === null) {
       throw new HttpError(
         "conflict",
@@ -104,6 +110,7 @@ export function registerNotify(app: Hono, ctx: AppContext): void {
         "push_off",
       );
     }
+
     if (!pushEndpointAllowed(body.endpoint, webPush.endpointHosts)) {
       throw new HttpError(
         "invalid_request",
@@ -111,8 +118,10 @@ export function registerNotify(app: Hono, ctx: AppContext): void {
         "endpoint_refused",
       );
     }
+
     const p256dh = body.keys.p256dh.replace(/=+$/, "");
     const auth = body.keys.auth.replace(/=+$/, "");
+
     if (!(await isP256Point(new Uint8Array(Buffer.from(p256dh, "base64url"))))) {
       throw new HttpError(
         "invalid_request",
@@ -120,7 +129,9 @@ export function registerNotify(app: Hono, ctx: AppContext): void {
         "bad_subscription",
       );
     }
+
     const userId = session.user.id;
+
     const saved = await ctx.db.transaction(async (tx) => {
       // A browser has one subscription per site, so whoever turns it on there last owns it; the
       // other person's notifications already waiting for it are dropped when they come due.
@@ -129,6 +140,7 @@ export function registerNotify(app: Hono, ctx: AppContext): void {
         .where(
           and(eq(pushSubscriptions.endpoint, body.endpoint), ne(pushSubscriptions.userId, userId)),
         );
+
       const [row] = await tx
         .insert(pushSubscriptions)
         .values({
@@ -152,11 +164,14 @@ export function registerNotify(app: Hono, ctx: AppContext): void {
           setWhere: eq(pushSubscriptions.userId, userId),
         })
         .returning();
+
       return row;
     });
+
     if (!saved) {
       throw new HttpError("conflict", "this device was just turned on for someone else; try again");
     }
+
     return subscriptionSummary(saved);
   });
 
@@ -170,7 +185,9 @@ export function registerNotify(app: Hono, ctx: AppContext): void {
         ),
       )
       .returning({ id: pushSubscriptions.id });
+
     if (removed.length === 0) throw new HttpError("not_found", "no such device");
+
     return {};
   });
 
@@ -181,15 +198,19 @@ export function registerNotify(app: Hono, ctx: AppContext): void {
   handle(app, ctx, "setNotificationPreferences", async ({ session, body }) => {
     const userId = session.user.id;
     const ids = body.workspaces.map((item) => item.workspaceId as WorkspaceId);
+
     if (ids.length > 0) {
       const member = await ctx.db
         .select({ workspaceId: memberships.workspaceId })
         .from(memberships)
         .where(and(eq(memberships.userId, userId), inArray(memberships.workspaceId, ids)));
+
       if (member.length !== ids.length) throw new HttpError("not_found", "no such workspace");
     }
+
     await ctx.db.transaction(async (tx) => {
       await tx.update(users).set({ quietHours: body.quietHours }).where(eq(users.id, userId));
+
       for (const item of body.workspaces) {
         const values = { webPush: item.webPush, reminders: item.reminders };
         await tx
@@ -201,6 +222,7 @@ export function registerNotify(app: Hono, ctx: AppContext): void {
           });
       }
     });
+
     return preferencesOf(ctx, userId);
   });
 
@@ -214,6 +236,7 @@ export function registerNotify(app: Hono, ctx: AppContext): void {
         .set({ notificationDetail: body.detail })
         .where(and(eq(workspaces.id, workspaceId), ne(workspaces.notificationDetail, body.detail)))
         .returning({ id: workspaces.id });
+
       if (changed.length === 0) return;
       await appendAudit(
         ctx,
@@ -227,6 +250,7 @@ export function registerNotify(app: Hono, ctx: AppContext): void {
         tx,
       );
     });
+
     return workspaceDetail(ctx, workspaceId, role);
   });
 }

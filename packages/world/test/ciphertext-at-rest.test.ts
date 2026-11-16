@@ -59,16 +59,22 @@ const PORTS = {
   outageA: 25763,
   outageB: 25764,
 };
+
 /** How long the OpenBao container stays paused in the outage test. */
 const OUTAGE_MS = 20_000;
+
 /** Generous bounds on recovery after the outage; the measured delays are printed. */
 const RESUME_CEILING_MS = 60_000;
+
 const COMPLETION_CEILING_MS = 240_000;
+
 /** Longer than any other file holds the OpenBao test server. */
 const OPENBAO_HOLD_WAIT_MS = 600_000;
 
 const dir = mkdtempSync(join(tmpdir(), "os-world-proof-"));
+
 const keyringFile = join(dir, "keyring.json");
+
 writeFileSync(keyringFile, JSON.stringify(LocalKeyring.generate("k1")), { mode: 0o600 });
 
 const markers = (nonce: string) => Array.from({ length: 10 }, (_, i) => `OSMARK${i + 1}_${nonce}`);
@@ -129,10 +135,12 @@ async function runScenario(
   const nonce = randomBytes(8).toString("hex");
   const token = `tok-${nonce}`;
   const first = await startHost({ port: ports[0], databaseUrl, env });
+
   const started = await first.call<{ runId?: string; error?: string }>("/start", {
     nonce,
     tenant: "ws_proof",
   });
+
   expect(started.status, started.json.error).toBe(200);
   const runId = started.json.runId ?? "";
   await waitForHook(databaseUrl, token);
@@ -142,14 +150,17 @@ async function runScenario(
 
   const second = await startHost({ port: ports[1], databaseUrl, env });
   const hook = await second.call<{ metadata?: unknown }>(`/hook/${token}`);
+
   const resumed = await second.call<{ error?: string }>("/resume", {
     token,
     m5: `OSMARK5_${nonce}`,
   });
+
   expect(resumed.status, resumed.json.error).toBe(200);
   // returnValue waits for the run to finish.
   const result = await second.call<{ value?: unknown }>(`/result/${runId}`);
   const finalScan = await scanForMarkers(databaseUrl, markers(nonce));
+
   return {
     nonce,
     token,
@@ -169,6 +180,7 @@ async function runStatus(databaseUrl: string, runId: string): Promise<string | u
     "SELECT status::text AS status FROM workflow.workflow_runs WHERE id = $1",
     [runId],
   );
+
   return row?.status;
 }
 
@@ -177,6 +189,7 @@ async function runCount(databaseUrl: string): Promise<number> {
     databaseUrl,
     "SELECT count(*)::int AS n FROM workflow.workflow_runs",
   );
+
   return row?.n ?? 0;
 }
 
@@ -190,8 +203,10 @@ function encryptingWorld(
 ): { db(): TestDatabase } {
   let db: TestDatabase | undefined;
   let enc: Scenario;
+
   const database = () => {
     if (!db) throw new Error("the provider's database was not created");
+
     return db;
   };
 
@@ -227,13 +242,16 @@ function encryptingWorld(
     });
     expect(enc.suspendedScan.hits).toEqual([]);
     expect(enc.finalScan.hits).toEqual([]);
+
     // The run's key is wrapped by the provider under test, not by some other one.
     const keys = await sql<{ kek_id: string }>(
       database().url,
       "SELECT kek_id FROM os_keys.data_keys WHERE scope = 'run' AND key_id = $1 AND wrapped_key IS NOT NULL",
       [enc.runId],
     );
+
     expect(keys).toEqual([{ kek_id: kekId }]);
+
     // Attributes cannot be encrypted: their values are replaced, except under a key the World
     // was told may stay readable.
     const [run] = await sql<{ attributes: Record<string, string> }>(
@@ -241,6 +259,7 @@ function encryptingWorld(
       "SELECT attributes FROM workflow.workflow_runs WHERE id = $1",
       [enc.runId],
     );
+
     expect(run?.attributes).toEqual({ note: "[withheld]", progress: "[withheld]", kind: "proof" });
     // The scan covered the workflow tables and the key table, not an empty database.
     expect(enc.finalScan.tables).toEqual(
@@ -257,6 +276,7 @@ function encryptingWorld(
     await enc.finalHost.kill();
     const pool = new pg.Pool({ connectionString: database().url, max: 2 });
     const keyProvider = keyProviderFromEnv(env, { keyringFileVariable: "HARNESS_KEYRING_FILE" });
+
     try {
       const keys = new DataKeyStore({ pool, provider: keyProvider, cacheTtlMs: 0 });
       expect(await keys.shred("run", enc.runId)).toBe(true);
@@ -264,6 +284,7 @@ function encryptingWorld(
       await keyProvider.close();
       await pool.end();
     }
+
     // A fresh process, so no key is left in any cache.
     const reader = await startHost({ port: ports.c, databaseUrl: database().url, env });
     const result = await reader.call<{ value?: unknown; error?: string }>(`/result/${enc.runId}`);
@@ -293,6 +314,7 @@ function encryptingWorld(
          (SELECT count(*) FROM os_keys.data_keys WHERE key_id = $1 AND shredded_at IS NOT NULL)::int AS tombstones`,
       [enc.runId],
     );
+
     report({ world: "encrypting", provider: name, shredded: enc.runId, rowsRemaining: rows });
     expect(rows).toMatchObject({ runs: 1, status: "completed", live_keys: 0, tombstones: 1 });
     expect(rows?.events).toBeGreaterThan(0);
@@ -328,14 +350,17 @@ describe("encrypting World on the keyring file", () => {
     // Replacing this one write would break replay (see src/attributes.ts), so it is refused.
     const url = world.db().url;
     const marker = `OSMARKBODY_${randomBytes(8).toString("hex")}`;
+
     const host = await startHost({
       port: PORTS.bodyAttribute,
       databaseUrl: url,
       env: fileProvider.env,
     });
+
     const started = await host.call<{ runId?: string; error?: string }>("/start-body-attribute", {
       marker,
     });
+
     expect(started.status, started.json.error).toBe(200);
     await expect
       .poll(async () => runStatus(url, started.json.runId ?? ""), {
@@ -350,14 +375,17 @@ describe("encrypting World on the keyring file", () => {
   test("when the key method throws at start, start fails and no run row is written", async () => {
     const url = world.db().url;
     const before = await runCount(url);
+
     const host = await startHost({
       port: PORTS.failStart,
       databaseUrl: url,
       env: { ...fileProvider.env, HARNESS_KEY_FAIL: "1" },
     });
+
     const started = await host.call<{ runId?: string; error?: string }>("/start", {
       nonce: randomBytes(8).toString("hex"),
     });
+
     expect(started.status).toBe(500);
     expect(started.json.runId).toBeUndefined();
     expect(await runCount(url)).toEqual(before);
@@ -371,36 +399,45 @@ describe("encrypting World on the keyring file", () => {
     const url = world.db().url;
     const host = await startHost({ port: PORTS.probe, databaseUrl: url, env: fileProvider.env });
     const runId = `wrun_PROBE${randomBytes(8).toString("hex").toUpperCase()}`;
+
     const probe = await host.call<{ healthy: boolean; publicKey: string | null }>("/probe", {
       runId,
     });
+
     expect(probe.json.healthy).toBe(true);
     expect(probe.json.publicKey).toEqual(expect.any(String));
+
     const keyRequests = (
       await host.call<{ requests: { runId: string; context: unknown }[] }>("/keylog")
     ).json.requests;
+
     expect(keyRequests.filter((request) => request.runId === runId)).toHaveLength(1);
+
     const rows = await sql<{ tenant_id: string | null; live: boolean }>(
       url,
       "SELECT tenant_id, wrapped_key IS NOT NULL AS live FROM os_keys.data_keys WHERE scope = 'run' AND key_id = $1",
       [runId],
     );
+
     expect(rows).toEqual([{ tenant_id: null, live: true }]);
     const runs = await sql(url, "SELECT 1 FROM workflow.workflow_runs WHERE id = $1", [runId]);
     expect(runs).toHaveLength(0);
     // If a start then named a tenant for this run id, the key store refuses rather than binding
     // the run to no tenant: see DataKeyTenantMismatchError.
     const pool = new pg.Pool({ connectionString: url, max: 1 });
+
     try {
       const keys = new DataKeyStore({
         pool,
         provider: LocalKeyring.fromFile(keyringFile),
         cacheTtlMs: 0,
       });
+
       await expect(keys.getOrCreate("run", runId, "ws_proof")).rejects.toThrow(/different tenant/);
     } finally {
       await pool.end();
     }
+
     report({ hazard: "probe-mints-key", runId, tenant: null, runRowCreated: false });
     await host.kill();
   });
@@ -413,8 +450,10 @@ describe.skipIf(!openBaoUp && process.env.CI !== "true")(
   () => {
     let release: (() => Promise<void>) | undefined;
     let openbao: ProviderSetup | undefined;
+
     const provider = () => {
       if (!openbao) throw new Error("the OpenBao provider was not prepared");
+
       return openbao;
     };
 
@@ -469,14 +508,17 @@ describe.skipIf(!openBaoUp && process.env.CI !== "true")(
         const nonce = randomBytes(8).toString("hex");
         const token = `tok-${nonce}`;
         const first = await startHost({ port: PORTS.outageA, databaseUrl: url, env });
+
         const started = await first.call<{ runId?: string; error?: string }>("/start", {
           nonce,
           tenant: "ws_proof",
         });
+
         expect(started.status, started.json.error).toBe(200);
         const runId = started.json.runId ?? "";
         await waitForHook(url, token);
         await first.kill();
+
         // A fresh process signs in while OpenBao answers and keeps no data key in memory: every
         // key it needs from here on must come from Transit. Without that, a job the killed host
         // left unfinished can make this one unwrap the run's key before the pause, and the run
@@ -486,6 +528,7 @@ describe.skipIf(!openBaoUp && process.env.CI !== "true")(
           databaseUrl: url,
           env: { ...env, HARNESS_KEY_CACHE: "off" },
         });
+
         const runsBefore = await runCount(url);
         const refusedNonce = randomBytes(8).toString("hex");
 
@@ -493,6 +536,7 @@ describe.skipIf(!openBaoUp && process.env.CI !== "true")(
           status: number;
           json: { runId?: string; error?: string; chain?: { name: string; message: string }[] };
         };
+
         let refusedStart: Answer | undefined;
         let refusedStartMs = 0;
         let resumeDuringOutage: Answer | undefined;
@@ -503,6 +547,7 @@ describe.skipIf(!openBaoUp && process.env.CI !== "true")(
         await pauseOpenBao();
         const pausedAt = performance.now();
         let unpausedAt: number;
+
         try {
           let at = performance.now();
           refusedStart = await host.call("/start", { nonce: refusedNonce, tenant: "ws_proof" });
@@ -547,6 +592,7 @@ describe.skipIf(!openBaoUp && process.env.CI !== "true")(
             )
             .toBe(200);
         }
+
         const resumedAfterMs = performance.now() - unpausedAt;
         await expect
           .poll(async () => runStatus(url, runId), {
@@ -560,18 +606,22 @@ describe.skipIf(!openBaoUp && process.env.CI !== "true")(
         expect(result.json.value).toEqual(expectedValue(nonce));
         const nextNonce = randomBytes(8).toString("hex");
         let at = performance.now();
+
         const next = await host.call<{ runId?: string; error?: string }>("/start", {
           nonce: nextNonce,
           tenant: "ws_proof",
         });
+
         const nextStartMs = performance.now() - at;
         expect(next.status, next.json.error).toBe(200);
         at = performance.now();
+
         const scan = await scanForMarkers(url, [
           ...markers(nonce),
           ...markers(refusedNonce),
           ...markers(nextNonce),
         ]);
+
         const scanMs = performance.now() - at;
 
         report({
@@ -602,6 +652,7 @@ describe("stock Postgres World (control)", () => {
     const stock = await runScenario(stockDb.url, [PORTS.stockA, PORTS.stockB], {
       HARNESS_WORLD: "stock",
     });
+
     await stock.finalHost.kill();
     expect(stock.result.status).toBe(200);
     const found = markersFound(stock.finalScan);

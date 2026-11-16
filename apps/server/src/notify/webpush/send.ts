@@ -39,6 +39,7 @@ export type PushResult =
   | { ok: false; code: "gone" | "retry" | "rejected"; reason: string; retryAfter?: number };
 
 const BASE64URL = /^[A-Za-z0-9_-]+={0,2}$/;
+
 const TOPIC = /^[A-Za-z0-9_-]{1,32}$/;
 
 /**
@@ -48,13 +49,16 @@ const TOPIC = /^[A-Za-z0-9_-]{1,32}$/;
  */
 export function pushEndpointAllowed(endpoint: string, hosts: readonly string[]): boolean {
   let url: URL;
+
   try {
     url = new URL(endpoint);
   } catch {
     return false;
   }
+
   if (url.protocol !== "https:" || url.username !== "" || url.password !== "") return false;
   const host = url.hostname.toLowerCase();
+
   return hosts.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
 }
 
@@ -78,19 +82,25 @@ export async function sendPush(
   message: PushMessage,
 ): Promise<PushResult> {
   const webPush = ctx.config.notify.webPush;
+
   if (webPush === null) return { ok: false, code: "rejected", reason: "push_off" };
+
   if (!pushEndpointAllowed(subscription.endpoint, webPush.endpointHosts)) {
     return { ok: false, code: "rejected", reason: "endpoint_refused" };
   }
+
   if (!TOPIC.test(message.topic)) return { ok: false, code: "rejected", reason: "bad_topic" };
+
   if (!Number.isSafeInteger(message.ttlSeconds) || message.ttlSeconds < 0) {
     return { ok: false, code: "rejected", reason: "bad_ttl" };
   }
+
   if (!BASE64URL.test(subscription.p256dh) || !BASE64URL.test(subscription.auth)) {
     return { ok: false, code: "rejected", reason: "bad_subscription" };
   }
 
   let body: Uint8Array<ArrayBuffer>;
+
   try {
     body = await encryptPayload({
       plaintext: new TextEncoder().encode(JSON.stringify(message.payload)),
@@ -101,15 +111,19 @@ export async function sendPush(
   } catch (error) {
     if (!(error instanceof PushEncryptionError)) throw error;
     const reason = error.code === "too_long" ? "payload_too_large" : "bad_subscription";
+
     return { ok: false, code: "rejected", reason };
   }
 
   let privateKey = vapidKeys.get(webPush);
+
   if (privateKey === undefined) {
     privateKey = importVapidKey(webPush.vapidPrivateKey);
     vapidKeys.set(webPush, privateKey);
   }
+
   const now = ctx.now();
+
   const authorization = await vapidAuthorization({
     endpoint: new URL(subscription.endpoint),
     subject: webPush.subject,
@@ -117,6 +131,7 @@ export async function sendPush(
     publicKeyRaw: webPush.vapidPublicKey,
     now,
   });
+
   const outcome = await postOnce(
     subscription.endpoint,
     {
@@ -130,11 +145,16 @@ export async function sendPush(
     body,
     now,
   );
+
   if (outcome.status === null) return { ok: false, code: "retry", reason: outcome.code };
+
   if (outcome.status >= 200 && outcome.status < 300) return { ok: true };
   const reason = `http_${outcome.status}`;
+
   if (outcome.status === 404 || outcome.status === 410) return { ok: false, code: "gone", reason };
+
   if (!isRetryable(outcome.status)) return { ok: false, code: "rejected", reason };
+
   return outcome.retryAfter === undefined
     ? { ok: false, code: "retry", reason }
     : { ok: false, code: "retry", reason, retryAfter: outcome.retryAfter };

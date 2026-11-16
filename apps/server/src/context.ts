@@ -13,11 +13,13 @@ import type { Sealer } from "./db/sealed.ts";
 import type { Logger } from "./log.ts";
 
 export type Database = NodePgDatabase<typeof schema>;
+
 export type Transaction = PgTransaction<
   NodePgQueryResultHKT,
   typeof schema,
   ExtractTablesWithRelations<typeof schema>
 >;
+
 /** Either the pool-backed database or a transaction on it. */
 export type Executor = Database | Transaction;
 

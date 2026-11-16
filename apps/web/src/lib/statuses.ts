@@ -36,12 +36,15 @@ export const intentSentence: Record<IntentStatus, string> = {
  */
 export function intentStatusSentence(status: IntentStatus, mandated: boolean): string {
   if (!mandated) return intentSentence[status];
+
   if (status === "approved") {
     return "An approval in advance covers it, so nobody was asked. The signer is signing it next.";
   }
+
   if (status === "denied") {
     return "The approval in advance or the wallet's limits did not cover it at the signer. Nothing was signed.";
   }
+
   return intentSentence[status];
 }
 
@@ -53,8 +56,11 @@ export function intentStatusSentence(status: IntentStatus, mandated: boolean): s
  */
 export function orderStatusSentence(status: IntentStatus, signed: boolean): string {
   if (status === "approved") return "Enough people approved it. The signer is signing it next.";
+
   if (status === "signed") return "The signer signed it. It is about to be sent to the venue.";
+
   if (!signed) return intentSentence[status];
+
   switch (status) {
     case "expired":
       return "It did not reach the venue within its submit window, so the venue refuses it for good. Nothing was traded.";

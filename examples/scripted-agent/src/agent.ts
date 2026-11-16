@@ -73,7 +73,9 @@ async function main(): Promise<number> {
     const result = await client.callTool({ name, arguments: args });
     const content = result.content as { type: string; text?: string }[] | undefined;
     const text = content?.find((part) => part.type === "text")?.text ?? "";
+
     if (result.isError) throw new Error(`${name} was refused: ${text}`);
+
     return result.structuredContent ?? JSON.parse(text);
   };
 
@@ -88,7 +90,9 @@ async function main(): Promise<number> {
         memo: env.MEMO,
       }),
     );
+
     say(`proposed ${proposal.intentId}: ${proposal.status}`);
+
     if (proposal.authorizedBy === "mandate") {
       say(`covered by mandate ${proposal.mandateId}: it is signed with no person asked`);
     } else {
@@ -99,10 +103,15 @@ async function main(): Promise<number> {
       const state = IntentState.parse(
         await call("get_intent", { intentId: proposal.intentId, waitSeconds: 50 }),
       );
+
       say(`status: ${state.status}`);
+
       if (!Object.hasOwn(FINAL, state.status)) continue;
+
       if (state.transactionHash) say(`transaction: ${state.explorerUrl ?? state.transactionHash}`);
+
       if (state.failureCode) say(`reason: ${state.failureCode}`);
+
       return state.status === "confirmed" ? 0 : 1;
     }
   } finally {

@@ -23,6 +23,7 @@ export async function createPasskey(options: WebAuthnOptions): Promise<Registrat
   const response = await startRegistration({
     optionsJSON: options as unknown as PublicKeyCredentialCreationOptionsJSON,
   });
+
   return RegistrationResponse.parse(response);
 }
 
@@ -30,5 +31,6 @@ export async function signWithPasskey(options: WebAuthnOptions): Promise<Asserti
   const response = await startAuthentication({
     optionsJSON: options as unknown as PublicKeyCredentialRequestOptionsJSON,
   });
+
   return AssertionResponse.parse(response);
 }

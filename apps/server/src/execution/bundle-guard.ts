@@ -7,9 +7,12 @@ import type { Pool, PoolClient } from "pg";
  * holds `(BUNDLE_LOCK_CLASS, <its bundle's id>)` shared, for as long as it delivers.
  */
 export const BUNDLE_LOCK_CLASS = 18_680;
+
 /** Serializes the check-then-lock of starting processes, so two bundles cannot both get in. */
 export const BUNDLE_CHECK_CLASS = 18_681;
+
 const RETRY_FIRST_MS = 250;
+
 const RETRY_MAX_MS = 30_000;
 
 /**
@@ -41,6 +44,7 @@ export async function bundleIdOf(flowFile: string): Promise<number> {
   const digest = createHash("sha256")
     .update(await readFile(flowFile))
     .digest();
+
   return digest.readUInt32BE(28) & 0x7f_ff_ff_ff;
 }
 
@@ -65,9 +69,11 @@ export async function holdBundleLock(
 
   const acquire = async (): Promise<PoolClient> => {
     const fresh = await pool.connect();
+
     try {
       await fresh.query("BEGIN");
       await fresh.query("SELECT pg_advisory_xact_lock($1, 0)", [BUNDLE_CHECK_CLASS]);
+
       const { rows } = await fresh.query<{ objid: number }>(
         `SELECT objid FROM pg_locks
          WHERE locktype = 'advisory' AND granted AND classid = $1 AND objsubid = 2 AND objid <> $2
@@ -75,6 +81,7 @@ export async function holdBundleLock(
          LIMIT 1`,
         [BUNDLE_LOCK_CLASS, bundleId],
       );
+
       if (rows.length > 0) throw new BundleMismatchError(bundleId);
       // Taken inside the transaction, kept by the session after it commits.
       await fresh.query("SELECT pg_advisory_lock_shared($1, $2)", [BUNDLE_LOCK_CLASS, bundleId]);
@@ -84,8 +91,10 @@ export async function holdBundleLock(
       fresh.release(true);
       throw error;
     }
+
     fresh.on("error", () => lost(fresh));
     fresh.on("end", () => lost(fresh));
+
     return fresh;
   };
 
@@ -99,8 +108,10 @@ export async function holdBundleLock(
         (fresh) => {
           if (released) {
             fresh.release(true);
+
             return;
           }
+
           client = fresh;
           retryMs = RETRY_FIRST_MS;
         },
@@ -121,6 +132,7 @@ export async function holdBundleLock(
   }
 
   client = await acquire();
+
   return {
     bundleId,
     async release() {
@@ -129,6 +141,7 @@ export async function holdBundleLock(
       retry = null;
       const held = client;
       client = null;
+
       if (held === null) return;
       // Give the lock back before this resolves: ending the session would too, but only once
       // Postgres notices the closed socket, and a bundle starting right after would be refused.

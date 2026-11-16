@@ -64,6 +64,7 @@ export class ChainAccess implements Chains {
       const client = createPublicClient({
         transport: http(config.rpcUrl, { retryCount: 1, timeout: 15_000 }),
       }) as PublicClient;
+
       this.#chains.set(config.chainId, { config, client });
     }
   }
@@ -96,20 +97,25 @@ export class ChainAccess implements Chains {
    */
   async #ready(chainId: ChainId): Promise<PublicClient> {
     const { client, config } = this.#entry(chainId);
+
     if (this.#verified.has(chainId)) return client;
     let answered: number;
+
     try {
       answered = await client.getChainId();
     } catch {
       throw new ChainError("rpc_unavailable");
     }
+
     if (`eip155:${answered}` !== config.chainId) throw new ChainError("chain_mismatch");
     this.#verified.add(chainId);
+
     return client;
   }
 
   explorerLink(chainId: ChainId, hash: string): string | null {
     const base = this.#chains.get(chainId)?.config.explorerUrl;
+
     return base ? `${base.replace(/\/$/, "")}/tx/${hash}` : null;
   }
 
@@ -120,6 +126,7 @@ export class ChainAccess implements Chains {
     return Promise.all(
       assets.map(async ({ chainId, asset }) => {
         const client = await this.#ready(chainId);
+
         if (asset === "native") {
           return {
             chainId,
@@ -129,6 +136,7 @@ export class ChainAccess implements Chains {
             amount: (await client.getBalance({ address })).toString(),
           };
         }
+
         const [info, amount] = await Promise.all([
           this.token(chainId, asset),
           client.readContract({
@@ -138,6 +146,7 @@ export class ChainAccess implements Chains {
             args: [address],
           }),
         ]);
+
         return { chainId, asset, ...info, amount: amount.toString() };
       }),
     );
@@ -146,14 +155,18 @@ export class ChainAccess implements Chains {
   async token(chainId: ChainId, token: Address): Promise<TokenInfo> {
     const key = `${chainId}|${token}`;
     const cached = this.#tokens.get(key);
+
     if (cached) return cached;
     const client = await this.#ready(chainId);
+
     const [symbol, decimals] = await Promise.all([
       client.readContract({ address: token, abi: erc20Abi, functionName: "symbol" }),
       client.readContract({ address: token, abi: erc20Abi, functionName: "decimals" }),
     ]);
+
     const info = { symbol: sanitizeReason(symbol).slice(0, 12) || "TOKEN", decimals };
     this.#tokens.set(key, info);
+
     return info;
   }
 
@@ -167,6 +180,7 @@ export class ChainAccess implements Chains {
   }): Promise<SimulationResult> {
     const client = await this.#ready(input.chainId);
     const block = await client.getBlock({ blockTag: "latest" });
+
     const request = {
       account: input.from,
       to: input.to,
@@ -174,14 +188,17 @@ export class ChainAccess implements Chains {
       ...(input.data === undefined ? {} : { data: input.data }),
       blockNumber: block.number,
     };
+
     try {
       await client.call(request);
+
       const gasEstimate = await client.estimateGas({
         account: input.from,
         to: input.to,
         value: input.value,
         ...(input.data === undefined ? {} : { data: input.data }),
       });
+
       return { ok: true, blockNumber: Number(block.number), gasEstimate, error: null };
     } catch (error) {
       return {
@@ -195,10 +212,12 @@ export class ChainAccess implements Chains {
 
   async fees(chainId: ChainId): Promise<FeeQuote> {
     const client = await this.#ready(chainId);
+
     const [block, tip] = await Promise.all([
       client.getBlock({ blockTag: "latest" }),
       client.estimateMaxPriorityFeePerGas().catch(() => 1_000_000_000n),
     ]);
+
     return { baseFeePerGas: block.baseFeePerGas ?? 0n, maxPriorityFeePerGas: tip };
   }
 
@@ -209,6 +228,7 @@ export class ChainAccess implements Chains {
   /** The newest block's number, read fresh. An RPC failure throws `rpc_unavailable`. */
   async head(chainId: ChainId): Promise<bigint> {
     const client = await this.#ready(chainId);
+
     try {
       return await client.getBlockNumber({ cacheTime: 0 });
     } catch {
@@ -222,6 +242,7 @@ export class ChainAccess implements Chains {
    */
   async latestNonce(chainId: ChainId, address: Address, blockNumber: bigint): Promise<number> {
     const client = await this.#ready(chainId);
+
     try {
       return await client.getTransactionCount({ address, blockNumber });
     } catch {
@@ -236,15 +257,20 @@ export class ChainAccess implements Chains {
    */
   async broadcast(chainId: ChainId, raw: Hex, hash: Hex): Promise<void> {
     const client = await this.#ready(chainId);
+
     try {
       await client.sendRawTransaction({ serializedTransaction: raw });
     } catch (error) {
       const text = errorText(error);
+
       if (/already known|known transaction|already imported/i.test(text)) return;
+
       if (/nonce too low|nonce has already been used/i.test(text)) {
         const existing = await client.getTransaction({ hash }).catch(() => null);
+
         if (existing !== null) return;
       }
+
       throw new ChainError("broadcast_failed");
     }
   }
@@ -255,8 +281,10 @@ export class ChainAccess implements Chains {
    */
   async known(chainId: ChainId, hash: Hex): Promise<boolean> {
     const client = await this.#ready(chainId);
+
     try {
       await client.getTransaction({ hash });
+
       return true;
     } catch (error) {
       if (error instanceof TransactionNotFoundError) return false;
@@ -272,6 +300,7 @@ export class ChainAccess implements Chains {
     const client = await this.#ready(chainId);
     let receipt: TransactionReceipt;
     let head: bigint;
+
     try {
       receipt = await client.getTransactionReceipt({ hash });
       // viem caches the block number for a few seconds; a stale head would undercount depth.
@@ -280,16 +309,21 @@ export class ChainAccess implements Chains {
       if (error instanceof TransactionReceiptNotFoundError) return { state: "missing" };
       throw new ChainError("rpc_unavailable");
     }
+
     const depth = head - receipt.blockNumber + 1n;
     const blockNumber = Number(receipt.blockNumber);
+
     if (depth < BigInt(this.config(chainId).confirmations))
       return { state: "pending", blockNumber };
+
     return { state: receipt.status === "success" ? "confirmed" : "reverted", blockNumber };
   }
 
   #entry(chainId: ChainId) {
     const entry = this.#chains.get(chainId);
+
     if (!entry) throw new ChainError("chain_not_configured");
+
     return entry;
   }
 }
@@ -307,17 +341,21 @@ export class ChainError extends Error {
 
 function errorText(error: unknown): string {
   if (error instanceof BaseError) return `${error.shortMessage} ${error.details ?? ""}`;
+
   return error instanceof Error ? error.message : String(error);
 }
 
 function revertReason(error: unknown): string {
   if (error instanceof BaseError) {
     const reverted = error.walk((cause) => cause instanceof ContractFunctionRevertedError);
+
     if (reverted instanceof ContractFunctionRevertedError && reverted.reason) {
       return sanitizeReason(reverted.reason) || "reverted";
     }
+
     return sanitizeReason(error.details || error.shortMessage) || "reverted";
   }
+
   return "reverted";
 }
 
@@ -330,5 +368,6 @@ export function chainAccess(ctx: Pick<AppContext, "chains">): ChainAccess {
   if (!(ctx.chains instanceof ChainAccess)) {
     throw new Error("the context's chains were not created by createChains()");
   }
+
   return ctx.chains;
 }

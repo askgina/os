@@ -14,6 +14,7 @@ export const SETUP_LOCK = 0x05_0a_77_10;
 /** True until the first owner exists. */
 export async function setupRequired(ctx: { db: Executor }): Promise<boolean> {
   const [row] = await ctx.db.select({ n: count() }).from(users);
+
   return (row?.n ?? 0) === 0;
 }
 
@@ -38,15 +39,19 @@ export async function prepareSetup(ctx: Pick<AppContext, "db" | "log">): Promise
 export async function rotateSetupToken(ctx: Pick<AppContext, "db">): Promise<string | null> {
   return ctx.db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${SETUP_LOCK})`);
+
     if (!(await setupRequired({ db: tx }))) {
       await tx.delete(installation).where(eq(installation.key, SETUP_TOKEN_KEY));
+
       return null;
     }
+
     const token = randomToken(24);
     await tx
       .insert(installation)
       .values({ key: SETUP_TOKEN_KEY, value: sha256Hex(token) })
       .onConflictDoUpdate({ target: installation.key, set: { value: sha256Hex(token) } });
+
     return token;
   });
 }
@@ -60,6 +65,7 @@ export async function checkSetupToken(
     .select({ value: installation.value })
     .from(installation)
     .where(eq(installation.key, SETUP_TOKEN_KEY));
+
   return row !== undefined && digestsEqual(row.value, sha256Hex(token));
 }
 

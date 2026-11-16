@@ -38,46 +38,60 @@ const PORT = 8080;
 /** The network whose signatures this venue accepts, from `FAKE_HYPERLIQUID_NETWORK`. */
 function networkFromEnvironment(): FakeNetwork {
   const value = process.env.FAKE_HYPERLIQUID_NETWORK ?? "testnet";
+
   if (value === "testnet" || value === "mainnet") return value;
   throw new Error(`FAKE_HYPERLIQUID_NETWORK: expected testnet or mainnet, got "${value}"`);
 }
 
 const network = networkFromEnvironment();
+
 const venue = new FakeHyperliquid({ network });
 
 async function readBody(request: IncomingMessage): Promise<string | null> {
   const chunks: Buffer[] = [];
   let size = 0;
+
   for await (const chunk of request) {
     const bytes = chunk as Buffer;
     size += bytes.length;
+
     if (size > FAKE_HYPERLIQUID_MAX_BODY_BYTES) return null;
     chunks.push(bytes);
   }
+
   return Buffer.concat(chunks).toString("utf8");
 }
 
 const server = createServer(async (request, response) => {
   const body = await readBody(request);
+
   if (body === null) {
     response.writeHead(413).end();
+
     return;
   }
+
   const path = new URL(request.url ?? "/", "http://fake-hyperliquid").pathname;
   const answer = await venue.handle({ method: request.method ?? "GET", path, body });
+
   if (answer.kind === "drop") {
     request.socket.destroy();
+
     return;
   }
+
   if (answer.status === 204) {
     response.writeHead(204).end();
+
     return;
   }
+
   response.writeHead(answer.status, { "content-type": answer.contentType }).end(answer.body);
 });
 
 server.listen(PORT, () => {
   process.stdout.write(`${JSON.stringify({ event: "listening", port: PORT, network })}\n`);
 });
+
 // Stop at once when Compose stops the stack; nothing here needs saving.
 process.on("SIGTERM", () => process.exit(0));

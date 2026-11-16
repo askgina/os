@@ -149,6 +149,7 @@ export const signerRoutes = {
 >;
 
 export const HealthResponse = z.strictObject({ ok: z.literal(true), version: z.string() });
+
 export type HealthResponse = z.infer<typeof HealthResponse>;
 
 // --- workspaces -------------------------------------------------------------------------------
@@ -163,6 +164,7 @@ export const CreateWorkspaceRequest = z.strictObject({
   adminThreshold: z.number().int().min(1).max(16),
   approvers: z.array(ApproverCredential).min(1).max(64),
 });
+
 export type CreateWorkspaceRequest = z.infer<typeof CreateWorkspaceRequest>;
 
 /**
@@ -174,6 +176,7 @@ export type CreateWorkspaceRequest = z.infer<typeof CreateWorkspaceRequest>;
  *   request for it except reading its state and its decision log.
  */
 export const WorkspaceLifecycle = z.enum(["active", "deleting", "deleted"]);
+
 export type WorkspaceLifecycle = z.infer<typeof WorkspaceLifecycle>;
 
 export const WorkspaceState = z
@@ -197,6 +200,7 @@ export const WorkspaceState = z
     path: ["destroyAfter"],
     message: "only a workspace being deleted or deleted has a destroy time",
   });
+
 export type WorkspaceState = z.infer<typeof WorkspaceState>;
 
 /**
@@ -204,6 +208,7 @@ export type WorkspaceState = z.infer<typeof WorkspaceState>;
  * `retire-wallet` or `delete-workspace` envelope.
  */
 export const AuthorizedRequest = z.strictObject({ authorization: Authorization });
+
 export type AuthorizedRequest = z.infer<typeof AuthorizedRequest>;
 
 /**
@@ -214,6 +219,7 @@ export type AuthorizedRequest = z.infer<typeof AuthorizedRequest>;
  * the confirmation page of this envelope that they hold its key, else `possession_unproven`.
  */
 export const AddApproverRequest = AuthorizedRequest;
+
 export type AddApproverRequest = z.infer<typeof AddApproverRequest>;
 
 /** One line of the signer's own append-only, hash-chained record of what it allowed and refused. */
@@ -229,20 +235,24 @@ export const SignerDecision = z.strictObject({
   previousHash: Digest.nullable(),
   hash: Digest,
 });
+
 export type SignerDecision = z.infer<typeof SignerDecision>;
 
 export const ListDecisionsResponse = z.strictObject({ decisions: z.array(SignerDecision) });
+
 export type ListDecisionsResponse = z.infer<typeof ListDecisionsResponse>;
 
 // --- approvals --------------------------------------------------------------------------------
 
 /** Names the workspace, so the revocation is recorded in that workspace's decision log. */
 export const RevokeApprovalRequest = z.strictObject({ workspaceId: WorkspaceId });
+
 export type RevokeApprovalRequest = z.infer<typeof RevokeApprovalRequest>;
 
 // --- wallets ----------------------------------------------------------------------------------
 
 export const WalletKind = z.enum(["agent", "treasury"]);
+
 export type WalletKind = z.infer<typeof WalletKind>;
 
 /** Create a wallet with no policy: it can sign nothing until a policy is approved. Idempotent by id. */
@@ -252,6 +262,7 @@ export const CreateWalletRequest = z.strictObject({
   kind: WalletKind,
   label: z.string().min(1).max(64),
 });
+
 export type CreateWalletRequest = z.infer<typeof CreateWalletRequest>;
 
 /**
@@ -264,6 +275,7 @@ export type CreateWalletRequest = z.infer<typeof CreateWalletRequest>;
  * - `destroyed`: its key is gone.
  */
 export const WalletLifecycle = z.enum(["active", "retiring", "held", "destroyed"]);
+
 export type WalletLifecycle = z.infer<typeof WalletLifecycle>;
 
 export const WalletState = z
@@ -297,6 +309,7 @@ export const WalletState = z
       message: "only a retiring or destroyed wallet has a destroy time",
     },
   );
+
 export type WalletState = z.infer<typeof WalletState>;
 
 /**
@@ -305,6 +318,7 @@ export type WalletState = z.infer<typeof WalletState>;
  * empty body.
  */
 export const RetireWalletStepRequest = z.strictObject({ workspaceId: WorkspaceId });
+
 export type RetireWalletStepRequest = z.infer<typeof RetireWalletStepRequest>;
 
 /** Carries a `set-policy` envelope whose `policyHash` is the hash of `policy`. */
@@ -312,6 +326,7 @@ export const SetPolicyRequest = z.strictObject({
   policy: WalletPolicy,
   authorization: Authorization,
 });
+
 export type SetPolicyRequest = z.infer<typeof SetPolicyRequest>;
 
 // --- signing ----------------------------------------------------------------------------------
@@ -327,6 +342,7 @@ export const TransactionParams = z.strictObject({
   maxFeePerGas: PositiveAmount,
   maxPriorityFeePerGas: Amount,
 });
+
 export type TransactionParams = z.infer<typeof TransactionParams>;
 
 /**
@@ -340,6 +356,7 @@ export const SignRequest = z.strictObject({
   authorization: Authorization,
   transaction: TransactionParams,
 });
+
 export type SignRequest = z.infer<typeof SignRequest>;
 
 export const SignResponse = z.strictObject({
@@ -349,6 +366,7 @@ export const SignResponse = z.strictObject({
   signedTransaction: Hex,
   transactionHash: Hex32,
 });
+
 export type SignResponse = z.infer<typeof SignResponse>;
 
 /**
@@ -362,6 +380,7 @@ export const SweepRequest = z.strictObject({
   authorization: Authorization,
   transaction: TransactionParams,
 });
+
 export type SweepRequest = z.infer<typeof SweepRequest>;
 
 // --- attempts ---------------------------------------------------------------------------------
@@ -375,6 +394,7 @@ export type SweepRequest = z.infer<typeof SweepRequest>;
  *   envelope, or a later reprice of one: once a cancel exists, every later attempt is one.
  */
 export const TransactionAttemptKind = z.enum(["original", "reprice", "cancel"]);
+
 export type TransactionAttemptKind = z.infer<typeof TransactionAttemptKind>;
 
 /** One signed transaction of an approval, as the signer recorded it. */
@@ -392,6 +412,7 @@ export const TransactionAttempt = z
     path: ["kind"],
     message: "attempt 0, and only attempt 0, is the original",
   });
+
 export type TransactionAttempt = z.infer<typeof TransactionAttempt>;
 
 /** The fees of one more attempt. `attempt` is the number the caller expects to create. */
@@ -417,6 +438,7 @@ export const RepriceRequest = z.union([
   z.strictObject({ intent: EvmIntent, envelope: ApproveIntentEnvelope, ...NextAttempt }),
   z.strictObject({ intent: EvmIntent, mandateId: MandateId, ...NextAttempt }),
 ]);
+
 export type RepriceRequest = z.infer<typeof RepriceRequest>;
 
 /**
@@ -428,6 +450,7 @@ export const CancelTransactionRequest = z.strictObject({
   authorization: Authorization,
   ...NextAttempt,
 });
+
 export type CancelTransactionRequest = z.infer<typeof CancelTransactionRequest>;
 
 /** One attempt the signer signed, with its bytes, ready to broadcast. */
@@ -439,6 +462,7 @@ export const AttemptResponse = z.strictObject({
   attempt: TransactionAttempt,
   signedTransaction: Hex,
 });
+
 export type AttemptResponse = z.infer<typeof AttemptResponse>;
 
 /**
@@ -463,6 +487,7 @@ export const ApprovalState = z.strictObject({
   /** The client order id of a signed venue order; null for anything else. */
   cloid: Cloid.nullable(),
 });
+
 export type ApprovalState = z.infer<typeof ApprovalState>;
 
 // --- venues -----------------------------------------------------------------------------------
@@ -494,6 +519,7 @@ export const HyperliquidOrderAction = z.strictObject({
     .length(1),
   grouping: z.literal("na"),
 });
+
 export type HyperliquidOrderAction = z.infer<typeof HyperliquidOrderAction>;
 
 /** The cancel of one order by its client order id. */
@@ -501,6 +527,7 @@ export const HyperliquidCancelByCloidAction = z.strictObject({
   type: z.literal("cancelByCloid"),
   cancels: z.array(z.strictObject({ asset: PerpAsset, cloid: Cloid })).length(1),
 });
+
 export type HyperliquidCancelByCloidAction = z.infer<typeof HyperliquidCancelByCloidAction>;
 
 /** A withdrawal of USDC from the venue to `destination`, always the wallet's own address. */
@@ -512,6 +539,7 @@ export const HyperliquidWithdrawAction = z.strictObject({
   time: z.number().int().min(0),
   destination: Address,
 });
+
 export type HyperliquidWithdrawAction = z.infer<typeof HyperliquidWithdrawAction>;
 
 export const HyperliquidAction = z.discriminatedUnion("type", [
@@ -519,6 +547,7 @@ export const HyperliquidAction = z.discriminatedUnion("type", [
   HyperliquidCancelByCloidAction,
   HyperliquidWithdrawAction,
 ]);
+
 export type HyperliquidAction = z.infer<typeof HyperliquidAction>;
 
 /**
@@ -550,6 +579,7 @@ export const HyperliquidRequest = z
         "an order or a cancel expires after its nonce; a withdrawal has no expiry and its time is its nonce",
     },
   );
+
 export type HyperliquidRequest = z.infer<typeof HyperliquidRequest>;
 
 /**
@@ -562,6 +592,7 @@ export const SignVenueRequest = z.strictObject({
   intent: VenueIntent,
   authorization: Authorization,
 });
+
 export type SignVenueRequest = z.infer<typeof SignVenueRequest>;
 
 export const SignVenueResponse = z
@@ -582,6 +613,7 @@ export const SignVenueResponse = z
         : action.type === "withdraw3" && cloid === null,
     { path: ["cloid"], message: "an order carries its cloid; a withdrawal has none" },
   );
+
 export type SignVenueResponse = z.infer<typeof SignVenueResponse>;
 
 /**
@@ -591,6 +623,7 @@ export type SignVenueResponse = z.infer<typeof SignVenueResponse>;
  * decision log. Within a cancel's own expiry the same cancel is returned.
  */
 export const CancelVenueOrderRequest = z.strictObject({ workspaceId: WorkspaceId });
+
 export type CancelVenueOrderRequest = z.infer<typeof CancelVenueOrderRequest>;
 
 export const CancelVenueOrderResponse = z
@@ -604,6 +637,7 @@ export const CancelVenueOrderResponse = z
       action.type === "cancelByCloid" && action.cancels[0]?.cloid === cloid,
     { path: ["request"], message: "expected the cancel of this cloid" },
   );
+
 export type CancelVenueOrderResponse = z.infer<typeof CancelVenueOrderResponse>;
 
 // --- mandates ---------------------------------------------------------------------------------
@@ -619,6 +653,7 @@ export const GrantMandateRequest = z.strictObject({
   mandate: Mandate,
   authorization: Authorization,
 });
+
 export type GrantMandateRequest = z.infer<typeof GrantMandateRequest>;
 
 /**
@@ -627,6 +662,7 @@ export type GrantMandateRequest = z.infer<typeof GrantMandateRequest>;
  * changes nothing.
  */
 export const RevokeMandateRequest = z.strictObject({ workspaceId: WorkspaceId });
+
 export type RevokeMandateRequest = z.infer<typeof RevokeMandateRequest>;
 
 /**
@@ -641,6 +677,7 @@ export const SignUnderMandateRequest = z.strictObject({
   intent: EvmIntent,
   transaction: TransactionParams,
 });
+
 export type SignUnderMandateRequest = z.infer<typeof SignUnderMandateRequest>;
 
 /**
@@ -651,6 +688,7 @@ export type SignUnderMandateRequest = z.infer<typeof SignUnderMandateRequest>;
  * - `active`: none of the above; a use can still be refused by its caps or the wallet's policy.
  */
 export const MandateStatus = z.enum(["active", "not_yet_valid", "expired", "exhausted", "revoked"]);
+
 export type MandateStatus = z.infer<typeof MandateStatus>;
 
 /**
@@ -658,6 +696,7 @@ export type MandateStatus = z.infer<typeof MandateStatus>;
  * (`grantor_removed`), or the operator ended it on the signer host (`operator`).
  */
 export const MandateRevokedReason = z.enum(["requested", "grantor_removed", "operator"]);
+
 export type MandateRevokedReason = z.infer<typeof MandateRevokedReason>;
 
 /** A mandate as the signer holds it, with what was signed under it so far. */
@@ -694,10 +733,12 @@ export const MandateState = z
       Mandate.safeParse(state.mandate).success && mandateHash(state.mandate) === state.mandateHash,
     { path: ["mandateHash"], message: "mandateHash must be the mandate's hash" },
   );
+
 export type MandateState = z.infer<typeof MandateState>;
 
 /** Every mandate of a wallet the signer holds, live or ended. */
 export const ListMandatesResponse = z.strictObject({ mandates: z.array(MandateState) });
+
 export type ListMandatesResponse = z.infer<typeof ListMandatesResponse>;
 
 // --- confirmations ----------------------------------------------------------------------------
@@ -708,6 +749,7 @@ export type ListMandatesResponse = z.infer<typeof ListMandatesResponse>;
  * SHA-256, and a wrong token is `not_found`.
  */
 export const CONFIRM_TOKEN_HEADER = "x-confirm-token";
+
 export const ConfirmToken = z.string().regex(/^[A-Za-z0-9_-]{22}$/, "expected 16 bytes, base64url");
 
 /**
@@ -720,12 +762,14 @@ export const OpenConfirmationRequest = z.strictObject({
   envelope: Envelope,
   subject: ConfirmationSubject,
 });
+
 export type OpenConfirmationRequest = z.infer<typeof OpenConfirmationRequest>;
 
 /** `/a/<approvalId>#<token>`, to append to the confirmation page's origin. */
 export const OpenConfirmationResponse = z.strictObject({
   path: z.string().refine((path) => {
     const parts = /^\/a\/([^/#]+)#([^#]*)$/.exec(path);
+
     return (
       parts !== null &&
       ApprovalId.safeParse(parts[1]).success &&
@@ -733,6 +777,7 @@ export const OpenConfirmationResponse = z.strictObject({
     );
   }, "expected /a/<approval id>#<token>"),
 });
+
 export type OpenConfirmationResponse = z.infer<typeof OpenConfirmationResponse>;
 
 /**
@@ -743,6 +788,7 @@ export type OpenConfirmationResponse = z.infer<typeof OpenConfirmationResponse>;
 export const ListConfirmationAssertionsResponse = z.strictObject({
   assertions: z.array(Assertion).max(256),
 });
+
 export type ListConfirmationAssertionsResponse = z.infer<typeof ListConfirmationAssertionsResponse>;
 
 /**
@@ -751,6 +797,7 @@ export type ListConfirmationAssertionsResponse = z.infer<typeof ListConfirmation
  * approval origin, not in a cross-origin frame.
  */
 export const SubmitConfirmationRequest = z.strictObject({ response: AssertionResponse });
+
 export type SubmitConfirmationRequest = z.infer<typeof SubmitConfirmationRequest>;
 
 export const SubmitConfirmationResponse = z.strictObject({
@@ -759,6 +806,7 @@ export const SubmitConfirmationResponse = z.strictObject({
   /** The control plane's page for the request, where the page sends the person next. */
   returnUrl: z.url({ protocol: /^https?$/ }),
 });
+
 export type SubmitConfirmationResponse = z.infer<typeof SubmitConfirmationResponse>;
 
 /**
@@ -768,6 +816,7 @@ export type SubmitConfirmationResponse = z.infer<typeof SubmitConfirmationRespon
  * keeps until an answer uses it; the next call after that gets a new one.
  */
 export const GetPossessionResponse = PasskeyRequest;
+
 export type GetPossessionResponse = z.infer<typeof GetPossessionResponse>;
 
 /**
@@ -777,12 +826,14 @@ export type GetPossessionResponse = z.infer<typeof GetPossessionResponse>;
  * signer adds no approver for it (`possession_unproven`).
  */
 export const SubmitPossessionRequest = z.strictObject({ response: AssertionResponse });
+
 export type SubmitPossessionRequest = z.infer<typeof SubmitPossessionRequest>;
 
 export const SubmitPossessionResponse = z.strictObject({
   /** `keyFingerprint` of the proven key, for the new person to read to the approvers. */
   fingerprint: z.string().regex(/^[0-9A-HJKMNP-TV-Z]{4}(?:-[0-9A-HJKMNP-TV-Z]{4}){3}$/),
 });
+
 export type SubmitPossessionResponse = z.infer<typeof SubmitPossessionResponse>;
 
 // --- errors -----------------------------------------------------------------------------------
@@ -857,6 +908,7 @@ export const SignerErrorCode = z.enum([
   "vault_error",
   "internal",
 ]);
+
 export type SignerErrorCode = z.infer<typeof SignerErrorCode>;
 
 export const signerErrorStatus: Record<SignerErrorCode, 400 | 401 | 403 | 404 | 409 | 429 | 500> = {
@@ -915,4 +967,5 @@ export const SignerErrorBody = z.strictObject({
     detail: z.string().optional(),
   }),
 });
+
 export type SignerErrorBody = z.infer<typeof SignerErrorBody>;

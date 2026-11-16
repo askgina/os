@@ -17,17 +17,21 @@ import {
 import { TEST_CHAIN_ID } from "../support/context.ts";
 
 const WEEK = 604_800;
+
 const ETH = 10n ** 18n;
+
 let f: Fixture;
 
 beforeAll(async () => {
   f = await createFixture("lifecycle_retire");
 });
+
 afterAll(async () => {
   await f?.close();
 });
 
 const api = () => f.t.owner.browser.api;
+
 const now = () => f.t.clock.now();
 
 /** Move the shared clock, and sign the owner in again: a session lasts less than a week. */
@@ -45,8 +49,10 @@ async function refusal(call: Promise<unknown>): Promise<{ code: string; detail?:
         ? { code: error.code }
         : { code: error.code, detail: error.detail };
     }
+
     throw error;
   }
+
   throw new Error("the call was not refused");
 }
 
@@ -54,6 +60,7 @@ async function fundedAgent(ws: WorkspaceId, name: string): Promise<TestAgent> {
   const agent = await f.newAgent(name, ws);
   await f.setPolicy(ws, agent.walletId, draftFor(agent.id));
   await fund(agent.address, 10n * ETH);
+
   return agent;
 }
 
@@ -76,12 +83,15 @@ async function grantMandate(ws: WorkspaceId, agent: TestAgent): Promise<MandateI
     notAfter: now() + 3 * 86_400,
     purpose: "pay the suppliers this week",
   };
+
   const opened = await api().call("proposeMandate", {
     params: { workspaceId: ws, walletId: agent.walletId },
     body: draft,
   });
+
   const row = await f.t.approve(opened.id as ApprovalId, [f.t.owner]);
   expect(row.status).toBe("executed");
+
   return row.subjectId as MandateId;
 }
 
@@ -101,6 +111,7 @@ async function newestEventAbout(ws: WorkspaceId, walletId: WalletId): Promise<st
     .where(and(eq(auditEvents.workspaceId, ws), eq(auditEvents.subjectId, walletId)))
     .orderBy(desc(auditEvents.seq))
     .limit(1);
+
   return row?.action;
 }
 
@@ -110,10 +121,13 @@ async function sweepToTreasury(ws: WorkspaceId, walletId: WalletId, to: `0x${str
     params: { workspaceId: ws, walletId },
     body: { chainId: TEST_CHAIN_ID, asset: "native", to },
   });
+
   const approvalId = opened.id as ApprovalId;
   expect((await f.t.approve(approvalId, [f.t.owner])).status).toBe("executed");
   const steps = engineOf(f.t.ctx).steps();
+
   for (let i = 0; i < 20 && !(await steps.followUp(approvalId)).done; i += 1);
+
   return approvalId;
 }
 
@@ -164,6 +178,7 @@ describe("retiring a wallet", () => {
       params: { workspaceId: ws, walletId: agent.walletId },
       body: {},
     });
+
     expect(held.lifecycle).toEqual({ state: "held", destroyAfter: null });
     expect((await f.t.ctx.signer.getWallet(agent.walletId)).state).toBe("held");
     expect(
@@ -203,19 +218,23 @@ describe("retiring a wallet", () => {
   it("waits for a given-up transaction until a later one of its wallet used its nonce (D7)", async () => {
     const ws = await f.newWorkspace("Rejected nonce");
     const agent = await fundedAgent(ws, "Nonce");
+
     const treasury = await api().call("createTreasury", {
       params: { workspaceId: ws },
       body: { label: "Treasury" },
     });
+
     const first = await sweepToTreasury(ws, agent.walletId, treasury.address);
     await fund(agent.address, 5n * ETH);
     const second = await sweepToTreasury(ws, agent.walletId, treasury.address);
     const subject = { workspaceId: ws, walletId: agent.walletId };
+
     const setStatus = (approvalId: ApprovalId, status: "rejected" | "broadcast" | "confirmed") =>
       f.t.ctx.db
         .update(transactions)
         .set({ status })
         .where(eq(transactions.approvalId, approvalId));
+
     expect(await hasUnminedTransactions(f.t.ctx, subject)).toBe(false);
 
     // Given up on, but the next transaction of the wallet was mined at a later nonce.
@@ -237,6 +256,7 @@ describe("removing an agent", () => {
     const ws = await f.newWorkspace("Remove agent");
     const agent = await fundedAgent(ws, "Leaving");
     const client = await f.mcp(agent.token);
+
     const proposed = toolJson(
       await client.callTool({
         name: "propose_transfer",
@@ -248,11 +268,14 @@ describe("removing an agent", () => {
         },
       }),
     );
+
     expect(proposed.status).toBe("pending_approval");
+
     const [intent] = await f.t.ctx.db
       .select({ approvalId: intents.approvalId })
       .from(intents)
       .where(eq(intents.id, proposed.intentId as IntentId));
+
     const approvalId = intent?.approvalId as ApprovalId;
     expect((await engineOf(f.t.ctx).row(approvalId)).status).toBe("pending");
 
@@ -260,6 +283,7 @@ describe("removing an agent", () => {
       params: { workspaceId: ws, agentId: agent.id },
       body: {},
     });
+
     expect(disabled.status).toBe("disabled");
     expect((await engineOf(f.t.ctx).row(approvalId)).status).toBe("cancelled");
     expect((await f.t.ctx.signer.getApproval(approvalId)).state).toBe("revoked");

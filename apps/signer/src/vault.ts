@@ -60,12 +60,15 @@ const MIN_PASSPHRASE_LENGTH = 12;
 // package version is pinned exactly and the mapping below is checked by the real-OWS test.
 function classifyOwsError(error: unknown): VaultError {
   const message = error instanceof Error ? error.message : "";
+
   if (/API key (not found|expired)|decryption failed/i.test(message)) {
     return new VaultError("credential_rejected", "the vault rejected the wallet credential");
   }
+
   if (/not found/i.test(message)) {
     return new VaultError("wallet_missing", "the vault has no such wallet");
   }
+
   return new VaultError("failed", "the vault operation failed");
 }
 
@@ -93,9 +96,11 @@ function owsCall<T>(operation: () => T): T {
 
 function splitSignature(signature: string, recoveryId: number | undefined) {
   const hex = signature.replace(/^0x/, "");
+
   if (!/^[0-9a-fA-F]{130}$/.test(hex)) {
     throw new VaultError("failed", "the vault returned a malformed signature");
   }
+
   return {
     r: `0x${hex.slice(0, 64)}` as const,
     s: `0x${hex.slice(64, 128)}` as const,
@@ -114,11 +119,15 @@ function hyperliquidSignature(
 ): HyperliquidSignature {
   const hex = signature.replace(/^0x/, "").toLowerCase();
   const malformed = new VaultError("failed", "the vault returned a malformed signature");
+
   if (!/^[0-9a-f]{130}$/.test(hex)) throw malformed;
   const parity = (value: number) => (value >= 27 ? value - 27 : value);
   const yParity = parity(Number.parseInt(hex.slice(128), 16));
+
   if (yParity !== 0 && yParity !== 1) throw malformed;
+
   if (recoveryId !== undefined && parity(recoveryId) !== yParity) throw malformed;
+
   return {
     r: `0x${hex.slice(0, 64)}`,
     s: `0x${hex.slice(64, 128)}`,
@@ -157,11 +166,15 @@ export class OwsVault implements Vault {
     if (!existsSync(this.#passphraseFile)) {
       throw new VaultError("passphrase_missing", "the vault passphrase file is absent");
     }
+
     const passphrase = readFileSync(this.#passphraseFile, "utf8").trim();
+
     if (passphrase.length < MIN_PASSPHRASE_LENGTH) {
       throw new VaultError("passphrase_missing", "the vault passphrase is too short");
     }
+
     let wallet: ows.WalletInfo;
+
     try {
       wallet = ows.createWallet(walletId, passphrase, 24, this.#vaultPath);
     } catch (error) {
@@ -174,11 +187,15 @@ export class OwsVault implements Vault {
         throw classifyOwsError(error);
       }
     }
+
     const account = wallet.accounts.find((candidate) => candidate.chainId.startsWith("eip155:"));
+
     if (!account) throw new VaultError("failed", "the new wallet has no EVM account");
+
     const key = owsCall(() =>
       ows.createApiKey(walletId, [wallet.id], [], passphrase, null, this.#vaultPath),
     );
+
     return { address: account.address.toLowerCase() as Address, credential: key.token };
   }
 
@@ -186,6 +203,7 @@ export class OwsVault implements Vault {
     // Anything else would be taken as the owner passphrase, which bypasses OWS entirely.
     assertScopedToken(credential);
     const unsigned = serializeTransaction({ ...transaction, type: "eip1559" });
+
     // The chain handed to OWS comes from the transaction itself; OWS would sign any bytes for
     // whatever chain it is told.
     const result = owsCall(() =>
@@ -198,6 +216,7 @@ export class OwsVault implements Vault {
         this.#vaultPath,
       ),
     );
+
     return serializeTransaction(
       { ...transaction, type: "eip1559" },
       splitSignature(result.signature, result.recoveryId ?? undefined),
@@ -216,9 +235,11 @@ export class OwsVault implements Vault {
   ): HyperliquidSignature {
     assertScopedToken(credential);
     const { chain, json } = eip712Json(payload);
+
     const result = owsCall(() =>
       ows.signTypedData(walletId, chain, json, credential, 0, this.#vaultPath),
     );
+
     return hyperliquidSignature(result.signature, result.recoveryId ?? undefined);
   }
 
@@ -229,16 +250,20 @@ export class OwsVault implements Vault {
    */
   destroyWallet(walletId: WalletId): void {
     let keys: unknown[];
+
     try {
       keys = ows.listApiKeys(this.#vaultPath);
     } catch {
       throw new VaultError("failed", "the vault could not list its keys");
     }
+
     for (const key of keys) {
       const { id, name } = (key ?? {}) as { id?: unknown; name?: unknown };
+
       if (name !== walletId || typeof id !== "string") continue;
       owsDelete(() => ows.revokeApiKey(id, this.#vaultPath));
     }
+
     owsDelete(() => ows.deleteWallet(walletId, this.#vaultPath));
   }
 }
@@ -255,7 +280,9 @@ export function exportOwsWalletSecret(
   if (!existsSync(options.passphraseFile)) {
     throw new VaultError("passphrase_missing", "the vault passphrase file is absent");
   }
+
   const passphrase = readFileSync(options.passphraseFile, "utf8").trim();
+
   return owsCall(() => ows.exportWallet(walletId, passphrase, options.vaultPath));
 }
 
@@ -266,16 +293,21 @@ export function exportOwsWalletSecret(
  */
 export function createTestVault(): Vault {
   const wallets = new Map<string, { privateKey: Uint8Array; credential: string }>();
+
   const unlock = (walletId: WalletId, credential: string) => {
     const wallet = wallets.get(walletId);
+
     if (!wallet) throw new VaultError("wallet_missing", "the vault has no such wallet");
     const expected = Buffer.from(wallet.credential);
     const given = Buffer.from(credential);
+
     if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
       throw new VaultError("credential_rejected", "the vault rejected the wallet credential");
     }
+
     return wallet;
   };
+
   const signDigest = (digest: Hex, privateKey: Uint8Array) =>
     secp256k1.Signature.fromBytes(
       secp256k1.sign(Buffer.from(digest.slice(2), "hex"), privateKey, {
@@ -284,6 +316,7 @@ export function createTestVault(): Vault {
       }),
       "recovered",
     );
+
   return {
     createWallet(walletId) {
       if (wallets.has(walletId)) throw new VaultError("failed", "the wallet already exists");
@@ -291,12 +324,14 @@ export function createTestVault(): Vault {
       const credential = `test_${randomBytes(24).toString("base64url")}`;
       wallets.set(walletId, { privateKey, credential });
       const address = privateKeyToAddress(`0x${Buffer.from(privateKey).toString("hex")}`);
+
       return { address: address.toLowerCase() as Address, credential };
     },
     signEvmTransaction(walletId, credential, transaction) {
       const wallet = unlock(walletId, credential);
       const unsigned = serializeTransaction({ ...transaction, type: "eip1559" });
       const signature = signDigest(keccak256(unsigned), wallet.privateKey);
+
       return serializeTransaction(
         { ...transaction, type: "eip1559" },
         {
@@ -309,6 +344,7 @@ export function createTestVault(): Vault {
     signHyperliquid(walletId, credential, payload) {
       const wallet = unlock(walletId, credential);
       const signature = signDigest(payloadDigest(payload), wallet.privateKey);
+
       return {
         r: `0x${signature.r.toString(16).padStart(64, "0")}`,
         s: `0x${signature.s.toString(16).padStart(64, "0")}`,

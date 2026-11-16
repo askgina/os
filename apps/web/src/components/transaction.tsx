@@ -71,6 +71,7 @@ export function HashLink({ hash, explorerUrl }: { hash: string; explorerUrl: str
   if (!explorerUrl) {
     return <code className="font-mono text-xs wrap-anywhere text-muted-foreground">{hash}</code>;
   }
+
   return (
     <a
       href={explorerUrl}
@@ -108,6 +109,7 @@ export function TransactionPanel({
   const now = useNow();
   const open = transactionOpen(transaction.status);
   const cancelSigned = transaction.attempts.some((attempt) => attempt.kind === "cancel");
+
   return (
     <section
       aria-labelledby={titleId}
@@ -206,22 +208,27 @@ function Actions({
   const navigate = useNavigate();
   const allowed = transactionActions(transaction, role);
   const what = target.kind === "payment" ? "payment" : "sweep";
+
   const refresh = async () => {
     if (target.approvalId) {
       await queryClient.invalidateQueries({ queryKey: keys.approval(target.approvalId) });
     }
+
     if (target.kind === "payment") {
       await queryClient.invalidateQueries({ queryKey: keys.intent(target.intentId) });
     }
+
     await queryClient.invalidateQueries({ queryKey: keys.intents(workspaceId) });
     await queryClient.invalidateQueries({ queryKey: keys.mandates(workspaceId) });
     await queryClient.invalidateQueries({ queryKey: ["approvals", workspaceId] });
   };
+
   const speedUp = useMutation({
     mutationFn: (intentId: IntentDetail["id"]) =>
       api.call("speedUp", { params: { intentId }, body: {} }),
     onSuccess: async (next) => {
       queryClient.setQueryData(keys.intent(next.id), next);
+
       if (next.approvalId) {
         queryClient.setQueryData<ApprovalDetail>(keys.approval(next.approvalId), (old) =>
           old?.subject.kind === "approve-intent"
@@ -229,9 +236,11 @@ function Actions({
             : old,
         );
       }
+
       await refresh();
     },
   });
+
   const cancel = useMutation({
     mutationFn: () =>
       target.kind === "payment"
@@ -251,7 +260,9 @@ function Actions({
     transaction.canSpeedUp && target.kind === "payment" ? "speed it up" : null,
     transaction.canCancel ? "cancel it" : null,
   ].filter((verb) => verb !== null);
+
   const viewerNote = role === "viewer" && possible.length > 0;
+
   if (
     !transaction.pendingCancelApprovalId &&
     !allowed.speedUp &&
@@ -262,6 +273,7 @@ function Actions({
   ) {
     return null;
   }
+
   return (
     <div className="grid grid-cols-1 gap-2">
       {transaction.pendingCancelApprovalId ? (

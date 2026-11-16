@@ -51,13 +51,16 @@ export async function withMiningHeld<T>(
   body: (mining: { resume(): Promise<void> }) => Promise<T>,
 ): Promise<T> {
   let held = true;
+
   const resume = async () => {
     if (!held) return;
     await chainAdmin.mine({ blocks: 1 });
     await chainAdmin.setAutomine(true);
     held = false;
   };
+
   await chainAdmin.setAutomine(false);
+
   try {
     return await body({ resume });
   } finally {

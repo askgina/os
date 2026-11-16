@@ -25,20 +25,27 @@ export async function main(
 ): Promise<number> {
   if (argv.length !== 1 || argv[0] !== "setup-token") {
     process.stderr.write(USAGE);
+
     return 1;
   }
+
   const setupToken = await rotateSetupToken(ctx);
+
   if (setupToken === null) {
     print({ ok: false, code: "setup_done" });
+
     return 3;
   }
+
   print({ ok: true, setupToken });
+
   return 0;
 }
 
 if (import.meta.main) {
   const config = loadConfig();
   const pool = new pg.Pool({ connectionString: config.databaseUrl, max: 1 });
+
   try {
     // A command run before the first server start still finds its tables.
     await migrateDatabase(pool);

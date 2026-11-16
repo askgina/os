@@ -3,10 +3,13 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 
 /** How far a delivery's `x-os-timestamp` may be from this host's clock, in seconds. */
 export const TIMESTAMP_TOLERANCE_SECONDS = 300;
+
 /** How long a forwarded delivery id is remembered, in seconds: far longer than any retry. */
 export const DEDUPE_SECONDS = 86_400;
+
 /** A delivery is a few hundred bytes; anything far larger is not one. */
 const MAX_BODY_BYTES = 16 * 1024;
+
 const NTFY_TIMEOUT_MS = 5_000;
 
 /**
@@ -54,17 +57,21 @@ interface Answer {
 async function readBody(request: IncomingMessage): Promise<Buffer | null> {
   const chunks: Buffer[] = [];
   let size = 0;
+
   for await (const chunk of request) {
     const bytes = chunk as Buffer;
     size += bytes.length;
+
     if (size > MAX_BODY_BYTES) return null;
     chunks.push(bytes);
   }
+
   return Buffer.concat(chunks);
 }
 
 function header(request: IncomingMessage, name: string): string | undefined {
   const value = request.headers[name];
+
   return Array.isArray(value) ? undefined : value;
 }
 
@@ -72,6 +79,7 @@ function header(request: IncomingMessage, name: string): string | undefined {
 function linkOn(origin: string, value: unknown): string | null {
   if (typeof value !== "string" || !URL.canParse(value)) return null;
   const url = new URL(value);
+
   return url.origin === origin ? url.href : null;
 }
 
@@ -107,8 +115,11 @@ export function createBridge(config: BridgeConfig, options: BridgeOptions = {}):
 
   async function publish(event: Event, link: string | null): Promise<boolean> {
     const headers: Record<string, string> = { "content-type": "text/plain; charset=utf-8" };
+
     if (config.token !== null) headers.authorization = `Bearer ${config.token}`;
+
     if (link !== null) headers.click = link;
+
     try {
       const response = await fetch(`${config.ntfyUrl}/${config.topic}`, {
         method: "POST",
@@ -117,7 +128,9 @@ export function createBridge(config: BridgeConfig, options: BridgeOptions = {}):
         redirect: "manual",
         signal: AbortSignal.timeout(NTFY_TIMEOUT_MS),
       });
+
       await response.body?.cancel();
+
       return response.ok;
     } catch {
       return false;
@@ -126,67 +139,89 @@ export function createBridge(config: BridgeConfig, options: BridgeOptions = {}):
 
   async function receive(request: IncomingMessage): Promise<Answer> {
     const path = new URL(request.url ?? "/", "http://sidecar").pathname;
+
     if (request.method === "GET" && path === "/healthz") return { status: 200, code: "healthy" };
+
     if (request.method !== "POST") return { status: 405, code: "method_not_allowed" };
     const body = await readBody(request);
+
     if (body === null) return { status: 413, code: "too_large" };
 
     // Nothing in the request is believed before the signature over its exact bytes verifies.
     const timestamp = header(request, "x-os-timestamp");
     const signature = /^v1=([0-9a-f]{64})$/.exec(header(request, "x-os-signature") ?? "")?.[1];
+
     if (timestamp === undefined || !/^\d{1,12}$/.test(timestamp) || signature === undefined) {
       return { status: 401, code: "unsigned" };
     }
+
     if (Math.abs(now() - Number(timestamp)) > TIMESTAMP_TOLERANCE_SECONDS) {
       return { status: 401, code: "stale_timestamp" };
     }
+
     const expected = createHmac("sha256", config.secret)
       .update(`${timestamp}.`)
       .update(body)
       .digest();
+
     if (!timingSafeEqual(Buffer.from(signature, "hex"), expected)) {
       return { status: 401, code: "bad_signature" };
     }
 
     let delivery: Record<string, unknown>;
+
     try {
       const parsed: unknown = JSON.parse(body.toString("utf8"));
+
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         return { status: 400, code: "not_a_delivery" };
       }
+
       delivery = parsed as Record<string, unknown>;
     } catch {
       return { status: 400, code: "not_a_delivery" };
     }
+
     if (delivery.v !== 1) return { status: 400, code: "unknown_version" };
     // The header is not signed; the id in the body is. Dedupe on the signed one.
     const deliveryId = delivery.deliveryId;
+
     if (typeof deliveryId !== "string" || deliveryId !== header(request, "x-os-delivery")) {
       return { status: 400, code: "delivery_id_mismatch" };
     }
+
     const event = delivery.event;
+
     if (typeof event !== "string" || !Object.hasOwn(MESSAGES, event)) {
       return { status: 204, code: "ignored", deliveryId };
     }
+
     const known = event as Event;
     const link = config.linkOrigin === null ? null : linkOn(config.linkOrigin, delivery.link);
     const linkDropped = config.linkOrigin !== null && link === null;
 
     forget();
+
     if (published.has(deliveryId)) return { status: 204, code: "duplicate", deliveryId, event };
     const outcome = linkDropped ? "published_without_link" : "published";
     let attempt = publishing.get(deliveryId);
     const first = attempt === undefined;
+
     if (attempt === undefined) {
       attempt = publish(known, link);
       publishing.set(deliveryId, attempt);
     }
+
     const ok = await attempt;
+
     if (first) {
       publishing.delete(deliveryId);
+
       if (ok) published.set(deliveryId, now() + DEDUPE_SECONDS);
     }
+
     if (!ok) return { status: 502, code: "ntfy_failed", deliveryId, event };
+
     return { status: 204, code: first ? outcome : "duplicate", deliveryId, event };
   }
 
@@ -194,6 +229,7 @@ export function createBridge(config: BridgeConfig, options: BridgeOptions = {}):
     receive(request).then(
       (answer) => {
         response.writeHead(answer.status).end();
+
         if (answer.code !== "healthy") log({ message: "delivery", ...answer });
       },
       () => {

@@ -65,6 +65,7 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
     if (!(await setupRequired(ctx)) || !(await checkSetupToken(ctx, body.setupToken))) {
       throw new HttpError("forbidden", "the setup token is not valid");
     }
+
     return startRegistration(ctx, {
       kind: "setup",
       userId: newId("usr"),
@@ -79,6 +80,7 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
       kind: "setup",
       response: body.response,
     });
+
     const userId = ceremony.userId as UserId;
     const displayName = ceremony.context.displayName ?? "Owner";
     await ctx.db.transaction(async (tx) => {
@@ -86,6 +88,7 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
       // here, then finds a user and stops.
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${SETUP_LOCK})`);
       const [existing] = await tx.select({ n: count() }).from(users);
+
       if ((existing?.n ?? 0) > 0) throw new HttpError("forbidden", "the setup token is not valid");
       await tx.insert(users).values({ id: userId, displayName });
       await insertPasskey(tx, userId, passkey, "First passkey");
@@ -93,6 +96,7 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
       await issueSession(ctx, c, { userId, credentialId: passkey.id }, tx);
     });
     ctx.log.info("setup completed", { event: "setup.completed", userId });
+
     return sessionInfo(ctx, { id: userId, displayName });
   });
 
@@ -103,14 +107,18 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
       ceremonyId: body.ceremonyId,
       response: body.response as never,
     });
+
     await issueSession(ctx, c, { userId, credentialId });
     const [user] = await ctx.db.select().from(users).where(eq(users.id, userId));
+
     if (!user) throw new HttpError("unauthenticated", "this passkey is not registered here");
+
     return sessionInfo(ctx, { id: user.id, displayName: user.displayName });
   });
 
   handle(app, ctx, "logout", async ({ session, c }) => {
     await endSession(ctx, c, session);
+
     return {};
   });
 
@@ -120,6 +128,7 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
       .from(credentials)
       .where(and(eq(credentials.userId, session.user.id), isNull(credentials.revokedAt)))
       .orderBy(asc(credentials.createdAt));
+
     return { items: rows.map(passkeySummary) };
   });
 
@@ -128,6 +137,7 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
       .select({ id: credentials.id, transports: credentials.transports })
       .from(credentials)
       .where(and(eq(credentials.userId, session.user.id), isNull(credentials.revokedAt)));
+
     return startRegistration(ctx, {
       kind: "add-passkey",
       userId: session.user.id,
@@ -143,12 +153,15 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
       kind: "add-passkey",
       response: body.response,
     });
+
     // A ceremony started by one person cannot be finished in another person's session.
     if (ceremony.userId !== session.user.id) {
       throw new HttpError("not_found", "this sign-in step expired; start again");
     }
+
     await insertPasskey(ctx.db, session.user.id, passkey, body.label);
     const opened: ApprovalSummary[] = [];
+
     for (const { workspaceId } of await approvingWorkspaces(ctx, session.user.id)) {
       opened.push(
         await openAddApprover(ctx, {
@@ -159,8 +172,11 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
         }),
       );
     }
+
     const [row] = await ctx.db.select().from(credentials).where(eq(credentials.id, passkey.id));
+
     if (!row) throw new HttpError("internal", "the passkey was not stored");
+
     return { passkey: passkeySummary(row), approvals: opened };
   });
 
@@ -169,19 +185,24 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
       .select({ id: credentials.id })
       .from(credentials)
       .where(and(eq(credentials.userId, session.user.id), isNull(credentials.revokedAt)));
+
     if (!live.some((row) => row.id === params.credentialId)) {
       throw new HttpError("not_found", "no such passkey");
     }
+
     if (live.length === 1) {
       throw new HttpError("conflict", "add another passkey before removing your last one");
     }
+
     const mine = await ctx.db
       .select()
       .from(approverCredentials)
       .where(eq(approverCredentials.userId, session.user.id));
+
     const approving = mine.filter(
       (row) => row.credentialId === params.credentialId && row.state !== "pending",
     );
+
     // Removing the person's only active approver passkey in a workspace would leave them no
     // passkey able to approve its own removal, or anything else, there.
     for (const row of approving) {
@@ -191,6 +212,7 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
           other.credentialId !== params.credentialId &&
           other.state === "active",
       );
+
       if (!otherActive) {
         throw new HttpError(
           "conflict",
@@ -198,6 +220,7 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
         );
       }
     }
+
     const workspaceIds = [
       ...new Set(
         mine
@@ -205,7 +228,9 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
           .map((row) => row.workspaceId),
       ),
     ];
+
     const opened: ApprovalSummary[] = [];
+
     for (const workspaceId of workspaceIds) {
       opened.push(
         ...(await withdrawApprover(ctx, {
@@ -218,6 +243,7 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
         })),
       );
     }
+
     // A passkey that approves nowhere stops signing in at once. One that still approves stops
     // when its last `remove-approver` request is applied (see the remove-approver kind).
     if (opened.length === 0) {
@@ -225,15 +251,19 @@ export function registerIdentity(app: Hono, ctx: AppContext): void {
         revokePasskey(tx, params.credentialId, new Date(ctx.now() * 1000)),
       );
     }
+
     ctx.log.info("passkey removed", { event: "passkey.removed", userId: session.user.id });
+
     return { approvals: opened };
   });
 
   handle(app, ctx, "eraseMe", async ({ session, c }) => {
     await requireRecentSignIn(ctx, session, "erase yourself");
     const outcome = await eraseOnRequest(ctx, session.user.id);
+
     // Erasing deleted every session of the person, this one included.
     if (outcome.status === "erased") clearSessionCookie(ctx.config, c);
+
     return outcome;
   });
 }

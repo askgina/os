@@ -56,13 +56,19 @@ import {
 test.describe.configure({ mode: "serial" });
 
 const CHAIN = "eip155:31337";
+
 const RECIPIENT = "0x00000000000000000000000000000000000a11ce";
+
 /** A contract address the wallet is later allowed to call. Nothing is deployed there. */
 const CALL_TARGET = "0x000000000000000000000000000000000000c0de";
+
 const run = Date.now().toString(36);
+
 /** Text an agent types. None of it may be readable in the database. */
 const MEMO_MARKER = `MEMOMARK${run} pay the hosting invoice`;
+
 const CALLDATA_MARKER = `0x12345678${Buffer.from(`CALLMARK${run}`).toString("hex")}`;
+
 /** A name a person types, which is readable on purpose: it proves the scanner can see. */
 const WORKSPACE_NAME = `Treasury ${run}`;
 
@@ -79,11 +85,17 @@ const AGENT_TOOLS = [
 ];
 
 const ada = new Person(stack.origin, "Ada");
+
 let workspace: WorkspaceDetail;
+
 let wallet: WalletSummary;
+
 let agentId: string;
+
 let agentToken: string;
+
 let agent: AgentConnection;
+
 /** The approval of the first confirmed payment, used later to show it cannot be used again. */
 let spentApprovalId: string;
 
@@ -113,6 +125,7 @@ async function setPolicy(draft: PolicyDraft, walletId: string = wallet.id): Prom
     params: { workspaceId: workspace.id, walletId },
     body: { draft },
   });
+
   expect(request.kind).toBe("set-policy");
   await ada.confirm(request.id);
   expect((await ada.settled(request.id)).status).toBe("executed");
@@ -129,6 +142,7 @@ async function propose(amount: string, memo: string) {
     amount,
     memo,
   });
+
   return { intentId: String(result.intentId), approvalId: approvalIdOf(result) };
 }
 
@@ -138,9 +152,11 @@ async function refusalCode(attempt: Promise<unknown>): Promise<string> {
     () => null,
     (error: unknown) => error,
   );
+
   if (!(outcome instanceof ConfirmationRefused)) {
     throw new Error(`expected the confirmation page to refuse, got ${String(outcome)}`);
   }
+
   return outcome.code;
 }
 
@@ -151,9 +167,12 @@ async function intentStatus(intentId: string): Promise<string> {
 async function intentSettles(intentId: string, timeoutMs = 120_000): Promise<string> {
   const pending = ["proposed", "pending_approval", "approved", "signed", "broadcast"];
   const deadline = Date.now() + timeoutMs;
+
   for (;;) {
     const status = await intentStatus(intentId);
+
     if (!pending.includes(status)) return status;
+
     if (Date.now() > deadline) throw new Error(`intent ${intentId} is still ${status}`);
     await delay(250);
   }
@@ -172,13 +191,16 @@ async function killServer(): Promise<void> {
 /** The workspace's whole signer decision log, read to its end: a page holds the oldest 100. */
 async function signerDecisions(): Promise<SignerDecision[]> {
   const decisions: SignerDecision[] = [];
+
   for (let after = 0; ; ) {
     const page = await ada.api.call("listSignerDecisions", {
       params: { workspaceId: workspace.id },
       query: { after: String(after) },
     });
+
     decisions.push(...page.items);
     const last = page.items.at(-1);
+
     if (!last || page.items.length < 100) return decisions;
     after = last.seq;
   }
@@ -206,10 +228,12 @@ test("a fresh installation is claimed once, with the setup token", async () => {
 
 test("a workspace, an agent with its own wallet, and limits approved with a passkey", async () => {
   workspace = await ada.api.call("createWorkspace", { body: { name: WORKSPACE_NAME } });
+
   const created = await ada.api.call("createAgent", {
     params: { workspaceId: workspace.id },
     body: { name: "Payer" },
   });
+
   agentId = created.agent.id;
   agentToken = created.token;
   wallet = created.wallet;
@@ -217,9 +241,11 @@ test("a workspace, an agent with its own wallet, and limits approved with a pass
   expect(agentToken.startsWith("osa_")).toBe(true);
 
   await setPolicy(policy());
+
   const detail = await ada.api.call("getWallet", {
     params: { workspaceId: workspace.id, walletId: wallet.id },
   });
+
   expect(detail.policy?.revision).toBe(1);
 
   await chainAdmin.setBalance({ address: wallet.address, value: parseEther("1") });
@@ -228,11 +254,13 @@ test("a workspace, an agent with its own wallet, and limits approved with a pass
 
 test("an agent can propose and read, and nothing else", async () => {
   expect(await agent.tools()).toEqual(AGENT_TOOLS);
+
   const unauthenticated = await fetch(`${stack.origin}/mcp`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
   });
+
   expect(unauthenticated.status).toBe(401);
 });
 
@@ -317,16 +345,21 @@ test("an approval made on the control plane's page is refused", async () => {
   const payment = await propose("0.003", "approved on the wrong page");
   // An approver change, the kind one misled tap would use to take a workspace over for good.
   const grace = new Person(stack.origin, "Grace");
+
   const invite = await ada.api.call("createInvite", {
     params: { workspaceId: workspace.id },
     body: { role: "approver" },
   });
+
   await grace.join(invite.url);
+
   const pending = await ada.api.call("listApprovals", {
     params: { workspaceId: workspace.id },
     query: { status: "pending" },
   });
+
   const addGrace = pending.items.find((item) => item.kind === "add-approver");
+
   if (!addGrace) throw new Error("joining as an approver opened no approver change");
   // Grace proves on the confirmation page that the new passkey is hers, so what is refused below
   // is only where Ada's approval was made.
@@ -350,11 +383,13 @@ test("an approval made on the control plane's page is refused", async () => {
   // A control plane that stores such an approval itself and sends it to the signer through its
   // own execution path, as a compromised one would, gets nothing signed: the request ends failed.
   const { user } = await ada.api.call("getSession");
+
   if (!user || ada.credentialId === undefined) throw new Error("Ada is not signed in");
   const view = await ada.readConfirmation(await ada.confirmationLink(payment.approvalId));
   const onControlPlane = ada.assertion(view.webauthn.challenge, stack.origin);
   const db = new pg.Client({ connectionString: await databaseUrl() });
   await db.connect();
+
   try {
     await db.query(
       "INSERT INTO os.approval_assertions (approval_id, user_id, credential_id, response) VALUES ($1, $2, $3, $4)",
@@ -368,6 +403,7 @@ test("an approval made on the control plane's page is refused", async () => {
   } finally {
     await db.end();
   }
+
   expect(await ada.settled(payment.approvalId)).toMatchObject({
     status: "failed",
     failureCode: "assertion_invalid",
@@ -386,11 +422,14 @@ test("an approval made on the control plane's page is refused", async () => {
 test("an approver change whose key the new person does not hold cannot be approved", async () => {
   // Heidi joins as a viewer, so no approver change is opened yet.
   const heidi = new Person(stack.origin, "Heidi");
+
   const invite = await ada.api.call("createInvite", {
     params: { workspaceId: workspace.id },
     body: { role: "viewer" },
   });
+
   const { user } = await heidi.join(invite.url);
+
   if (!user || heidi.credentialId === undefined) throw new Error("Heidi did not join");
 
   // A compromised control plane puts a key of its own choosing into her approver change, under
@@ -400,26 +439,32 @@ test("an approver change whose key the new person does not hold cannot be approv
     rpId: new URL(stack.origin).hostname,
     challenge: "chosen-key",
   });
+
   const chosenKey = Buffer.from(coseEc2(chosen.credential.publicKey));
   const db = new pg.Client({ connectionString: await databaseUrl() });
   await db.connect();
   let change: { id: string } | undefined;
+
   try {
     const { rows } = await db.query<{ public_key: Buffer }>(
       "SELECT public_key FROM os.credentials WHERE id = $1",
       [heidi.credentialId],
     );
+
     const original = rows[0]?.public_key;
+
     if (!original) throw new Error("Heidi's passkey is not in the database");
     await db.query("UPDATE os.credentials SET public_key = $1 WHERE id = $2", [
       chosenKey,
       heidi.credentialId,
     ]);
+
     try {
       const promoted = await ada.api.call("setMemberRole", {
         params: { workspaceId: workspace.id, userId: user.id },
         body: { role: "approver" },
       });
+
       change = promoted.approvals.find((item) => item.kind === "add-approver");
     } finally {
       await db.query("UPDATE os.credentials SET public_key = $1 WHERE id = $2", [
@@ -430,6 +475,7 @@ test("an approver change whose key the new person does not hold cannot be approv
   } finally {
     await db.end();
   }
+
   if (!change) throw new Error("making Heidi an approver opened no approver change");
   const approvalId = change.id;
 
@@ -471,9 +517,11 @@ test("the confirmation service reaches the signer and nothing else", async () =>
         .then((r) => r.status, () => "unreachable");
       process.stdout.write(JSON.stringify({ resolved, internet }) + "\\n");
     })();`;
+
   const seen = JSON.parse(
     (await exec("approve", "node", "-e", script)).trim().split("\n").at(-1) ?? "{}",
   );
+
   // Caddy is the only way in, the signer the only way on.
   expect(seen).toEqual({
     resolved: {
@@ -493,6 +541,7 @@ test("a proposal over the wallet's limit is refused before anyone is asked", asy
     () => null,
     (error: unknown) => error,
   );
+
   expect(refusal).toBeInstanceOf(ToolRefused);
   expect(String(refusal)).toContain("over_per_tx_cap");
 });
@@ -529,9 +578,11 @@ test("limits change only with a passkey, and a raw contract call stays a proposa
   ).rejects.toThrow(/contract_call_not_allowed/);
 
   await setPolicy(policy({ contractCalls: { mode: "allowlist", targets: [CALL_TARGET] } }));
+
   const detail = await ada.api.call("getWallet", {
     params: { workspaceId: workspace.id, walletId: wallet.id },
   });
+
   expect(detail.policy?.revision).toBe(2);
 
   const result = await agent.call("propose_contract_call", {
@@ -540,9 +591,11 @@ test("limits change only with a passkey, and a raw contract call stays a proposa
     data: CALLDATA_MARKER,
     memo: "a call with marked calldata",
   });
+
   const approval = await ada.api.call("getApproval", {
     params: { approvalId: approvalIdOf(result) },
   });
+
   expect(approval.status).toBe("pending");
   await ada.reject(approval.id);
   expect(await intentSettles(String(result.intentId))).toBe("rejected");
@@ -573,6 +626,7 @@ test("a container on the agents network reaches the MCP gateway and nothing else
         internet: await tryFetch("https://example.com/"),
       }));
     })();`;
+
   const { output } = await fromAgentsNetwork(script);
   const seen = JSON.parse(output.trim().split("\n").at(-1) ?? "{}");
   expect(seen.resolved).toEqual({
@@ -606,6 +660,7 @@ test("the example agent, in a container on the agents network, gets its payment 
     ),
     { stdio: ["ignore", "pipe", "pipe"] },
   );
+
   let output = "";
   container.stdout.on("data", (chunk: Buffer) => {
     output += chunk.toString();
@@ -629,6 +684,7 @@ test("the example agent, in a container on the agents network, gets its payment 
 
 test("what an agent typed is in no column of the database in the clear", async () => {
   const url = await databaseUrl();
+
   const scan = await scanForMarkers(url, [
     MEMO_MARKER,
     CALLDATA_MARKER,
@@ -636,6 +692,7 @@ test("what an agent typed is in no column of the database in the clear", async (
     RECIPIENT,
     RECIPIENT.slice(2),
   ]);
+
   expect(scan.hits).toEqual([]);
   expect(scan.tables.length).toBeGreaterThan(20);
 
@@ -680,6 +737,7 @@ test("the audit log is complete and its chain verifies", async () => {
   const decisions = await ada.api.call("listSignerDecisions", {
     params: { workspaceId: workspace.id },
   });
+
   expect(decisions.items.some((decision) => decision.outcome === "denied")).toBe(true);
   expect(decisions.items.some((decision) => decision.outcome === "allowed")).toBe(true);
 });
@@ -689,16 +747,19 @@ test("a person empties a disabled agent's wallet to the treasury while paused, a
     params: { workspaceId: workspace.id },
     body: { label: "Reserve" },
   });
+
   const retired = await ada.api.call("createAgent", {
     params: { workspaceId: workspace.id },
     body: { name: "Retired" },
   });
+
   await chainAdmin.setBalance({ address: retired.wallet.address, value: parseEther("0.5") });
   await ada.api.call("disableAgent", {
     params: { workspaceId: workspace.id, agentId: retired.agent.id },
     body: {},
   });
   await ada.api.call("pauseWorkspace", { params: { workspaceId: workspace.id }, body: {} });
+
   const sweep = (to: string) =>
     ada.api.call("requestSweep", {
       params: { workspaceId: workspace.id, walletId: retired.wallet.id },
@@ -721,6 +782,7 @@ test("a person empties a disabled agent's wallet to the treasury while paused, a
   await ada.confirm(toTreasury.id);
   expect((await ada.settled(toTreasury.id)).status).toBe("executed");
   let approved = await ada.api.call("getApproval", { params: { approvalId: toTreasury.id } });
+
   for (let i = 0; i < 240; i += 1) {
     if (
       approved.subject.kind === "sweep-wallet" &&
@@ -730,6 +792,7 @@ test("a person empties a disabled agent's wallet to the treasury while paused, a
     await delay(500);
     approved = await ada.api.call("getApproval", { params: { approvalId: toTreasury.id } });
   }
+
   if (approved.subject.kind !== "sweep-wallet") throw new Error("not a sweep");
   expect(approved.subject.transaction?.status).toBe("confirmed");
   expect((await chain.getBalance({ address: treasury.address })) - treasuryBefore).toBe(
@@ -747,6 +810,7 @@ test("a person empties a disabled agent's wallet to the treasury while paused, a
     params: { workspaceId: workspace.id },
     body: {},
   });
+
   await ada.confirm(resume.id);
   expect((await ada.settled(resume.id)).status).toBe("executed");
 });
@@ -769,9 +833,11 @@ test("a restored and fenced backup keeps wallets, refuses an approval used after
 
   // The same person, the same passkey, the same wallet.
   await ada.signIn();
+
   const restored = await ada.api.call("getWallet", {
     params: { workspaceId: workspace.id, walletId: wallet.id },
   });
+
   expect(restored.address).toBe(wallet.address);
   expect(restored.policy?.revision).toBe(2);
   expect((await ada.api.call("verifyAudit", { params: { workspaceId: workspace.id } })).ok).toBe(
@@ -795,7 +861,9 @@ test("a restored and fenced backup keeps wallets, refuses an approval used after
   const shown = await ada.api.call("getApproval", {
     params: { approvalId: paidAfterBackup.approvalId },
   });
+
   expect(shown.status).toBe("pending");
+
   for (const proposal of [paidAfterBackup, waiting]) {
     const link = await ada.confirmationLink(proposal.approvalId);
     const view = await ada.readConfirmation(link);
@@ -806,6 +874,7 @@ test("a restored and fenced backup keeps wallets, refuses an approval used after
     await ada.reject(proposal.approvalId);
     expect(await intentSettles(proposal.intentId, 200_000)).toBe("rejected");
   }
+
   expect(await chain.getTransactionCount({ address: wallet.address })).toBe(nonceBefore);
   expect(await chain.getBalance({ address: RECIPIENT })).toBe(before);
   // The restored file is a new file, so the signer may already have fenced it when the operator's
@@ -819,6 +888,7 @@ test("a restored and fenced backup keeps wallets, refuses an approval used after
 
   // A proposal made after the fence and the clock skew it allows is signed as usual.
   const skewEnds = (fenceAt + 31) * 1000;
+
   if (Date.now() < skewEnds) await delay(skewEnds - Date.now());
   agent = await connectAgent(`${stack.origin}/mcp`, agentToken);
   const fresh = await propose("0.001", "after the restore");
@@ -833,17 +903,23 @@ test("a restored and fenced backup keeps wallets, refuses an approval used after
 
 /** The one address the mandates below may pay. */
 const PAYEE = "0x000000000000000000000000000000000000b0b0";
+
 /** A person's reason for a mandate. It is sealed: none of it may be readable in the database. */
 const PURPOSE_MARKER = `PURPOSEMARK${run} pay the hosting invoices`;
 
 const wei = (amount: string) => parseEther(amount).toString();
+
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 
 /** The agent the mandates below are for, with its own wallet. */
 let payerId: AgentSummary["id"];
+
 let payerToken: string;
+
 let payerWallet: WalletSummary;
+
 let payer: AgentConnection;
+
 /** The mandate the first gates grant and use, until one of them revokes it. */
 let mandateId: string;
 
@@ -898,7 +974,9 @@ async function grantMandate(
   await approver.confirm(grant.id);
   const granted = await ada.settled(grant.id);
   expect(granted.status).toBe("executed");
+
   if (granted.subject.kind !== "grant-mandate") throw new Error(`${grant.id} grants no mandate`);
+
   return { mandateId: granted.subject.mandate.id, grantId: grant.id };
 }
 
@@ -909,12 +987,14 @@ function getMandate(id: string) {
 /** The ids of the live mandates `whoami` shows the payer. */
 async function payerMandates(): Promise<string[]> {
   const { mandates } = await payer.call("whoami");
+
   return (mandates as { mandateId: string }[]).map((mandate) => mandate.mandateId);
 }
 
 /** How many proposals the payer has made, as it lists them. */
 async function payerIntentCount(): Promise<number> {
   const { intents } = await payer.call("list_intents", { limit: 50 });
+
   return (intents as unknown[]).length;
 }
 
@@ -926,9 +1006,11 @@ async function toolRefusal(
     () => null,
     (error: unknown) => error,
   );
+
   if (!(outcome instanceof ToolRefused)) {
     throw new Error(`expected the tool to refuse, got ${String(outcome)}`);
   }
+
   return { code: outcome.code, detail: outcome.detail };
 }
 
@@ -940,9 +1022,11 @@ async function apiRefusal(
     () => null,
     (error: unknown) => error,
   );
+
   if (!(outcome instanceof ApiError)) {
     throw new Error(`expected the API to refuse, got ${String(outcome)}`);
   }
+
   return { code: outcome.code, detail: outcome.detail };
 }
 
@@ -969,29 +1053,38 @@ async function joinAsApprover(person: Person): Promise<string> {
     params: { workspaceId: workspace.id },
     body: { role: "approver" },
   });
+
   const { user } = await person.join(invite.url);
+
   if (!user) throw new Error(`${person.name} did not join`);
+
   const pending = await ada.api.call("listApprovals", {
     params: { workspaceId: workspace.id },
     query: { status: "pending" },
   });
+
   let change: string | undefined;
+
   for (const item of pending.items.filter((candidate) => candidate.kind === "add-approver")) {
     const detail = await ada.api.call("getApproval", { params: { approvalId: item.id } });
+
     if (detail.subject.kind === "add-approver" && detail.subject.user.id === user.id) {
       change = item.id;
     }
   }
+
   if (!change) throw new Error("joining as an approver opened no approver change");
   await person.provePossession(change);
   await ada.confirm(change);
   expect((await ada.settled(change)).status).toBe("executed");
+
   return user.id;
 }
 
 /** Run one of the signer's operator commands on its host, as the deploy guide does. */
 async function signerAdmin(...args: string[]): Promise<Record<string, unknown>> {
   const output = await exec("signer", "node", "src/admin.ts", ...args);
+
   return JSON.parse(output.trim().split("\n").at(-1) ?? "") as Record<string, unknown>;
 }
 
@@ -1000,10 +1093,12 @@ async function runExampleAgent(
   env: Record<string, string>,
 ): Promise<{ exitCode: number; output: string }> {
   const variables = Object.entries(env).flatMap(([name, value]) => ["-e", `${name}=${value}`]);
+
   try {
     return { exitCode: 0, output: await compose("run", "--rm", ...variables, "scripted-agent") };
   } catch (error) {
     const failure = error as { code?: number; stdout?: string; stderr?: string };
+
     return {
       exitCode: typeof failure.code === "number" ? failure.code : 1,
       output: `${failure.stdout ?? ""}${failure.stderr ?? ""}`,
@@ -1016,6 +1111,7 @@ test("a mandate approved on the confirmation page at the admin threshold lets it
     params: { workspaceId: workspace.id },
     body: { name: "Invoice payer" },
   });
+
   payerId = created.agent.id;
   payerToken = created.token;
   payerWallet = created.wallet;
@@ -1038,17 +1134,20 @@ test("a mandate approved on the confirmation page at the admin threshold lets it
   const { adminThreshold } = await ada.api.call("getWorkspace", {
     params: { workspaceId: workspace.id },
   });
+
   const grant = await ada.proposeMandate(
     workspace.id,
     payerWallet.id,
     mandateDraft(payerId, { purpose: PURPOSE_MARKER }),
   );
+
   expect(grant).toMatchObject({
     kind: "grant-mandate",
     status: "pending",
     threshold: adminThreshold,
   });
   const detail = await ada.api.call("getApproval", { params: { approvalId: grant.id } });
+
   if (detail.subject.kind !== "grant-mandate") throw new Error("the request grants no mandate");
   mandateId = detail.subject.mandate.id;
 
@@ -1089,14 +1188,17 @@ test("a mandate approved on the confirmation page at the admin threshold lets it
   const { pendingApprovals } = await ada.api.call("getWorkspace", {
     params: { workspaceId: workspace.id },
   });
+
   const before = await chain.getBalance({ address: PAYEE });
   const nonceBefore = await chain.getTransactionCount({ address: payerWallet.address });
+
   const paid = await payer.proposeTransfer({
     chainId: CHAIN,
     to: PAYEE,
     amount: "0.01",
     memo: "hosting invoice 1",
   });
+
   expect(paid).toMatchObject({
     authorizedBy: "mandate",
     mandateId,
@@ -1119,6 +1221,7 @@ test("a mandate approved on the confirmation page at the admin threshold lets it
     AMOUNT: "0.005",
     MEMO: "hosting invoice 2, from the example agent",
   });
+
   expect(example.exitCode, example.output).toBe(0);
   expect(example.output).toContain(`covered by mandate ${mandateId}`);
   expect(example.output).toContain("status: confirmed");
@@ -1225,6 +1328,7 @@ test("a payment over the mandate's per-payment cap, or to a recipient it does no
 test("a server killed right after a payment under a mandate still ends in exactly one transaction, and the mandate keeps its counts", async () => {
   const before = await chain.getBalance({ address: PAYEE });
   const nonceBefore = await chain.getTransactionCount({ address: payerWallet.address });
+
   // Named by the agent this time.
   const paid = await payer.proposeTransfer({
     chainId: CHAIN,
@@ -1233,6 +1337,7 @@ test("a server killed right after a payment under a mandate still ends in exactl
     memo: "survives a restart",
     mandateId,
   });
+
   expect(paid).toMatchObject({ authorizedBy: "mandate", mandateId });
   await killServer();
   await compose("up", "-d", "--wait", "--wait-timeout", "300", "server");
@@ -1266,6 +1371,7 @@ test("concurrent payments under one mandate never exceed its window cap, and the
   // 0.02 of the 0.03 the mandate allows in any hour is used. Each payment fits alone; both do not.
   const before = await chain.getBalance({ address: PAYEE });
   const nonceBefore = await chain.getTransactionCount({ address: payerWallet.address });
+
   const racing = await Promise.all(
     ["first", "second"].map((which) =>
       payer.proposeTransfer({
@@ -1276,26 +1382,33 @@ test("concurrent payments under one mandate never exceed its window cap, and the
       }),
     ),
   );
+
   const outcomes: { authorizedBy: string; status: string; failureCode: string | null }[] = [];
+
   for (const proposal of racing) {
     // A proposal checked after the other was signed no longer fits, so it waits for a person.
     if (proposal.authorizedBy === "person") await rejectWaiting(proposal);
     else await intentSettles(proposal.intentId);
+
     const { status, failureCode } = await ada.api.call("getIntent", {
       params: { intentId: proposal.intentId },
     });
+
     outcomes.push({ authorizedBy: proposal.authorizedBy, status, failureCode });
   }
+
   // One is signed. When both were routed to the mandate, the signer refuses the other with the
   // window's code.
   const confirmed = outcomes.filter((outcome) => outcome.status === "confirmed");
   expect(confirmed).toEqual([expect.objectContaining({ authorizedBy: "mandate" })]);
   const other = outcomes.find((outcome) => outcome.status !== "confirmed");
+
   if (other?.authorizedBy === "mandate") {
     expect(other).toMatchObject({ status: "denied", failureCode: "mandate_over_window_cap" });
   } else {
     expect(other).toMatchObject({ authorizedBy: "person", status: "rejected" });
   }
+
   expect(formatEther((await chain.getBalance({ address: PAYEE })) - before)).toBe("0.01");
   expect(await chain.getTransactionCount({ address: payerWallet.address })).toBe(nonceBefore + 1);
   expect((await getMandate(mandateId)).usage).toMatchObject({
@@ -1369,10 +1482,12 @@ test("a revoked mandate signs nothing, and the next payment waits for a person",
       outcome: "allowed",
     }),
   );
+
   const ended = await ada.api.call("listMandates", {
     params: { workspaceId: workspace.id },
     query: { agentId: payerId, status: "ended" },
   });
+
   expect(ended.items.map((item) => item.id)).toContain(mandateId);
 });
 
@@ -1394,7 +1509,9 @@ test("removing the approver who granted a mandate ends that mandate and no other
     params: { workspaceId: workspace.id, userId: linId },
     body: { role: "viewer" },
   });
+
   const removal = demoted.approvals.find((item) => item.kind === "remove-approver");
+
   if (!removal) throw new Error("demoting Lin opened no approver removal");
   await ada.confirm(removal.id);
   expect((await ada.settled(removal.id)).status).toBe("executed");
@@ -1422,12 +1539,14 @@ test("removing the approver who granted a mandate ends that mandate and no other
       }),
     ),
   ).toEqual({ code: "policy_denied", detail: "mandate_revoked" });
+
   const paid = await payer.proposeTransfer({
     chainId: CHAIN,
     to: PAYEE,
     amount: "0.001",
     memo: "under the mandate Ada granted",
   });
+
   expect(paid).toMatchObject({ authorizedBy: "mandate", mandateId: byAda.mandateId });
   expect(await intentSettles(paid.intentId)).toBe("confirmed");
 
@@ -1440,8 +1559,10 @@ test("disabling an agent revokes its mandates at the signer and cancels its wait
     params: { workspaceId: workspace.id },
     body: { name: "Contractor" },
   });
+
   await setPolicy(payerPolicy(created.agent.id), created.wallet.id);
   const granted = await grantMandate(created.wallet.id, mandateDraft(created.agent.id));
+
   const waiting = await ada.proposeMandate(
     workspace.id,
     created.wallet.id,
@@ -1468,6 +1589,7 @@ test("disabling an agent revokes its mandates at the signer and cancels its wait
       revokedReason: "requested",
     }),
   );
+
   // The agent's token no longer opens the gateway.
   const refused = await fetch(`${stack.origin}/mcp`, {
     method: "POST",
@@ -1478,6 +1600,7 @@ test("disabling an agent revokes its mandates at the signer and cancels its wait
     },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
   });
+
   expect(refused.status).toBe(403);
 });
 
@@ -1528,8 +1651,10 @@ test("the operator's revoke-mandate --all on the signer host ends every live man
 
 /** What the payer types into the proposal below. None of it may reach the webhook. */
 const NOTICE_MEMO = `NOTICEMARK${run} pay the notified invoice`;
+
 /** An address no other gate pays, and an amount no other gate sends. */
 const NOTICE_RECIPIENT = "0x0000000000000000000000000000000000dec0de";
+
 const NOTICE_AMOUNT = "0.004321";
 
 /** The keys of each event's body, sorted as canonical JSON sorts them (deploy/README.md). */
@@ -1543,6 +1668,7 @@ const APPROVAL_EVENT_KEYS = [
   "v",
   "workspaceId",
 ];
+
 const MANDATE_EVENT_KEYS = [
   "approvalId",
   "deliveryId",
@@ -1556,6 +1682,7 @@ const MANDATE_EVENT_KEYS = [
 test("an approval is announced once, signed, with no sealed content, even after a failed delivery", async () => {
   const secret = await webhookSecret();
   expect(secret.length).toBeGreaterThanOrEqual(32);
+
   // Whatever reached the receiver so far was a notification of a gate above, signed and accepted.
   for (const request of await receivedRequests()) {
     expect(request.status).toBe(200);
@@ -1563,6 +1690,7 @@ test("an approval is announced once, signed, with no sealed content, even after 
   }
 
   await failFirstAttempts(true);
+
   try {
     const proposal = await payer.proposeTransfer({
       chainId: CHAIN,
@@ -1570,8 +1698,10 @@ test("an approval is announced once, signed, with no sealed content, even after 
       amount: NOTICE_AMOUNT,
       memo: NOTICE_MEMO,
     });
+
     expect(proposal).toMatchObject({ authorizedBy: "person", status: "pending_approval" });
     const approvalId = approvalIdOf(proposal);
+
     const requests = await acknowledged(
       (body) => body.approvalId === approvalId && body.event === "approval.opened",
     );
@@ -1580,6 +1710,7 @@ test("an approval is announced once, signed, with no sealed content, even after 
     // which carried the same delivery id and the same body, signed again.
     expect(requests.map((request) => request.status)).toEqual([503, 200]);
     const [first, second] = requests;
+
     if (!first || !second) throw new Error("expected two attempts");
     const deliveryId = first.headers["x-os-delivery"];
     expect(deliveryId).toMatch(/^ndl_[0-9a-z]+$/);
@@ -1588,6 +1719,7 @@ test("an approval is announced once, signed, with no sealed content, even after 
     expect(Number(second.headers["x-os-timestamp"])).toBeGreaterThanOrEqual(
       Number(first.headers["x-os-timestamp"]),
     );
+
     const hidden = [
       NOTICE_MEMO,
       `NOTICEMARK${run}`,
@@ -1596,6 +1728,7 @@ test("an approval is announced once, signed, with no sealed content, even after 
       NOTICE_AMOUNT,
       wei(NOTICE_AMOUNT),
     ];
+
     for (const request of requests) {
       expect(expectSignedDelivery(secret, request, APPROVAL_EVENT_KEYS, hidden)).toEqual({
         v: 1,
@@ -1635,10 +1768,13 @@ test("a payment under a mandate is announced to the webhook as mandate.used, sig
   const requests = await acknowledged(
     (body) => body.event === "mandate.used" && body.mandateId === granted,
   );
+
   expect(requests).toHaveLength(1);
   const [request] = requests;
+
   if (!request) throw new Error("expected one delivery");
   const deliveryId = request.headers["x-os-delivery"];
+
   const body = expectSignedDelivery(secret, request, MANDATE_EVENT_KEYS, [
     memo,
     `NOTICEMARK${run}`,
@@ -1647,6 +1783,7 @@ test("a payment under a mandate is announced to the webhook as mandate.used, sig
     "0.002",
     wei("0.002"),
   ]);
+
   expect(body).toMatchObject({
     event: "mandate.used",
     workspaceId: workspace.id,
@@ -1659,15 +1796,18 @@ test("a payment under a mandate is announced to the webhook as mandate.used, sig
   // decides on and no list of approvals shows.
   const db = new pg.Client({ connectionString: await databaseUrl() });
   await db.connect();
+
   try {
     const { rows } = await db.query(
       "SELECT kind, mandate_id, subject_id FROM os.approvals WHERE id = $1",
       [body.approvalId],
     );
+
     expect(rows).toEqual([{ kind: "mandate-use", mandate_id: granted, subject_id: paid.intentId }]);
   } finally {
     await db.end();
   }
+
   await expect
     .poll(() => webhookDeliveries(String(body.approvalId), "mandate.used"), { timeout: 60_000 })
     .toEqual([{ id: deliveryId, state: "sent", attempts: 0 }]);
@@ -1696,6 +1836,7 @@ const STUCK_RECIPIENT = "0x0000000000000000000000000000000000057001";
 
 /** Kai, an approver who is not an owner: the one who speeds up and asks for the cancel. */
 const kai = new Person(stack.origin, "Kai");
+
 let kaiId: string;
 
 /** `value`, in wei, raised by the stack's REPRICE_BUMP_PERCENT of 12, rounded up. */
@@ -1708,15 +1849,19 @@ async function transactionOnceSent(
   timeoutMs = 60_000,
 ): Promise<{ intent: IntentDetail; transaction: TransactionInfo }> {
   const deadline = Date.now() + timeoutMs;
+
   for (;;) {
     const intent = await ada.api.call("getIntent", { params: { intentId } });
     const { transaction } = intent;
+
     if (transaction !== null && ready(transaction)) return { intent, transaction };
+
     if (Date.now() > deadline) {
       throw new Error(
         `intent ${intentId} is ${intent.status}, its transaction ${transaction?.status ?? "not signed"} with ${transaction?.attempts.length ?? 0} attempts`,
       );
     }
+
     await delay(250);
   }
 }
@@ -1724,7 +1869,9 @@ async function transactionOnceSent(
 /** The intent's transaction as people see it now. */
 async function transactionOf(intentId: string): Promise<TransactionInfo> {
   const { transaction } = await ada.api.call("getIntent", { params: { intentId } });
+
   if (transaction === null) throw new Error(`intent ${intentId} has no transaction`);
+
   return transaction;
 }
 
@@ -1733,28 +1880,34 @@ async function spentNative(walletId: WalletSummary["id"]): Promise<bigint> {
   const { spent } = await ada.api.call("getWallet", {
     params: { workspaceId: workspace.id, walletId },
   });
+
   const native = spent.find((entry) => entry.chainId === CHAIN && entry.asset === "native");
+
   return BigInt(native?.amount ?? "0");
 }
 
 /** The newest audit event's number. */
 async function auditHead(): Promise<number> {
   const page = await ada.api.call("listAudit", { params: { workspaceId: workspace.id } });
+
   return page.items[0]?.seq ?? 0;
 }
 
 /** The workspace's audit events after `seq`, oldest first, read across pages. */
 async function auditAfter(seq: number): Promise<AuditEvent[]> {
   const events: AuditEvent[] = [];
+
   for (let cursor: string | undefined; ; ) {
     const page = await ada.api.call("listAudit", {
       params: { workspaceId: workspace.id },
       query: cursor === undefined ? {} : { cursor },
     });
+
     for (const event of page.items) {
       if (event.seq <= seq) return events.reverse();
       events.push(event);
     }
+
     if (page.nextCursor === null) return events.reverse();
     cursor = page.nextCursor;
   }
@@ -1766,7 +1919,9 @@ async function auditAfter(seq: number): Promise<AuditEvent[]> {
  */
 function passkeyUses(person: Person): number {
   let uses = 0;
+
   for (const credential of person.authenticator.credentials.values()) uses += credential.signCount;
+
   return uses;
 }
 
@@ -1793,6 +1948,7 @@ async function offered(attempt: TransactionAttemptView): Promise<Transaction> {
     maxFeePerGas: BigInt(attempt.maxFeePerGas),
     maxPriorityFeePerGas: BigInt(attempt.maxPriorityFeePerGas),
   });
+
   return transaction;
 }
 
@@ -1810,6 +1966,7 @@ async function expectMinedOnce(
   mined: TransactionAttemptView,
 ): Promise<void> {
   expect((await receiptOf(mined.hash as Hash))?.status).toBe("success");
+
   for (const attempt of attempts) {
     if (attempt.attempt === mined.attempt) continue;
     expect(await receiptOf(attempt.hash as Hash), `attempt ${attempt.attempt}`).toBeNull();
@@ -1833,6 +1990,7 @@ test("a payment the chain does not mine is signed again with a higher fee by its
       amount,
       memo: "repriced by the server",
     });
+
     expect(proposal).toMatchObject({ authorizedBy: "person", status: "pending_approval" });
     intentId = proposal.intentId;
     approvalId = approvalIdOf(proposal);
@@ -1842,6 +2000,7 @@ test("a payment the chain does not mine is signed again with a higher fee by its
     const sent = await transactionOnceSent(intentId, (tx) => tx.status === "broadcast");
     expect(sent.transaction.attempts).toHaveLength(1);
     const [original] = sent.transaction.attempts;
+
     if (!original) throw new Error("no first attempt");
     expect(original).toMatchObject({
       attempt: 0,
@@ -1884,7 +2043,9 @@ test("a payment the chain does not mine is signed again with a higher fee by its
       (tx) => tx.attempts.length >= 2,
       120_000,
     );
+
     const [, raised] = transaction.attempts;
+
     if (!raised) throw new Error("no second attempt");
     expect(raised).toMatchObject({
       attempt: 1,
@@ -1895,13 +2056,16 @@ test("a payment the chain does not mine is signed again with a higher fee by its
     });
     expect(raised.hash).not.toBe(original.hash);
     expectRaised(original, raised);
+
     // Every attempt stays inside the ceiling the person approved and the policy's fee cap.
     if (!("maxFeeWei" in intent.intent)) throw new Error("a payment is an EVM intent");
     const ceiling = BigInt(intent.intent.maxFeeWei);
     expect(ceiling).toBeLessThanOrEqual(BigInt(wei("0.01")));
+
     for (const attempt of transaction.attempts) {
       expect(BigInt(attempt.gas) * BigInt(attempt.maxFeePerGas)).toBeLessThanOrEqual(ceiling);
     }
+
     // The node holds the new attempt: the first signature's sender, recipient, amount, data,
     // nonce, gas and chain, with only the two fees higher.
     expect(fixedFields(await offered(raised))).toEqual(fixedFields(first));
@@ -1932,6 +2096,7 @@ test("a payment the chain does not mine is signed again with a higher fee by its
   expect(await intentSettles(intentId)).toBe("confirmed");
   const settled = await transactionOf(intentId);
   const mined = settled.attempts.at(-1);
+
   if (!mined || !first) throw new Error("nothing was mined");
   expect(settled).toMatchObject({
     status: "confirmed",
@@ -1969,10 +2134,12 @@ test("an approver speeds up a stuck payment with no passkey, and the agent that 
       amount,
       memo: "sped up by a person",
     });
+
     intentId = proposal.intentId;
     await ada.confirm(approvalIdOf(proposal));
     const { transaction } = await transactionOnceSent(intentId, (tx) => tx.status === "broadcast");
     const [original] = transaction.attempts;
+
     if (!original) throw new Error("no first attempt");
     const first = await offered(original);
 
@@ -1988,6 +2155,7 @@ test("an approver speeds up a stuck payment with no passkey, and the agent that 
       intentId,
       status: "broadcast",
     });
+
     // Its token opens none of the people's routes: from the public origin it is no session...
     for (const action of ["speed-up", "cancel-transaction"]) {
       const response = await fetch(`${stack.origin}/api/v1/intents/${intentId}/${action}`, {
@@ -2000,12 +2168,14 @@ test("an approver speeds up a stuck payment with no passkey, and the agent that 
         body: "{}",
         redirect: "manual",
       });
+
       const refusal = (await response.json()) as { error?: { code?: string } };
       expect({ status: response.status, code: refusal.error?.code }, action).toEqual({
         status: 401,
         code: "unauthenticated",
       });
     }
+
     // ...and from where an agent runs, the routes are not there at all.
     const script = `
       const post = (path) => fetch("http://agent-gateway" + path, {
@@ -2020,6 +2190,7 @@ test("an approver speeds up a stuck payment with no passkey, and the agent that 
           cancel: await post("/api/v1/intents/${intentId}/cancel-transaction"),
         }));
       })();`;
+
     const { output } = await fromAgentsNetwork(script);
     expect(JSON.parse(output.trim().split("\n").at(-1) ?? "{}")).toEqual({
       speedUp: 404,
@@ -2054,6 +2225,7 @@ test("an approver speeds up a stuck payment with no passkey, and the agent that 
     // Fifteen seconds after the first signature Kai's click adds an attempt, and asks for no
     // passkey. The server's own reprice is not due until 45 seconds, so this one is Kai's.
     const spacing = (original.signedAt + 16) * 1000 - Date.now();
+
     if (spacing > 0) await delay(spacing);
     const uses = passkeyUses(kai);
     const sped = await kai.api.call("speedUp", { params: { intentId }, body: {} });
@@ -2061,6 +2233,7 @@ test("an approver speeds up a stuck payment with no passkey, and the agent that 
     const attempts = sped.transaction?.attempts ?? [];
     expect(attempts).toHaveLength(2);
     const [, raised] = attempts;
+
     if (!raised) throw new Error("no second attempt");
     expect(raised).toMatchObject({ attempt: 1, kind: "reprice", gas: original.gas });
     expectRaised(original, raised);
@@ -2098,6 +2271,7 @@ test("an approver speeds up a stuck payment with no passkey, and the agent that 
   expect(await intentSettles(intentId)).toBe("confirmed");
   const settled = await transactionOf(intentId);
   const [original, raised] = settled.attempts;
+
   if (!original || !raised) throw new Error("the attempts are gone");
   expect(settled).toMatchObject({ status: "confirmed", minedAttempt: 1, hash: raised.hash });
   expect(settled.attempts.map((attempt) => attempt.status)).toEqual(["not_mined", "mined"]);
@@ -2138,14 +2312,18 @@ test("a cancel a person asks for, approved on the confirmation page at the walle
       amount,
       memo: "cancelled by people",
     });
+
     intentId = proposal.intentId;
     approvalId = approvalIdOf(proposal);
     await ada.confirm(approvalId);
+
     const { intent, transaction } = await transactionOnceSent(
       intentId,
       (tx) => tx.status === "broadcast",
     );
+
     const [original] = transaction.attempts;
+
     if (!original) throw new Error("no first attempt");
     expect(await spentNative(payerWallet.id)).toBe(spentBefore + parseEther(amount));
 
@@ -2180,6 +2358,7 @@ test("a cancel a person asks for, approved on the confirmation page at the walle
       pendingCancelApprovalId: cancel.id,
     });
     const detail = await ada.api.call("getApproval", { params: { approvalId: cancel.id } });
+
     if (detail.subject.kind !== "cancel-transaction") throw new Error("not a cancel");
     expect(detail.subject).toMatchObject({
       intent: { id: intentId },
@@ -2226,6 +2405,7 @@ test("a cancel a person asks for, approved on the confirmation page at the walle
     const { attempts } = await transactionOf(intentId);
     expect(attempts).toHaveLength(2);
     const [, cancelling] = attempts;
+
     if (!cancelling) throw new Error("no cancel attempt");
     expect(cancelling).toMatchObject({
       attempt: 1,
@@ -2254,8 +2434,10 @@ test("a cancel a person asks for, approved on the confirmation page at the walle
   const voided = await ada.api.call("getIntent", { params: { intentId } });
   expect(voided).toMatchObject({ status: "voided", failureCode: "transaction_cancelled" });
   const settled = voided.transaction;
+
   if (!settled) throw new Error("the transaction is gone");
   const [original, cancelling] = settled.attempts;
+
   if (!original || !cancelling) throw new Error("the attempts are gone");
   expect(settled).toMatchObject({ status: "cancelled", minedAttempt: 1, hash: cancelling.hash });
   expect(settled.attempts.map((attempt) => attempt.status)).toEqual(["not_mined", "mined"]);
@@ -2264,6 +2446,7 @@ test("a cancel a person asks for, approved on the confirmation page at the walle
   expect(await chain.getTransactionCount({ address: payerWallet.address })).toBe(nonceBefore + 1);
   // The wallet paid the cancel's network fee and nothing else.
   const receipt = await receiptOf(cancelling.hash as Hash);
+
   if (!receipt) throw new Error("the cancel has no receipt");
   expect(walletBefore - (await chain.getBalance({ address: payerWallet.address }))).toBe(
     receipt.gasUsed * receipt.effectiveGasPrice,
@@ -2317,6 +2500,7 @@ test("a cancel a person asks for, approved on the confirmation page at the walle
     params: { workspaceId: workspace.id },
     body: {},
   });
+
   await ada.confirm(resume.id);
   expect((await ada.settled(resume.id)).status).toBe("executed");
 });
@@ -2325,12 +2509,14 @@ test("a cancel a person asks for, approved on the confirmation page at the walle
 // granted or approved after it in this file.
 test("the operator's restore fence ends every live mandate", async () => {
   const granted = await grantMandate(payerWallet.id, mandateDraft(payerId));
+
   const paid = await payer.proposeTransfer({
     chainId: CHAIN,
     to: PAYEE,
     amount: "0.001",
     memo: "before the fence",
   });
+
   expect(paid).toMatchObject({ authorizedBy: "mandate", mandateId: granted.mandateId });
   expect(await intentSettles(paid.intentId)).toBe("confirmed");
 

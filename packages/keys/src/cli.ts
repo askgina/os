@@ -45,62 +45,78 @@ function parseBatch(args: string[]): number {
   if (args.length === 0) return 500;
   const [flag, value, ...rest] = args;
   const batch = Number(value);
+
   if (flag !== "--batch" || rest.length > 0 || !Number.isInteger(batch) || batch < 1) {
     throw new UsageError(USAGE);
   }
+
   return batch;
 }
 
 function parseShred(args: string[]): { scope: KeyScope; id: string } {
   const [scope, id, ...rest] = args;
+
   if ((scope !== "run" && scope !== "workspace") || !id || rest.length > 0) {
     throw new UsageError(USAGE);
   }
+
   return { scope, id };
 }
 
 export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<number> {
   const [command, ...args] = argv;
+
   // Parse everything before touching the database, so a typo never half-runs an operation.
   let operation:
     | { kind: "rewrap"; batch: number }
     | { kind: "shred" | "shred-tenant"; scope: KeyScope; id: string };
+
   try {
     if (command === "rewrap") operation = { kind: "rewrap", batch: parseBatch(args) };
     else if (command === "shred" || command === "shred-tenant") {
       operation = { kind: command, ...parseShred(args) };
     } else throw new UsageError(USAGE);
+
     if (!env.DATABASE_URL) throw new UsageError("DATABASE_URL is not set");
   } catch (error) {
     if (!(error instanceof UsageError)) throw error;
     emit({ event: "keys.cli.usage_error", message: error.message });
+
     return 1;
   }
 
   let provider: KeyProvider;
+
   try {
     provider = keyProviderFromEnv(env, { keyringFileVariable: "KEYRING_FILE" });
   } catch (error) {
     // Both kinds carry fixed messages that name variables or fields, never values.
     const event =
       error instanceof KeyProviderConfigError ? "keys.cli.usage_error" : "keys.cli.keyring_error";
+
     emit({ event, message: (error as Error).message });
+
     return 1;
   }
 
   const databaseUrl = new URL(env.DATABASE_URL);
+
   if (env.DATABASE_PASSWORD_FILE) {
     try {
       databaseUrl.password = readFileSync(env.DATABASE_PASSWORD_FILE, "utf8").trim();
     } catch {
       await provider.close();
       emit({ event: "keys.cli.usage_error", message: "DATABASE_PASSWORD_FILE cannot be read" });
+
       return 1;
     }
   }
+
   const pool = new pg.Pool({ connectionString: databaseUrl.toString(), max: 2 });
+
   try {
     const store = new DataKeyStore({ pool, provider, cacheTtlMs: 0 });
+
     if (operation.kind === "rewrap") {
       const result = await store.rewrap(operation.batch);
       emit({
@@ -110,8 +126,10 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
         failedCount: result.failed.length,
         failed: result.failed,
       });
+
       return result.failed.length === 0 ? 0 : 2;
     }
+
     if (operation.kind === "shred-tenant") {
       const { shredded } = await store.shredTenant(operation.scope, operation.id);
       emit({
@@ -120,10 +138,13 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
         tenantId: operation.id,
         shredded,
       });
+
       return 0;
     }
+
     const shredded = await store.shred(operation.scope, operation.id);
     emit({ event: "keys.shred", scope: operation.scope, id: operation.id, shredded });
+
     return shredded ? 0 : 3;
   } catch (error) {
     if (
@@ -132,8 +153,10 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
     ) {
       throw error;
     }
+
     // Provider messages carry ids and HTTP statuses, never key material.
     emit({ event: "keys.cli.provider_error", error: error.name, message: error.message });
+
     return 4;
   } finally {
     await pool.end();

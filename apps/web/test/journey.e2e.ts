@@ -53,12 +53,17 @@ import { standInPushManager } from "./push-stand-in.ts";
 const test = baseTest.extend<LayoutOptions>({ widerText: [false, { option: true }] });
 
 const SETUP_TOKEN = process.env.OS_WEB_SETUP_TOKEN ?? "fixture-setup-token-0123456789";
+
 const SCREENSHOTS = new URL("../dev/screenshots/", import.meta.url).pathname;
+
 const RECIPIENT = "0x52908400098527886e0f7030069857d2e4169ee7";
+
 /** A second recipient an approval in advance lists. */
 const PAYEE = "0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae";
+
 /** A key fingerprint as the pages show it: four groups of four Crockford base32 letters. */
 const FINGERPRINT = /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){3}$/;
+
 /**
  * The projects whose phone screen height means something: real fonts at a real size. The
  * `phone-wide-font` project widens every letter beyond any real font to find sideways overflow
@@ -80,6 +85,7 @@ async function addAuthenticator(page: Page): Promise<CDPSession> {
       automaticPresenceSimulation: true,
     },
   });
+
   return cdp;
 }
 
@@ -101,6 +107,7 @@ function watchConsole(page: Page): string[] {
         `response ${response.status()} ${response.request().method()} ${response.url()}`,
       );
   });
+
   return problems;
 }
 
@@ -137,6 +144,7 @@ async function shownNotifications(page: Page): Promise<ShownNotification[]> {
   return page.evaluate(async () => {
     const registration = await navigator.serviceWorker.getRegistration("/");
     const shown = (await registration?.getNotifications()) ?? [];
+
     return shown.map((item) => ({
       title: item.title,
       body: item.body,
@@ -154,14 +162,18 @@ async function shownNotifications(page: Page): Promise<ShownNotification[]> {
 async function deliverPush(page: Page, cdp: CDPSession, message: unknown): Promise<void> {
   const origin = new URL(page.url()).origin;
   const registered = Promise.withResolvers<string>();
+
   const timer = setTimeout(
     () => registered.reject(new Error("no service worker registered")),
     10_000,
   );
+
   const listener = ({ registrations }: { registrations: ServiceWorkerRegistrationInfo[] }) => {
     const found = registrations.find((item) => !item.isDeleted && item.scopeURL === `${origin}/`);
+
     if (found) registered.resolve(found.registrationId);
   };
+
   cdp.on("ServiceWorker.workerRegistrationUpdated", listener);
   await cdp.send("ServiceWorker.enable");
   const registrationId = await registered.promise.finally(() => clearTimeout(timer));
@@ -215,6 +227,7 @@ async function capture(
 async function expectOnFirstScreen(page: Page, testInfo: TestInfo, decision: Locator) {
   const viewport = page.viewportSize();
   const box = await decision.boundingBox();
+
   if (ONE_SCREEN_PROJECTS.has(testInfo.project.name) && viewport && box) {
     expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
   }
@@ -241,7 +254,9 @@ async function proposePayment(
     headers: { authorization: `Bearer ${token}` },
     data: { kind: "transfer", to: RECIPIENT, amount, memo: "Pay invoice" },
   });
+
   expect(proposed.ok()).toBe(true);
+
   return (await proposed.json()) as { id: string; approvalId: string };
 }
 
@@ -253,17 +268,21 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
   widerText,
 }, testInfo) => {
   test.setTimeout(360_000);
+
   /** `capture` on the owner's page unless `on` names another person's. */
   const shot = (
     name: string,
     target: { element?: Locator; viewport?: true } = {},
     on: Page = page,
   ) => capture(on, testInfo, name, target);
+
   const expectDecisionOnFirstScreen = (decision: Locator) =>
     expectOnFirstScreen(page, testInfo, decision);
+
   /** Another person's browser, on the same kind of screen as the owner's, with a passkey. */
   const personPage = async (): Promise<{ person: Page; personProblems: string[] }> => {
     const { viewport, deviceScaleFactor, isMobile, hasTouch, colorScheme } = testInfo.project.use;
+
     const context = await browser.newContext({
       baseURL,
       viewport,
@@ -272,15 +291,20 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
       hasTouch,
       colorScheme: colorScheme ?? "light",
     });
+
     if (widerText) await widenText(context);
     const person = await context.newPage();
     const personProblems = watchConsole(person);
     await addAuthenticator(person);
+
     return { person, personProblems };
   };
+
   const problems = watchConsole(page);
   const proposeUrl = process.env.OS_WEB_PROPOSE_URL ?? `${baseURL}/__fixture/propose`;
+
   if (!process.env.OS_WEB_BASE_URL) await request.post(`${baseURL}/__fixture/reset`);
+
   if (widerText) await widenText(page.context());
   const ownerSession = await addAuthenticator(page);
 
@@ -288,11 +312,13 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await page.goto("/");
     await expect(page).toHaveURL(/\/setup$/);
     await expect(page.getByRole("heading", { name: "Set up this server" })).toBeVisible();
+
     if (widerText) {
       // The project proves nothing unless the wider letters really reached the page.
       const body = page.locator("body");
       expect(await body.evaluate((node) => getComputedStyle(node).letterSpacing)).toBe("1.28px");
     }
+
     await shot("01-setup");
     await page.getByLabel("Setup token").fill(SETUP_TOKEN);
     await page.getByLabel("Your name").fill("Ada Owner");
@@ -339,9 +365,11 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await page.getByRole("button", { name: "Submit for approval" }).click();
     const fieldError = threshold.locator("xpath=..").getByRole("alert");
     await expect(fieldError).toHaveText(/at most 1, the number needed for admin changes/);
+
     // The browser reports the refused request twice: as a response and as a console line.
     const expected = (line: string) =>
       /^response 400 POST .*\/policy$/.test(line) || /status of 400 .* at \S+\/policy /.test(line);
+
     expect(problems.filter(expected)).toHaveLength(2);
     problems.splice(0, problems.length, ...problems.filter((line) => !expected(line)));
     await threshold.fill("1");
@@ -366,6 +394,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
         memo: "Pay invoice #4411 to Northwind <b>not bold</b>",
       },
     });
+
     expect(proposed.ok()).toBe(true);
     const intent = (await proposed.json()) as { approvalId: string };
     const workspacePath = new URL(page.url()).pathname.replace(/\/approvals\/.*$/, "");
@@ -423,6 +452,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
         memo: "Approve router",
       },
     });
+
     expect(proposed.ok()).toBe(true);
     const { approvalId } = (await proposed.json()) as { approvalId: string };
     await page.goto(approvalUrl.replace(/[^/]+$/, approvalId));
@@ -439,6 +469,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
   let stuckUrl = "";
   await test.step("a stuck and a chain-rejected payment each say what happened in words", async () => {
     const settleUrl = `${baseURL}/__fixture/settle`;
+
     for (const [status, sentence, picture] of [
       [
         "stuck",
@@ -457,13 +488,16 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
         token,
         "1000000000000000",
       );
+
       await page.goto(approvalUrl.replace(/[^/]+$/, approvalId));
       await approveOnSignerPage(page);
       await expect(page.getByText("Approved.", { exact: true })).toBeVisible();
+
       if (process.env.OS_WEB_BASE_URL) continue;
       expect((await request.post(settleUrl, { data: { intentId: id, status } })).ok()).toBe(true);
       await page.reload();
       await expect(page.getByText(sentence)).toBeVisible();
+
       if (status === "stuck") stuckUrl = new URL(page.url()).pathname;
       await shot(picture);
     }
@@ -473,15 +507,18 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     // Only the fixture can hold a payment back from the chain.
     if (process.env.OS_WEB_BASE_URL) return;
     const attempts = page.getByRole("list", { name: "Attempts" });
+
     /** A payment approved, sent, and then held back by the network: its page, reloaded. */
     const stuckPayment = async (amount: string) => {
       const { id, approvalId } = await proposePayment(request, proposeUrl, token, amount);
       await page.goto(approvalUrl.replace(/[^/]+$/, approvalId));
       await approveOnSignerPage(page);
       await expect(page.getByText("Approved.", { exact: true })).toBeVisible();
+
       const settled = await request.post(`${baseURL}/__fixture/settle`, {
         data: { intentId: id, status: "stuck" },
       });
+
       expect(settled.ok()).toBe(true);
       await page.reload();
       await expect(page.getByText("Not mined yet", { exact: true })).toBeVisible();
@@ -605,9 +642,11 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(page.getByText("No open invites.")).toBeVisible();
     // A revoked link is dead, so the page stops offering it.
     await expect(page.getByLabel(/Invite link/)).toHaveCount(0);
+
     const revokedCheck = await request.get(
       `${baseURL}/api/v1/invites/${new URL(revokedUrl).pathname.split("/").pop()}`,
     );
+
     expect(revokedCheck.status()).toBe(404);
 
     await page.getByLabel("Role", { exact: true }).selectOption("approver");
@@ -654,16 +693,20 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
       grace.getByRole("heading", { name: "Let Grace Approver approve with a new passkey" }),
     ).toBeVisible();
     const approvalPath = new URL(grace.url()).pathname;
+
     const fingerprint =
       (await grace.locator("dd code", { hasText: FINGERPRINT }).textContent()) ?? "";
+
     expect(fingerprint).toMatch(FINGERPRINT);
     await expect(grace.getByText("Prove that this passkey is yours")).toBeVisible();
     await expect(
       grace.getByRole("link", { name: "Review and approve on the signer's page" }),
     ).toHaveCount(0);
+
     const prove = grace.getByRole("link", {
       name: "Prove the passkey is yours on the signer's page",
     });
+
     const proveUrl = new URL((await prove.getAttribute("href")) ?? "");
     expect(proveUrl.origin).not.toBe(new URL(grace.url()).origin);
     expect(proveUrl.pathname).toBe(`/a/${approvalPath.split("/").pop()}`);
@@ -728,9 +771,11 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(editor.getByRole("alert")).toHaveText(
       "The most per payment is more than the wallet's limit per transaction.",
     );
+
     const refused = (line: string) =>
       /^response 400 POST .*\/mandates$/.test(line) ||
       /status of 400 .* at \S+\/mandates /.test(line);
+
     expect(problems.filter(refused)).toHaveLength(2);
     problems.splice(0, problems.length, ...problems.filter((line) => !refused(line)));
 
@@ -787,11 +832,14 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
       headers: { authorization: `Bearer ${token}` },
       data: { kind: "transfer", to: RECIPIENT, amount: "5000000000000000", memo: "Invoice 4413" },
     });
+
     expect(covered.ok()).toBe(true);
+
     const coveredIntent = (await covered.json()) as {
       approvalId: string | null;
       mandateId: string | null;
     };
+
     expect(coveredIntent.approvalId).toBeNull();
     expect(coveredIntent.mandateId).toBe(mandatePath.split("/").pop());
     // Over its per-payment cap: that one waits for a person, as before.
@@ -850,6 +898,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
 
   await test.step("notifications: off at the server, then on for this device, with quiet hours, a device removed and what they say", async () => {
     const notifications = page.getByRole("region", { name: "Notifications" });
+
     if (!process.env.OS_WEB_BASE_URL) {
       // The operator has not turned Web Push on: the page says so and names the webhook.
       const off = await request.post(`${baseURL}/__fixture/web-push`, { data: { enabled: false } });
@@ -887,10 +936,12 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(devices.getByRole("listitem")).toHaveCount(1);
     await expect(devices.getByText("Ada's phone")).toBeVisible();
     await expect(devices.getByText("This device", { exact: true })).toBeVisible();
+
     // The real worker, served at /sw.js under the production Content-Security-Policy.
     const worker = await page.evaluate(
       async () => (await navigator.serviceWorker.getRegistration("/"))?.active?.scriptURL ?? null,
     );
+
     expect(worker).toBe(`${baseURL}/sw.js`);
 
     // A message for a waiting request shows with its approval's path; one linking elsewhere
@@ -935,9 +986,11 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
           .replace(/\+/g, "-")
           .replace(/\//g, "_")
           .replace(/=+$/, "");
+
       const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, [
         "deriveBits",
       ]);
+
       const response = await fetch("/api/v1/me/push-subscriptions", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -950,8 +1003,10 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
           label: "Work laptop",
         }),
       });
+
       return response.ok;
     });
+
     expect(added).toBe(true);
     await page.reload();
     await expect(devices.getByRole("listitem")).toHaveCount(2);
@@ -963,6 +1018,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     const reminder = notifications.getByRole("switch", {
       name: "Remind me before Research team's requests expire",
     });
+
     await expect(reminder).toHaveAttribute("aria-checked", "true");
     await reminder.click();
     await expect(reminder).toHaveAttribute("aria-checked", "false");
@@ -1029,6 +1085,7 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(seen.getByRole("radio")).toHaveCount(0);
     await expect(seen.getByRole("button")).toHaveCount(0);
     await shot("43-workspace-notification-level-viewer", { element: seen }, viewer);
+
     if (!process.env.OS_WEB_BASE_URL) {
       // A viewer reads a stuck payment's attempts and state, with no action.
       await viewer.goto(stuckUrl);
@@ -1043,19 +1100,24 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
       await expect(viewer.getByRole("button", { name: "Cancel payment" })).toHaveCount(0);
       await shot("49-approval-stuck-viewer", {}, viewer);
     }
+
     const refused = await viewer.evaluate(async (workspaceId) => {
       const response = await fetch(`/api/v1/workspaces/${workspaceId}/notification-detail`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ detail: "count" }),
       });
+
       return { status: response.status, body: (await response.json()) as unknown };
     }, base.split("/").pop() ?? "");
+
     expect(refused).toMatchObject({ status: 403, body: { error: { code: "forbidden" } } });
+
     // The browser reports the refused request twice: as a response and as a console line.
     const forbidden = (line: string) =>
       /^response 403 POST .*\/notification-detail$/.test(line) ||
       /status of 403 .* at \S+\/notification-detail /.test(line);
+
     expect(viewerProblems.filter(forbidden)).toHaveLength(2);
     expect(viewerProblems.filter((line) => !forbidden(line))).toEqual([]);
     await viewer.context().close();
@@ -1126,12 +1188,16 @@ test("the end of a wallet and of a workspace: retire, cancel, destroy, delete", 
 }, testInfo) => {
   test.skip(Boolean(process.env.OS_WEB_BASE_URL), "the delay is skipped with the fixture only");
   test.setTimeout(240_000);
+
   const shot = (name: string, target: { element?: Locator; viewport?: true } = {}) =>
     capture(page, testInfo, `lifecycle-${name}`, target);
+
   const problems = watchConsole(page);
   await request.post(`${baseURL}/__fixture/reset`);
+
   if (widerText) await widenText(page.context());
   await addAuthenticator(page);
+
   const due = async (data: { workspaceId: string; walletId?: string }) => {
     const response = await request.post(`${baseURL}/__fixture/due`, { data });
     expect(response.ok()).toBe(true);
@@ -1319,9 +1385,11 @@ test("the end of a wallet and of a workspace: retire, cancel, destroy, delete", 
       page.getByRole("heading", { name: "This workspace does not exist or was deleted" }),
     ).toBeVisible();
     await shot("12-missing");
+
     // Those reads were refused as the server refuses its former members: the expected failures.
     const gone = (line: string) =>
       line.includes(`/api/v1/workspaces/${workspaceId}`) && /404|Not Found/.test(line);
+
     problems.splice(0, problems.length, ...problems.filter((line) => !gone(line)));
     await page.getByRole("link", { name: "← All workspaces" }).click();
     await expect(page.getByText("No workspaces yet")).toBeVisible();
@@ -1350,21 +1418,27 @@ test("export, copy and import a workspace; erase a person", async ({
 }, testInfo) => {
   test.skip(Boolean(process.env.OS_WEB_BASE_URL), "sign-ins are dated back with the fixture only");
   test.setTimeout(240_000);
+
   const shot = (
     name: string,
     target: { element?: Locator; viewport?: true } = {},
     on: Page = page,
   ) => capture(on, testInfo, `export-${name}`, target);
+
   const problems = watchConsole(page);
+
   /** Drops the expected refusals of `path` with `status` from a list of problems. */
   const expectRefused = (list: string[], status: number, path: string) => {
     const refused = (line: string) => line.includes(String(status)) && line.includes(path);
     expect(list.filter(refused).length).toBeGreaterThan(0);
     list.splice(0, list.length, ...list.filter((line) => !refused(line)));
   };
+
   await request.post(`${baseURL}/__fixture/reset`);
+
   if (widerText) await widenText(page.context());
   await addAuthenticator(page);
+
   const staleSignIns = async () => {
     expect((await request.post(`${baseURL}/__fixture/stale-sign-in`)).ok()).toBe(true);
   };
@@ -1395,6 +1469,7 @@ test("export, copy and import a workspace; erase a person", async ({
     await page.getByRole("button", { name: "Create invite link" }).click();
     const invite = await page.getByLabel(/Invite link/).inputValue();
     const { viewport, deviceScaleFactor, isMobile, hasTouch, colorScheme } = testInfo.project.use;
+
     const context = await browser.newContext({
       baseURL,
       viewport,
@@ -1403,6 +1478,7 @@ test("export, copy and import a workspace; erase a person", async ({
       hasTouch,
       colorScheme: colorScheme ?? "light",
     });
+
     if (widerText) await widenText(context);
     viewer = await context.newPage();
     viewerProblems = watchConsole(viewer);
@@ -1417,10 +1493,12 @@ test("export, copy and import a workspace; erase a person", async ({
   await test.step("the template downloads; the record waits for a fresh sign-in", async () => {
     await page.goto(overview);
     const card = page.locator("#export");
+
     const [template] = await Promise.all([
       page.waitForEvent("download"),
       card.getByRole("button", { name: "Download template" }).click(),
     ]);
+
     expect(template.suggestedFilename()).toBe("ops-team-template.json");
     templatePath = testInfo.outputPath("ops-team-template.json");
     await template.saveAs(templatePath);
@@ -1445,15 +1523,19 @@ test("export, copy and import a workspace; erase a person", async ({
     await expect(page).toHaveURL(/\/login\?next=/);
     await page.getByRole("button", { name: "Sign in with passkey" }).click();
     await expect(page).toHaveURL((url) => url.pathname === overview && url.hash === "#export");
+
     const [record] = await Promise.all([
       page.waitForEvent("download"),
       page.locator("#export").getByRole("button", { name: "Download record" }).click(),
     ]);
+
     expect(record.suggestedFilename()).toMatch(/^ops-team-record-\d{4}-\d{2}-\d{2}\.jsonl$/);
+
     const lines = (await readFile(await record.path(), "utf8"))
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as { format?: string; type?: string; action?: string });
+
     expect(lines[0]).toMatchObject({ format: "askgina.os/workspace-record/v1" });
     expect(lines.at(-1)).toMatchObject({ type: "end" });
     // The record holds its own export.
@@ -1598,10 +1680,13 @@ test("an order on Hyperliquid mainnet: venue rules, the order, where it rests, i
 }, testInfo) => {
   test.skip(Boolean(process.env.OS_WEB_BASE_URL), "orders are proposed with the fixture only");
   test.setTimeout(240_000);
+
   const shot = (name: string, target: { element?: Locator; viewport?: true } = {}) =>
     capture(page, testInfo, `order-${name}`, target);
+
   const problems = watchConsole(page);
   await request.post(`${baseURL}/__fixture/reset`);
+
   if (widerText) await widenText(page.context());
   await addAuthenticator(page);
 
@@ -1662,6 +1747,7 @@ test("an order on Hyperliquid mainnet: venue rules, the order, where it rests, i
         memo: "Funding turned",
       },
     });
+
     expect(proposed.ok()).toBe(true);
     const { approvalId } = (await proposed.json()) as { approvalId: string };
     await page.goto(page.url().replace(/[^/]+$/, approvalId));

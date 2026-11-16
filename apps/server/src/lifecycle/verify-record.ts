@@ -28,11 +28,15 @@ export const RECORD_SECTIONS = [
   "mandate-use",
   "signer-decision",
 ] as const;
+
 export type RecordSection = (typeof RECORD_SECTIONS)[number];
 
 const Id = z.string().min(1).max(128);
+
 const Seconds = z.number().int();
+
 const Opened = z.record(z.string(), z.unknown());
+
 const Head = z.strictObject({ seq: z.number().int().min(0), hash: z.string().nullable() });
 
 export const RecordHeader = z.strictObject({
@@ -44,6 +48,7 @@ export const RecordHeader = z.strictObject({
   /** The newest signer decision exported, likewise. */
   signerDecisionHead: Head,
 });
+
 export type RecordHeader = z.infer<typeof RecordHeader>;
 
 /** One audit entry with its chained fields, its salt and its opened detail. */
@@ -184,6 +189,7 @@ export const RecordLine = z.discriminatedUnion("type", [
   MandateUseLine,
   SignerDecisionLine,
 ]);
+
 export type RecordLine = z.infer<typeof RecordLine>;
 
 export const RecordEnd = z.strictObject({
@@ -198,6 +204,7 @@ export const RecordEnd = z.strictObject({
     "signer-decision": z.number().int().min(0),
   }),
 });
+
 export type RecordEnd = z.infer<typeof RecordEnd>;
 
 /** The order of lines within a section. */
@@ -244,8 +251,10 @@ export interface RecordVerification {
 
 function parseJson<T>(schema: z.ZodType<T>, text: string | undefined): T | null {
   if (text === undefined) return null;
+
   try {
     const parsed = schema.safeParse(JSON.parse(text));
+
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
@@ -280,7 +289,9 @@ function selfConsistent(line: RecordLine): boolean {
 export function verifyRecord(lines: readonly string[]): RecordVerification {
   const broken = (index: number): RecordVerification => ({ ok: false, brokenAt: index + 1 });
   const header = parseJson(RecordHeader, lines[0]);
+
   if (!header) return broken(0);
+
   const counts: Record<RecordSection, number> = {
     audit: 0,
     intent: 0,
@@ -290,36 +301,49 @@ export function verifyRecord(lines: readonly string[]): RecordVerification {
     "mandate-use": 0,
     "signer-decision": 0,
   };
+
   const sameHead = (head: { seq: number; hash: string | null }, expected: typeof head) =>
     head.seq === expected.seq && head.hash === expected.hash;
+
   const audit: { seq: number; hash: string | null } = { seq: 0, hash: null };
   const decisions: { seq: number; hash: string | null } = { seq: 0, hash: null };
   let section = 0;
   let lastKey: string | number | null = null;
+
   for (let index = 1; index < lines.length; index += 1) {
     const end = parseJson(RecordEnd, lines[index]);
+
     if (end) {
       const complete =
         index === lines.length - 1 &&
         sameHead(audit, header.auditHead) &&
         sameHead(decisions, header.signerDecisionHead) &&
         RECORD_SECTIONS.every((name) => end.counts[name] === counts[name]);
+
       return complete ? { ok: true, brokenAt: null } : broken(index);
     }
+
     const line = parseJson(RecordLine, lines[index]);
+
     if (!line) return broken(index);
     const position = RECORD_SECTIONS.indexOf(line.type);
+
     if (position < section) return broken(index);
+
     if (position > section) {
       // Leaving the audit section: every entry up to the head must have been there.
       if (section === 0 && !sameHead(audit, header.auditHead)) return broken(index);
       section = position;
       lastKey = null;
     }
+
     const key = recordLineKey(line);
+
     if (lastKey !== null && !(key > lastKey)) return broken(index);
     lastKey = key;
+
     if (!selfConsistent(line)) return broken(index);
+
     if (line.type === "audit") {
       const expected = entryHash({
         workspaceId: header.workspaceId,
@@ -333,6 +357,7 @@ export function verifyRecord(lines: readonly string[]): RecordVerification {
         detailDigest: line.detailDigest,
         previousHash: line.previousHash,
       });
+
       if (
         line.seq !== audit.seq + 1 ||
         line.previousHash !== audit.hash ||
@@ -340,9 +365,11 @@ export function verifyRecord(lines: readonly string[]): RecordVerification {
       ) {
         return broken(index);
       }
+
       audit.seq = line.seq;
       audit.hash = line.hash;
     }
+
     if (line.type === "signer-decision") {
       if (
         line.seq !== decisions.seq + 1 ||
@@ -351,11 +378,14 @@ export function verifyRecord(lines: readonly string[]): RecordVerification {
       ) {
         return broken(index);
       }
+
       decisions.seq = line.seq;
       decisions.hash = line.hash;
     }
+
     counts[line.type] += 1;
   }
+
   // No `end` line: the record was cut short.
   return broken(lines.length);
 }
@@ -363,7 +393,9 @@ export function verifyRecord(lines: readonly string[]): RecordVerification {
 /** The lines of a record file: one JSON document per line, a final newline allowed. */
 export function recordLines(text: string): string[] {
   const lines = text.split("\n");
+
   if (lines.at(-1) === "") lines.pop();
+
   return lines;
 }
 
@@ -373,19 +405,26 @@ export function recordLines(text: string): string[] {
  */
 export function main(argv: readonly string[]): number {
   const [file] = argv;
+
   if (argv.length !== 1 || file === undefined) {
     process.stderr.write("usage: node apps/server/src/lifecycle/verify-record.ts <file>\n");
+
     return 1;
   }
+
   let text: string;
+
   try {
     text = readFileSync(file, "utf8");
   } catch {
     process.stderr.write(`${JSON.stringify({ ok: false, error: "unreadable" })}\n`);
+
     return 1;
   }
+
   const result = verifyRecord(recordLines(text));
   process.stdout.write(`${JSON.stringify(result)}\n`);
+
   return result.ok ? 0 : 2;
 }
 

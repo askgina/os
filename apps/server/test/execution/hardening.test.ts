@@ -22,12 +22,14 @@ import { TEST_CHAIN_ID, TEST_ORIGIN, type TestPerson } from "../support/context.
 import { anvil, createFixture, draftFor, type Fixture, fund, toolJson } from "./fixture.ts";
 
 let f: Fixture;
+
 let bob: TestPerson;
 
 beforeAll(async () => {
   f = await createFixture("exec_hardening");
   bob = await f.addApprover(f.workspaceId, "Bob Approver");
 });
+
 afterAll(async () => {
   await f?.close();
 });
@@ -39,13 +41,18 @@ async function propose(client: Client, amount = "0.01") {
     name: "propose_transfer",
     arguments: { chainId: TEST_CHAIN_ID, to: randomAddress(), amount, memo: "test" },
   });
+
   const proposed = toolJson(result);
+
   if (typeof proposed.intentId !== "string") throw new Error(JSON.stringify(proposed));
+
   const [row] = await f.t.ctx.db
     .select()
     .from(intents)
     .where(eq(intents.id, proposed.intentId as IntentId));
+
   if (!row?.approvalId) throw new Error("intent without approval");
+
   return { intentId: row.id, approvalId: row.approvalId, url: String(proposed.approvalUrl) };
 }
 
@@ -58,6 +65,7 @@ async function agentClient(name: string) {
   const agent = await f.newAgent(name);
   await f.setPolicy(f.workspaceId, agent.walletId, draftFor(agent.id));
   await fund(agent.address, 50n * 10n ** 18n);
+
   return { agent, client: await f.mcp(agent.token) };
 }
 
@@ -69,12 +77,15 @@ async function transactionOf(approvalId: ApprovalId) {
     .select()
     .from(transactions)
     .where(eq(transactions.approvalId, approvalId));
+
   if (!row) throw new Error("no transaction");
+
   return row;
 }
 
 async function rawOf(approvalId: ApprovalId) {
   const row = await transactionOf(approvalId);
+
   return (await f.t.ctx.sealer.open(
     f.workspaceId,
     `transactions.raw:${approvalId}`,
@@ -91,6 +102,7 @@ async function patched<T extends object, K extends keyof T>(
 ) {
   const own = Object.getOwnPropertyDescriptor(target, key);
   Object.defineProperty(target, key, { value: replacement, configurable: true, writable: true });
+
   try {
     await run();
   } finally {
@@ -114,11 +126,13 @@ describe("links and proposals", () => {
       .update(workspaces)
       .set({ paused: true })
       .where(eq(workspaces.id, f.workspaceId));
+
     try {
       const result = await client.callTool({
         name: "propose_transfer",
         arguments: { chainId: TEST_CHAIN_ID, to: randomAddress(), amount: "0.01", memo: "x" },
       });
+
       expect(result.isError).toBe(true);
       expect(toolJson(result)).toMatchObject({ error: "conflict", detail: "workspace_paused" });
     } finally {
@@ -132,13 +146,17 @@ describe("links and proposals", () => {
   it("refuses more open proposals than the limit until some are decided", async () => {
     const { client } = await agentClient("Spammer");
     const opened = [];
+
     for (let i = 0; i < MAX_PENDING_PER_AGENT; i += 1) opened.push(await propose(client));
+
     const over = await client.callTool({
       name: "propose_transfer",
       arguments: { chainId: TEST_CHAIN_ID, to: randomAddress(), amount: "0.01", memo: "x" },
     });
+
     expect(toolJson(over)).toMatchObject({ error: "rate_limited", detail: "too_many_pending" });
     const first = opened[0];
+
     if (!first) throw new Error("nothing opened");
     await client.callTool({ name: "cancel_intent", arguments: { intentId: first.intentId } });
     await propose(client);
@@ -150,9 +168,11 @@ describe("cancelling", () => {
     const { client } = await agentClient("Late canceller");
     const { intentId, approvalId } = await propose(client);
     await approveOnly(approvalId);
+
     const answer = toolJson(
       await client.callTool({ name: "cancel_intent", arguments: { intentId } }),
     );
+
     expect(answer.status).not.toBe("cancelled");
     expect((await engineOf(f.t.ctx).row(approvalId)).status).toBe("approved");
     expect(await steps().execute(approvalId)).toEqual({ ok: true });
@@ -174,9 +194,11 @@ describe("the MCP gateway's errors", () => {
     const { client } = await agentClient("Unlucky");
     await propose(client);
     const chains = chainAccess(f.t.ctx);
+
     const boom = async () => {
       throw new Error(`request to ${SECRET} failed`);
     };
+
     await patched(chains, "balances", boom, () => expectInternal(client, "get_balances", {}));
     await patched(chains, "simulate", boom, async () => {
       await expectInternal(client, "propose_transfer", {
@@ -198,6 +220,7 @@ describe("the MCP gateway's errors", () => {
 
   it("refuses a client after too many failed authentications, before reading the database", async () => {
     const { agent } = await agentClient("Guessed");
+
     const call = (token: string, client: string) =>
       f.t.app.fetch(
         new Request(`${TEST_ORIGIN}/mcp`, {
@@ -211,9 +234,11 @@ describe("the MCP gateway's errors", () => {
           body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
         }),
       );
+
     for (let i = 0; i < FAILED_AUTH_PER_MINUTE; i += 1) {
       expect((await call(`osa_${"x".repeat(40)}`, "203.0.113.9")).status).toBe(401);
     }
+
     // Even a valid token is refused from that client now: the limit comes before the lookup.
     expect((await call(agent.token, "203.0.113.9")).status).toBe(429);
     expect((await call(agent.token, "203.0.113.10")).status).toBe(200);
@@ -224,11 +249,14 @@ describe("deciding", () => {
   it("lets a passkey being removed still approve, as the signer still accepts it", async () => {
     const { client } = await agentClient("Removal race");
     const { approvalId } = await propose(client);
+
     const where = and(
       eq(approverCredentials.workspaceId, f.workspaceId),
       eq(approverCredentials.credentialId, bob.credentialId),
     );
+
     await f.t.ctx.db.update(approverCredentials).set({ state: "removing" }).where(where);
+
     try {
       const detail = await bob.browser.api.call("getApproval", { params: { approvalId } });
       expect(detail.canDecide).toBe(true);
@@ -241,11 +269,14 @@ describe("deciding", () => {
   it("does not offer a decision to a member whose role cannot decide", async () => {
     const { client } = await agentClient("Demoted");
     const { approvalId } = await propose(client);
+
     const where = and(
       eq(memberships.workspaceId, f.workspaceId),
       eq(memberships.userId, bob.userId),
     );
+
     await f.t.ctx.db.update(memberships).set({ role: "viewer" }).where(where);
+
     try {
       const detail = await bob.browser.api.call("getApproval", { params: { approvalId } });
       expect(detail.canDecide).toBe(false);
@@ -302,9 +333,11 @@ describe("signing", () => {
     const rowB = await transactionOf(b.approvalId);
     expect(rowA.hash).toBe(firstHash);
     expect([rowA.nonce, rowB.nonce]).toEqual([start, start + 1]);
+
     for (const id of [a.approvalId, b.approvalId]) {
       for (let i = 0; i < 20 && !(await steps().followUp(id)).done; i += 1);
     }
+
     expect((await intentOf(a.intentId)).status).toBe("confirmed");
     expect((await intentOf(b.intentId)).status).toBe("confirmed");
   });
@@ -313,6 +346,7 @@ describe("signing", () => {
 describe("cleanup and recovery", () => {
   it("abandons the intent even when revoking at the signer fails", async () => {
     const { client } = await agentClient("Cleanup");
+
     for (const failure of [
       new TypeError("fetch failed"),
       new SignerError("conflict", "already signed", 409),
@@ -364,17 +398,21 @@ describe("cleanup and recovery", () => {
     const { approvalId } = await propose(client);
     const engine = engineOf(f.t.ctx);
     let starts = 0;
+
     const fake = {
       world: undefined as never,
       async startRun() {
         starts += 1;
+
         return `wrun_fake_${starts}`;
       },
       async wake() {
         return false;
       },
     } satisfies WorkflowRuntime;
+
     engine.attachRuntime(fake);
+
     try {
       const row = await engine.row(approvalId);
       const expiresAt = Math.floor(row.expiresAt.getTime() / 1000);
@@ -386,6 +424,7 @@ describe("cleanup and recovery", () => {
     } finally {
       engine.attachRuntime(null);
     }
+
     expect(starts).toBe(1);
     expect((await engine.row(approvalId)).runId).toBe("wrun_fake_1");
   });
@@ -395,9 +434,11 @@ describe("the chain", () => {
   it("tells an RPC failure apart from a missing transaction", async () => {
     const hash = `0x${randomBytes(32).toString("hex")}` as `0x${string}`;
     expect(await chainAccess(f.t.ctx).receipt(TEST_CHAIN_ID, hash)).toEqual({ state: "missing" });
+
     const dead = new ChainAccess([
       { ...chainAccess(f.t.ctx).config(TEST_CHAIN_ID), rpcUrl: "http://127.0.0.1:1" },
     ]);
+
     await expect(dead.receipt(TEST_CHAIN_ID, hash)).rejects.toMatchObject({
       code: "rpc_unavailable",
     });
@@ -407,6 +448,7 @@ describe("the chain", () => {
     const wrong = new ChainAccess([
       { ...chainAccess(f.t.ctx).config(TEST_CHAIN_ID), chainId: "eip155:1" },
     ]);
+
     await expect(
       wrong.balances(randomAddress(), [{ chainId: "eip155:1", asset: "native" }]),
     ).rejects.toMatchObject({
@@ -420,9 +462,11 @@ describe("the chain", () => {
     await approveOnly(approvalId);
     expect(await steps().execute(approvalId)).toEqual({ ok: true });
     const nonce = (await transactionOf(approvalId)).nonce;
+
     const refuse = async () => {
       throw new ChainError("broadcast_failed");
     };
+
     await patched(chainAccess(f.t.ctx), "broadcast", refuse, async () => {
       expect((await steps().followUp(approvalId)).done).toBe(false);
       expect((await transactionOf(approvalId)).status).toBe("signed");
@@ -459,6 +503,7 @@ describe("the chain", () => {
       },
     );
     expect((await transactionOf(approvalId)).status).toBe("broadcast");
+
     for (let i = 0; i < 20 && !(await steps().followUp(approvalId)).done; i += 1);
     expect((await intentOf(intentId)).status).toBe("confirmed");
   });
@@ -502,6 +547,7 @@ describe("the chain", () => {
     expect(parseTransaction(await rawOf(approvalId)).nonce).toBe(
       (await transactionOf(approvalId)).nonce,
     );
+
     for (let i = 0; i < 20 && !(await steps().followUp(approvalId)).done; i += 1);
     expect((await intentOf(intentId)).status).toBe("confirmed");
   });
@@ -533,7 +579,9 @@ describe("the chain", () => {
 
     // The next look at the stuck one sends it again, and then both can be mined in order.
     f.t.clock.advance(61);
+
     for (let i = 0; i < 20 && !(await steps().followUp(first.approvalId)).done; i += 1);
+
     for (let i = 0; i < 20 && !(await steps().followUp(second.approvalId)).done; i += 1);
     expect((await intentOf(first.intentId)).status).toBe("confirmed");
     expect((await intentOf(second.intentId)).status).toBe("confirmed");

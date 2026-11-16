@@ -42,5 +42,6 @@ export function registerSteps(implementations: StepImplementations): void {
 
 export function unregisterSteps(implementations: StepImplementations): void {
   const store = globalThis as Record<symbol, unknown>;
+
   if (store[STEPS_KEY] === implementations) delete store[STEPS_KEY];
 }

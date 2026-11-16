@@ -9,6 +9,7 @@ import { createPublicApp } from "../../src/http/app.ts";
 import { createTestContext, TEST_ORIGIN, type TestContext } from "./context.ts";
 
 let t: TestContext;
+
 let uiDir: string;
 
 beforeAll(async () => {
@@ -16,6 +17,7 @@ beforeAll(async () => {
   uiDir = mkdtempSync(join(tmpdir(), "os-public-app-ui-"));
   writeFileSync(join(uiDir, "index.html"), "<!doctype html><title>app shell</title>");
 });
+
 afterAll(async () => {
   await t?.close();
 });
@@ -23,6 +25,7 @@ afterAll(async () => {
 describe("readiness", () => {
   const ready = async (ctx = t.ctx) => {
     const response = await createPublicApp(ctx).fetch(new Request(new URL("/readyz", TEST_ORIGIN)));
+
     return { status: response.status, body: await response.json() };
   };
 
@@ -31,6 +34,7 @@ describe("readiness", () => {
     expect(await ready()).toEqual({ status: 503, body: { ok: false } });
     const engine = engineOf(t.ctx);
     engine.attachRuntime(workflowRuntime(t.ctx));
+
     try {
       expect(await ready()).toEqual({ status: 200, body: { ok: true } });
       const down = { ...t.ctx, db: { execute: () => Promise.reject(new Error("down")) } as never };
@@ -38,9 +42,11 @@ describe("readiness", () => {
     } finally {
       engine.attachRuntime(null);
     }
+
     const health = await createPublicApp(t.ctx).fetch(
       new Request(new URL("/healthz", TEST_ORIGIN)),
     );
+
     expect(health.status).toBe(200);
   });
 });
@@ -56,6 +62,7 @@ describe("the public app never serves the Workflow delivery routes", () => {
   ])("%s", async (_label, withUi) => {
     const config = withUi ? { ...t.ctx.config, webDistDir: uiDir } : t.ctx.config;
     const app = createPublicApp({ ...t.ctx, config });
+
     for (const path of paths) {
       for (const method of ["POST", "GET"]) {
         const response = await app.fetch(
@@ -65,11 +72,13 @@ describe("the public app never serves the Workflow delivery routes", () => {
             ...(method === "POST" ? { body: "{}" } : {}),
           }),
         );
+
         expect(response.status, `${method} ${path}`).toBe(404);
         const body = ApiErrorBody.parse(await response.json());
         expect(body.error.code).toBe("not_found");
       }
     }
+
     if (withUi) {
       // The control: the same app does serve the UI shell for the UI's own routes.
       const shell = await app.fetch(new Request(new URL("/join/abc", TEST_ORIGIN)));

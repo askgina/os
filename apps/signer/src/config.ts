@@ -133,12 +133,15 @@ export class ConfigError extends Error {
 // Secrets are files holding base64 text, so they never appear in the process environment.
 function readSecret(variable: string, path: string): Uint8Array {
   let text: string;
+
   try {
     text = readFileSync(path, "utf8").trim();
   } catch {
     throw new ConfigError(`${variable}: file cannot be read`);
   }
+
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(text)) throw new ConfigError(`${variable}: not base64`);
+
   return new Uint8Array(Buffer.from(text, "base64"));
 }
 
@@ -152,6 +155,7 @@ function readPem(variable: string, path: string): Buffer {
 
 function readCertificate(variable: string, path: string): { pem: Buffer; der: Buffer } {
   const pem = readPem(variable, path);
+
   try {
     return { pem, der: new X509Certificate(pem).raw };
   } catch {
@@ -176,23 +180,29 @@ function readTls(files: Record<keyof SignerTlsConfig, string>): SignerTlsConfig 
   const approve = readCertificate(TLS_VARIABLES.approve, files.approve);
   const key = readPem("SIGNER_TLS_KEY_FILE", files.key);
   let matches: boolean;
+
   try {
     matches = new X509Certificate(cert.pem).checkPrivateKey(createPrivateKey(key));
   } catch {
     throw new ConfigError("SIGNER_TLS_KEY_FILE: not a PEM private key");
   }
+
   if (!matches) throw new ConfigError("SIGNER_TLS_KEY_FILE: not the key of SIGNER_TLS_CERT_FILE");
+
   if (control.der.equals(cert.der)) {
     throw new ConfigError(`${TLS_VARIABLES.control}: the signer's own certificate`);
   }
+
   if (approve.der.equals(cert.der)) {
     throw new ConfigError(`${TLS_VARIABLES.approve}: the signer's own certificate`);
   }
+
   if (control.der.equals(approve.der)) {
     throw new ConfigError(
       "SIGNER_TLS_APPROVE_CERT_FILE: the same certificate as SIGNER_TLS_CONTROL_CERT_FILE",
     );
   }
+
   return { cert: cert.pem, key, control: control.pem, approve: approve.pem };
 }
 
@@ -207,6 +217,7 @@ export interface CertificateExpiry {
 export function certificateExpiry(tls: SignerTlsConfig, nowMs: number): CertificateExpiry[] {
   return (["cert", "control", "approve"] as const).map((name) => {
     const left = new X509Certificate(tls[name]).validToDate.getTime() - nowMs;
+
     return {
       variable: TLS_VARIABLES[name],
       daysLeft: Math.floor(left / 86_400_000),
@@ -217,11 +228,13 @@ export function certificateExpiry(tls: SignerTlsConfig, nowMs: number): Certific
 
 function readJson(variable: string, path: string): unknown {
   let text: string;
+
   try {
     text = readFileSync(path, "utf8");
   } catch {
     throw new ConfigError(`${variable}: file cannot be read`);
   }
+
   try {
     return JSON.parse(text);
   } catch {
@@ -232,14 +245,17 @@ function readJson(variable: string, path: string): unknown {
 // Origins are compared as exact strings, so they must be written in their canonical form.
 function parseOrigin(variable: string, origin: string): URL {
   let parsed: URL;
+
   try {
     parsed = new URL(origin);
   } catch {
     throw new ConfigError(`${variable}: not an origin`);
   }
+
   if (parsed.origin !== origin || !["http:", "https:"].includes(parsed.protocol)) {
     throw new ConfigError(`${variable}: not a canonical http or https origin`);
   }
+
   return parsed;
 }
 
@@ -255,70 +271,89 @@ const ChainsFileEntries = z.array(
 function readChainLabels(path: string): ChainLabels {
   const entries = ChainsFileEntries.safeParse(readJson("SIGNER_CHAINS_FILE", path));
   const labels = ChainLabels.safeParse(entries.success ? entries.data : null);
+
   if (!labels.success) {
     throw new ConfigError("SIGNER_CHAINS_FILE: not a list of chains with a name and native coin");
   }
+
   return labels.data;
 }
 
 export function loadConfig(environment: NodeJS.ProcessEnv): SignerConfig {
   const parsed = Environment.safeParse(environment);
+
   if (!parsed.success) {
     const names = [...new Set(parsed.error.issues.map((issue) => String(issue.path[0])))];
     throw new ConfigError(`missing or invalid: ${names.join(", ")}`);
   }
+
   const env = parsed.data;
   const requestSecret = readSecret("SIGNER_HMAC_SECRET_FILE", env.SIGNER_HMAC_SECRET_FILE);
+
   if (requestSecret.byteLength < MIN_SECRET_BYTES) {
     throw new ConfigError(`SIGNER_HMAC_SECRET_FILE: fewer than ${MIN_SECRET_BYTES} bytes`);
   }
+
   const confirmSecret = readSecret("SIGNER_CONFIRM_SECRET_FILE", env.SIGNER_CONFIRM_SECRET_FILE);
+
   if (confirmSecret.byteLength < MIN_SECRET_BYTES) {
     throw new ConfigError(`SIGNER_CONFIRM_SECRET_FILE: fewer than ${MIN_SECRET_BYTES} bytes`);
   }
+
   // The same secret for both would let whoever holds the confirm secret call every route.
   if (Buffer.from(confirmSecret).equals(Buffer.from(requestSecret))) {
     throw new ConfigError("SIGNER_CONFIRM_SECRET_FILE: the same secret as SIGNER_HMAC_SECRET_FILE");
   }
+
   if (env.SIGNER_MAX_DESTROY_DELAY_SECONDS < env.SIGNER_MIN_DESTROY_DELAY_SECONDS) {
     throw new ConfigError(
       "SIGNER_MAX_DESTROY_DELAY_SECONDS: less than SIGNER_MIN_DESTROY_DELAY_SECONDS",
     );
   }
+
   const {
     SIGNER_TLS_CERT_FILE: cert,
     SIGNER_TLS_KEY_FILE: key,
     SIGNER_TLS_CONTROL_CERT_FILE: control,
     SIGNER_TLS_APPROVE_CERT_FILE: approve,
   } = env;
+
   let tls: SignerTlsConfig | null = null;
+
   if (cert !== undefined && key !== undefined && control !== undefined && approve !== undefined) {
     if (env.SIGNER_HEALTH_PORT === env.SIGNER_PORT) {
       throw new ConfigError("SIGNER_HEALTH_PORT: the same port as SIGNER_PORT");
     }
+
     tls = readTls({ cert, key, control, approve });
   } else if ((cert ?? key ?? control ?? approve) !== undefined) {
     // Half a TLS configuration would serve plain HTTP to a deployment that expects mutual TLS.
     throw new ConfigError("SIGNER_TLS_*: set all four or none");
   }
+
   const tokenKey = readSecret("SIGNER_KEY_FILE", env.SIGNER_KEY_FILE);
+
   if (tokenKey.byteLength !== 32) throw new ConfigError("SIGNER_KEY_FILE: not 32 bytes");
 
   const rpId = env.WEBAUTHN_RP_ID;
   // The confirmation page must share the RP ID so enrolled passkeys work there: its host is the
   // RP ID itself (another port) or a name under it.
   const approval = parseOrigin("SIGNER_APPROVAL_ORIGIN", env.SIGNER_APPROVAL_ORIGIN);
+
   if (approval.hostname !== rpId && !approval.hostname.endsWith(`.${rpId}`)) {
     throw new ConfigError("SIGNER_APPROVAL_ORIGIN: its host is not WEBAUTHN_RP_ID or under it");
   }
+
   // The return origin is the control plane's. An approval page on the control plane's own origin
   // would protect nothing: the signer would accept assertions the control plane's page made.
   parseOrigin("SIGNER_RETURN_ORIGIN", env.SIGNER_RETURN_ORIGIN);
+
   if (env.SIGNER_RETURN_ORIGIN === env.SIGNER_APPROVAL_ORIGIN) {
     throw new ConfigError("SIGNER_RETURN_ORIGIN: the same origin as SIGNER_APPROVAL_ORIGIN");
   }
 
   const assets = AssetLabels.safeParse(readJson("SIGNER_ASSETS_FILE", env.SIGNER_ASSETS_FILE));
+
   if (!assets.success) {
     throw new ConfigError("SIGNER_ASSETS_FILE: not a list of tokens with a symbol and decimals");
   }

@@ -8,7 +8,9 @@ import { join, relative } from "node:path";
 import { test } from "node:test";
 
 const ROOT = join(import.meta.dirname, "..", "..", "..");
+
 const K8S = join(ROOT, "deploy", "k8s");
+
 const read = (...path: string[]): string => readFileSync(join(ROOT, ...path), "utf8");
 
 /**
@@ -19,21 +21,27 @@ function blocks(caddyfile: string): string[] {
   const found: string[] = [];
   let current: string[] = [];
   let depth = 0;
+
   for (const line of caddyfile.split("\n")) {
     if (depth === 0 && line.trim() === "") {
       if (current.length > 0) found.push(current.join("\n"));
       current = [];
       continue;
     }
+
     current.push(line);
+
     // `{$NAME:default}` is a placeholder, not a block.
     for (const char of line.replace(/\{\$[^}]*\}/g, "")) {
       if (char === "{") depth += 1;
+
       if (char === "}") depth -= 1;
     }
   }
+
   if (current.length > 0) found.push(current.join("\n"));
   assert.equal(depth, 0, "unbalanced braces");
+
   return found;
 }
 
@@ -71,6 +79,7 @@ test("the gateway's Caddyfile, the chains and the assets are copied byte for byt
       ["deploy", "k8s", "components", "signer-in-cluster", "files", "assets.json"],
     ],
   ];
+
   for (const [source, copy] of copies) {
     assert.equal(read(...copy), read(...source), `${copy.join("/")} differs from its source`);
   }
@@ -78,10 +87,13 @@ test("the gateway's Caddyfile, the chains and the assets are copied byte for byt
 
 test("every image a manifest pins by digest is one compose.yaml pins", () => {
   const compose = read("compose.yaml");
+
   const manifests = readdirSync(K8S, { recursive: true, encoding: "utf8" }).filter((path) =>
     path.endsWith(".yaml"),
   );
+
   let pinned = 0;
+
   for (const path of manifests) {
     for (const [, image] of read("deploy", "k8s", path).matchAll(
       /image: (\S+@sha256:[0-9a-f]{64})/g,
@@ -93,5 +105,6 @@ test("every image a manifest pins by digest is one compose.yaml pins", () => {
       );
     }
   }
+
   assert.ok(pinned > 0, "no pinned image found");
 });

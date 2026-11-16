@@ -191,15 +191,20 @@ function createCaller(options: SignerClientOptions) {
     input: CallInput,
   ): Promise<z.infer<S>> {
     let path: string = route.path;
+
     for (const [name, value] of Object.entries(input.params ?? {})) {
       path = path.replace(`:${name}`, encodeURIComponent(value));
     }
+
     const query = new URLSearchParams(input.query ?? {}).toString();
     const pathWithQuery = query === "" ? path : `${path}?${query}`;
+
     const body = new TextEncoder().encode(
       input.body === undefined ? "" : JSON.stringify(input.body),
     );
+
     const timestamp = now();
+
     const response = await doFetch(`${baseUrl}${pathWithQuery}`, {
       method: route.method,
       headers: {
@@ -216,17 +221,22 @@ function createCaller(options: SignerClientOptions) {
       ...(route.method === "GET" ? {} : { body }),
       signal: AbortSignal.timeout(timeoutMs),
     });
+
     // A proxy in front of the signer may answer with a non-JSON error page; that is still a
     // refusal the caller must see as a SignerError, not a parse failure.
     const payload: unknown = await response.json().catch(() => null);
+
     if (!response.ok) {
       const parsed = SignerErrorBody.safeParse(payload);
+
       if (parsed.success) {
         const { code, message, detail } = parsed.data.error;
         throw new SignerError(code, message, response.status, detail);
       }
+
       throw new SignerError("internal", `signer answered HTTP ${response.status}`, response.status);
     }
+
     return schema.parse(payload);
   };
 }
@@ -362,6 +372,7 @@ export function createSignerClient(options: SignerClientOptions): SignerClient {
 
 export function createConfirmClient(options: SignerClientOptions): ConfirmClient {
   const call = createCaller(options);
+
   const confirm = (approvalId: ApprovalId, token: string) => ({
     params: { approvalId },
     headers: { [CONFIRM_TOKEN_HEADER]: token },

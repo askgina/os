@@ -17,6 +17,7 @@ let t: TestContext;
 beforeAll(async () => {
   t = await createTestContext({ label: "identity" });
 });
+
 afterAll(async () => {
   await t?.close();
 });
@@ -26,7 +27,9 @@ async function refusal(promise: Promise<unknown>): Promise<string> {
     () => null,
     (caught: unknown) => caught,
   );
+
   if (!(error instanceof ApiError)) throw new Error("expected the API to refuse");
+
   return error.code;
 }
 
@@ -34,6 +37,7 @@ describe("first-run setup", () => {
   it("refuses a wrong token, takes the right one once, and never logs or stores it", async () => {
     let seen: { required: boolean; code: string } | undefined;
     let issued = "";
+
     const fresh = await createTestContext({
       label: "identity_fresh",
       beforeOwner: async ({ token, browser }) => {
@@ -47,13 +51,16 @@ describe("first-run setup", () => {
         };
       },
     });
+
     try {
       expect(seen).toEqual({ required: true, code: "forbidden" });
       expect(issued).toHaveLength(32);
+
       // The owner exists now: the token that made them is refused, and its hash is gone.
       const again = fresh.browser().api.call("startSetup", {
         body: { setupToken: issued, displayName: "Mallory" },
       });
+
       expect(await refusal(again)).toBe("forbidden");
       expect(await fresh.ctx.db.select().from(installation)).toEqual([]);
       expect(fresh.log.lines.join("\n")).not.toContain(issued);
@@ -65,35 +72,43 @@ describe("first-run setup", () => {
   it("no boot mints or logs a setup token; of two commands at once, the later token works", async () => {
     const database = await createTestDatabase("identity_boots");
     const pools = [0, 1].map(() => new pg.Pool({ connectionString: database.url, max: 2 }));
+
     try {
       await migrateDatabase(pools[0] as pg.Pool);
       const lines: string[] = [];
+
       const log = {
         info: (message: string, fields: object = {}) =>
           lines.push(JSON.stringify({ message, ...fields })),
         warn: () => {},
         error: () => {},
       };
+
       // Two replicas on one fresh database, each its own process with its own pool.
       const replicas = pools.map((pool) => ({
         db: drizzle(pool, { schema }),
         log,
         config: t.ctx.config,
       }));
+
       await Promise.all(replicas.map((replica) => prepareSetup(replica)));
       const [first] = replicas;
+
       if (!first) throw new Error("no replica");
       // Each boot says only that setup waits; nothing is stored until the operator asks.
       expect(lines).toHaveLength(2);
+
       for (const line of lines) expect(line).toContain('"setup.token_pending"');
       expect(await first.db.select().from(installation)).toEqual([]);
 
       // The operator's command, run against both replicas at once: each prints a token on
       // stdout, and exactly one of them, the later, is the installation's token.
       const printed: { ok?: boolean; setupToken?: string }[] = [];
+
       const exits = await Promise.all(
         replicas.map((replica) => cli(["setup-token"], replica, (line) => printed.push(line))),
       );
+
       expect(exits).toEqual([0, 0]);
       const tokens = printed.map((line) => line.setupToken ?? "");
       expect(new Set(tokens).size).toBe(2);
@@ -105,6 +120,7 @@ describe("first-run setup", () => {
       expect(await Promise.all(tokens.map((token) => checkSetupToken(first, token)))).toEqual(
         valid,
       );
+
       for (const token of tokens) expect(lines.join("\n")).not.toContain(token);
     } finally {
       await Promise.all(pools.map((pool) => pool.end()));
@@ -132,16 +148,19 @@ describe("sessions", () => {
   it("stores only the SHA-256 of the cookie, which is httpOnly and SameSite=Strict", async () => {
     const browser = t.browser();
     const { ceremonyId, options } = await browser.api.call("startLogin", { body: {} });
+
     const response = t.authenticator.authenticate({
       credentialId: t.owner.credentialId,
       challenge: options.challenge as string,
       origin: TEST_ORIGIN,
     });
+
     const raw = await browser.fetch(routes.finishLogin.path, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ceremonyId, response }),
     });
+
     const cookie = raw.headers.get("set-cookie") ?? "";
     expect(cookie).toMatch(/HttpOnly/);
     expect(cookie).toMatch(/SameSite=Strict/);
@@ -156,9 +175,11 @@ describe("sessions", () => {
     const stolen = browser.cookie();
     await browser.api.call("logout", { body: {} });
     expect((await browser.api.call("getSession")).user).toBeNull();
+
     const replay = await t
       .browser()
       .fetch(routes.listPasskeys.path, { headers: { cookie: stolen } });
+
     expect(replay.status).toBe(401);
   });
 
@@ -174,11 +195,13 @@ describe("sessions", () => {
   it("a sign-in ceremony is single use and expires after five minutes", async () => {
     const browser = t.browser();
     const first = await browser.api.call("startLogin", { body: {} });
+
     const response = t.authenticator.authenticate({
       credentialId: t.owner.credentialId,
       challenge: first.options.challenge as string,
       origin: TEST_ORIGIN,
     }) as AssertionResponse;
+
     await browser.api.call("finishLogin", { body: { ceremonyId: first.ceremonyId, response } });
     expect(
       await refusal(
@@ -188,11 +211,13 @@ describe("sessions", () => {
 
     const late = await browser.api.call("startLogin", { body: {} });
     t.clock.advance(301);
+
     const lateResponse = t.authenticator.authenticate({
       credentialId: t.owner.credentialId,
       challenge: late.options.challenge as string,
       origin: TEST_ORIGIN,
     }) as AssertionResponse;
+
     expect(
       await refusal(
         browser.api.call("finishLogin", {
@@ -205,11 +230,13 @@ describe("sessions", () => {
   it("refuses an assertion signed for another origin", async () => {
     const browser = t.browser();
     const start = await browser.api.call("startLogin", { body: {} });
+
     const response = t.authenticator.authenticate({
       credentialId: t.owner.credentialId,
       challenge: start.options.challenge as string,
       origin: "https://evil.example",
     }) as AssertionResponse;
+
     expect(
       await refusal(
         browser.api.call("finishLogin", { body: { ceremonyId: start.ceremonyId, response } }),
@@ -223,9 +250,11 @@ describe("passkeys", () => {
     const api = t.owner.browser.api;
     const start = await api.call("startAddPasskey", { body: {} });
     const added = t.register(start.options);
+
     const result = await api.call("finishAddPasskey", {
       body: { ceremonyId: start.ceremonyId, response: added.response as never, label: "Laptop" },
     });
+
     expect(result.passkey.label).toBe("Laptop");
     // The owner approves nowhere yet, so nothing needs approving.
     expect(result.approvals).toEqual([]);
@@ -235,10 +264,12 @@ describe("passkeys", () => {
     await api.call("removePasskey", { params: { credentialId: added.credentialId } });
     expect(await refusal(second.api.call("listPasskeys"))).toBe("unauthenticated");
     expect(await refusal(t.signIn(added.credentialId))).toBe("unauthenticated");
+
     const [row] = await t.ctx.db
       .select({ revokedAt: credentials.revokedAt })
       .from(credentials)
       .where(eq(credentials.id, added.credentialId));
+
     expect(row?.revokedAt).not.toBeNull();
   });
 
@@ -248,6 +279,7 @@ describe("passkeys", () => {
         params: { credentialId: t.owner.credentialId },
       }),
     );
+
     expect(code).toBe("conflict");
   });
 
@@ -256,9 +288,11 @@ describe("passkeys", () => {
     const workspace = await api.call("createWorkspace", { body: { name: "Keys" } });
     const start = await api.call("startAddPasskey", { body: {} });
     const phone = t.register(start.options);
+
     const added = await api.call("finishAddPasskey", {
       body: { ceremonyId: start.ceremonyId, response: phone.response as never, label: "Phone" },
     });
+
     expect(added.approvals).toHaveLength(1);
 
     // The new passkey only waits to approve: removing the old one now would leave nobody able
@@ -268,9 +302,11 @@ describe("passkeys", () => {
     ).toBe("conflict");
 
     expect((await t.approve(added.approvals[0]?.id as never, [t.owner])).status).toBe("executed");
+
     const removal = await api.call("removePasskey", {
       params: { credentialId: t.owner.credentialId },
     });
+
     expect(removal.approvals).toHaveLength(1);
     // The signer still accepts it, so it still signs in: it may be needed to approve.
     await t.signIn(t.owner.credentialId);
@@ -307,19 +343,23 @@ describe("origin check", () => {
     "requestRetireWallet",
     "cancelRetireWallet",
   ]);
+
   const writes = Object.entries(routes).filter(
     ([name, route]) => route.method !== "GET" && !elsewhere.has(name),
   );
 
   it.each(writes)("%s refuses a write without a same-site Origin", async (_name, route) => {
     const path = route.path.replace(/:[A-Za-z]+/g, "x");
+
     const init = {
       method: route.method,
       headers: { "content-type": "application/json" },
       ...(route.method === "DELETE" ? {} : { body: "{}" }),
     };
+
     const missing = await t.owner.browser.fetch(path, { ...init, origin: null });
     const foreign = await t.owner.browser.fetch(path, { ...init, origin: "https://evil.example" });
+
     for (const response of [missing, foreign]) {
       expect(response.status).toBe(403);
       expect(ApiErrorBody.parse(await response.json()).error.code).toBe("forbidden");

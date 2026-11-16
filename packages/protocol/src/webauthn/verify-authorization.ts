@@ -31,6 +31,7 @@ export const AUTHORIZATION_FAILURES = [
   "assertion_invalid",
   "insufficient_approvals",
 ] as const;
+
 export type AuthorizationFailure = (typeof AUTHORIZATION_FAILURES)[number];
 
 export type AuthorizationVerdict =
@@ -64,8 +65,11 @@ function madeInFrame(response: AssertionResponse): boolean {
     const clientData: unknown = JSON.parse(
       Buffer.from(response.response.clientDataJSON, "base64url").toString("utf8"),
     );
+
     if (typeof clientData !== "object" || clientData === null) return true;
+
     if ("topOrigin" in clientData) return true;
+
     return "crossOrigin" in clientData && clientData.crossOrigin === true;
   } catch {
     return true;
@@ -84,6 +88,7 @@ async function assertionProblem(input: {
   relyingParty: RelyingParty;
 }): Promise<string | null> {
   if (madeInFrame(input.response)) return "an assertion was made inside a frame of another page";
+
   try {
     const { verified } = await verifyAuthenticationResponse({
       // Shape-checked by the `AssertionResponse` schema; the library validates the contents.
@@ -101,6 +106,7 @@ async function assertionProblem(input: {
       },
       requireUserVerification: true,
     });
+
     return verified ? null : "an assertion did not verify";
   } catch (error) {
     return error instanceof Error ? error.message : "invalid assertion";
@@ -125,47 +131,57 @@ export async function verifyAuthorization(
   input: VerifyAuthorizationInput,
 ): Promise<AuthorizationVerdict> {
   const { envelope, assertions } = input.authorization;
+
   if (envelope.issuedAt > input.now + CLOCK_SKEW_SECONDS) {
     return fail("envelope_not_yet_valid", "the envelope is dated in the future");
   }
+
   if (input.now >= envelope.expiresAt) {
     return fail("envelope_expired", "the envelope has expired");
   }
+
   if (envelope.expiresAt - envelope.issuedAt > input.maxTtlSeconds) {
     return fail("envelope_ttl_too_long", "the envelope is valid for longer than allowed");
   }
 
   const challenge = envelopeChallenge(envelope);
   const approvedBy = new Set<UserId>();
+
   for (const assertion of assertions) {
     const approver = input.approvers.find(
       (candidate) =>
         candidate.credentialId === assertion.credentialId && candidate.userId === assertion.userId,
     );
+
     if (!approver) {
       return fail(
         "approver_unknown",
         "an assertion comes from a passkey that may not approve here",
       );
     }
+
     if (assertion.response.id !== approver.credentialId || approvedBy.has(approver.userId)) {
       return fail("assertion_invalid", "an assertion is mislabelled or repeats a person");
     }
+
     const problem = await assertionProblem({
       response: assertion.response,
       credential: approver,
       challenge,
       relyingParty: input.relyingParty,
     });
+
     if (problem !== null) return fail("assertion_invalid", problem);
     approvedBy.add(approver.userId);
   }
+
   if (approvedBy.size < input.threshold) {
     return fail(
       "insufficient_approvals",
       `${approvedBy.size} of ${input.threshold} required approvals`,
     );
   }
+
   return { ok: true, approvedBy: [...approvedBy] };
 }
 
@@ -201,12 +217,14 @@ export async function verifyPossession(input: VerifyPossessionInput): Promise<Po
       message: "the answer comes from another passkey than the one being added",
     };
   }
+
   const problem = await assertionProblem({
     response: input.response,
     credential: { credentialId: input.possession.credentialId, publicKey: input.publicKey },
     challenge: possessionChallenge(input.possession),
     relyingParty: input.relyingParty,
   });
+
   return problem === null
     ? { ok: true }
     : { ok: false, code: "assertion_invalid", message: problem };

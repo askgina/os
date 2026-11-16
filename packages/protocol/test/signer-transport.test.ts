@@ -23,6 +23,7 @@ import {
 } from "../src/signer/transport.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "os-signer-transport-"));
+
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 interface Pair {
@@ -58,17 +59,23 @@ function selfSigned(name: string, subjectAltName?: string): Pair {
     ],
     { stdio: "ignore" },
   );
+
   return { cert: readFileSync(certPath), key: readFileSync(keyPath), certPath, keyPath };
 }
 
 const signer = selfSigned("os-signer", "DNS:signer");
+
 /** Another signer certificate for the same name, with another key. */
 const impostor = selfSigned("os-signer-impostor", "DNS:signer");
+
 const control = selfSigned("os-control");
+
 const secret = new Uint8Array(randomBytes(32));
+
 const clientTls: SignerTls = { cert: control.cert, key: control.key, peerCert: signer.cert };
 
 const servers: Server[] = [];
+
 afterEach(async () => {
   for (const server of servers.splice(0)) {
     server.closeAllConnections();
@@ -94,6 +101,7 @@ async function startSigner(
   options: { maxVersion?: "TLSv1.2" } = {},
 ): Promise<TestSigner> {
   const peers: string[] = [];
+
   const server = createServer(
     {
       cert: identity.cert,
@@ -106,12 +114,16 @@ async function startSigner(
     async (request, response) => {
       peers.push((request.socket as TLSSocket).getPeerCertificate().fingerprint256);
       const chunks: Buffer[] = [];
+
       for await (const chunk of request) chunks.push(chunk as Buffer);
+
       const reply = (status: number, body: unknown) => {
         response.writeHead(status, { "content-type": "application/json" });
         response.end(JSON.stringify(body));
       };
+
       if (request.url === "/healthz") return reply(200, { ok: true, version: "0.1.0" });
+
       const authentic = verifyRequestSignature(secret, {
         method: request.method ?? "",
         pathWithQuery: request.url ?? "",
@@ -120,14 +132,18 @@ async function startSigner(
         signature: String(request.headers[SIGNATURE_HEADER] ?? ""),
         now: Math.floor(Date.now() / 1000),
       });
+
       const code = authentic ? "not_found" : "unauthenticated";
+
       return reply(authentic ? 404 : 401, { error: { code, message: code } });
     },
   );
+
   servers.push(server);
   const listening = Promise.withResolvers<void>();
   server.listen(0, "127.0.0.1", () => listening.resolve());
   await listening.promise;
+
   return { baseUrl: `https://127.0.0.1:${(server.address() as AddressInfo).port}`, peers };
 }
 
@@ -136,11 +152,13 @@ const controlFingerprint = new X509Certificate(control.cert).fingerprint256;
 describe("createSignerFetch", () => {
   it("completes a signed request to a TLS signer, presenting the client certificate", async () => {
     const test = await startSigner(signer);
+
     const client = createSignerClient({
       baseUrl: test.baseUrl,
       secret,
       fetch: createSignerFetch(clientTls, "signer"),
     });
+
     expect(await client.health()).toEqual({ ok: true, version: "0.1.0" });
     // The request signature still binds the request inside TLS: the signer checked it.
     const refusal = await client.getWorkspace(newId("ws")).catch((error: unknown) => error);
@@ -151,11 +169,13 @@ describe("createSignerFetch", () => {
 
   it("fails against a signer presenting another certificate, before any request is made", async () => {
     const test = await startSigner(impostor);
+
     const client = createSignerClient({
       baseUrl: test.baseUrl,
       secret,
       fetch: createSignerFetch(clientTls, "signer"),
     });
+
     const failure = await client.health().catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(TypeError);
     expect((failure as TypeError).cause).toMatchObject({ code: "DEPTH_ZERO_SELF_SIGNED_CERT" });
@@ -164,11 +184,13 @@ describe("createSignerFetch", () => {
 
   it("fails when the signer's certificate is not issued for the expected name", async () => {
     const test = await startSigner(signer);
+
     const client = createSignerClient({
       baseUrl: test.baseUrl,
       secret,
       fetch: createSignerFetch(clientTls, "signer.elsewhere"),
     });
+
     const failure = await client.health().catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(TypeError);
     expect((failure as TypeError).cause).toMatchObject({ code: "ERR_TLS_CERT_ALTNAME_INVALID" });
@@ -177,11 +199,13 @@ describe("createSignerFetch", () => {
 
   it("speaks nothing older than TLS 1.3", async () => {
     const test = await startSigner(signer, { maxVersion: "TLSv1.2" });
+
     const client = createSignerClient({
       baseUrl: test.baseUrl,
       secret,
       fetch: createSignerFetch(clientTls, "signer"),
     });
+
     await expect(client.health()).rejects.toThrow(TypeError);
     expect(test.peers).toEqual([]);
   });
@@ -193,10 +217,13 @@ describe("readSignerTls", () => {
       readSignerTls(paths);
     } catch (error) {
       if (!(error instanceof SignerTlsFileError)) throw error;
+
       return `${error.file}: ${error.message}`;
     }
+
     return null;
   };
+
   const paths = { cert: control.certPath, key: control.keyPath, peerCert: signer.certPath };
 
   it("reads a client certificate, its key and the signer's certificate", () => {

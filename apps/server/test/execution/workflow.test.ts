@@ -12,6 +12,7 @@ import { TEST_CHAIN_ID } from "../support/context.ts";
 import { anvil, createFixture, type Fixture, toolJson } from "./fixture.ts";
 
 let f: Fixture;
+
 let background: { stop(): Promise<void> };
 
 beforeAll(async () => {
@@ -19,6 +20,7 @@ beforeAll(async () => {
   f = await createFixture("exec_workflow");
   background = await startBackground(f.t.ctx);
 }, 180_000);
+
 afterAll(async () => {
   await background?.stop();
   await f?.close();
@@ -28,17 +30,21 @@ const randomAddress = () => `0x${randomBytes(20).toString("hex")}` as `0x${strin
 
 async function proposeOverMcp(memo: string, to = randomAddress()) {
   const client = await f.mcp(f.agent.token);
+
   const proposed = toolJson(
     await client.callTool({
       name: "propose_transfer",
       arguments: { chainId: TEST_CHAIN_ID, to, amount: "0.01", memo },
     }),
   );
+
   const [row] = await f.t.ctx.db
     .select()
     .from(intents)
     .where(eq(intents.id, proposed.intentId as IntentId));
+
   if (!row?.approvalId) throw new Error(JSON.stringify(proposed));
+
   return { client, intentId: row.id, approvalId: row.approvalId, to };
 }
 
@@ -46,11 +52,13 @@ async function proposeOverMcp(memo: string, to = randomAddress()) {
 async function until<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> {
   for (let attempt = 0; attempt < 120; attempt += 1) {
     const value = await read();
+
     if (done(value)) return value;
     f.t.clock.advance(6);
     await sweep(f.t.ctx);
     await delay(250);
   }
+
   throw new Error("condition never reached");
 }
 
@@ -59,10 +67,12 @@ const approvalRow = (id: ApprovalId) => engineOf(f.t.ctx).row(id);
 describe("the approval workflow", () => {
   it("records its run and waits for the decision", async () => {
     const { approvalId } = await proposeOverMcp("waiting");
+
     const row = await until(
       () => approvalRow(approvalId),
       (value) => value.runId !== null,
     );
+
     expect(row.runId).toMatch(/^wrun_/);
     expect(row.status).toBe("pending");
   });
@@ -75,6 +85,7 @@ describe("the approval workflow", () => {
       (row) => row.runId !== null,
     );
     await f.t.approveOnPage(f.t.owner, approvalId);
+
     const final = await until(
       async () =>
         toolJson(
@@ -82,6 +93,7 @@ describe("the approval workflow", () => {
         ),
       (view) => view.status === "confirmed",
     );
+
     expect(final.transactionHash).toMatch(/^0x[0-9a-f]{64}$/);
     expect(await anvil.getBalance({ address: to })).toBe(10n ** 16n);
     expect((await approvalRow(approvalId)).status).toBe("executed");
@@ -116,6 +128,7 @@ describe("the approval workflow", () => {
     await until(
       async () => {
         await engineOf(f.t.ctx).wake(approvalId);
+
         return (await f.t.ctx.db.select().from(intents).where(eq(intents.id, intentId)))[0]?.status;
       },
       (status) => status === "expired",
@@ -126,10 +139,12 @@ describe("the approval workflow", () => {
   it("completes an approval whose wake-up was lost, and waking twice is harmless", async () => {
     const engine = engineOf(f.t.ctx);
     const { intentId, approvalId } = await proposeOverMcp("lost wake-up");
+
     const { runId } = await until(
       () => approvalRow(approvalId),
       (row) => row.runId !== null,
     );
+
     // Wait until the run has looked at the request once and is waiting. A run that takes its
     // first look after the decision reads it without any wake-up, which is correct, and is not
     // the case this test is about.
@@ -157,10 +172,12 @@ describe("the approval workflow", () => {
         (await f.t.ctx.db.select().from(intents).where(eq(intents.id, intentId)))[0]?.status,
       (status) => status === "confirmed",
     );
+
     const rows = await f.t.ctx.db
       .select()
       .from(transactions)
       .where(eq(transactions.approvalId, approvalId));
+
     expect(rows).toHaveLength(1);
     expect((await approvalRow(approvalId)).resumeState).toBe("done");
   });
@@ -187,16 +204,19 @@ describe("the approval workflow", () => {
       () => approvalRow(approvalId),
       (value) => value.runId !== null,
     );
+
     await f.t.approveOnPage(f.t.owner, approvalId);
     await until(
       async () =>
         (await f.t.ctx.db.select().from(intents).where(eq(intents.id, intentId)))[0]?.status,
       (status) => status === "confirmed",
     );
+
     const rows = await f.t.ctx.db
       .select()
       .from(transactions)
       .where(eq(transactions.intentId, intentId));
+
     expect(rows).toHaveLength(1);
     const [stored] = await f.t.ctx.db.select().from(approvals).where(eq(approvals.id, approvalId));
     expect(stored?.runId).toBe(owned.runId);
@@ -208,6 +228,7 @@ describe("the approval workflow", () => {
   it("signs a mandated payment exactly once when the process died between the use and its run", async () => {
     const engine = engineOf(f.t.ctx);
     const to = randomAddress();
+
     // The grant itself runs through the workflow like every other request.
     const grant = await f.t.owner.browser.api.call("proposeMandate", {
       params: { workspaceId: f.workspaceId, walletId: f.agent.walletId },
@@ -230,6 +251,7 @@ describe("the approval workflow", () => {
         purpose: "workflow mandate",
       },
     });
+
     await until(
       () => approvalRow(grant.id as ApprovalId),
       (row) => row.runId !== null,
@@ -255,11 +277,14 @@ describe("the approval workflow", () => {
         ),
       (view) => view.status === "confirmed",
     );
+
     expect(final).toMatchObject({ authorizedBy: "mandate", mandateId: use.mandateId });
+
     const rows = await f.t.ctx.db
       .select()
       .from(transactions)
       .where(eq(transactions.intentId, intentId));
+
     expect(rows).toHaveLength(1);
     expect((await approvalRow(approvalId)).status).toBe("executed");
     expect(await anvil.getBalance({ address: to })).toBe(10n ** 16n);

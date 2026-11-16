@@ -17,10 +17,12 @@ export function createSealer(keys: DataKeyStore): Sealer {
   return {
     async seal(workspaceId, location, value) {
       const key = await keys.getOrCreate("workspace", workspaceId, workspaceId);
+
       return sealJson(key, value, location);
     },
     async open(workspaceId, location, sealed) {
       const key = await keys.getOrCreate("workspace", workspaceId, workspaceId);
+
       return openJson(key, sealed, location);
     },
   };

@@ -45,6 +45,7 @@ async function waitingRequest(
         eq(approvals.status, "pending"),
       ),
     );
+
   return row;
 }
 
@@ -67,7 +68,9 @@ async function adminThresholdOf(ctx: AppContext, workspaceId: WorkspaceId): Prom
     .select({ adminThreshold: workspaces.adminThreshold })
     .from(workspaces)
     .where(eq(workspaces.id, workspaceId));
+
   if (!row) throw new HttpError("not_found", "no such workspace");
+
   return row.adminThreshold;
 }
 
@@ -77,6 +80,7 @@ async function mirrorAllWallets(ctx: AppContext, workspaceId: WorkspaceId): Prom
     .select({ id: wallets.id })
     .from(wallets)
     .where(eq(wallets.workspaceId, workspaceId));
+
   for (const { id } of rows) {
     await mirrorWallet(ctx.db, await signerCall(() => ctx.signer.getWallet(id)));
   }
@@ -91,6 +95,7 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
   handle(app, ctx, "getDeletionPreflight", async ({ session, params }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "owner");
+
     return deletionPreflight(ctx, workspaceId);
   });
 
@@ -99,16 +104,21 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
     await requireMember(ctx, session, workspaceId, "owner");
     // The signer's own flags decide: a deletion is asked for only once nothing signs.
     const state = await signerCall(() => ctx.signer.getWorkspace(workspaceId));
+
     if (state.state !== "active") {
       throw new HttpError("conflict", "this workspace is already being deleted", state.state);
     }
+
     if (!state.paused) {
       throw new HttpError("conflict", "pause the workspace before deleting it", "not_paused");
     }
+
     if (await waitingRequest(ctx, workspaceId, "delete-workspace", workspaceId)) {
       throw new HttpError("conflict", "a deletion already waits for approval", "already_requested");
     }
+
     checkDelay(ctx, body.destroyAfter, state.minDestroyDelaySeconds);
+
     // Every wallet whose key the signer still holds, as the signer holds it; the signer refuses
     // the deletion if it holds one more or one less (`wallet_set_mismatch`).
     const rows = await ctx.db
@@ -116,12 +126,17 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
       .from(wallets)
       .where(eq(wallets.workspaceId, workspaceId))
       .orderBy(asc(wallets.id));
+
     const refs: WalletRef[] = [];
+
     for (const { id } of rows) {
       const wallet = await signerCall(() => ctx.signer.getWallet(id));
+
       if (wallet.state !== "destroyed") refs.push({ walletId: id, address: wallet.address });
     }
+
     refs.sort((a, b) => (a.walletId < b.walletId ? -1 : a.walletId > b.walletId ? 1 : 0));
+
     return ctx.approvals.open({
       workspaceId,
       kind: "delete-workspace",
@@ -139,11 +154,15 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
     // Any member: cancelling keeps the keys and leaves the workspace paused.
     const role = await requireMember(ctx, session, workspaceId, "viewer");
     const waiting = await waitingRequest(ctx, workspaceId, "delete-workspace", workspaceId);
+
     if (waiting) {
       await cancelRequests(ctx, [waiting]);
+
       return workspaceDetail(ctx, workspaceId, role);
     }
+
     const before = await signerCall(() => ctx.signer.getWorkspace(workspaceId));
+
     if (before.state !== "deleting") {
       throw new HttpError(
         "conflict",
@@ -151,6 +170,7 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
         before.state,
       );
     }
+
     const state = await signerCall(() => ctx.signer.cancelDeleteWorkspace(workspaceId));
     await ctx.db.transaction(async (tx) => {
       if (!(await mirrorWorkspace(tx, state)) || state.state !== "active") return;
@@ -166,6 +186,7 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
       );
     });
     await mirrorAllWallets(ctx, workspaceId);
+
     return workspaceDetail(ctx, workspaceId, role);
   });
 
@@ -175,9 +196,11 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
     const { wallet } = await loadWallet(ctx, workspaceId, params.walletId);
     // The envelope names the wallet as the signer holds it, never as our mirror does.
     const state = await signerCall(() => ctx.signer.getWallet(wallet.id));
+
     if (state.state === "retiring" || state.state === "destroyed") {
       throw new HttpError("conflict", "this wallet is already retiring", "wallet_retired");
     }
+
     if (await waitingRequest(ctx, workspaceId, "retire-wallet", wallet.id)) {
       throw new HttpError(
         "conflict",
@@ -185,8 +208,10 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
         "already_requested",
       );
     }
+
     const workspace = await signerCall(() => ctx.signer.getWorkspace(workspaceId));
     checkDelay(ctx, body.destroyAfter, workspace.minDestroyDelaySeconds);
+
     return ctx.approvals.open({
       workspaceId,
       kind: "retire-wallet",
@@ -206,10 +231,12 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "approver");
     const { wallet, agentId } = await loadWallet(ctx, workspaceId, params.walletId);
+
     const [workspace] = await ctx.db
       .select({ lifecycle: workspaces.lifecycle })
       .from(workspaces)
       .where(eq(workspaces.id, workspaceId));
+
     if (workspace?.lifecycle !== "active") {
       throw new HttpError(
         "conflict",
@@ -217,11 +244,14 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
         "workspace_deleting",
       );
     }
+
     const waiting = await waitingRequest(ctx, workspaceId, "retire-wallet", wallet.id);
+
     if (waiting) {
       await cancelRequests(ctx, [waiting]);
     } else {
       const before = await signerCall(() => ctx.signer.getWallet(wallet.id));
+
       if (before.state !== "retiring") {
         await mirrorWallet(ctx.db, before);
         throw new HttpError(
@@ -230,6 +260,7 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
           before.state === "destroyed" ? "wallet_retired" : "not_retiring",
         );
       }
+
       const state = await signerCall(() => ctx.signer.cancelRetireWallet(wallet.id, workspaceId));
       await ctx.db.transaction(async (tx) => {
         if (!(await mirrorWallet(tx, state)) || state.state !== "held") return;
@@ -245,7 +276,9 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
         );
       });
     }
+
     const { wallet: current } = await loadWallet(ctx, workspaceId, wallet.id);
+
     return walletSummary(current, agentId);
   });
 
@@ -254,6 +287,7 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
   handle(app, ctx, "exportTemplate", async ({ session, params }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "owner");
+
     return toTemplate(ctx, workspaceId);
   });
 
@@ -265,6 +299,7 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
     await writeRecord(ctx, session, workspaceId, (line) => {
       lines.push(line);
     });
+
     return { record: `${lines.join("\n")}\n` };
   });
 
@@ -272,11 +307,13 @@ export function registerLifecycleRoutes(app: Hono, ctx: AppContext): void {
     const sourceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, sourceId, "owner");
     const { workspaceId, ...result } = await cloneWorkspace(ctx, session, { ...body, sourceId });
+
     return { workspace: await workspaceDetail(ctx, workspaceId, "owner"), ...result };
   });
 
   handle(app, ctx, "importTemplate", async ({ session, body }) => {
     const { workspaceId, ...result } = await cloneWorkspace(ctx, session, body);
+
     return { workspace: await workspaceDetail(ctx, workspaceId, "owner"), ...result };
   });
 }

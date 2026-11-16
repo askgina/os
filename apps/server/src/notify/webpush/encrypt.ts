@@ -4,16 +4,24 @@
  */
 
 const RECORD_SIZE = 4096;
+
 const TAG_LENGTH = 16;
+
 const SALT_LENGTH = 16;
+
 const AUTH_SECRET_LENGTH = 16;
+
 /** An uncompressed P-256 point: 0x04, then x and y. */
 const POINT_LENGTH = 65;
+
 const PADDING_DELIMITER = 0x02;
 
 const utf8 = (text: string) => new TextEncoder().encode(text);
+
 const KEY_INFO = utf8("WebPush: info\0");
+
 const CEK_INFO = utf8("Content-Encoding: aes128gcm\0");
+
 const NONCE_INFO = utf8("Content-Encoding: nonce\0");
 
 /** Why a message could not be encrypted for a subscription. */
@@ -48,10 +56,12 @@ export interface EncryptInput {
 function concat(...parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
   let offset = 0;
+
   for (const part of parts) {
     out.set(part, offset);
     offset += part.length;
   }
+
   return out;
 }
 
@@ -63,11 +73,13 @@ async function hkdf(
   length: number,
 ): Promise<Uint8Array<ArrayBuffer>> {
   const key = await crypto.subtle.importKey("raw", concat(ikm), "HKDF", false, ["deriveBits"]);
+
   const bits = await crypto.subtle.deriveBits(
     { name: "HKDF", hash: "SHA-256", salt: concat(salt), info: concat(info) },
     key,
     length * 8,
   );
+
   return new Uint8Array(bits);
 }
 
@@ -78,18 +90,23 @@ async function hkdf(
  */
 export async function encryptPayload(input: EncryptInput): Promise<Uint8Array<ArrayBuffer>> {
   const { plaintext, uaPublicKey, authSecret } = input;
+
   if (uaPublicKey.length !== POINT_LENGTH || uaPublicKey[0] !== 0x04) {
     throw new PushEncryptionError("bad_key", "p256dh is not an uncompressed P-256 point");
   }
+
   if (authSecret.length !== AUTH_SECRET_LENGTH) {
     throw new PushEncryptionError("bad_auth", "auth is not 16 bytes");
   }
+
   const contentLength = input.paddedLength ?? plaintext.length + 1;
+
   if (plaintext.length + 1 > contentLength || contentLength + TAG_LENGTH > RECORD_SIZE) {
     throw new PushEncryptionError("too_long", "the message does not fit one record");
   }
 
   let uaKey: CryptoKey;
+
   try {
     // Importing checks that the point is on the curve.
     uaKey = await crypto.subtle.importKey(
@@ -102,10 +119,13 @@ export async function encryptPayload(input: EncryptInput): Promise<Uint8Array<Ar
   } catch {
     throw new PushEncryptionError("bad_key", "p256dh is not a point on P-256");
   }
+
   const asKeyPair =
     input.asKeyPair ??
     (await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]));
+
   const asPublicKey = new Uint8Array(await crypto.subtle.exportKey("raw", asKeyPair.publicKey));
+
   const ecdhSecret = new Uint8Array(
     await crypto.subtle.deriveBits({ name: "ECDH", public: uaKey }, asKeyPair.privateKey, 256),
   );
@@ -120,11 +140,13 @@ export async function encryptPayload(input: EncryptInput): Promise<Uint8Array<Ar
   record.set(plaintext);
   record[plaintext.length] = PADDING_DELIMITER;
   const aesKey = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["encrypt"]);
+
   const sealed = new Uint8Array(
     await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, aesKey, record),
   );
 
   const recordSize = new Uint8Array(4);
   new DataView(recordSize.buffer).setUint32(0, RECORD_SIZE);
+
   return concat(salt, recordSize, Uint8Array.of(asPublicKey.length), asPublicKey, sealed);
 }

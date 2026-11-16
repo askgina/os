@@ -27,6 +27,7 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
     // Adding standing authority is an owner's call, as a policy change is; approving it takes
     // the workspace's admin threshold.
     await requireMember(ctx, session, workspaceId, "owner");
+
     return openMandateGrant(ctx, {
       workspaceId,
       walletId: params.walletId,
@@ -38,6 +39,7 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
   handle(app, ctx, "listMandates", async ({ params, query, session }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId);
+
     return listMandates(ctx, workspaceId, query);
   });
 
@@ -46,6 +48,7 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
     await requireMember(ctx, session, workspaceId);
     const { row, state } = await loadMandate(ctx, workspaceId, params.mandateId);
     const { rows, nextCursor } = await listIntentRows(ctx, { workspaceId, mandateId: row.id });
+
     return {
       ...(await mandateSummary(ctx, row, state)),
       intents: await Promise.all(rows.map((intent) => intentSummary(ctx, intent))),
@@ -65,6 +68,7 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
       actor: { type: "user", id: session.user.id },
     });
     const revoked = await loadMandate(ctx, workspaceId, row.id);
+
     return mandateSummary(ctx, revoked.row, revoked.state);
   });
 
@@ -73,6 +77,7 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
     // Moving funds without an agent or a cap is an owner's call; approving it takes the
     // workspace's admin threshold.
     await requireMember(ctx, session, workspaceId, "owner");
+
     return requestSweep(ctx, {
       workspaceId,
       walletId: params.walletId,
@@ -83,6 +88,7 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
 
   handle(app, ctx, "listApprovals", async ({ params, query, session }) => {
     await requireMember(ctx, session, params.workspaceId as never);
+
     return engine.list(params.workspaceId as never, query);
   });
 
@@ -92,6 +98,7 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
     const row = await engine.request(params.approvalId);
     await requireMember(ctx, session, row.workspaceId);
     await engine.collect(row);
+
     return engine.detail(await engine.request(row.id), session);
   });
 
@@ -99,6 +106,7 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
     const row = await engine.request(params.approvalId);
     await requireMember(ctx, session, row.workspaceId);
     await engine.collect(row);
+
     return engine.detail(await engine.request(row.id), session);
   });
 
@@ -106,6 +114,7 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
     const row = await engine.request(params.approvalId);
     await requireMember(ctx, session, row.workspaceId, "approver");
     await engine.reject(row, session);
+
     return engine.detail(await engine.request(row.id), session);
   });
 
@@ -114,7 +123,9 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
   handle(app, ctx, "requestSweepCancel", async ({ params, session }) => {
     const row = await engine.request(params.approvalId);
     await requireMember(ctx, session, row.workspaceId, "approver");
+
     if (row.kind !== "sweep-wallet") throw new HttpError("not_found", "no such sweep");
+
     return requestCancel(ctx, {
       workspaceId: row.workspaceId,
       targetApprovalId: row.id,
@@ -125,17 +136,20 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
 
   handle(app, ctx, "listIntents", async ({ params, query, session }) => {
     await requireMember(ctx, session, params.workspaceId as never);
+
     const { rows, nextCursor } = await listIntentRows(ctx, {
       workspaceId: params.workspaceId as never,
       mandateId: query.mandateId as MandateId | undefined,
       cursor: query.cursor,
     });
+
     return { items: await Promise.all(rows.map((row) => intentSummary(ctx, row))), nextCursor };
   });
 
   handle(app, ctx, "getIntent", async ({ params, session }) => {
     const row = await getIntentRow(ctx, params.intentId);
     await requireMember(ctx, session, row.workspaceId);
+
     return intentDetail(ctx, row);
   });
 
@@ -145,6 +159,7 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
     const row = await getIntentRow(ctx, params.intentId);
     await requireMember(ctx, session, row.workspaceId, "approver");
     await speedUpIntent(ctx, row, session.user.id);
+
     return intentDetail(ctx, await getIntentRow(ctx, row.id));
   });
 
@@ -153,12 +168,14 @@ export function registerApprovalAndIntentRoutes(app: Hono, ctx: AppContext): voi
     const row = await getIntentRow(ctx, params.intentId);
     await requireMember(ctx, session, row.workspaceId, "approver");
     await cancelVenueOrder(ctx, row, { type: "user", id: session.user.id });
+
     return intentDetail(ctx, await getIntentRow(ctx, row.id));
   });
 
   handle(app, ctx, "requestCancel", async ({ params, session }) => {
     const row = await getIntentRow(ctx, params.intentId);
     await requireMember(ctx, session, row.workspaceId, "approver");
+
     return requestCancel(ctx, {
       workspaceId: row.workspaceId,
       targetApprovalId: row.approvalId,

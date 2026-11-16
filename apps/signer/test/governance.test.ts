@@ -184,12 +184,14 @@ describe("policy changes", () => {
   it("refuses an admin authorization signed under a threshold that was raised since", async () => {
     const world = await setUpWorld(startSigner(), { people: 2 });
     const next = nextPolicy(world);
+
     const signedByOne = setPolicyAuthorization(
       world,
       next,
       policyHash(world.policy),
       world.people.slice(0, 1),
     );
+
     await world.t.client.setAdminThreshold(
       world.workspaceId,
       authorize(
@@ -227,6 +229,7 @@ describe("approvers and recovery", () => {
     const t = startSigner();
     const world = await setUpWorld(t);
     const carol = newPerson();
+
     const addCarol: AddApproverEnvelope = {
       ...header(world.t.clock, newId("apr"), world.workspaceId),
       type: "add-approver",
@@ -234,6 +237,7 @@ describe("approvers and recovery", () => {
       credentialId: carol.credential.credentialId,
       publicKey: carol.credential.publicKey,
     };
+
     // Proving she holds the key is not approving: her passkey cannot let itself in.
     await provePossession(t, addCarol, carol);
     await refused(
@@ -242,9 +246,11 @@ describe("approvers and recovery", () => {
       }),
       "approver_unknown",
     );
+
     const state = await world.t.client.addApprover(world.workspaceId, {
       authorization: authorize(addCarol, world.people),
     });
+
     expect(state.approvers.map((approver) => approver.userId)).toContain(carol.userId);
   });
 
@@ -252,6 +258,7 @@ describe("approvers and recovery", () => {
     const t = startSigner();
     const world = await setUpWorld(t);
     const mallory = newPerson();
+
     const addMallory: AddApproverEnvelope = {
       ...header(world.t.clock, newId("apr"), world.workspaceId),
       type: "add-approver",
@@ -259,6 +266,7 @@ describe("approvers and recovery", () => {
       credentialId: mallory.credential.credentialId,
       publicKey: mallory.credential.publicKey,
     };
+
     // She holds the key; what is refused below is where the approval was made.
     await provePossession(t, addMallory, mallory);
     // One misled tap on the control plane's page would hand over the workspace for good.
@@ -294,6 +302,7 @@ describe("approvers and recovery", () => {
     const added = await world.t.client.addApprover(world.workspaceId, {
       authorization: authorize(addMallory, world.people),
     });
+
     expect(added.approvers.map((approver) => approver.userId)).toContain(mallory.userId);
   });
 
@@ -321,10 +330,12 @@ describe("approvers and recovery", () => {
     // The relay (the control plane) would choose the key; only the host operator may do this.
     const t = startSigner();
     const world = await setUpWorld(t);
+
     const response = await t.signer.app.request(`/v1/workspaces/${world.workspaceId}/approvers`, {
       method: "POST",
       body: JSON.stringify({ approver: newPerson().credential }),
     });
+
     expect(response.status).toBe(401);
     await refused(
       world.t.client.addApprover(world.workspaceId, {
@@ -371,11 +382,13 @@ describe("approvers and recovery", () => {
     const wallet = await world.t.client.getWallet(world.walletId);
     expect(wallet.address).toBe(world.address);
     const intent = intentFor(world);
+
     const signed = await world.t.client.sign({
       intent,
       authorization: approveIntent(world, intent, { people: [replacement] }),
       transaction: txParams(),
     });
+
     expect(signed.from).toBe(world.address);
     const byLost = intentFor(world);
     await refused(

@@ -52,6 +52,7 @@ const ROLE_NAMES = { owner: "Owner", approver: "Approver", viewer: "Viewer" } as
  */
 function useOpenCloneResult() {
   const navigate = useNavigate();
+
   return async (result: CloneResult) => {
     revealCloneResult(result);
     queryClient.setQueryData(keys.workspace(result.workspace.id), result.workspace);
@@ -64,11 +65,13 @@ function useOpenCloneResult() {
 export function ExportCard({ workspace }: { workspace: WorkspaceDetail }) {
   const openCloneResult = useOpenCloneResult();
   const [copying, setCopying] = useState(false);
+
   const template = useMutation({
     mutationFn: () => api.call("exportTemplate", { params: { workspaceId: workspace.id } }),
     onSuccess: (result) =>
       downloadText(templateFileText(result), templateFileName(workspace.name), "application/json"),
   });
+
   const record = useMutation({
     mutationFn: () => api.call("exportRecord", { params: { workspaceId: workspace.id } }),
     // The record is the workspace's whole history: kept here no longer than it takes to save it.
@@ -76,6 +79,7 @@ export function ExportCard({ workspace }: { workspace: WorkspaceDetail }) {
     onSuccess: ({ record: lines }) =>
       downloadText(lines, recordFileName(workspace.name, new Date()), "application/x-ndjson"),
   });
+
   const clone = useMutation({
     mutationFn: (options: CloneOptions) =>
       api.call("cloneWorkspace", { params: { workspaceId: workspace.id }, body: options }),
@@ -83,7 +87,9 @@ export function ExportCard({ workspace }: { workspace: WorkspaceDetail }) {
     gcTime: 0,
     onSuccess: openCloneResult,
   });
+
   const deleting = workspace.lifecycle.state !== "active";
+
   return (
     <Card id="export">
       <CardHeader>
@@ -213,6 +219,7 @@ function CloneForm({
   const [name, setName] = useState(defaultName);
   const [includeAgents, setIncludeAgents] = useState(true);
   const [includeMembers, setIncludeMembers] = useState(true);
+
   return (
     <form
       className="grid grid-cols-1 gap-4"
@@ -269,6 +276,7 @@ export function ImportTemplateCard() {
   const [open, setOpen] = useState(false);
   const [read, setRead] = useState<{ fileName: string; template: WorkspaceTemplate } | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+
   const importTemplate = useMutation({
     mutationFn: ({ template, options }: { template: WorkspaceTemplate; options: CloneOptions }) =>
       api.call("importTemplate", { body: { template, ...options } }),
@@ -282,17 +290,23 @@ export function ImportTemplateCard() {
     setRead(null);
     setProblem(null);
     importTemplate.reset();
+
     if (!file) return;
+
     if (file.size > MAX_TEMPLATE_BYTES) {
       setProblem("This file is too large to be a workspace template.");
+
       return;
     }
+
     const result = readTemplateFile(await file.text());
+
     if (result.ok) setRead({ fileName: file.name, template: result.template });
     else setProblem(result.problem);
   };
 
   const agents = read?.template.wallets.filter((wallet) => wallet.agent !== null).length ?? 0;
+
   return (
     <Card id="import">
       <CardHeader>
@@ -362,6 +376,7 @@ export function ImportTemplateCard() {
 export function CloneResultView({ result }: { result: CloneResult }) {
   const now = useNow();
   const workspaceId = result.workspace.id;
+
   return (
     <div className="grid grid-cols-1 gap-6">
       <Alert tone="success" className="items-start">
@@ -400,6 +415,7 @@ export function CloneResultView({ result }: { result: CloneResult }) {
                 const name =
                   result.workspace.agents.find((item) => item.id === agent.agentId)?.name ??
                   "Agent";
+
                 return (
                   <li key={agent.agentId} className="grid grid-cols-1 gap-2">
                     <Link
@@ -473,6 +489,7 @@ export function CloneResultView({ result }: { result: CloneResult }) {
             <ul className="grid grid-cols-1 gap-4" aria-label="Invite links">
               {result.invites.map((invite) => {
                 const id = `invite-${invite.userId}`;
+
                 return (
                   <li key={invite.userId} className="grid grid-cols-1 gap-2">
                     <div className="flex flex-wrap items-center gap-2">

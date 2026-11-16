@@ -59,15 +59,19 @@ import { mapFromJson } from "./hyperliquid-vectors.ts";
 import vectors from "./vectors/hyperliquid-python-sdk.json" with { type: "json" };
 
 const RPC = "http://127.0.0.1:55545";
+
 // Below Linux's default ephemeral range, so no "any free port" listener can take it first.
 const PORT = 25701;
+
 const anvil = defineChain({
   id: 31337,
   name: "anvil",
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   rpcUrls: { default: { http: [RPC] } },
 });
+
 const chain = createPublicClient({ chain: anvil, transport: http(RPC) });
+
 // Anvil's default test mnemonic. Index 8 keeps clear of the accounts other suites tend to use.
 const funder = createWalletClient({
   account: mnemonicToAccount("test test test test test test test test test test test junk", {
@@ -92,12 +96,14 @@ describe("destroying a wallet in the real OWS vault", () => {
     vault.createWallet(gone);
     vault.createWallet(kept);
     const goneId = ows.getWallet(gone, vaultPath).id;
+
     const naming = (name: string) =>
       ["wallets", "keys"].flatMap((sub) =>
         readdirSync(join(vaultPath, sub)).filter((file) =>
           readFileSync(join(vaultPath, sub, file), "utf8").includes(name),
         ),
       );
+
     expect(naming(gone).length).toBeGreaterThan(0);
 
     vault.destroyWallet(gone);
@@ -128,6 +134,7 @@ describe("Hyperliquid signing in the real OWS vault", () => {
       vaultPath,
       "ethereum",
     );
+
     token = ows.createApiKey(walletId, [wallet.id], [], passphrase, null, vaultPath).token;
   });
 
@@ -143,12 +150,14 @@ describe("Hyperliquid signing in the real OWS vault", () => {
       v: expected.v,
     });
     expect(isTypedSignedBy(signature, payload, address)).toBe(true);
+
     return signature;
   }
 
   it("reproduces the SDK's GTC order signatures, with and without a cloid, on both networks", () => {
     const orders = vectors.sdkTests.signatures.filter((vector) => vector.operation !== null);
     expect(orders).toHaveLength(2);
+
     for (const vector of orders) {
       // The SDK's order without a cloid is not one the signer builds, so that one hashes the
       // SDK's own action; the one with a cloid is built by the signer's `orderAction`.
@@ -159,6 +168,7 @@ describe("Hyperliquid signing in the real OWS vault", () => {
               Cloid.parse(vector.cloid),
             )
           : mapFromJson(vector.action);
+
       const connectionId = l1ActionHash(action, vector.nonce, vector.expiresAfter);
       expectVector({ kind: "l1", network: "hyperliquid:mainnet", connectionId }, vector.mainnet);
       expectVector({ kind: "l1", network: "hyperliquid:testnet", connectionId }, vector.testnet);
@@ -167,10 +177,12 @@ describe("Hyperliquid signing in the real OWS vault", () => {
 
   it("reproduces the generated order and cancel signatures that carry expiresAfter", () => {
     const { inputs, output } = vectors.generated;
+
     const order = orderAction(
       HyperliquidOrderOperation.parse(inputs.order.operation),
       Cloid.parse(inputs.order.cloid),
     );
+
     const orderId = l1ActionHash(order, output.order.nonce, output.order.expiresAfter);
     expectVector(
       { kind: "l1", network: "hyperliquid:mainnet", connectionId: orderId },
@@ -190,12 +202,14 @@ describe("Hyperliquid signing in the real OWS vault", () => {
 
   it("reproduces the SDK's testnet withdrawal, and a mainnet one recovers to the wallet", () => {
     const vector = vectors.sdkTests.withdraw;
+
     const withdraw = {
       kind: "withdraw",
       destination: Address.parse(vector.destination),
       amount: vector.amount,
       time: vector.time,
     } as const;
+
     expectVector({ ...withdraw, network: "hyperliquid:testnet" }, vector.testnet);
     const mainnet = { ...withdraw, network: "hyperliquid:mainnet" } as const;
     const signature = vault.signHyperliquid(walletId, token, mainnet);
@@ -209,6 +223,7 @@ describe("Hyperliquid signing in the real OWS vault", () => {
       network: "hyperliquid:testnet",
       connectionId: `0x${"ab".repeat(32)}`,
     };
+
     expect(() => vault.signHyperliquid(walletId, passphrase, payload)).toThrow(VaultError);
     const otherId = newId("wal");
     const other = ows.createWallet(otherId, passphrase, 24, vaultPath);
@@ -220,11 +235,13 @@ describe("Hyperliquid signing in the real OWS vault", () => {
 describe("the real OWS vault, across a restart of the signer process", () => {
   const dir = mkdtempSync(join(tmpdir(), "os-signer-ows-"));
   const dataDir = join(dir, "data");
+
   const files = {
     hmac: join(dir, "hmac"),
     key: join(dir, "key"),
     passphrase: join(dir, "passphrase"),
   };
+
   const secret = randomBytes(32);
   const confirmSecret = randomBytes(32);
   const tokenKey = randomBytes(32);
@@ -247,6 +264,7 @@ describe("the real OWS vault, across a restart of the signer process", () => {
     const clock = new Clock();
     clock.now = realClock;
     clock.value = realClock();
+
     const first = createSigner({
       sqlitePath: join(dataDir, "signer.sqlite"),
       vault: new OwsVault({ vaultPath: join(dataDir, "vault"), passphraseFile: files.passphrase }),
@@ -259,11 +277,13 @@ describe("the real OWS vault, across a restart of the signer process", () => {
       maxAdminTtlSeconds: 86_400,
       now: realClock,
     });
+
     const inProcess = createSignerClient({
       baseUrl: "http://signer.test",
       secret,
       fetch: (url, init) => Promise.resolve(first.app.request(String(url), init)),
     });
+
     const alice = newPerson();
     const workspaceId = newId("ws");
     const walletId = newId("wal");
@@ -273,12 +293,14 @@ describe("the real OWS vault, across a restart of the signer process", () => {
       adminThreshold: 1,
       approvers: [alice.credential],
     });
+
     const wallet = await inProcess.createWallet({
       workspaceId,
       walletId,
       kind: "agent",
       label: "w",
     });
+
     const policy = basePolicy({ workspaceId, walletId, agentId });
     await inProcess.setPolicy(walletId, {
       policy,
@@ -293,6 +315,7 @@ describe("the real OWS vault, across a restart of the signer process", () => {
         [alice],
       ),
     });
+
     const world: World = {
       t: { client: inProcess, clock },
       workspaceId,
@@ -308,6 +331,7 @@ describe("the real OWS vault, across a restart of the signer process", () => {
     await chain.waitForTransactionReceipt({ hash: funding });
     const fees = await chain.estimateFeesPerGas();
     const transfer = intentFor(world, { type: "evm.transfer", to: RECIPIENT, valueWei: "1000" });
+
     const transferRequest = {
       intent: transfer,
       authorization: approveIntent(world, transfer),
@@ -318,15 +342,20 @@ describe("the real OWS vault, across a restart of the signer process", () => {
         maxPriorityFeePerGas: String(fees.maxPriorityFeePerGas),
       },
     };
+
     const signed = await inProcess.sign(transferRequest);
+
     const from = await recoverTransactionAddress({
       serializedTransaction: signed.signedTransaction as `0x02${string}`,
     });
+
     expect(from.toLowerCase()).toBe(wallet.address);
     const before = await chain.getBalance({ address: RECIPIENT });
+
     const hash = await chain.sendRawTransaction({
       serializedTransaction: signed.signedTransaction,
     });
+
     expect(hash).toBe(signed.transactionHash);
     const receipt = await chain.waitForTransactionReceipt({ hash });
     expect(receipt.status).toBe("success");
@@ -339,6 +368,7 @@ describe("the real OWS vault, across a restart of the signer process", () => {
       to: RECIPIENT,
       amount: "7",
     });
+
     const tokenSigned = await inProcess.sign({
       intent: token,
       authorization: approveIntent(world, token),
@@ -348,6 +378,7 @@ describe("the real OWS vault, across a restart of the signer process", () => {
         gas: "60000",
       },
     });
+
     expect(
       (
         await recoverTransactionAddress({
@@ -386,10 +417,12 @@ describe("the real OWS vault, across a restart of the signer process", () => {
     });
     child.once("exit", (code) => listening.reject(new Error(`signer exited with ${code}`)));
     await listening.promise;
+
     const remote: SignerClient = createSignerClient({
       baseUrl: `http://127.0.0.1:${PORT}`,
       secret,
     });
+
     expect(await remote.health()).toEqual({ ok: true, version: "0.1.0" });
 
     expect(
@@ -400,11 +433,13 @@ describe("the real OWS vault, across a restart of the signer process", () => {
     ).toEqual(signed);
     // The account nonce is the caller's to choose and may repeat under a new approval.
     const reuse = intentFor(world, { type: "evm.transfer", to: RECIPIENT, valueWei: "1" });
+
     const reused = await remote.sign({
       intent: reuse,
       authorization: approveIntent(world, reuse),
       transaction: transferRequest.transaction,
     });
+
     expect(reused.transactionHash).not.toBe(signed.transactionHash);
     await refused(
       remote.sign({
@@ -417,12 +452,15 @@ describe("the real OWS vault, across a restart of the signer process", () => {
       "assertion_invalid",
     );
     const fresh = intentFor(world, { type: "evm.transfer", to: RECIPIENT, valueWei: "2" });
+
     const freshSigned = await remote.sign({
       intent: fresh,
       authorization: approveIntent(world, fresh),
       transaction: { ...transferRequest.transaction, nonce: transferRequest.transaction.nonce + 2 },
     });
+
     expect(freshSigned.from).toBe(wallet.address);
+
     // A transfer under the mandate is signed by the same key, once per use.
     const mandated = {
       ...useRequest(tokenIntent(world, 9n)),
@@ -432,6 +470,7 @@ describe("the real OWS vault, across a restart of the signer process", () => {
         gas: "60000",
       },
     };
+
     const underMandate = await remote.signUnderMandate(mandate.id, mandated);
     expect(
       (

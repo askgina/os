@@ -10,7 +10,9 @@ export function mapFromJson(value: object): MsgpackMap {
 
 function fromJson(value: unknown): MsgpackValue {
   if (Array.isArray(value)) return value.map(fromJson);
+
   if (value !== null && typeof value === "object") return mapFromJson(value);
+
   if (
     value === null ||
     typeof value === "string" ||
@@ -19,5 +21,6 @@ function fromJson(value: unknown): MsgpackValue {
   ) {
     return value;
   }
+
   throw new TypeError(`not JSON: ${typeof value}`);
 }

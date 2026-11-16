@@ -17,26 +17,33 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
 const packsDir = resolve(process.argv[2] ?? join(root, ".packs"));
+
 const say = (line) => process.stdout.write(`${line}\n`);
 
 const major = Number(process.versions.node.split(".")[0]);
+
 if (major < 26) throw new Error(`smoke: Node 26 or later is required, this is ${process.version}`);
 
 const packs = JSON.parse(readFileSync(join(packsDir, "packs.json"), "utf8"));
+
 const tarball = (name) => {
   if (!packs[name]) throw new Error(`smoke: no tarball for ${name} in ${packsDir}/packs.json`);
+
   return `file:${join(packsDir, packs[name])}`;
 };
 
 // A consumer's own type packages, at the versions this repository tests with.
 const manifest = (path) => JSON.parse(readFileSync(join(root, path, "package.json"), "utf8"));
+
 const typePackages = {
   "@types/node": manifest(".").devDependencies["@types/node"],
   "@types/pg": manifest("packages/world").devDependencies["@types/pg"],
 };
 
 const dir = mkdtempSync(join(tmpdir(), "os-world-smoke-"));
+
 try {
   writeFileSync(
     join(dir, "package.json"),

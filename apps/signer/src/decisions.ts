@@ -56,10 +56,14 @@ function readHead(db: DatabaseSync, workspaceId: string): Head | undefined {
 export function appendDecision(db: DatabaseSync, input: DecisionInput): void {
   if (!db.isTransaction) {
     transaction(db, () => appendDecision(db, input));
+
     return;
   }
+
   const head = readHead(db, input.workspaceId);
+
   if (!head) throw new Error("decision for a workspace that does not exist");
+
   const entry = {
     workspace_id: input.workspaceId,
     seq: head.decision_seq + 1,
@@ -70,6 +74,7 @@ export function appendDecision(db: DatabaseSync, input: DecisionInput): void {
     code: input.code,
     previous_hash: head.decision_hash,
   };
+
   const hash = entryHash(entry);
   db.prepare(
     `INSERT INTO decisions (workspace_id, seq, at, approval_id, action, outcome, code, previous_hash, hash)
@@ -99,6 +104,7 @@ export function listDecisions(
   const rows = db
     .prepare("SELECT * FROM decisions WHERE workspace_id = ? AND seq > ? ORDER BY seq LIMIT ?")
     .all(workspaceId, after, limit) as DecisionRow[];
+
   return rows.map((row) => ({
     seq: row.seq,
     at: row.at,
@@ -125,21 +131,28 @@ export function verifyDecisions(
   const rows = db
     .prepare("SELECT * FROM decisions WHERE workspace_id = ? ORDER BY seq")
     .all(workspaceId) as DecisionRow[];
+
   let previous: string | null = null;
   let expectedSeq = 1;
+
   for (const row of rows) {
     const { hash, ...rest } = row;
+
     if (row.seq !== expectedSeq || row.previous_hash !== previous || entryHash(rest) !== hash) {
       return { ok: false, brokenAt: expectedSeq };
     }
+
     previous = hash;
     expectedSeq += 1;
   }
+
   const head = readHead(db, workspaceId);
   const lastSeq = expectedSeq - 1;
+
   if (!head || head.decision_seq !== lastSeq || head.decision_hash !== previous) {
     // Rows past the end of the chain were removed (or the head was edited).
     return { ok: false, brokenAt: Math.min(lastSeq, head?.decision_seq ?? lastSeq) + 1 };
   }
+
   return { ok: true, brokenAt: null };
 }

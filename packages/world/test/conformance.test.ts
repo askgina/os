@@ -14,8 +14,11 @@ import { afterAll, beforeAll, expect, test } from "vitest";
 import { bootstrapWorkflowSchema } from "./harness/host.ts";
 
 const execFileAsync = promisify(execFile);
+
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
+
 const dir = mkdtempSync(join(tmpdir(), "os-world-conformance-"));
+
 let db: TestDatabase;
 
 interface Assertion {
@@ -40,6 +43,7 @@ test("upstream conformance fails only where the suite itself cannot decrypt", {
   const keyringFile = join(dir, "keyring.json");
   writeFileSync(keyringFile, JSON.stringify(LocalKeyring.generate("k1")), { mode: 0o600 });
   const reportFile = join(dir, "report.json");
+
   // `--retry=1`: the suite's servers listen on port 0, which can land on a port fetch refuses.
   const args = [
     "vitest",
@@ -50,6 +54,7 @@ test("upstream conformance fails only where the suite itself cannot decrypt", {
     "--reporter=json",
     `--outputFile=${reportFile}`,
   ];
+
   await execFileAsync("bunx", args, {
     cwd: packageRoot,
     env: { ...process.env, WORKFLOW_POSTGRES_URL: db.url, HARNESS_KEYRING_FILE: keyringFile },
@@ -64,9 +69,11 @@ test("upstream conformance fails only where the suite itself cannot decrypt", {
   const report = JSON.parse(readFileSync(reportFile, "utf8")) as {
     testResults: { assertionResults: Assertion[] }[];
   };
+
   const all = report.testResults.flatMap((file) => file.assertionResults);
   const count = (status: string) => all.filter((assertion) => assertion.status === status).length;
   const failed = all.filter((assertion) => assertion.status === "failed");
+
   const unexplained = failed.filter(
     (assertion) =>
       !assertion.failureMessages.every(
@@ -75,6 +82,7 @@ test("upstream conformance fails only where the suite itself cannot decrypt", {
           message.includes("hydrateWorkflowReturnValue"),
       ),
   );
+
   process.stdout.write(
     `[conformance] ${JSON.stringify({
       passed: count("passed"),

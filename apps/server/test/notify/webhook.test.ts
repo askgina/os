@@ -29,9 +29,13 @@ import {
 } from "./support.ts";
 
 let f: Fixture;
+
 let bob: TestPerson;
+
 let receiver: Receiver;
+
 const secret = webhookSecret();
+
 const ETH = 10n ** 18n;
 
 beforeAll(async () => {
@@ -41,6 +45,7 @@ beforeAll(async () => {
   // From here on the operator has a webhook.
   f.t.ctx.config.notify = { webhook: { url: receiver.url, secret }, webPush: null };
 });
+
 afterAll(async () => {
   await f?.close();
   await receiver?.close();
@@ -52,23 +57,29 @@ async function agentWith(name: string): Promise<{ agent: TestAgent; client: Clie
   const agent = await f.newAgent(name);
   await f.setPolicy(f.workspaceId, agent.walletId, draftFor(agent.id));
   await fund(agent.address, 50n * ETH);
+
   return { agent, client: await f.mcp(agent.token) };
 }
 
 async function propose(client: Client, args: Record<string, unknown>) {
   const answer = toolJson(await client.callTool({ name: "propose_transfer", arguments: args }));
+
   if (typeof answer.intentId !== "string") throw new Error(JSON.stringify(answer));
+
   const [row] = await f.t.ctx.db
     .select()
     .from(intents)
     .where(eq(intents.id, answer.intentId as IntentId));
+
   if (!row?.approvalId) throw new Error("an intent without its approval or use");
+
   return { answer, approvalId: row.approvalId };
 }
 
 /** Send what is due and return what the receiver got for `approvalId`. */
 async function delivered(approvalId: ApprovalId): Promise<Received[]> {
   await deliverDueNotifications(f.t.ctx);
+
   return receiver.requests.filter((request) => JSON.parse(request.body).approvalId === approvalId);
 }
 
@@ -80,6 +91,7 @@ function expectSigned(request: Received) {
     expectedSignature(secret, timestamp, request.body),
   );
   const bytes = Buffer.from(request.body, "utf8");
+
   for (const index of [0, Math.floor(bytes.length / 2), bytes.length - 1]) {
     const changed = Buffer.from(bytes);
     changed[index] = (changed[index] ?? 0) ^ 0x01;
@@ -87,6 +99,7 @@ function expectSigned(request: Received) {
       expectedSignature(secret, timestamp, changed.toString("utf8")),
     );
   }
+
   expect(request.headers["x-os-signature"]).not.toBe(
     expectedSignature(webhookSecret(), timestamp, request.body),
   );
@@ -95,6 +108,7 @@ function expectSigned(request: Received) {
 /** Neither the body nor any header carries a marker, in any of its forms. */
 function expectNoMarkers(request: Received, markers: string[]) {
   const text = `${request.body}\n${JSON.stringify(request.headers)}`.toLowerCase();
+
   for (const marker of markers) {
     for (const form of markerForms(marker)) expect(text).not.toContain(form.toLowerCase());
   }
@@ -105,21 +119,26 @@ describe("the signed webhook", () => {
     const { client } = await agentWith("Payer");
     const recipient = randomAddress();
     const memo = `memo-marker-${randomBytes(6).toString("hex")}`;
+
     const { approvalId } = await propose(client, {
       chainId: TEST_CHAIN_ID,
       to: recipient,
       amount: "0.031415926",
       memo,
     });
+
     const requests = await delivered(approvalId);
     expect(requests).toHaveLength(1);
     const [request] = requests;
+
     if (!request) throw new Error("nothing was delivered");
     const body = JSON.parse(request.body);
+
     const [row] = await f.t.ctx.db
       .select()
       .from(notificationDeliveries)
       .where(eq(notificationDeliveries.approvalId, approvalId));
+
     const approval = await f.t.owner.browser.api.call("getApproval", { params: { approvalId } });
 
     // Keys sorted, compact JSON, nothing else.
@@ -161,6 +180,7 @@ describe("the signed webhook", () => {
     const { agent, client } = await agentWith("Supplier payer");
     const recipient = randomAddress();
     const purpose = `purpose-marker-${randomBytes(6).toString("hex")}`;
+
     const draft: MandateDraft = {
       agentId: agent.id,
       assets: [
@@ -179,10 +199,12 @@ describe("the signed webhook", () => {
       notAfter: f.t.clock.now() + 3 * 86_400,
       purpose,
     };
+
     const grant = await f.t.owner.browser.api.call("proposeMandate", {
       params: { workspaceId: f.workspaceId, walletId: agent.walletId },
       body: draft,
     });
+
     const grantRequests = await delivered(grant.id as ApprovalId);
     expect(grantRequests).toHaveLength(1);
     expect(JSON.parse(grantRequests[0]?.body ?? "{}")).toMatchObject({
@@ -195,18 +217,22 @@ describe("the signed webhook", () => {
     const mandateId = granted.subjectId as MandateId;
 
     const memo = `use-marker-${randomBytes(6).toString("hex")}`;
+
     const { answer, approvalId: useId } = await propose(client, {
       chainId: TEST_CHAIN_ID,
       to: recipient,
       amount: "0.5",
       memo,
     });
+
     expect(answer).toMatchObject({ mandateId, approvalUrl: null });
+
     // The use's only row is the webhook's `mandate.used`: nobody is asked to approve it.
     const rows = await f.t.ctx.db
       .select()
       .from(notificationDeliveries)
       .where(eq(notificationDeliveries.approvalId, useId));
+
     expect(rows.map((row) => [row.event, row.target, row.userId])).toEqual([
       ["mandate.used", "webhook", null],
     ]);
@@ -225,6 +251,7 @@ describe("the signed webhook", () => {
     const useRequests = await delivered(useId);
     expect(useRequests).toHaveLength(1);
     const [request] = useRequests;
+
     if (!request) throw new Error("the use was not reported");
     const body = JSON.parse(request.body);
     expect(Object.keys(body)).toEqual([
@@ -246,6 +273,7 @@ describe("the signed webhook", () => {
       link: `${TEST_ORIGIN}/w/${f.workspaceId}/mandates/${mandateId}`,
     });
     expectSigned(request);
+
     for (const sent of [request, ...grantRequests]) {
       expectNoMarkers(sent, [memo, purpose, recipient, recipient.slice(2), "500000000000000000"]);
     }

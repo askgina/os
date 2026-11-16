@@ -45,6 +45,7 @@ async function open(t: TestSigner, envelope: Envelope): Promise<string> {
     envelope,
     subject: { kind: "envelope-only" },
   });
+
   return path.slice(path.indexOf("#") + 1);
 }
 
@@ -61,6 +62,7 @@ function approvalOf(person: Person, envelope: Envelope): AssertionResponse {
 
 const lineOf = (view: ConfirmationView, label: string) =>
   view.lines.find((line) => line.label === label)?.value;
+
 const PROVEN = "The new person proved they hold this passkey";
 
 describe("proof of possession of a new approver's passkey", () => {
@@ -71,6 +73,7 @@ describe("proof of possession of a new approver's passkey", () => {
     const carol = newPerson();
     const envelope = addApprover(world, carol.credential);
     const id = envelope.approvalId;
+
     const apply = (authorization = authorize(envelope, [alice])) =>
       t.client.addApprover(world.workspaceId, { authorization });
 
@@ -91,9 +94,11 @@ describe("proof of possession of a new approver's passkey", () => {
     );
     expect((await t.client.listConfirmationAssertions(id)).assertions).toEqual([]);
     await refused(apply(), "possession_unproven");
+
     const refusals = (await t.client.listDecisions(world.workspaceId)).decisions.filter(
       (decision) => decision.action === "add-approver",
     );
+
     expect(refusals.map((decision) => [decision.outcome, decision.code])).toEqual([
       ["denied", "possession_unproven"],
       ["denied", "possession_unproven"],
@@ -153,11 +158,14 @@ describe("proof of possession of a new approver's passkey", () => {
     const envelope = addApprover(world, carol.credential);
     const id = envelope.approvalId;
     const token = await open(t, envelope);
+
     const prove = async (answer: (options: { challenge: string }) => AssertionResponse) =>
       t.confirm.submitPossession(id, token, answer(await t.confirm.getPossession(id, token)));
+
     /** Mallory's answer, labelled with Carol's credential id as if it came from her passkey. */
     const relabelled = (options: { challenge: string }): AssertionResponse => {
       const answer = answerPossession(mallory, options);
+
       return { ...answer, id: carol.credential.credentialId, rawId: carol.credential.credentialId };
     };
 
@@ -183,6 +191,7 @@ describe("proof of possession of a new approver's passkey", () => {
       ...carol.credential,
       publicKey: mallory.credential.publicKey,
     });
+
     const swappedToken = await open(t, swapped);
     const options = await t.confirm.getPossession(swapped.approvalId, swappedToken);
     expect(options.allowCredentials).toEqual([carol.credential.credentialId]);
@@ -194,6 +203,7 @@ describe("proof of possession of a new approver's passkey", () => {
       ),
       "assertion_invalid",
     );
+
     // Mallory holds that key and can prove it. What gives the swap away is the fingerprint:
     // the page shows her key's, not the one Carol reads from her own page.
     const proven = await t.confirm.submitPossession(
@@ -201,6 +211,7 @@ describe("proof of possession of a new approver's passkey", () => {
       swappedToken,
       relabelled(await t.confirm.getPossession(swapped.approvalId, swappedToken)),
     );
+
     expect(proven.fingerprint).toBe(keyFingerprint(mallory.credential.publicKey));
     expect(proven.fingerprint).not.toBe(keyFingerprint(carol.credential.publicKey));
     const shown = await t.confirm.getConfirmation(swapped.approvalId, swappedToken);
@@ -214,6 +225,7 @@ describe("proof of possession of a new approver's passkey", () => {
     const envelope = addApprover(world, carol.credential);
     const id = envelope.approvalId;
     const token = await open(t, envelope);
+
     const attempt = async (
       overrides: Parameters<typeof answerPossession>[2],
       options?: { challenge: string },
@@ -237,14 +249,18 @@ describe("proof of possession of a new approver's passkey", () => {
       ["a registration", { clientDataType: "webauthn.create" }],
       ["no user verification", { flags: { uv: false } }],
     ] as const;
+
     const outcomes: [string, string][] = [];
+
     for (const [where, overrides] of elsewhere) {
       const code = await attempt(overrides).then(
         () => "accepted",
         (error: unknown) => (error instanceof SignerError ? error.code : String(error)),
       );
+
       outcomes.push([where, code]);
     }
+
     expect(outcomes).toEqual(elsewhere.map(([where]) => [where, "assertion_invalid"]));
     // The envelope's own challenge (an approval, not a proof) does not count.
     await refused(
@@ -274,10 +290,12 @@ describe("proof of possession of a new approver's passkey", () => {
     // A payment has none.
     const intent = intentFor(world);
     const { envelope: payment } = approveIntent(world, intent, { people: [] });
+
     const { path } = await t.client.openConfirmation(payment.approvalId, {
       envelope: payment,
       subject: { kind: "approve-intent", intent },
     });
+
     const paymentToken = path.slice(path.indexOf("#") + 1);
     await refused(t.confirm.getPossession(payment.approvalId, paymentToken), "not_found");
     await refused(
@@ -319,12 +337,14 @@ describe("proof of possession of a new approver's passkey", () => {
     const token = await open(t, envelope);
     const options = await t.confirm.getPossession(envelope.approvalId, token);
     const wrong = answerPossession(carol, options, { origin: ORIGIN });
+
     for (let attempt = 0; attempt < 64; attempt += 1) {
       await refused(
         t.confirm.submitPossession(envelope.approvalId, token, wrong),
         "assertion_invalid",
       );
     }
+
     await refused(
       t.confirm.submitPossession(envelope.approvalId, token, answerPossession(carol, options)),
       "rate_limited",

@@ -22,8 +22,10 @@ export function mandateLink(origin: string, workspaceId: string, mandateId: stri
  * which is the padding delimiter.
  */
 export const PUSH_PAYLOAD_MAX_BYTES = 511;
+
 /** The longest title or body, in characters. */
 const TEXT_MAX_CHARACTERS = 60;
+
 /** The badge counts up to this; more read as this many. */
 const BADGE_MAX = 99;
 
@@ -86,8 +88,11 @@ function line(text: string): string {
     .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+
   const characters = Array.from(flat);
+
   if (characters.length <= TEXT_MAX_CHARACTERS) return flat;
+
   return `${characters.slice(0, TEXT_MAX_CHARACTERS - 1).join("")}…`;
 }
 
@@ -96,14 +101,17 @@ const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)
 /** Shorten a body, then a title, that is too long in bytes; throw when even that is not enough. */
 function fit(message: DeclarativePush): DeclarativePush {
   const { notification } = message;
+
   for (const field of ["body", "title"] as const) {
     while (bytes(message) > PUSH_PAYLOAD_MAX_BYTES && notification[field].length > 1) {
       notification[field] = `${Array.from(notification[field]).slice(0, -2).join("")}…`;
     }
   }
+
   if (bytes(message) > PUSH_PAYLOAD_MAX_BYTES) {
     throw new Error("the approval link leaves no room for a push message");
   }
+
   return message;
 }
 
@@ -128,6 +136,7 @@ export function lifecycleMessage(input: {
 }): DeclarativePush {
   let title: string;
   let body: string;
+
   if (input.level === "summary") {
     // `2026-11-22 14:05 UTC`: the same for every reader, whatever their time zone.
     const when = new Date(input.destroyAfter * 1000).toISOString().slice(0, 16).replace("T", " ");
@@ -138,6 +147,7 @@ export function lifecycleMessage(input: {
     title = "Keys scheduled for destruction";
     body = "Open to review or cancel";
   }
+
   return fit({
     web_push: 8030,
     notification: {
@@ -170,17 +180,20 @@ export function pushMessage(input: {
   const many = facts.pendingCount > BADGE_MAX ? `${BADGE_MAX}+` : String(count);
   let title: string;
   let body: string;
+
   if (input.level === "summary") {
     const label =
       facts.kind === "approve-intent" && facts.operation === "order"
         ? "Order"
         : KIND_LABEL[facts.kind];
+
     title = `${label} waiting`;
     body = `${facts.requesterName} in ${facts.workspaceName}`;
   } else {
     title = "Approval waiting";
     body = count === 1 ? "1 request needs your passkey" : `${many} requests need your passkey`;
   }
+
   return fit({
     web_push: 8030,
     notification: {

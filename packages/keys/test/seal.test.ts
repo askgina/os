@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { open, openJson, seal, sealJson } from "../src/seal.ts";
 
 const key = randomBytes(32);
+
 const context = "intents.payload:int_01";
 
 describe("seal and open", () => {
@@ -34,6 +35,7 @@ describe("seal and open", () => {
 
   test("tampering with the iv, body or tag is detected", () => {
     const sealed = seal(key, Buffer.from("tamper me"), context);
+
     for (const index of [1, 13, sealed.length - 1]) {
       const tampered = Buffer.from(sealed);
       tampered[index] = (tampered[index] ?? 0) ^ 0x80;

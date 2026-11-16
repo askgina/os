@@ -56,9 +56,11 @@ export type FollowUp = (
 ) => Promise<{ done: boolean; waitSeconds: number }>;
 
 const PAGE_SIZE = 50;
+
 const ENDED: readonly SettledStatus[] = ["rejected", "expired", "cancelled", "failed"];
 
 const detailLocation = (id: string) => `approvals.detail:${id}`;
+
 const confirmationLocation = (id: string) => `approvals.confirmation:${id}`;
 
 /** Why an assertion does not count, with the code the signer would give for it. */
@@ -72,7 +74,9 @@ function encodeCursor(row: { createdAt: Date; id: string }): string {
 function decodeCursor(cursor: string): { at: Date; id: string } {
   const [at, id] = Buffer.from(cursor, "base64url").toString("utf8").split("|");
   const time = Number(at);
+
   if (!id || !Number.isSafeInteger(time)) throw new HttpError("invalid_request", "bad cursor");
+
   return { at: new Date(time), id };
 }
 
@@ -122,12 +126,15 @@ export class Engine implements ApprovalEngine {
 
   handler(kind: ApprovalKind): ApprovalKindHandler {
     const handler = this.#handlers.get(kind);
+
     if (!handler) throw new Error(`no handler registered for approval kind ${kind}`);
+
     return handler;
   }
 
   #use(): MandateUseHandler {
     if (this.#useHandler === null) throw new Error("no handler registered for mandate uses");
+
     return this.#useHandler;
   }
 
@@ -137,6 +144,7 @@ export class Engine implements ApprovalEngine {
     const id = newId("apr");
     const issuedAt = ctx.now();
     const expiresAt = issuedAt + input.ttlSeconds;
+
     const envelope = Envelope.parse({
       ...input.envelope,
       v: PROTOCOL_VERSION,
@@ -147,6 +155,7 @@ export class Engine implements ApprovalEngine {
       issuedAt,
       expiresAt,
     });
+
     await ctx.db.transaction(async (tx) => {
       await tx.insert(approvals).values({
         id,
@@ -192,6 +201,7 @@ export class Engine implements ApprovalEngine {
         error: error instanceof Error ? error.name : "unknown",
       });
     });
+
     return this.summary(row);
   }
 
@@ -245,6 +255,7 @@ export class Engine implements ApprovalEngine {
       });
     });
     await this.startRun(id, input.workspaceId, seconds(at));
+
     return this.row(id);
   }
 
@@ -257,12 +268,14 @@ export class Engine implements ApprovalEngine {
     alongside?: (tx: Transaction) => Promise<unknown>,
   ): Promise<boolean> {
     const ctx = this.#ctx;
+
     const ended = await ctx.db.transaction(async (tx) => {
       const [row] = await tx
         .update(approvals)
         .set({ status: "cancelled", decidedAt: new Date(ctx.now() * 1000), resumeState: "needed" })
         .where(and(eq(approvals.id, approvalId), eq(approvals.status, "pending")))
         .returning();
+
       if (!row) return false;
       await alongside?.(tx);
       await appendAudit(
@@ -275,9 +288,12 @@ export class Engine implements ApprovalEngine {
         },
         tx,
       );
+
       return true;
     });
+
     if (ended) await this.wake(approvalId);
+
     return ended;
   }
 
@@ -293,14 +309,18 @@ export class Engine implements ApprovalEngine {
   async startRun(id: ApprovalId, workspaceId: WorkspaceId, expiresAt: number): Promise<void> {
     const ctx = this.#ctx;
     const runtime = this.#runtime;
+
     if (runtime === null) return;
+
     try {
       await ctx.db.transaction(async (tx) => {
         await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`run:${id}`}, 0))`);
+
         const [row] = await tx
           .select({ runId: approvals.runId })
           .from(approvals)
           .where(eq(approvals.id, id));
+
         if (!row || row.runId !== null) return;
         const runId = await runtime.startRun({ approvalId: id, workspaceId, expiresAt });
         await tx
@@ -319,21 +339,26 @@ export class Engine implements ApprovalEngine {
   /** Resume the workflow so it reads the decision; marks the outbox done when it worked. */
   async wake(id: ApprovalId): Promise<boolean> {
     const ctx = this.#ctx;
+
     if (this.#runtime === null) return false;
+
     // Wake the run that owns the request. With none recorded yet there is nothing to wake: a
     // run reads the decision when it first looks, and the sweeper tries again meanwhile.
     const [owner] = await ctx.db
       .select({ runId: approvals.runId })
       .from(approvals)
       .where(eq(approvals.id, id));
+
     if (!owner || owner.runId === null) return false;
     const woken = await this.#runtime.wake(id, owner.runId);
+
     if (woken) {
       await ctx.db
         .update(approvals)
         .set({ resumeState: "done" })
         .where(and(eq(approvals.id, id), eq(approvals.resumeState, "needed")));
     }
+
     return woken;
   }
 
@@ -342,7 +367,9 @@ export class Engine implements ApprovalEngine {
       .select()
       .from(approvals)
       .where(eq(approvals.id, id as ApprovalId));
+
     if (!row) throw new HttpError("not_found", "no such approval");
+
     return row;
   }
 
@@ -352,28 +379,34 @@ export class Engine implements ApprovalEngine {
    */
   async request(id: string, executor: Executor = this.#ctx.db): Promise<RequestRow> {
     const row = await this.row(id, executor);
+
     if (!isRequest(row)) throw new HttpError("not_found", "no such approval");
+
     return row;
   }
 
   async openDetail(row: ApprovalRow): Promise<unknown> {
     if (row.detail === null) return null;
+
     return this.#ctx.sealer.open(row.workspaceId, detailLocation(row.id), row.detail);
   }
 
   /** The status a person should see: a pending request past its expiry is already expired. */
   shownStatus(row: ApprovalRow): ApprovalStatus {
     if (row.status === "pending" && seconds(row.expiresAt) <= this.#ctx.now()) return "expired";
+
     return row.status;
   }
 
   async summary(row: RequestRow): Promise<ApprovalSummary> {
     const ctx = this.#ctx;
     const detail = await this.openDetail(row);
+
     const [count] = await ctx.db
       .select({ n: sql<number>`count(*)::int` })
       .from(approvalAssertions)
       .where(eq(approvalAssertions.approvalId, row.id));
+
     return {
       id: row.id,
       workspaceId: row.workspaceId,
@@ -392,18 +425,22 @@ export class Engine implements ApprovalEngine {
   async detail(row: RequestRow, session: Session): Promise<ApprovalDetail> {
     const ctx = this.#ctx;
     const detail = await this.openDetail(row);
+
     const approvedBy = await ctx.db
       .select({ id: users.id, displayName: users.displayName })
       .from(approvalAssertions)
       .innerJoin(users, eq(users.id, approvalAssertions.userId))
       .where(eq(approvalAssertions.approvalId, row.id))
       .orderBy(asc(approvalAssertions.createdAt));
+
     const [rejectedBy] = await ctx.db
       .select({ id: users.id, displayName: users.displayName })
       .from(approvalRejections)
       .innerJoin(users, eq(users.id, approvalRejections.userId))
       .where(eq(approvalRejections.approvalId, row.id));
+
     const decided = approvedBy.some((user) => user.id === session.user.id);
+
     // The rule the reject route and collecting apply: the approver role and a passkey the signer
     // accepts.
     const [membership] = await ctx.db
@@ -412,11 +449,13 @@ export class Engine implements ApprovalEngine {
       .where(
         and(eq(memberships.workspaceId, row.workspaceId), eq(memberships.userId, session.user.id)),
       );
+
     const canDecide =
       this.shownStatus(row) === "pending" &&
       !decided &&
       (membership?.role === "approver" || membership?.role === "owner") &&
       (await this.activeApproverCredentials(row.workspaceId, session.user.id)).length > 0;
+
     return {
       ...(await this.summary(row)),
       envelope: row.envelope,
@@ -437,13 +476,19 @@ export class Engine implements ApprovalEngine {
    */
   async ensureConfirmation(row: RequestRow): Promise<string | null> {
     const ctx = this.#ctx;
+
     if (this.shownStatus(row) !== "pending") return null;
+
     const link = async (sealed: Uint8Array) => {
       const path = await ctx.sealer.open(row.workspaceId, confirmationLocation(row.id), sealed);
+
       if (typeof path !== "string") throw new Error("a stored confirmation link is not a path");
+
       return `${ctx.config.approveOrigin}${path}`;
     };
+
     if (row.confirmation !== null) return link(row.confirmation);
+
     // Read before the lock: a view waiting for the lock holds a connection, so the holder must
     // not need another one from the pool.
     const subject = await this.handler(row.kind).confirmationSubject(
@@ -451,17 +496,21 @@ export class Engine implements ApprovalEngine {
       row,
       await this.openDetail(row),
     );
+
     return ctx.db.transaction(async (tx) => {
       // Views of one request that arrive together open it once.
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtextextended(${`confirm:${row.id}`}, 0))`,
       );
+
       const [current] = await tx
         .select({ confirmation: approvals.confirmation })
         .from(approvals)
         .where(eq(approvals.id, row.id));
+
       if (current?.confirmation) return link(current.confirmation);
       let path: string;
+
       try {
         ({ path } = await ctx.signer.openConfirmation(row.id, { envelope: row.envelope, subject }));
       } catch (error) {
@@ -470,10 +519,13 @@ export class Engine implements ApprovalEngine {
           approvalId: row.id,
           code: error instanceof SignerError ? error.code : "unreachable",
         });
+
         return null;
       }
+
       const sealed = await ctx.sealer.seal(row.workspaceId, confirmationLocation(row.id), path);
       await tx.update(approvals).set({ confirmation: sealed }).where(eq(approvals.id, row.id));
+
       return `${ctx.config.approveOrigin}${path}`;
     });
   }
@@ -487,8 +539,10 @@ export class Engine implements ApprovalEngine {
    */
   async collect(row: RequestRow): Promise<void> {
     const ctx = this.#ctx;
+
     if (this.shownStatus(row) !== "pending" || row.confirmation === null) return;
     let listed: Assertion[];
+
     try {
       ({ assertions: listed } = await ctx.signer.listConfirmationAssertions(row.id));
     } catch (error) {
@@ -496,18 +550,24 @@ export class Engine implements ApprovalEngine {
         approvalId: row.id,
         code: error instanceof SignerError ? error.code : "unreachable",
       });
+
       return;
     }
+
     if (listed.length === 0) return;
+
     const recorded = await ctx.db
       .select({ userId: approvalAssertions.userId })
       .from(approvalAssertions)
       .where(eq(approvalAssertions.approvalId, row.id));
+
     const counted = new Set<string>(recorded.map((entry) => entry.userId));
     let decided = false;
+
     for (const assertion of listed) {
       if (counted.has(assertion.userId)) continue;
       const verdict = await this.#verify(row, assertion.userId, assertion.response);
+
       if (!verdict.ok) {
         ctx.log.warn("a collected approval was not counted", {
           approvalId: row.id,
@@ -515,16 +575,20 @@ export class Engine implements ApprovalEngine {
         });
         continue;
       }
+
       const outcome = await this.#record(
         row,
         assertion.userId,
         verdict.credentialId,
         assertion.response,
       );
+
       if (outcome === "closed") break;
       counted.add(assertion.userId);
+
       if (outcome === "decided") decided = true;
     }
+
     if (decided) await this.wake(row.id);
   }
 
@@ -535,36 +599,45 @@ export class Engine implements ApprovalEngine {
     const ctx = this.#ctx;
     // Uses of mandates are not approvals people make: no list or count ever shows one.
     const conditions = [eq(approvals.workspaceId, workspaceId), ne(approvals.kind, "mandate-use")];
+
     if (filter.status !== "all") {
       conditions.push(eq(approvals.status, "pending"));
       conditions.push(sql`${approvals.expiresAt} > ${new Date(ctx.now() * 1000)}`);
     }
+
     if (filter.cursor !== undefined) {
       const { at, id } = decodeCursor(filter.cursor);
+
       const before = or(
         lt(approvals.createdAt, at),
         and(eq(approvals.createdAt, at), lt(approvals.id, id as ApprovalId)),
       );
+
       if (before) conditions.push(before);
     }
+
     const rows = await ctx.db
       .select()
       .from(approvals)
       .where(and(...conditions))
       .orderBy(desc(approvals.createdAt), desc(approvals.id))
       .limit(PAGE_SIZE + 1);
+
     const page = rows.slice(0, PAGE_SIZE);
     const last = page.at(-1);
     // Approvals made on the confirmation page count as soon as someone looks at the inbox.
     const current: RequestRow[] = [];
+
     for (const row of page.filter(isRequest)) {
       if (row.confirmation === null || this.shownStatus(row) !== "pending") {
         current.push(row);
         continue;
       }
+
       await this.collect(row);
       current.push(await this.request(row.id));
     }
+
     return {
       items: await Promise.all(current.map((row) => this.summary(row))),
       nextCursor: rows.length > PAGE_SIZE && last ? encodeCursor(last) : null,
@@ -584,7 +657,9 @@ export class Engine implements ApprovalEngine {
       inArray(approverCredentials.state, ["active", "removing"]),
       isNull(credentials.revokedAt),
     ];
+
     if (userId !== undefined) conditions.push(eq(approverCredentials.userId, userId));
+
     const rows = await this.#ctx.db
       .select({
         userId: approverCredentials.userId,
@@ -594,6 +669,7 @@ export class Engine implements ApprovalEngine {
       .from(approverCredentials)
       .innerJoin(credentials, eq(credentials.id, approverCredentials.credentialId))
       .where(and(...conditions));
+
     return rows.map((row) => ({
       userId: row.userId,
       credentialId: row.credentialId,
@@ -609,17 +685,22 @@ export class Engine implements ApprovalEngine {
    */
   async #verify(row: RequestRow, userId: UserId, response: AssertionResponse): Promise<Verdict> {
     const ctx = this.#ctx;
+
     const [membership] = await ctx.db
       .select({ role: memberships.role })
       .from(memberships)
       .where(and(eq(memberships.workspaceId, row.workspaceId), eq(memberships.userId, userId)));
+
     if (membership?.role !== "approver" && membership?.role !== "owner") {
       return { ok: false, code: "approver_unknown" };
     }
+
     const mine = await this.activeApproverCredentials(row.workspaceId, userId);
     const credential = mine.find((candidate) => candidate.credentialId === response.id);
+
     if (!credential) return { ok: false, code: "approver_unknown" };
     const assertion: Assertion = { userId, credentialId: credential.credentialId, response };
+
     const verdict = await verifyAuthorization({
       authorization: { envelope: row.envelope, assertions: [assertion] },
       approvers: mine,
@@ -628,6 +709,7 @@ export class Engine implements ApprovalEngine {
       maxTtlSeconds: row.envelope.expiresAt - row.envelope.issuedAt,
       now: ctx.now(),
     });
+
     return verdict.ok
       ? { ok: true, credentialId: credential.credentialId }
       : { ok: false, code: verdict.code };
@@ -645,13 +727,16 @@ export class Engine implements ApprovalEngine {
     response: AssertionResponse,
   ): Promise<"recorded" | "decided" | "duplicate" | "closed"> {
     const ctx = this.#ctx;
+
     return ctx.db.transaction(async (tx) => {
       const [locked] = await tx
         .select()
         .from(approvals)
         .where(eq(approvals.id, row.id))
         .for("update");
+
       if (locked?.status !== "pending" || seconds(locked.expiresAt) <= ctx.now()) return "closed";
+
       const inserted = await tx
         .insert(approvalAssertions)
         .values({
@@ -663,6 +748,7 @@ export class Engine implements ApprovalEngine {
         })
         .onConflictDoNothing()
         .returning({ userId: approvalAssertions.userId });
+
       if (inserted.length === 0) return "duplicate";
       await appendAudit(
         ctx,
@@ -675,10 +761,12 @@ export class Engine implements ApprovalEngine {
         },
         tx,
       );
+
       const [count] = await tx
         .select({ n: sql<number>`count(*)::int` })
         .from(approvalAssertions)
         .where(eq(approvalAssertions.approvalId, row.id));
+
       if ((count?.n ?? 0) < locked.threshold) return "recorded";
       await tx
         .update(approvals)
@@ -694,6 +782,7 @@ export class Engine implements ApprovalEngine {
         },
         tx,
       );
+
       return "decided";
     });
   }
@@ -701,9 +790,11 @@ export class Engine implements ApprovalEngine {
   async reject(row: RequestRow, session: Session): Promise<void> {
     const ctx = this.#ctx;
     const mine = await this.activeApproverCredentials(row.workspaceId, session.user.id);
+
     if (mine.length === 0) {
       throw new HttpError("forbidden", "you have no passkey that approves for this workspace");
     }
+
     await ctx.db.transaction(async (tx) => {
       const [updated] = await tx
         .update(approvals)
@@ -716,6 +807,7 @@ export class Engine implements ApprovalEngine {
           ),
         )
         .returning({ id: approvals.id });
+
       if (!updated)
         throw new HttpError("conflict", "this request is no longer waiting for approval");
       await tx.insert(approvalRejections).values({
@@ -747,6 +839,7 @@ export class Engine implements ApprovalEngine {
   /** What the bundled workflow's steps call. Each is safe to run more than once. */
   steps(): StepImplementations {
     const ctx = this.#ctx;
+
     return {
       settle: async (approvalId, runId) => {
         const id = approvalId as ApprovalId;
@@ -755,21 +848,26 @@ export class Engine implements ApprovalEngine {
           .set({ runId })
           .where(and(eq(approvals.id, id), isNull(approvals.runId)));
         let row = await this.row(id);
+
         if (row.runId !== runId) return "superseded";
         const open = () => row.status === "pending" && seconds(row.expiresAt) > ctx.now();
+
         if (open() && isRequest(row)) {
           // Nobody may be on a page of ours that would ask the signer, so the run asks.
           await this.collect(row);
           row = await this.row(id);
         }
+
         if (row.status === "pending") {
           if (open()) return "pending";
+
           const expired = await ctx.db.transaction(async (tx) => {
             const [updated] = await tx
               .update(approvals)
               .set({ status: "expired", resumeState: "done" })
               .where(and(eq(approvals.id, id), eq(approvals.status, "pending")))
               .returning({ id: approvals.id });
+
             if (!updated) return false;
             await appendAudit(
               ctx,
@@ -781,22 +879,29 @@ export class Engine implements ApprovalEngine {
               },
               tx,
             );
+
             return true;
           });
+
           return expired ? "expired" : (await this.row(id)).status;
         }
+
         // The run has seen the decision, so nothing is left for the outbox to deliver.
         await ctx.db
           .update(approvals)
           .set({ resumeState: "done" })
           .where(and(eq(approvals.id, id), eq(approvals.resumeState, "needed")));
+
         return row.status;
       },
 
       execute: async (approvalId) => {
         const row = await this.row(approvalId);
+
         if (row.status === "executed") return { ok: true };
+
         if (row.status !== "approved") return { ok: false, code: `not_approved_${row.status}` };
+
         try {
           if (isRequest(row)) {
             const assertions = await ctx.db
@@ -804,6 +909,7 @@ export class Engine implements ApprovalEngine {
               .from(approvalAssertions)
               .where(eq(approvalAssertions.approvalId, row.id))
               .orderBy(asc(approvalAssertions.createdAt));
+
             const authorization = {
               envelope: row.envelope,
               assertions: assertions.map((assertion) => ({
@@ -812,6 +918,7 @@ export class Engine implements ApprovalEngine {
                 response: assertion.response,
               })),
             };
+
             await this.handler(row.kind).execute(
               ctx,
               row,
@@ -825,12 +932,14 @@ export class Engine implements ApprovalEngine {
           if (error instanceof ApprovalFailure) return { ok: false, code: error.code };
           throw error;
         }
+
         await ctx.db.transaction(async (tx) => {
           const [updated] = await tx
             .update(approvals)
             .set({ status: "executed" })
             .where(and(eq(approvals.id, row.id), eq(approvals.status, "approved")))
             .returning({ id: approvals.id });
+
           if (!updated) return;
           await appendAudit(
             ctx,
@@ -843,6 +952,7 @@ export class Engine implements ApprovalEngine {
             tx,
           );
         });
+
         return { ok: true };
       },
 
@@ -856,6 +966,7 @@ export class Engine implements ApprovalEngine {
               and(eq(approvals.id, row.id), inArray(approvals.status, ["approved", "pending"])),
             )
             .returning({ id: approvals.id });
+
           if (!updated) return;
           await appendAudit(
             ctx,
@@ -880,6 +991,7 @@ export class Engine implements ApprovalEngine {
       followUp: async (approvalId) => {
         const row = await this.row(approvalId);
         const followUp = this.#followUps.get(row.kind);
+
         return followUp ? followUp(ctx, row) : { done: true, waitSeconds: 0 };
       },
     };
@@ -898,8 +1010,10 @@ export class Engine implements ApprovalEngine {
   ): Promise<void> {
     const ctx = this.#ctx;
     const detail = await this.openDetail(row);
+
     if (isRequest(row)) await this.handler(row.kind).abandon?.(ctx, row, status, detail);
     else await this.#use().abandon(ctx, row, status, detail);
+
     try {
       await ctx.signer.revokeApproval(row.id, row.workspaceId);
     } catch (error) {
@@ -918,35 +1032,45 @@ export class Engine implements ApprovalEngine {
    */
   async recoverOrphan(row: ApprovalRow): Promise<"started" | "abandoned" | "none"> {
     const ctx = this.#ctx;
+
     if (row.runId !== null) return "none";
+
     if (row.status === "pending" || row.status === "approved") {
       await this.startRun(row.id, row.workspaceId, seconds(row.expiresAt));
+
       return "started";
     }
+
     if (row.status === "rejected" || row.status === "expired" || row.status === "cancelled") {
       await this.#end(row, row.status);
       await ctx.db
         .update(approvals)
         .set({ resumeState: "done" })
         .where(and(eq(approvals.id, row.id), eq(approvals.resumeState, "needed")));
+
       return "abandoned";
     }
+
     return "none";
   }
 
   async #requester(row: ApprovalRow): Promise<Requester> {
     const ctx = this.#ctx;
+
     if (row.requestedByType === "agent") {
       const [agent] = await ctx.db
         .select({ name: agents.name })
         .from(agents)
         .where(eq(agents.id, row.requestedById as never));
+
       return { type: "agent", id: row.requestedById as never, name: agent?.name ?? "" };
     }
+
     const [user] = await ctx.db
       .select({ name: users.displayName })
       .from(users)
       .where(eq(users.id, row.requestedById as never));
+
     return { type: "user", id: row.requestedById as never, name: user?.name ?? "" };
   }
 }
@@ -960,5 +1084,6 @@ export function engineOf(ctx: Pick<AppContext, "approvals">): Engine {
   if (!(ctx.approvals instanceof Engine)) {
     throw new Error("the context's approval engine was not created by createApprovalEngine()");
   }
+
   return ctx.approvals;
 }

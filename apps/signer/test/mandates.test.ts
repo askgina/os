@@ -129,12 +129,14 @@ describe("granting a mandate", () => {
       t.client.grantMandate(next.id, grantRequest(world, { ...next, walletId: newId("wal") })),
       "not_found",
     );
+
     const bare = await t.client.createWallet({
       workspaceId: world.workspaceId,
       walletId: newId("wal"),
       kind: "agent",
       label: "no policy yet",
     });
+
     const unpoliced = mandateFor(world, { walletId: bare.walletId });
     await refused(
       t.client.grantMandate(unpoliced.id, grantRequest(world, unpoliced)),
@@ -146,9 +148,11 @@ describe("granting a mandate", () => {
     const t = startSigner();
     const world = await setUpWorld(t);
     const now = t.clock.value;
+
     const token = (limits: { maxPerAction: string; maxPerWindow: string; maxTotal: string }) => [
       { chainId: CHAIN, asset: TOKEN, ...limits },
     ];
+
     const cases: { reason: string; changes: Partial<Mandate> }[] = [
       { reason: "requester_not_allowed", changes: { agentId: newId("agt") } },
       {
@@ -196,6 +200,7 @@ describe("granting a mandate", () => {
       { reason: "already_expired", changes: { notBefore: now - 7200, notAfter: now } },
       { reason: "lifetime_too_long", changes: { notAfter: now + 604_801 } },
     ];
+
     for (const { reason, changes } of cases) {
       const mandate = mandateFor(world, changes);
       await refused(
@@ -210,12 +215,15 @@ describe("granting a mandate", () => {
       windowSeconds: 172_800,
       assets: token({ maxPerAction: "1000000", maxPerWindow: "5000001", maxTotal: "9000000" }),
     });
+
     expect(weekly.state.status).toBe("active");
+
     // Seven days, counted from the start when it is later than now.
     const later = await grantMandate(world, {
       notBefore: now + 3600,
       notAfter: now + 3600 + 604_800,
     });
+
     expect(later.state.status).toBe("not_yet_valid");
 
     // A recipient outside the policy's own allowlist.
@@ -267,9 +275,11 @@ describe("signing under a mandate", () => {
 
     const signed = await t.client.signUnderMandate(mandate.id, request);
     expect(signed.from).toBe(world.address);
+
     const recovered = await recoverTransactionAddress({
       serializedTransaction: signed.signedTransaction as `0x02${string}`,
     });
+
     expect(recovered.toLowerCase()).toBe(world.address);
     const transaction = parseTransaction(signed.signedTransaction);
     expect(transaction.to).toBe(TOKEN);
@@ -345,6 +355,7 @@ describe("signing under a mandate", () => {
     });
     const { mandate } = await grantMandate(world, { maxFeePerActionWei: String(10n ** 14n) });
     const cheap = (intent: EvmIntent): EvmIntent => ({ ...intent, maxFeeWei: String(10n ** 14n) });
+
     const cases: [EvmIntent, string][] = [
       [{ ...cheap(tokenIntent(world, 1n)), agentId: helper }, "mandate_agent_mismatch"],
       // A contract call is never signed under a mandate, not even one that moves no coin.
@@ -362,9 +373,11 @@ describe("signing under a mandate", () => {
       [tokenIntent(world, 1n), "mandate_over_fee_cap"],
       [cheap(tokenIntent(world, 500_001n)), "mandate_over_per_action_cap"],
     ];
+
     for (const [intent, code] of cases) {
       await refused(use(world, mandate.id, intent), "mandate_denied", code);
     }
+
     // An intent for another wallet or workspace fails the wallet's policy first.
     await refused(
       use(world, mandate.id, { ...cheap(tokenIntent(world, 1n)), walletId: newId("wal") }),
@@ -377,9 +390,11 @@ describe("signing under a mandate", () => {
       "wallet_mismatch",
     );
     expect((await t.client.getMandate(mandate.id)).usage.uses).toBe(0);
+
     const denied = (await decisionsOf(world)).filter(
       (d) => d.action === "sign-under-mandate" && d.outcome === "denied",
     );
+
     expect(denied.map((d) => d.code)).toEqual([
       ...cases.map(() => "mandate_denied"),
       "policy_denied",
@@ -438,8 +453,10 @@ describe("signing under a mandate", () => {
   it("keeps the wallet's policy as the outer limit, and counts mandated spending in its daily cap", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
+
     const native = (wei: bigint) =>
       intentFor(world, { type: "evm.transfer", to: RECIPIENT, valueWei: String(wei) });
+
     const { mandate } = await grantMandate(world, {
       windowSeconds: 172_800,
       assets: [
@@ -490,10 +507,12 @@ describe("signing under a mandate", () => {
     const t = startSigner();
     const world = await setUpWorld(t);
     const start = t.clock.value + 600;
+
     const { mandate, state } = await grantMandate(world, {
       notBefore: start,
       notAfter: start + 600,
     });
+
     expect(state.status).toBe("not_yet_valid");
     await refused(use(world, mandate.id, tokenIntent(world, 1n)), "mandate_not_yet_valid");
 
@@ -525,6 +544,7 @@ describe("signing under a mandate", () => {
   it("lets two concurrent uses against a window cap that fits one produce exactly one signature", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
+
     const { mandate } = await grantMandate(world, {
       assets: [
         {
@@ -536,14 +556,18 @@ describe("signing under a mandate", () => {
         },
       ],
     });
+
     const outcomes = await Promise.allSettled([
       use(world, mandate.id, tokenIntent(world, 600_000n)),
       use(world, mandate.id, tokenIntent(world, 600_000n)),
     ]);
+
     expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+
     const rejected = outcomes.flatMap((outcome) =>
       outcome.status === "rejected" ? [outcome.reason] : [],
     );
+
     expect(rejected).toHaveLength(1);
     expect(rejected[0]).toBeInstanceOf(SignerError);
     expect([(rejected[0] as SignerError).code, (rejected[0] as SignerError).detail]).toEqual([
@@ -605,6 +629,7 @@ describe("ending a mandate", () => {
     const [alice, bob, carol] = world.people as [Person, Person, Person];
     const byAlice = await grantMandate(world, {}, [alice]);
     const byBob = await grantMandate(world, {}, [bob]);
+
     const removal = (person: Person, by: Person) =>
       authorize(
         {
@@ -632,9 +657,11 @@ describe("ending a mandate", () => {
 
     // Recorded next to the removal, which committed with it.
     const decisions = await decisionsOf(world);
+
     const removed = decisions.findIndex(
       (d) => d.action === "remove-approver" && d.approvalId === removeAlice.envelope.approvalId,
     );
+
     expect(decisions[removed - 1]).toMatchObject({
       action: "revoke-mandate-on-grantor-removal",
       approvalId: byAlice.state.grantApprovalId,
@@ -718,10 +745,12 @@ describe("the database's schema version 5", () => {
   afterAll(() => {
     for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
   });
+
   const userVersion = (path: string) => {
     const db = new DatabaseSync(path);
     const { user_version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
     db.close();
+
     return user_version;
   };
 
@@ -729,20 +758,24 @@ describe("the database's schema version 5", () => {
     const dir = mkdtempSync(join(tmpdir(), "os-signer-mandates-"));
     dirs.push(dir);
     const sqlitePath = join(dir, "signer.sqlite");
+
     const host = {
       sqlitePath,
       clock: new Clock(),
       vault: createTestVault(),
       tokenKey: randomBytes(32),
     };
+
     let t = startSigner(host);
     const world = await setUpWorld(t);
     const intent = intentFor(world);
+
     const request = {
       intent,
       authorization: approveIntent(world, intent),
       transaction: txParams(),
     };
+
     const signed = await t.client.sign(request);
     t.signer.close();
 

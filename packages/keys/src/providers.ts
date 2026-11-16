@@ -26,9 +26,11 @@ const VARIABLE_OF_OPTION: Record<string, string> = {
 
 function required(env: NodeJS.ProcessEnv, variable: string): string {
   const value = env[variable];
+
   if (value === undefined || value === "") {
     throw new KeyProviderConfigError(`${variable} is not set`, variable);
   }
+
   return value;
 }
 
@@ -61,15 +63,19 @@ function transitOptions(
   onEvent: KeyProviderFromEnvOptions["onEvent"],
 ): TransitKeyProviderOptions {
   let address: URL;
+
   try {
     address = new URL(required(env, "OPENBAO_ADDR"));
   } catch (error) {
     if (error instanceof KeyProviderConfigError) throw error;
     throw new KeyProviderConfigError("OPENBAO_ADDR is not a URL", "OPENBAO_ADDR");
   }
+
   let timeoutMs: number | undefined;
+
   if (env.OPENBAO_TIMEOUT_MS) {
     timeoutMs = Number(env.OPENBAO_TIMEOUT_MS);
+
     if (!Number.isInteger(timeoutMs)) {
       throw new KeyProviderConfigError(
         "OPENBAO_TIMEOUT_MS must be an integer",
@@ -77,6 +83,7 @@ function transitOptions(
       );
     }
   }
+
   return {
     address,
     auth: transitAuth(env),
@@ -109,6 +116,7 @@ export function keyProviderFromEnv(
 ): KeyProvider {
   const kind = env.KEY_PROVIDER || "file";
   const keyringFile = env[options.keyringFileVariable] || undefined;
+
   if (kind === "file") {
     // Someone who set up OpenBao and forgot this switch would otherwise run on the file unawares.
     if (env.OPENBAO_ADDR) {
@@ -117,20 +125,26 @@ export function keyProviderFromEnv(
         "KEY_PROVIDER",
       );
     }
+
     return LocalKeyring.fromFile(required(env, options.keyringFileVariable));
   }
+
   if (kind !== "openbao") {
     throw new KeyProviderConfigError("KEY_PROVIDER must be file or openbao", "KEY_PROVIDER");
   }
+
   const legacy = keyringFile === undefined ? undefined : LocalKeyring.fromFile(keyringFile);
   let active: TransitKeyProvider;
+
   try {
     active = new TransitKeyProvider(transitOptions(env, options.onEvent));
   } catch (error) {
     if (error instanceof KeyProviderConfigError && VARIABLE_OF_OPTION[error.code] !== undefined) {
       throw new KeyProviderConfigError(error.message, VARIABLE_OF_OPTION[error.code] ?? error.code);
     }
+
     throw error;
   }
+
   return legacy === undefined ? active : new CompositeKeyProvider({ active, legacy });
 }

@@ -19,14 +19,19 @@ import {
 } from "../src/index.ts";
 
 const execFileAsync = promisify(execFile);
+
 const k1 = LocalKeyring.generate("k1");
+
 let db: TestDatabase;
+
 const pools: pg.Pool[] = [];
+
 const dir = mkdtempSync(join(tmpdir(), "os-keys-store-"));
 
 function pool(): pg.Pool {
   const created = new pg.Pool({ connectionString: db.url, max: 4 });
   pools.push(created);
+
   return created;
 }
 
@@ -35,6 +40,7 @@ function store(file: KeyringFile = k1, cacheTtlMs = 0): DataKeyStore {
 }
 
 const newId = (prefix = "wrun_") => `${prefix}${randomBytes(10).toString("hex")}`;
+
 const hex = (key: Uint8Array) => Buffer.from(key).toString("hex");
 
 async function query<T extends pg.QueryResultRow>(text: string, params: unknown[] = []) {
@@ -59,9 +65,11 @@ describe("migration", () => {
   test("is idempotent when many stores migrate at once", async () => {
     await Promise.all(Array.from({ length: 6 }, () => store().ensureMigrated()));
     await store().ensureMigrated();
+
     const rows = await query<{ n: number }>(
       "SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'os_keys'",
     );
+
     expect(rows[0]?.n).toBe(1);
   });
 });
@@ -69,14 +77,18 @@ describe("migration", () => {
 describe("creating and reading keys", () => {
   test("concurrent first use from 20 independent stores converges on one key", async () => {
     const id = newId();
+
     const keys = await Promise.all(
       Array.from({ length: 20 }, () => store().getOrCreate("run", id)),
     );
+
     expect(new Set(keys.map(hex)).size).toBe(1);
+
     const rows = await query<{ n: number }>(
       "SELECT count(*)::int AS n FROM os_keys.data_keys WHERE key_id = $1",
       [id],
     );
+
     expect(rows[0]?.n).toBe(1);
   });
 
@@ -84,6 +96,7 @@ describe("creating and reading keys", () => {
     const keyringFile = join(dir, "ring.json");
     writeFileSync(keyringFile, JSON.stringify(k1), { mode: 0o600 });
     const script = join(import.meta.dirname, "fixtures", "get-key.ts");
+
     const env = {
       ...process.env,
       DATABASE_URL: db.url,
@@ -91,10 +104,12 @@ describe("creating and reading keys", () => {
       SCOPE: "run",
       KEY_ID: newId(),
     };
+
     const [a, b] = await Promise.all([
       execFileAsync(process.execPath, [script], { env }),
       execFileAsync(process.execPath, [script], { env }),
     ]);
+
     expect(a.stdout.trim()).toMatch(/^[0-9a-f]{64}$/);
     expect(b.stdout.trim()).toBe(a.stdout.trim());
     const restarted = await execFileAsync(process.execPath, [script], { env });
@@ -127,10 +142,12 @@ describe("creating and reading keys", () => {
   test("the wrapped key in the database is not the data key", async () => {
     const id = newId();
     const key = await store().getOrCreate("run", id);
+
     const rows = await query<{ wrapped_key: Buffer }>(
       "SELECT wrapped_key FROM os_keys.data_keys WHERE key_id = $1",
       [id],
     );
+
     expect(rows[0]?.wrapped_key.includes(Buffer.from(key))).toBe(false);
   });
 });
@@ -141,8 +158,11 @@ describe("binding the wrapping to where the key belongs", () => {
       "SELECT wrapped_key FROM os_keys.data_keys WHERE scope = $1 AND key_id = $2",
       [scope, id],
     );
+
     const wrapped = rows[0]?.wrapped_key;
+
     if (!wrapped) throw new Error("no row");
+
     return wrapped;
   }
 
@@ -212,11 +232,13 @@ describe("shred", () => {
     await expect(s.getOrCreate("run", id)).rejects.toBeInstanceOf(DataKeyUnavailableError);
     await expect(store().getOrCreate("run", id)).rejects.toBeInstanceOf(DataKeyUnavailableError);
     await expect(s.get("run", id)).rejects.toBeInstanceOf(DataKeyUnavailableError);
+
     const rows = await query<{
       wrapped_key: Buffer | null;
       kek_id: string | null;
       shredded_at: Date | null;
     }>("SELECT wrapped_key, kek_id, shredded_at FROM os_keys.data_keys WHERE key_id = $1", [id]);
+
     expect(rows).toHaveLength(1);
     expect(rows[0]?.wrapped_key).toBeNull();
     expect(rows[0]?.kek_id).toBeNull();
@@ -261,10 +283,12 @@ describe("shredTenant", () => {
       );
       await expect(store().getOrCreate("run", id)).rejects.toBeInstanceOf(DataKeyUnavailableError);
     }
+
     const rows = await query<{ n: number }>(
       "SELECT count(*)::int AS n FROM os_keys.data_keys WHERE key_id = ANY($1) AND wrapped_key IS NULL AND kek_id IS NULL AND shredded_at IS NOT NULL",
       [[a1, a2]],
     );
+
     expect(rows[0]?.n).toBe(2);
     expect(hex(await store().get("run", b1))).toBe(hex(bKey));
     expect(hex(await store().get("workspace", tenantA))).toBe(hex(wsKey));
@@ -275,9 +299,11 @@ describe("shredTenant", () => {
 
   test("migration creates the partial tenant index", async () => {
     await store().ensureMigrated();
+
     const rows = await query<{ indexdef: string }>(
       "SELECT indexdef FROM pg_indexes WHERE schemaname = 'os_keys' AND indexname = 'data_keys_tenant_idx'",
     );
+
     expect(rows).toHaveLength(1);
     expect(rows[0]?.indexdef).toContain("(scope, tenant_id)");
     expect(rows[0]?.indexdef).toContain("WHERE (shredded_at IS NULL)");
@@ -304,7 +330,9 @@ describe("cache", () => {
       cacheTtlMs: 60_000,
       listen: true,
     });
+
     await listening.start();
+
     try {
       const workspace = newId("ws_");
       const [run1, run2] = [newId(), newId()];
@@ -343,6 +371,7 @@ describe("cache", () => {
 
   test("a listening store forgets its cache when its connection is lost, and listens again", async () => {
     const events: string[] = [];
+
     const listening = new DataKeyStore({
       pool: pool(),
       provider: new LocalKeyring(k1),
@@ -350,12 +379,14 @@ describe("cache", () => {
       listen: true,
       onEvent: (event) => events.push(event),
     });
+
     const id = newId();
     // Before `start` it does not listen, so it does not cache either.
     await listening.getOrCreate("run", id);
     await listening.getOrCreate("run", id);
     expect(events.filter((e) => e === "cache-hit")).toHaveLength(0);
     await listening.start();
+
     try {
       await listening.getOrCreate("run", id);
       await listening.getOrCreate("run", id);
@@ -364,6 +395,7 @@ describe("cache", () => {
       // The listening connection dies: the cached key goes with it.
       const listener =
         "SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND query = 'LISTEN os_keys_shred'";
+
       const [killed] = await query<{ pid: number }>(listener);
       await query("SELECT pg_terminate_backend($1)", [killed?.pid]);
       await vi.waitFor(async () => {
@@ -398,24 +430,28 @@ describe("cache", () => {
   test("a cache TTL of 0 reads the database every time; evict drops the cache", async () => {
     const events: string[] = [];
     const id = newId();
+
     const uncached = new DataKeyStore({
       pool: pool(),
       provider: new LocalKeyring(k1),
       cacheTtlMs: 0,
       onEvent: (event) => events.push(event),
     });
+
     await uncached.getOrCreate("run", id);
     await uncached.getOrCreate("run", id);
     expect(events.filter((e) => e === "cache-hit")).toHaveLength(0);
     expect(events.filter((e) => e === "created")).toHaveLength(1);
 
     const cachedEvents: string[] = [];
+
     const cached = new DataKeyStore({
       pool: pool(),
       provider: new LocalKeyring(k1),
       cacheTtlMs: 60_000,
       onEvent: (event) => cachedEvents.push(event),
     });
+
     await cached.getOrCreate("run", id);
     await cached.getOrCreate("run", id);
     expect(cachedEvents.filter((e) => e === "cache-hit")).toHaveLength(1);
@@ -430,9 +466,11 @@ describe("rewrap", () => {
     // Its own database, so rows tampered with by other tests do not count.
     const rotationDb = await createTestDatabase("keys_rotation");
     const rotationPool = new pg.Pool({ connectionString: rotationDb.url, max: 4 });
+
     try {
       const make = (file: KeyringFile) =>
         new DataKeyStore({ pool: rotationPool, provider: new LocalKeyring(file), cacheTtlMs: 0 });
+
       const old = make(k1);
       const ids = Array.from({ length: 5 }, () => newId());
       const before = await Promise.all(ids.map((id) => old.getOrCreate("run", id)));
@@ -451,6 +489,7 @@ describe("rewrap", () => {
         active: "k2",
         keys: { ...k1.keys, k2: randomBytes(32).toString("base64") },
       };
+
       const rotated = make(k2);
       // A small batch so pagination is exercised.
       const first = await rotated.rewrap(2);
@@ -464,10 +503,12 @@ describe("rewrap", () => {
       await expect(k2Only.getOrCreate("run", shredded)).rejects.toBeInstanceOf(
         DataKeyUnavailableError,
       );
+
       const tombstone = await rotationPool.query(
         "SELECT kek_id, shredded_at FROM os_keys.data_keys WHERE key_id = $1",
         [shredded],
       );
+
       expect(tombstone.rows[0]).toMatchObject({ kek_id: null });
     } finally {
       await rotationPool.end();
@@ -480,20 +521,24 @@ describe("rewrap", () => {
 function flakyProvider(file: KeyringFile): KeyProvider & { down: boolean; readyCalls: number } {
   const ring = new LocalKeyring(file);
   const outage = () => new KeyProviderUnavailableError("test: the provider is down");
+
   return {
     down: true,
     readyCalls: 0,
     async ready() {
       this.readyCalls += 1;
+
       if (this.down) throw outage();
     },
     activeKekId: () => ring.activeKekId(),
     async wrap(kekId, dataKey, aad) {
       if (this.down) throw outage();
+
       return ring.wrap(kekId, dataKey, aad);
     },
     async unwrap(kekId, wrapped, aad) {
       if (this.down) throw outage();
+
       return ring.unwrap(kekId, wrapped, aad);
     },
     close: () => ring.close(),
@@ -530,15 +575,18 @@ describe("a key provider that is down", () => {
   test("rewrap stops with the provider's error instead of listing reachable rows as failed", async () => {
     const rotationDb = await createTestDatabase("keys_store_rewrap_down");
     const rotationPool = new pg.Pool({ connectionString: rotationDb.url, max: 4 });
+
     try {
       await new DataKeyStore({ pool: rotationPool, provider: new LocalKeyring(k1) }).getOrCreate(
         "run",
         newId(),
       );
+
       const k2: KeyringFile = {
         active: "k2",
         keys: { ...k1.keys, k2: randomBytes(32).toString("base64") },
       };
+
       const provider = flakyProvider(k2);
       provider.down = false;
       const rotating = new DataKeyStore({ pool: rotationPool, provider, cacheTtlMs: 0 });

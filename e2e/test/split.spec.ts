@@ -14,6 +14,7 @@ import { expect, test } from "@playwright/test";
 import { docker, exec, HELPER_IMAGE, signerProject, stack } from "../src/stack.ts";
 
 const run = promisify(execFile);
+
 const ROOT = join(import.meta.dirname, "..", "..");
 
 /** What `e2e/run.sh` made for the split: the peer certificates, and the network both share. */
@@ -41,6 +42,7 @@ async function servicesOf(project: string): Promise<string[]> {
     "--format",
     '{{.Label "com.docker.compose.service"}}',
   );
+
   return [...new Set(output.split("\n").filter((line) => line.length > 0))].sort();
 }
 
@@ -58,7 +60,9 @@ async function volumeContents(project: string): Promise<Record<string, string[]>
   )
     .split("\n")
     .filter((line) => line.length > 0);
+
   const contents: Record<string, string[]> = {};
+
   for (const volume of volumes) {
     const listing = await docker(
       "run",
@@ -75,8 +79,10 @@ async function volumeContents(project: string): Promise<Record<string, string[]>
       "-printf",
       "%f\\n",
     );
+
     contents[volume.slice(`${project}_`.length)] = listing.split("\n").filter((l) => l.length > 0);
   }
+
   return contents;
 }
 
@@ -116,6 +122,7 @@ async function fromWire(): Promise<Record<string, number | string>> {
       };
       process.stdout.write(JSON.stringify(seen) + "\\n");
     })();`;
+
   const output = await docker(
     "run",
     "--rm",
@@ -130,6 +137,7 @@ async function fromWire(): Promise<Record<string, number | string>> {
     "-e",
     script,
   );
+
   return JSON.parse(output.trim().split("\n").at(-1) ?? "{}") as Record<string, number | string>;
 }
 
@@ -138,9 +146,11 @@ async function signerReachesInternet(): Promise<number | string> {
   const script = `fetch("https://example.com/", { signal: AbortSignal.timeout(6000) })
     .then((r) => r.status, () => "unreachable")
     .then((seen) => process.stdout.write(JSON.stringify({ seen }) + "\\n"));`;
+
   const output = await exec("signer", "node", "-e", script);
   // The script's last line, which it always prints.
   const line: { seen: number | string } = JSON.parse(output.trim().split("\n").at(-1) ?? "{}");
+
   return line.seen;
 }
 
@@ -161,17 +171,20 @@ test("the control project holds no signer secret, no confirm secret and no vault
     "signer.key",
     "approve.key",
   ];
+
   const held = await volumeContents(stack.project);
   // The server's volume holds what it needs to reach the signer, so the listing sees files.
   expect(held["server-secrets"]).toEqual(
     expect.arrayContaining(["signer-request-secret", "control.crt", "control.key", "signer.crt"]),
   );
+
   for (const [volume, names] of Object.entries(held)) {
     expect(
       names.filter((name) => signerOnly.includes(name)),
       volume,
     ).toEqual([]);
   }
+
   // The same listing finds them on the signer's side.
   const signerSide = await volumeContents(signerProject());
   expect(signerSide["signer-secrets"]).toEqual(
@@ -184,6 +197,7 @@ test("a container on the wire without the control plane's key cannot complete a 
   const seen = await fromWire();
   // The control plane's certificate gets an answer: the signer is there to be reached.
   expect(seen.control).toBe(200);
+
   // No certificate, or one the signer does not trust: no HTTP response at all.
   for (const client of ["none", "stranger"]) {
     expect(typeof seen[client], `${client}: ${seen[client]}`).toBe("string");
@@ -196,6 +210,7 @@ test("the signer cannot reach https://example.com/ with the example nftables rul
   expect(await signerReachesInternet()).toEqual(expect.any(Number));
   const rules = join(ROOT, "deploy", "split", "nftables-signer.conf");
   await run("sudo", ["-n", "nft", "-f", rules]);
+
   try {
     expect(await signerReachesInternet()).toBe("unreachable");
     // Connections to the signer still work: answers are not connections out.

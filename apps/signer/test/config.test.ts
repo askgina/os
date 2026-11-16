@@ -11,10 +11,13 @@ describe("the signer's configuration", () => {
   const dir = mkdtempSync(join(tmpdir(), "os-signer-config-"));
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
   const controlSecret = randomBytes(32);
+
   const file = (name: string, content: string | Buffer) => {
     writeFileSync(join(dir, name), content);
+
     return join(dir, name);
   };
+
   const base = {
     SIGNER_DATA_DIR: dir,
     SIGNER_HMAC_SECRET_FILE: file("hmac", controlSecret.toString("base64")),
@@ -27,13 +30,16 @@ describe("the signer's configuration", () => {
     SIGNER_CHAINS_FILE: join(DEPLOY, "chains.json"),
     SIGNER_ASSETS_FILE: join(DEPLOY, "assets.json"),
   };
+
   const refusal = (changes: Record<string, string>) => {
     try {
       loadConfig({ ...base, ...changes });
     } catch (error) {
       if (!(error instanceof ConfigError)) throw error;
+
       return error.message;
     }
+
     return null;
   };
 
@@ -52,17 +58,21 @@ describe("the signer's configuration", () => {
     const config = loadConfig(base);
     expect(config.maxMandateSeconds).toBe(604_800);
     expect(config.maxLiveMandatesPerWallet).toBe(16);
+
     const set = loadConfig({
       ...base,
       SIGNER_MAX_MANDATE_SECONDS: "86400",
       SIGNER_MAX_LIVE_MANDATES_PER_WALLET: "4",
     });
+
     expect([set.maxMandateSeconds, set.maxLiveMandatesPerWallet]).toEqual([86_400, 4]);
+
     for (const value of ["3599", "2592001", "1.5", "a week"]) {
       expect(refusal({ SIGNER_MAX_MANDATE_SECONDS: value })).toBe(
         "missing or invalid: SIGNER_MAX_MANDATE_SECONDS",
       );
     }
+
     for (const value of ["0", "65"]) {
       expect(refusal({ SIGNER_MAX_LIVE_MANDATES_PER_WALLET: value })).toBe(
         "missing or invalid: SIGNER_MAX_LIVE_MANDATES_PER_WALLET",
@@ -73,17 +83,21 @@ describe("the signer's configuration", () => {
   it("signs at most 16 attempts per approval and reprices for a day unless set, within fixed bounds", () => {
     const config = loadConfig(base);
     expect([config.maxTxAttempts, config.repriceWindowSeconds]).toEqual([16, 86_400]);
+
     const set = loadConfig({
       ...base,
       SIGNER_MAX_TX_ATTEMPTS: "4",
       SIGNER_REPRICE_WINDOW_SECONDS: "0",
     });
+
     expect([set.maxTxAttempts, set.repriceWindowSeconds]).toEqual([4, 0]);
+
     for (const value of ["1", "65", "2.5"]) {
       expect(refusal({ SIGNER_MAX_TX_ATTEMPTS: value })).toBe(
         "missing or invalid: SIGNER_MAX_TX_ATTEMPTS",
       );
     }
+
     for (const value of ["-1", "604801", "a day"]) {
       expect(refusal({ SIGNER_REPRICE_WINDOW_SECONDS: value })).toBe(
         "missing or invalid: SIGNER_REPRICE_WINDOW_SECONDS",
@@ -96,24 +110,30 @@ describe("the signer's configuration", () => {
     expect([config.minDestroyDelaySeconds, config.maxDestroyDelaySeconds]).toEqual([
       604_800, 7_776_000,
     ]);
+
     // Compose passes an unset variable as "": that is the default, never a zero delay.
     const unset = loadConfig({
       ...base,
       SIGNER_MIN_DESTROY_DELAY_SECONDS: "",
       SIGNER_MAX_DESTROY_DELAY_SECONDS: "",
     });
+
     expect(unset.minDestroyDelaySeconds).toBe(604_800);
+
     const set = loadConfig({
       ...base,
       SIGNER_MIN_DESTROY_DELAY_SECONDS: "60",
       SIGNER_MAX_DESTROY_DELAY_SECONDS: "3600",
     });
+
     expect([set.minDestroyDelaySeconds, set.maxDestroyDelaySeconds]).toEqual([60, 3600]);
+
     for (const value of ["-1", "7776001", "a week"]) {
       expect(refusal({ SIGNER_MIN_DESTROY_DELAY_SECONDS: value })).toBe(
         "missing or invalid: SIGNER_MIN_DESTROY_DELAY_SECONDS",
       );
     }
+
     expect(
       refusal({ SIGNER_MIN_DESTROY_DELAY_SECONDS: "3600", SIGNER_MAX_DESTROY_DELAY_SECONDS: "60" }),
     ).toMatch(/^SIGNER_MAX_DESTROY_DELAY_SECONDS:/);
@@ -128,6 +148,7 @@ describe("the signer's configuration", () => {
     ]) {
       expect(refusal({ SIGNER_APPROVAL_ORIGIN: origin })).toMatch(/^SIGNER_APPROVAL_ORIGIN:/);
     }
+
     // Another port on the RP ID's own host is the layout for hosts without subdomains.
     expect(refusal({ SIGNER_APPROVAL_ORIGIN: "https://os.example.com:8443" })).toBeNull();
     // Origins are compared exactly, so only their canonical form is accepted.
@@ -155,6 +176,7 @@ describe("the signer's configuration", () => {
 
   it("names that could pass for something else stop the signer instead of reaching the page", () => {
     const chain = { chainId: "eip155:1", rpcUrl: "https://rpc.example" };
+
     for (const entry of [
       { ...chain, name: "Ethereum\u202Emainnet", nativeSymbol: "ETH" },
       { ...chain, name: "Ethereum", nativeSymbol: "ETH " },
@@ -163,7 +185,9 @@ describe("the signer's configuration", () => {
       const chains = file("chains.json", JSON.stringify([entry]));
       expect(refusal({ SIGNER_CHAINS_FILE: chains })).toMatch(/^SIGNER_CHAINS_FILE:/);
     }
+
     const token = { chainId: "eip155:1", asset: `0x${"11".repeat(20)}`, symbol: "USDC" };
+
     for (const entry of [
       { ...token, decimals: 37 },
       { ...token, decimals: 6, symbol: "US DC" },

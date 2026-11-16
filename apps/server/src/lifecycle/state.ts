@@ -13,6 +13,7 @@ const at = (epochSeconds: number | null) =>
  */
 export async function mirrorWallet(tx: Executor, state: WalletState): Promise<boolean> {
   const destroyAfter = at(state.destroyAfter);
+
   const changed = await tx
     .update(wallets)
     .set({ lifecycle: state.state, destroyAfter })
@@ -26,6 +27,7 @@ export async function mirrorWallet(tx: Executor, state: WalletState): Promise<bo
       ),
     )
     .returning({ id: wallets.id });
+
   return changed.length > 0;
 }
 
@@ -38,6 +40,7 @@ export async function mirrorWorkspace(tx: Executor, state: WorkspaceState): Prom
   // The control plane alone finishes a deletion (its tombstone); the signer's `deleted` is
   // mirrored by the finalize step, not here.
   const lifecycle = state.state === "deleted" ? "deleting" : state.state;
+
   const changed = await tx
     .update(workspaces)
     .set({ lifecycle, destroyAfter, paused: state.paused })
@@ -53,6 +56,7 @@ export async function mirrorWorkspace(tx: Executor, state: WorkspaceState): Prom
       ),
     )
     .returning({ id: workspaces.id });
+
   return changed.length > 0;
 }
 
@@ -68,7 +72,9 @@ export interface Subject {
 /** Rows of `approvals` about the subject: every row of the workspace, or those of one wallet. */
 function aboutSubject(subject: Subject): SQL | undefined {
   const inWorkspace = eq(approvals.workspaceId, subject.workspaceId);
+
   if (subject.walletId === null) return inWorkspace;
+
   return and(
     inWorkspace,
     or(
@@ -118,6 +124,7 @@ export async function cancelRequests(
   rows: readonly { id: ApprovalId; workspaceId: WorkspaceId }[],
 ): Promise<number> {
   let cancelled = 0;
+
   for (const row of rows) {
     if (!(await ctx.approvals.cancel(row.id))) continue;
     cancelled += 1;
@@ -128,6 +135,7 @@ export async function cancelRequests(
       });
     });
   }
+
   return cancelled;
 }
 
@@ -158,6 +166,7 @@ export async function hasUnfinishedRuns(
       ),
     )
     .limit(1);
+
   return row !== undefined;
 }
 
@@ -177,6 +186,7 @@ export async function hasUnminedTransactions(
           sql`(SELECT ${wallets.id} FROM ${wallets} WHERE ${wallets.workspaceId} = ${subject.workspaceId})`,
         )
       : eq(transactions.walletId, subject.walletId);
+
   const [row] = await ctx.db
     .select({ id: transactions.approvalId })
     .from(transactions)
@@ -199,5 +209,6 @@ export async function hasUnminedTransactions(
       ),
     )
     .limit(1);
+
   return row !== undefined;
 }

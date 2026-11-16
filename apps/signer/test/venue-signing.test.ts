@@ -40,7 +40,9 @@ import {
 } from "./harness.ts";
 
 const NETWORK = "hyperliquid:testnet" as const;
+
 const BTC = 3;
+
 const ZERO = "0x0000000000000000000000000000000000000000" as const;
 
 /** BTC up to 1,000 USD an order, ETH up to 500, 1,500 USD a day, IOC and GTC, a 60 s window. */
@@ -63,15 +65,18 @@ function rules(overrides: Partial<HyperliquidRules> = {}): HyperliquidRules {
 function countingVault() {
   const honest = createTestVault();
   const count = { venue: 0 };
+
   const vault: Vault = {
     createWallet: (walletId) => honest.createWallet(walletId),
     signEvmTransaction: (...args) => honest.signEvmTransaction(...args),
     signHyperliquid: (...args) => {
       count.venue += 1;
+
       return honest.signHyperliquid(...args);
     },
     destroyWallet: (walletId) => honest.destroyWallet(walletId),
   };
+
   return { vault, count };
 }
 
@@ -81,6 +86,7 @@ async function venueWorld(
 ): Promise<World> {
   const world = await setUpWorld(t, { people: options.people ?? 1, adminThreshold: 1 });
   const policy = await replacePolicy(world, { venues: { hyperliquid: rules(options.venue) } });
+
   return { ...world, policy };
 }
 
@@ -136,6 +142,7 @@ async function l1Signer(
       numberToHex(request.expiresAfter ?? 0, { size: 8 }),
     ]),
   );
+
   const address = await recoverTypedDataAddress({
     domain: { name: "Exchange", version: "1", chainId: 1337, verifyingContract: ZERO },
     types: {
@@ -148,11 +155,13 @@ async function l1Signer(
     message: { source: network === "hyperliquid:mainnet" ? "a" : "b", connectionId },
     signature: signatureHex(request.signature),
   });
+
   return address.toLowerCase();
 }
 
 async function decisionCount(client: SignerClient, world: World, action: string) {
   const { decisions } = await client.listDecisions(world.workspaceId);
+
   return decisions.filter((d) => d.action === action && d.outcome === "allowed").length;
 }
 
@@ -217,10 +226,12 @@ describe("signing an approved venue order", () => {
     const world = await venueWorld(startSigner({ vault }));
     const intent = orderIntent(world);
     const request = { intent, authorization: approveIntent(world, intent) };
+
     const [first, second] = await Promise.all([
       world.t.client.signVenue(request),
       world.t.client.signVenue(request),
     ]);
+
     expect(second).toEqual(first);
     await world.t.client.pauseWorkspace(world.workspaceId);
     world.t.clock.value += 30;
@@ -234,6 +245,7 @@ describe("signing an approved venue order", () => {
     const intent = orderIntent(world);
     const authorization = approveIntent(world, intent);
     const order = intent.operation as HyperliquidOrderOperation;
+
     const changed: [VenueIntent, string][] = [
       [{ ...intent, operation: { ...order, asset: 4 } }, "intent_mismatch"],
       [{ ...intent, operation: { ...order, isBuy: false } }, "intent_mismatch"],
@@ -246,9 +258,11 @@ describe("signing an approved venue order", () => {
       [{ ...intent, walletId: newId("wal") }, "envelope_mismatch"],
       [{ ...intent, agentId: newId("agt") }, "envelope_mismatch"],
     ];
+
     for (const [other, code] of changed) {
       await refused(world.t.client.signVenue({ intent: other, authorization }), code);
     }
+
     const withdrawal = withdrawIntent(world);
     await refused(
       world.t.client.signVenue({
@@ -269,11 +283,13 @@ describe("signing an approved venue order", () => {
     const used = approveIntent(world, first);
     await world.t.client.signVenue({ intent: first, authorization: used });
     const second = orderIntent(world);
+
     const envelope = {
       ...used.envelope,
       approvalId: newId("apr"),
       intentHash: intentHash(second),
     } as Envelope;
+
     await refused(
       world.t.client.signVenue({
         intent: second,
@@ -285,11 +301,13 @@ describe("signing an approved venue order", () => {
 
   it("signs one of two concurrent approvals that together exceed the daily cap", async () => {
     const world = await venueWorld();
+
     // 780 USD each against a 1,500 USD day.
     const results = await Promise.allSettled([
       signVenue(world, orderIntent(world, { size: "0.012" })),
       signVenue(world, orderIntent(world, { size: "0.012" })),
     ]);
+
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     const rejected = results.find((result) => result.status === "rejected");
     expect(rejected?.reason).toMatchObject({ code: "policy_denied", detail: "over_daily_cap" });
@@ -407,10 +425,12 @@ describe("signing an approved venue order", () => {
 
     const stale = orderIntent(world);
     const staleApproval = approveIntent(world, stale, { people: [alice] });
+
     const changedPolicy = await replacePolicy(
       { ...world, people: [alice] },
       { venues: { hyperliquid: rules({ submitWindowSeconds: 30 }) } },
     );
+
     await refused(
       world.t.client.signVenue({ intent: stale, authorization: staleApproval }),
       "policy_changed",
@@ -446,9 +466,11 @@ describe("signing an approved venue order", () => {
     expect(second.request.expiresAfter).toBe((start - 10) * 1000 + 60_000);
 
     world.t.clock.value = start + 100;
+
     const policy = await replacePolicy(world, {
       venues: { hyperliquid: rules({ submitWindowSeconds: 30 }) },
     });
+
     const third = await signVenue({ ...world, policy });
     expect([third.request.nonce, third.request.expiresAfter]).toEqual([
       (start + 100) * 1000,
@@ -470,7 +492,9 @@ describe("signing an approved venue order", () => {
       destination: world.address,
     });
     expect([signed.cloid, signed.request.expiresAfter]).toEqual([null, null]);
+
     if (action.type !== "withdraw3") throw new Error("expected a withdrawal");
+
     const recovered = await recoverTypedDataAddress({
       domain: {
         name: "HyperliquidSignTransaction",
@@ -490,6 +514,7 @@ describe("signing an approved venue order", () => {
       message: { ...action, time: BigInt(action.time) },
       signature: signatureHex(signed.request.signature),
     });
+
     expect(recovered.toLowerCase()).toBe(world.address);
     expect((await world.t.client.getWallet(world.walletId)).venueSpent).toEqual([]);
 
@@ -499,6 +524,7 @@ describe("signing an approved venue order", () => {
       id: newId("int"),
       operation: { ...intent.operation, destination: ZERO },
     } as unknown as VenueIntent;
+
     await refused(
       world.t.client.signVenue({ intent: elsewhere, authorization: approveIntent(world, intent) }),
       "invalid_request",
@@ -567,14 +593,17 @@ describe("the confirmation view of an order", () => {
     await signVenue(world);
     const intent = orderIntent(world);
     const { envelope } = approveIntent(world, intent, { people: [] });
+
     const { path } = await t.client.openConfirmation(envelope.approvalId, {
       envelope,
       subject: { kind: "approve-intent", intent },
     });
+
     const view = await t.confirm.getConfirmation(
       envelope.approvalId,
       path.slice(path.indexOf("#") + 1),
     );
+
     expect(view.lines.find((line) => line.label === "Spent in the last 24 hours")?.value).toBe(
       "650 USD of 1,500 USD",
     );
@@ -591,20 +620,24 @@ describe("schema version 8", () => {
     const dir = mkdtempSync(join(tmpdir(), "os-signer-venues-"));
     dirs.push(dir);
     const sqlitePath = join(dir, "signer.sqlite");
+
     const host = {
       sqlitePath,
       clock: new Clock(),
       vault: createTestVault(),
       tokenKey: new Uint8Array(32).fill(7),
     };
+
     let t = startSigner(host);
     const world = await venueWorld(t);
     const payment = intentFor(world);
+
     const signed = await t.client.sign({
       intent: payment,
       authorization: approveIntent(world, payment),
       transaction: txParams(),
     });
+
     t.signer.close();
 
     // What a signer at version 7 left behind.

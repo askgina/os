@@ -27,24 +27,31 @@ import { acknowledged, bodyOf, receivedRequests } from "../src/webhook.ts";
 test.describe.configure({ mode: "serial" });
 
 const RECIPIENT = "0x00000000000000000000000000000000000b0b0b";
+
 const REQUESTS_PER_MINUTE = 120;
+
 const run = Date.now().toString(36);
 
 let replicas: string[] = [];
+
 let ada: Person;
+
 let payer: PayingAgent;
 
 /** The JSON objects one container logged, every start of it included, oldest first. */
 async function logLines(container: string): Promise<Record<string, unknown>[]> {
   const lines: Record<string, unknown>[] = [];
+
   for (const line of (await containerLogs(container)).split("\n")) {
     try {
       const parsed: unknown = JSON.parse(line);
+
       if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
         lines.push(parsed as Record<string, unknown>);
       }
     } catch {}
   }
+
   return lines;
 }
 
@@ -60,13 +67,16 @@ async function readyzIn(container: string): Promise<string> {
     "-e",
     "fetch('http://127.0.0.1:3000/readyz').then((r) => console.log(r.status), () => console.log('unreachable'))",
   );
+
   return output.trim().split("\n").at(-1) ?? "";
 }
 
 async function waitUntilReady(container: string, timeoutMs = 180_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+
   for (;;) {
     if ((await readyzIn(container).catch(() => "")) === "200") return;
+
     if (Date.now() > deadline) throw new Error(`${container} did not become ready in time`);
     await delay(1_000);
   }
@@ -78,14 +88,17 @@ async function replicaThatStartsSigning(
   timeoutMs: number,
 ): Promise<{ container: string; replica: string }> {
   const deadline = Date.now() + timeoutMs;
+
   for (;;) {
     for (const container of replicas) {
       const started = (await logLines(container)).find(
         (line) =>
           line.event === "step.started" && line.approvalId === approvalId && line.step === "sign",
       );
+
       if (started) return { container, replica: String(started.replica) };
     }
+
     if (Date.now() > deadline) throw new Error(`no replica started signing ${approvalId}`);
     await delay(250);
   }
@@ -133,6 +146,7 @@ async function mcpInside(container: string, token: string, count: number): Promi
       for (let i = 0; i < Number(process.env.MCP_COUNT); i += 1) statuses.push(await one());
       console.log(JSON.stringify(statuses));
     })();`;
+
   const output = await docker(
     "exec",
     "-e",
@@ -146,6 +160,7 @@ async function mcpInside(container: string, token: string, count: number): Promi
     "-e",
     script,
   );
+
   return JSON.parse(output.trim().split("\n").at(-1) ?? "[]") as unknown[];
 }
 
@@ -161,33 +176,44 @@ test.afterAll(async () => {
 test("two replicas boot before setup and log no token; of two setup-token commands at once, one token claims the installation", async () => {
   expect(replicas).toHaveLength(2);
   const pending = await Promise.all(replicas.map((c) => eventCount(c, "setup.token_pending")));
+
   for (const n of pending) expect(n).toBeGreaterThanOrEqual(1);
 
   // The operator's command in both replicas at once: two tokens printed, one stored.
   const tokens = await Promise.all(
     replicas.map(async (container) => {
       const printed = await execIn(container, "node", "apps/server/src/cli.ts", "setup-token");
+
       const answer = JSON.parse(printed.trim().split("\n").at(-1) ?? "{}") as {
         setupToken?: string;
       };
+
       return answer.setupToken ?? "";
     }),
   );
+
   expect(new Set(tokens).size).toBe(2);
   const claimed: boolean[] = [];
+
   for (const token of tokens) {
     const person = new Person(stack.origin, "Ada");
+
     const taken = await person.setUp(token).then(
       () => true,
       () => false,
     );
+
     claimed.push(taken);
+
     if (taken) ada = person;
   }
+
   expect(claimed.filter(Boolean)).toHaveLength(1);
+
   // Neither token is in either replica's log.
   for (const container of replicas) {
     const logs = await containerLogs(container);
+
     for (const token of tokens) expect(logs).not.toContain(token);
   }
 
@@ -200,6 +226,7 @@ test("two replicas boot before setup and log no token; of two setup-token comman
         stdout: error.stdout ?? "",
       }),
     );
+
     expect(refused.exitCode).toBe(3);
     expect(JSON.parse(refused.stdout.trim().split("\n").at(-1) ?? "{}")).toEqual({
       ok: false,
@@ -222,6 +249,7 @@ test("the replica that started signing a payment is killed, and the other finish
   test.setTimeout(420_000);
   const before = await chain.getBalance({ address: RECIPIENT });
   const nonceBefore = await chain.getTransactionCount({ address: payer.wallet.address });
+
   const { intentId, approvalId } = await propose(
     payer.agent,
     RECIPIENT,
@@ -230,6 +258,7 @@ test("the replica that started signing a payment is killed, and the other finish
   );
 
   let killed: string | undefined;
+
   try {
     // With the chain frozen, the signing step cannot get past its fee quote, so the replica that
     // started it is still inside it when it dies. The approval's answer may wait on the chain
@@ -247,6 +276,7 @@ test("the replica that started signing a payment is killed, and the other finish
   } finally {
     await compose("unpause", "anvil");
   }
+
   const survivor = replicas.find((container) => container !== killed) ?? "";
 
   try {
@@ -276,9 +306,11 @@ test("the replica that started signing a payment is killed, and the other finish
 
 test("each notification about one payment reaches the webhook once while both replicas sweep", async () => {
   test.setTimeout(360_000);
+
   // Both replicas deliver Workflow steps and run the 3-second sweep that sends notifications.
   for (const container of replicas) expect(await readyzIn(container), container).toBe("200");
   const { intentId, approvalId } = await propose(payer.agent, RECIPIENT, "0.001", "announced once");
+
   // The webhook hears of a request only while it waits for people: a row the sweep finds after
   // the decision is dropped (`approval_ended`), never sent. So the request waits until the
   // receiver has accepted its announcement, and then through several more sweeps of both
@@ -286,10 +318,12 @@ test("each notification about one payment reaches the webhook once while both re
   const announced = await acknowledged(
     (body) => body.approvalId === approvalId && body.event === "approval.opened",
   );
+
   await delay(10_000);
 
   const db = new pg.Client({ connectionString: await databaseUrl() });
   await db.connect();
+
   try {
     const outbox = async () =>
       (
@@ -298,14 +332,17 @@ test("each notification about one payment reaches the webhook once while both re
           [approvalId],
         )
       ).rows;
+
     const rows = await outbox();
     // The webhook's only notification of a request: its announcement, sent once, first time.
     expect(rows.map(({ event, state, attempts }) => ({ event, state, attempts }))).toEqual([
       { event: "approval.opened", state: "sent", attempts: 0 },
     ]);
+
     const received = (await receivedRequests()).filter(
       (request) => bodyOf(request).approvalId === approvalId,
     );
+
     const deliveryIds = received.map((request) => request.headers["x-os-delivery"] ?? "");
     process.stdout.write(
       `${JSON.stringify({ gate: "webhook-once", deliveries: received.length, firstAcknowledged: announced.length })}\n`,
@@ -330,6 +367,7 @@ test("one agent's requests are counted once across both replicas: the 121st in a
   const bucket = `agent:${payer.agentId}`;
   const db = new pg.Client({ connectionString: await databaseUrl() });
   await db.connect();
+
   try {
     await db.query("DELETE FROM os.rate_limits WHERE bucket = $1", [bucket]);
     expect((await mcpThroughEdge(payer.agentToken)).status).toBe(200);
@@ -339,6 +377,7 @@ test("one agent's requests are counted once across both replicas: the 121st in a
       bucket,
     ]);
     const [first, second] = replicas;
+
     if (first === undefined || second === undefined) throw new Error("expected two replicas");
     const half = REQUESTS_PER_MINUTE / 2;
     expect(await mcpInside(first, payer.agentToken, half - 1)).toEqual(
@@ -351,6 +390,7 @@ test("one agent's requests are counted once across both replicas: the 121st in a
     const over = await mcpThroughEdge(payer.agentToken);
     expect(over.status).toBe(429);
     expect(await over.json()).toMatchObject({ error: { code: "rate_limited" } });
+
     for (const container of replicas) {
       expect(await mcpInside(container, payer.agentToken, 1), container).toEqual([429]);
     }

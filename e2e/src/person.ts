@@ -67,22 +67,27 @@ export class Person {
   async #fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const headers = new Headers(init?.headers);
     headers.set("origin", this.origin);
+
     if (this.#cookies.size > 0) {
       headers.set(
         "cookie",
         [...this.#cookies].map(([name, value]) => `${name}=${value}`).join("; "),
       );
     }
+
     const response = await fetch(input, { ...init, headers, redirect: "manual" });
+
     for (const line of response.headers.getSetCookie()) {
       const [pair = "", ...attributes] = line.split(";");
       const separator = pair.indexOf("=");
       const name = pair.slice(0, separator).trim();
       const value = pair.slice(separator + 1).trim();
       const expired = attributes.some((attribute) => /^\s*max-age=0\s*$/i.test(attribute));
+
       if (expired || value === "") this.#cookies.delete(name);
       else this.#cookies.set(name, value);
     }
+
     return response;
   }
 
@@ -94,13 +99,16 @@ export class Person {
   #register(options: Record<string, unknown>) {
     const rp = options.rp as { id: string };
     const user = options.user as { id: string };
+
     const { response, credential } = this.authenticator.register({
       rpId: rp.id,
       challenge: options.challenge as string,
       origin: this.origin,
       userHandle: new Uint8Array(Buffer.from(user.id, "base64url")),
     });
+
     this.credentialId = b64url(credential.id);
+
     return RegistrationResponse.parse(response);
   }
 
@@ -112,6 +120,7 @@ export class Person {
    */
   assertion(challenge: string, origin: string): AssertionResponse {
     if (this.credentialId === undefined) throw new Error(`${this.name} has no passkey yet`);
+
     return AssertionResponse.parse(
       this.authenticator.authenticate({ credentialId: this.credentialId, challenge, origin }),
     );
@@ -122,6 +131,7 @@ export class Person {
     const { ceremonyId, options } = await this.api.call("startSetup", {
       body: { setupToken, displayName: this.name },
     });
+
     return this.api.call("finishSetup", {
       body: { ceremonyId, response: this.#register(options) },
     });
@@ -130,10 +140,12 @@ export class Person {
   /** Join a workspace through an invite link, registering a passkey on the way. */
   async join(inviteUrl: string): Promise<SessionInfo> {
     const token = new URL(inviteUrl).pathname.split("/").at(-1) ?? "";
+
     const { ceremonyId, options } = await this.api.call("startInviteRegistration", {
       params: { token },
       body: { displayName: this.name },
     });
+
     return this.api.call("finishInviteRegistration", {
       params: { token },
       body: { ceremonyId, response: this.#register(options) },
@@ -142,6 +154,7 @@ export class Person {
 
   async signIn(): Promise<SessionInfo> {
     const { ceremonyId, options } = await this.api.call("startLogin", { body: {} });
+
     return this.api.call("finishLogin", {
       body: { ceremonyId, response: this.assertion(options.challenge as string, this.origin) },
     });
@@ -154,12 +167,15 @@ export class Person {
   /** The confirmation page's link the approval page shows for a request that waits. */
   async confirmationLink(approvalId: string): Promise<ConfirmationLink> {
     const { confirmUrl } = await this.api.call("getApproval", { params: { approvalId } });
+
     if (confirmUrl === null) throw new Error(`${approvalId} shows no confirmation page`);
     const url = new URL(confirmUrl);
     const id = /^\/a\/([^/]+)$/.exec(url.pathname)?.[1];
+
     if (id !== approvalId || url.search !== "" || url.hash.length < 2) {
       throw new Error(`${approvalId} links to an unexpected confirmation page`);
     }
+
     return { origin: url.origin, approvalId: id, token: url.hash.slice(1) };
   }
 
@@ -169,6 +185,7 @@ export class Person {
       headers: { [CONFIRM_TOKEN_HEADER]: link.token },
       redirect: "manual",
     });
+
     return ConfirmationView.parse(await answerOf(response));
   }
 
@@ -193,6 +210,7 @@ export class Person {
       body: JSON.stringify({ response }),
       redirect: "manual",
     });
+
     return SubmitConfirmationResponse.parse(await answerOf(answer));
   }
 
@@ -206,6 +224,7 @@ export class Person {
       headers: { [CONFIRM_TOKEN_HEADER]: link.token },
       redirect: "manual",
     });
+
     return GetPossessionResponse.parse(await answerOf(response));
   }
 
@@ -229,6 +248,7 @@ export class Person {
       body: JSON.stringify({ response }),
       redirect: "manual",
     });
+
     return SubmitPossessionResponse.parse(await answerOf(answer));
   }
 
@@ -239,10 +259,12 @@ export class Person {
    */
   async provePossession(approvalId: string): Promise<string> {
     const link = await this.confirmationLink(approvalId);
+
     const { fingerprint } = await this.proveOnConfirmationPage(
       link,
       await this.readPossession(link),
     );
+
     return fingerprint;
   }
 
@@ -253,6 +275,7 @@ export class Person {
   async confirm(approvalId: string): Promise<ApprovalDetail> {
     const link = await this.confirmationLink(approvalId);
     await this.approveOnConfirmationPage(link, await this.readConfirmation(link));
+
     return this.api.call("collectApproval", { params: { approvalId }, body: {} });
   }
 
@@ -281,12 +304,16 @@ export class Person {
   /** Wait until an approval request leaves `pending`/`approved`, and return it. */
   async settled(approvalId: string, timeoutMs = 60_000): Promise<ApprovalDetail> {
     const deadline = Date.now() + timeoutMs;
+
     for (;;) {
       const approval = await this.api.call("getApproval", { params: { approvalId } });
+
       if (approval.status !== "pending" && approval.status !== "approved") return approval;
+
       if (Date.now() > deadline) {
         throw new Error(`approval ${approvalId} is still ${approval.status} after ${timeoutMs} ms`);
       }
+
       await delay(250);
     }
   }
@@ -295,6 +322,7 @@ export class Person {
 /** The JSON of a successful answer from the confirmation page, or its refusal as an error. */
 async function answerOf(response: Response): Promise<unknown> {
   const body: unknown = await response.json().catch(() => null);
+
   if (response.ok) return body;
   const refusal = SignerErrorBody.safeParse(body);
   throw new ConfirmationRefused(

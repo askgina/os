@@ -15,6 +15,7 @@ function fileStem(name: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 48)
     .replace(/-+$/, "");
+
   return stem === "" ? "workspace" : stem;
 }
 
@@ -53,15 +54,19 @@ export const MAX_TEMPLATE_BYTES = 4 * 1024 * 1024;
 /** A template file's text, checked as the server checks it, or what is wrong with it in words. */
 export function readTemplateFile(text: string): TemplateFile {
   let value: unknown;
+
   try {
     value = JSON.parse(text);
   } catch {
     return { ok: false, problem: "This file is not a workspace template: it is not JSON." };
   }
+
   const parsed = WorkspaceTemplate.safeParse(value);
+
   if (parsed.success) return { ok: true, template: parsed.data };
   const issue = parsed.error.issues[0];
   const where = issue && issue.path.length > 0 ? ` (at ${issue.path.join(".")})` : "";
+
   return {
     ok: false,
     problem: `This file is not a workspace template this server can read: ${issue?.message ?? "it does not match"}${where}.`,
@@ -71,6 +76,7 @@ export function readTemplateFile(text: string): TemplateFile {
 /** The name a copy starts with: the source's, marked, within the 64 characters a name may have. */
 export function copyName(sourceName: string): string {
   const suffix = " (copy)";
+
   return `${sourceName.slice(0, 64 - suffix.length).trimEnd()}${suffix}`;
 }
 
@@ -81,7 +87,9 @@ export function copyName(sourceName: string): string {
 export function thresholdReminder(templateAdminThreshold: number): string {
   const start =
     "Admin changes in this workspace need 1 approval until you change it: you are its only approver.";
+
   if (templateAdminThreshold <= 1) return start;
+
   return `${start} The template's workspace needed ${templateAdminThreshold}; raise it to that once ${templateAdminThreshold} approvers have joined.`;
 }
 

@@ -14,10 +14,13 @@ let verifier: ReturnType<typeof httpBasic> | undefined;
 function basic(): ReturnType<typeof httpBasic> {
   if (verifier) return verifier;
   const password = process.env.EVE_CHAT_PASSWORD;
+
   if (!password || password.length < 16) {
     throw new Error("EVE_CHAT_PASSWORD must be set to at least 16 characters");
   }
+
   verifier = httpBasic({ username: process.env.EVE_CHAT_USERNAME || "operator", password });
+
   return verifier;
 }
 

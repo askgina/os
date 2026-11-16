@@ -56,6 +56,7 @@ function fail(code: string, exitCode = 2): never {
 }
 
 process.umask(0o077);
+
 function readArgs() {
   try {
     return parseArgs({
@@ -76,11 +77,17 @@ function readArgs() {
     fail("usage");
   }
 }
+
 const { positionals, values } = readArgs();
+
 const command = positionals[0];
+
 const workspace = WorkspaceId.safeParse(values.workspace);
+
 const mandate = MandateId.safeParse(values.mandate);
+
 const wallet = WalletId.safeParse(values.wallet);
+
 const exportTo =
   command === "export-wallet" &&
   workspace.success &&
@@ -89,17 +96,20 @@ const exportTo =
   isAbsolute(values.out)
     ? values.out
     : null;
+
 // Exactly one of the two forms: one mandate by id, or every live mandate of one workspace.
 const revokeOne =
   command === "revoke-mandate" &&
   mandate.success &&
   values.all !== true &&
   values.workspace === undefined;
+
 const revokeAll =
   command === "revoke-mandate" &&
   values.all === true &&
   workspace.success &&
   values.mandate === undefined;
+
 const usable =
   command === "fence" ||
   revokeOne ||
@@ -107,10 +117,12 @@ const usable =
   exportTo !== null ||
   ((command === "enroll-approver" || command === "verify-log" || command === "list-mandates") &&
     workspace.success);
+
 if (!usable) {
   process.stderr.write(USAGE);
   fail("usage");
 }
+
 const approver =
   command === "enroll-approver"
     ? ApproverCredential.safeParse({
@@ -119,12 +131,14 @@ const approver =
         publicKey: values["public-key"],
       })
     : null;
+
 if (approver && !approver.success) {
   process.stderr.write(USAGE);
   fail("usage");
 }
 
 let config: SignerConfig;
+
 try {
   config = loadConfig(process.env);
 } catch (error) {
@@ -133,8 +147,11 @@ try {
   );
   fail("config");
 }
+
 mkdirSync(config.vaultPath, { recursive: true, mode: 0o700 });
+
 let signer: Signer;
+
 try {
   signer = createSigner({
     sqlitePath: config.sqlitePath,
@@ -159,23 +176,27 @@ try {
 } catch (error) {
   fail(error instanceof SchemaTooNewError ? "schema_too_new" : "database");
 }
+
 try {
   if (command === "fence") {
     print({ ok: true, action: "fence-set-by-operator", fenceAt: signer.fence() });
   } else if (exportTo !== null && workspace.success && wallet.success) {
     // Checked before the key is read; the write below refuses a file created meanwhile.
     if (existsSync(exportTo)) fail("out_exists");
+
     const exported = await signer.exportWalletByOperator(workspace.data, wallet.data, (walletId) =>
       exportOwsWalletSecret(
         { vaultPath: config.vaultPath, passphraseFile: config.passphraseFile },
         walletId,
       ),
     );
+
     try {
       writeFileSync(exportTo, `${exported.secret}\n`, { mode: 0o600, flag: "wx" });
     } catch {
       fail("out_unwritable");
     }
+
     // Identifiers only: never the secret.
     print({
       ok: true,

@@ -68,9 +68,12 @@ export function WalletPage() {
   const { workspaceId, walletId } = useParams({ from: "/w/$workspaceId/wallets/$walletId" });
   const workspace = useWorkspace(workspaceId);
   const wallet = useWallet(workspaceId, walletId);
+
   if (wallet.isPending || !workspace.data) return <Loading />;
+
   if (wallet.isError)
     return <ErrorState error={wallet.error} retry={() => void wallet.refetch()} />;
+
   return <WalletView wallet={wallet.data} workspace={workspace.data} />;
 }
 
@@ -81,6 +84,7 @@ function WalletView({ wallet, workspace }: { wallet: WalletDetail; workspace: Wo
   // A wallet of a workspace being deleted is retiring with it, so this also covers that.
   const active = wallet.lifecycle.state === "active";
   const changeable = walletChangeable(wallet.lifecycle) && workspace.lifecycle.state === "active";
+
   return (
     <div className="grid grid-cols-1 gap-6">
       <PageHeader
@@ -145,11 +149,14 @@ function WalletView({ wallet, workspace }: { wallet: WalletDetail; workspace: Wo
           )}
           {wallet.policy?.assets.map((limit) => {
             const info = assetInfo(limit.chainId, limit.asset, workspace.chains, wallet.balances);
+
             const spent =
               wallet.spent.find(
                 (item) => item.chainId === limit.chainId && item.asset === limit.asset,
               )?.amount ?? "0";
+
             const share = percentOf(spent, limit.maxPerDay);
+
             return (
               <div key={`${limit.chainId}|${limit.asset}`} className="grid grid-cols-1 gap-1.5">
                 <div className="flex flex-wrap justify-between gap-2 text-sm">
@@ -234,15 +241,20 @@ function SweepCard({ wallet, workspace }: { wallet: WalletDetail; workspace: Wor
   const id = useId();
   const destinations = sweepDestinations(wallet, workspace);
   const held = wallet.balances.filter((balance) => balance.amount !== "0");
+
   const [assetKey, setAssetKey] = useState(() =>
     held[0] ? `${held[0].chainId}|${held[0].asset}` : "",
   );
+
   const [to, setTo] = useState(() => destinations[0]?.address ?? "");
+
   const submit = useMutation({
     mutationFn: () => {
       const balance = held.find((item) => `${item.chainId}|${item.asset}` === assetKey);
       const destination = destinations.find((item) => item.address === to);
+
       if (!balance || !destination) throw new Error("Choose an asset and a destination.");
+
       return api.call("requestSweep", {
         params: { workspaceId: workspace.id, walletId: wallet.id },
         body: { chainId: balance.chainId, asset: balance.asset, to: destination.address },
@@ -256,6 +268,7 @@ function SweepCard({ wallet, workspace }: { wallet: WalletDetail; workspace: Wor
       });
     },
   });
+
   const approvals =
     workspace.adminThreshold === 1 ? "1 approval" : `${workspace.adminThreshold} approvals`;
 
@@ -360,6 +373,7 @@ let nextRowKey = 1;
 function initialState(wallet: WalletDetail, workspace: WorkspaceDetail): EditorState {
   const policy = wallet.policy;
   const firstChain = workspace.chains[0]?.chainId ?? "";
+
   if (!policy) {
     return {
       chains: firstChain ? [firstChain] : [],
@@ -384,12 +398,14 @@ function initialState(wallet: WalletDetail, workspace: WorkspaceDetail): EditorS
       venue: venueRulesState(undefined, workspace.venueNetworks),
     };
   }
+
   return {
     chains: [...policy.chains],
     requesters: [...policy.requesters],
     assets: policy.assets.map((limit) => {
       const decimals =
         assetInfo(limit.chainId, limit.asset, workspace.chains, wallet.balances).decimals ?? 0;
+
       return {
         key: nextRowKey++,
         chainId: limit.chainId,
@@ -418,39 +434,51 @@ class DraftError extends Error {
 
 function parseAddresses(text: string, what: string): `0x${string}`[] {
   const lines = text.split(/[\s,]+/).filter((line) => line !== "");
+
   return lines.map((line) => {
     const lower = line.toLowerCase();
+
     if (!/^0x[0-9a-f]{40}$/.test(lower))
       throw new DraftError(`${what}: "${line}" is not an address.`);
+
     return lower as `0x${string}`;
   });
 }
 
 function toDraft(state: EditorState): PolicyDraft {
   if (state.chains.length === 0) throw new DraftError("Choose at least one network.");
+
   const assets = state.assets.map((row, index) => {
     const label = `Asset ${index + 1}`;
     const asset = row.asset.trim().toLowerCase();
+
     if (asset !== "native" && !/^0x[0-9a-f]{40}$/.test(asset)) {
       throw new DraftError(`${label}: enter "native" or a token contract address.`);
     }
+
     const decimals = Number(row.decimals);
+
     if (!Number.isInteger(decimals) || decimals < 0 || decimals > 36) {
       throw new DraftError(`${label}: decimals must be a whole number from 0 to 36.`);
     }
+
     try {
       const maxPerTx = parseUnits(row.maxPerTx, decimals);
       const maxPerDay = parseUnits(row.maxPerDay, decimals);
+
       if (maxPerTx === 0n || maxPerDay === 0n)
         throw new DraftError(`${label}: limits must be above zero.`);
+
       if (maxPerTx > maxPerDay) {
         throw new DraftError(
           `${label}: the per-transaction limit cannot exceed the 24-hour limit.`,
         );
       }
+
       if (!state.chains.includes(row.chainId)) {
         throw new DraftError(`${label}: its network is not one of the wallet's networks.`);
       }
+
       return {
         chainId: row.chainId as `eip155:${number}`,
         asset: asset as "native" | `0x${string}`,
@@ -462,29 +490,37 @@ function toDraft(state: EditorState): PolicyDraft {
       throw error;
     }
   });
+
   let fee: bigint;
+
   try {
     fee = parseUnits(state.feeCeiling, NATIVE_DECIMALS);
   } catch (error) {
     if (error instanceof UnitsError) throw new DraftError(`Network fee ceiling: ${error.message}`);
     throw error;
   }
+
   if (fee === 0n) throw new DraftError("Network fee ceiling must be above zero.");
   const threshold = Number(state.threshold);
   const ttlSeconds = Number(state.ttlMinutes) * 60;
+
   if (!Number.isInteger(threshold) || threshold < 1 || threshold > 16) {
     throw new DraftError("Approvals needed must be from 1 to 16.");
   }
+
   if (!Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 86_400) {
     throw new DraftError("An approval can stay valid from 1 to 1440 minutes.");
   }
+
   let hyperliquid: HyperliquidRules | undefined;
+
   try {
     hyperliquid = toVenueRules(state.venue);
   } catch (error) {
     if (error instanceof VenueRulesError) throw new DraftError(error.message);
     throw error;
   }
+
   return {
     chains: state.chains as `eip155:${number}`[],
     requesters: state.requesters as PolicyDraft["requesters"],
@@ -509,10 +545,13 @@ function PolicyEditor({ wallet, workspace }: { wallet: WalletDetail; workspace: 
   const [state, setState] = useState(() => initialState(wallet, workspace));
   const [draftError, setDraftError] = useState<string | null>(null);
   const update = (patch: Partial<EditorState>) => setState((current) => ({ ...current, ...patch }));
+
   const updateRow = (key: number, patch: Partial<AssetRow>) =>
     update({ assets: state.assets.map((row) => (row.key === key ? { ...row, ...patch } : row)) });
+
   const toggle = (list: string[], value: string) =>
     list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
+
   const submit = useMutation({
     mutationFn: (draft: PolicyDraft) =>
       api.call("requestPolicy", {
@@ -555,6 +594,7 @@ function PolicyEditor({ wallet, workspace }: { wallet: WalletDetail; workspace: 
           className="grid grid-cols-1 gap-7"
           onSubmit={(event) => {
             event.preventDefault();
+
             try {
               const draft = toDraft(state);
               setDraftError(null);
@@ -604,10 +644,12 @@ function PolicyEditor({ wallet, workspace }: { wallet: WalletDetail; workspace: 
           >
             {state.assets.map((row, index) => {
               const native = row.asset.trim().toLowerCase() === "native";
+
               const symbol = native
                 ? (workspace.chains.find((chain) => chain.chainId === row.chainId)?.nativeSymbol ??
                   "")
                 : "";
+
               return (
                 <div
                   key={row.key}
@@ -651,12 +693,14 @@ function PolicyEditor({ wallet, workspace }: { wallet: WalletDetail; workspace: 
                       spellCheck={false}
                       onChange={(event) => {
                         const asset = event.target.value;
+
                         const known = assetInfo(
                           row.chainId,
                           asset.trim().toLowerCase(),
                           workspace.chains,
                           wallet.balances,
                         );
+
                         updateRow(row.key, {
                           asset,
                           ...(known.decimals === null ? {} : { decimals: String(known.decimals) }),
@@ -858,15 +902,20 @@ function VenueRulesFields({
   onChange: (patch: Partial<VenueRulesState>) => void;
 }) {
   const id = useId();
+
   const updateMarket = (key: number, patch: Partial<MarketRow>) =>
     onChange({
       markets: state.markets.map((row) => (row.key === key ? { ...row, ...patch } : row)),
     });
+
   const choices = venueNetworkChoices(configured, state);
+
   if (choices.length === 0) {
     return <Group legend="Hyperliquid" hint="This server is not set up for Hyperliquid." />;
   }
+
   const mainnet = state.network === "hyperliquid:mainnet";
+
   return (
     <Group
       legend="Hyperliquid"

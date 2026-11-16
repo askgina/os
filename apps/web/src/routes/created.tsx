@@ -10,6 +10,7 @@ import { takeCloneResult } from "@/lib/reveal.ts";
 export function CreatedPage() {
   const { workspaceId } = useParams({ from: "/w/$workspaceId/created" });
   const [result] = useState(() => takeCloneResult(workspaceId));
+
   return result ? (
     <CloneResultView result={result} />
   ) : (

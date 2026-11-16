@@ -50,12 +50,15 @@ import {
 //   printf '%s\n%s' "<tag>" "<json>" | openssl dgst -sha256
 // If any of these fail, every existing approval and policy hash in the field changes meaning.
 const INTENT_JSON = `{"agentId":"${AGENT}","chainId":"eip155:8453","createdAt":1700000000,"id":"${INTENT}","maxFeeWei":"1000000000000000","memo":"pay invoice 42","operation":{"to":"${ALICE}","type":"evm.transfer","valueWei":"250000000000000000"},"v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+
 const INTENT_HASH = "52d1822482a0fe3dc28883d06413ec38fe1efe50aba28c51167af733e24f9da3";
 
 const POLICY_JSON = `{"approvals":{"threshold":1,"ttlSeconds":3600},"assets":[{"asset":"native","chainId":"eip155:8453","maxPerDay":"5000000000000000000","maxPerTx":"1000000000000000000"}],"chains":["eip155:8453"],"contractCalls":{"mode":"deny"},"fees":{"maxPerTxWei":"10000000000000000"},"previousHash":null,"recipients":{"mode":"any"},"requesters":["${AGENT}"],"revision":1,"v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+
 const POLICY_HASH = "968a11eb9c37f06f745249bfc4a94d48b8aa8b4ed6a3ebbc7673b888970668b5";
 
 const ENVELOPE_JSON = `{"agentId":"${AGENT}","approvalId":"${APPROVAL}","chainId":"eip155:8453","expiresAt":1700000600,"intentHash":"${INTENT_HASH}","issuedAt":1700000000,"nonce":"AAAAAAAAAAAAAAAAAAAAAA","policyHash":"${POLICY_HASH}","type":"approve-intent","v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+
 const ENVELOPE_CHALLENGE = "SoAiEpNpEeP2ex9Y_3B7aWINGGXHZFbp3OvzZU6dC80";
 
 // The policy JSON hashed under the intent tag, to show tags separate otherwise equal inputs.
@@ -63,8 +66,11 @@ const POLICY_UNDER_INTENT_TAG = "e690d76b4c9e3a0bb2a01f86834fb4923cbb7b8645ae192
 
 // Added with the `sweep-wallet` envelope. The vectors above did not change.
 const SWEEP_JSON = `{"amount":"250000000000000000","asset":"native","chainId":"eip155:8453","maxFeeWei":"1000000000000000","to":"${ALICE}","v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+
 const SWEEP_HASH = "aa3f2f4c50ee481b88aaf98c610125b769c5508ab8d6bac13f731c50bccad674";
+
 const SWEEP_ENVELOPE_JSON = `{"approvalId":"${APPROVAL}","chainId":"eip155:8453","expiresAt":1700000600,"issuedAt":1700000000,"nonce":"AAAAAAAAAAAAAAAAAAAAAA","sweepHash":"${SWEEP_HASH}","type":"sweep-wallet","v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+
 const SWEEP_ENVELOPE_CHALLENGE = "lgZRKMxucwdO2AFLyWBfmAc4oANInAkJObl_azLac0Q";
 
 // Added with the possession step of an approver change. The vectors above did not change.
@@ -73,28 +79,41 @@ const POSSESSION = {
   credentialId: "Y3JlZC1h",
   nonce: "AAAAAAAAAAAAAAAAAAAAAA",
 } as const;
+
 const POSSESSION_JSON = `{"approvalId":"${APPROVAL}","credentialId":"Y3JlZC1h","nonce":"AAAAAAAAAAAAAAAAAAAAAA","v":1}`;
+
 const POSSESSION_CHALLENGE = "7voVoMiWeZwDat_WCB8R-xOqaIfjygPAYO7xmCsm8ec";
 
 // Added with mandates. The vectors above did not change.
 const MANDATE_JSON = `{"agentId":"${AGENT}","assets":[{"asset":"0x833589fcd6edb6e08f4c7c32d4f71b54bda02913","chainId":"eip155:8453","maxPerAction":"100000000","maxPerWindow":"500000000","maxTotal":"1000000000"}],"id":"${MANDATE}","maxFeePerActionWei":"2000000000000000","maxUses":20,"notAfter":1700604000,"notBefore":1700000000,"purpose":"pay supplier invoices this week","recipients":["${ALICE}","${BOB}","${TOKEN}"],"v":1,"walletId":"${WALLET}","windowSeconds":86400,"workspaceId":"${WS}"}`;
+
 const MANDATE_HASH = "368a65426f5e33c8fa92c281a9a2d600328b39635fea2d60e67400c5cb65d7d4";
+
 const GRANT_MANDATE_JSON = `{"agentId":"${AGENT}","approvalId":"${APPROVAL}","expiresAt":1700000600,"issuedAt":1700000000,"mandateHash":"${MANDATE_HASH}","mandateId":"${MANDATE}","nonce":"AAAAAAAAAAAAAAAAAAAAAA","type":"grant-mandate","v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+
 const GRANT_MANDATE_CHALLENGE = "TjkhTXhNOAPy5fq2YK8479_qPLBCg1DFmvX1g0zX55c";
+
 const MANDATE_USE_JSON = `{"approvalId":"${APPROVAL}","intentHash":"${INTENT_HASH}","mandateId":"${MANDATE}","v":1}`;
+
 const MANDATE_USE_DIGEST = "96fe14af43d24b9388d45b9f7a478c48a1d37c944056f9b5319ddad6bd990cd7";
 
 // Added with the `cancel-transaction` envelope. The vectors above did not change.
 const CANCEL_ENVELOPE_JSON = `{"approvalId":"${APPROVAL}","chainId":"eip155:8453","expiresAt":1700000600,"issuedAt":1700000000,"maxFeeWei":"2000000000000000","nonce":"AAAAAAAAAAAAAAAAAAAAAA","targetApprovalId":"${TARGET_APPROVAL}","txNonce":7,"type":"cancel-transaction","v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+
 const CANCEL_ENVELOPE_CHALLENGE = "FYp0khasgxD2rQxW3vUf47xd5PbsXrKOGUXaK1L_2ro";
 
 // Added with venue intents, by widening `Intent` and `WalletPolicy` within version 1. The vectors
 // above did not change.
 const VENUE_INTENT_JSON = `{"agentId":"${AGENT}","chainId":"hyperliquid:testnet","createdAt":1700000000,"id":"${INTENT}","memo":"the funding rate turned","operation":{"asset":3,"isBuy":true,"limitPx":"65000","reduceOnly":false,"size":"0.01","tif":"Ioc","type":"hyperliquid.order"},"v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+
 const VENUE_INTENT_HASH = "63bde93a4524d11d4c53e02ecec81f9e791b3aaf54fb079369255f476edc8afd";
+
 const VENUE_POLICY_JSON = `{"approvals":{"threshold":1,"ttlSeconds":3600},"assets":[{"asset":"native","chainId":"eip155:8453","maxPerDay":"5000000000000000000","maxPerTx":"1000000000000000000"}],"chains":["eip155:8453"],"contractCalls":{"mode":"deny"},"fees":{"maxPerTxWei":"10000000000000000"},"previousHash":null,"recipients":{"mode":"any"},"requesters":["${AGENT}"],"revision":1,"v":1,"venues":{"hyperliquid":{"markets":[{"asset":3,"coin":"BTC","maxNotionalPerOrderUsd6":"1000000000"},{"asset":4,"coin":"ETH","maxNotionalPerOrderUsd6":"500000000"}],"maxNotionalPerDayUsd6":"2000000000","network":"hyperliquid:testnet","submitWindowSeconds":60,"timeInForce":["Gtc","Ioc"],"withdrawals":true}},"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+
 const VENUE_POLICY_HASH = "874aa65f8d6cd314029f14ad0f3c232a2ed00ef7428b901fc35f20266d6a2241";
+
 const VENUE_ENVELOPE_JSON = `{"agentId":"${AGENT}","approvalId":"${APPROVAL}","chainId":"hyperliquid:testnet","expiresAt":1700000600,"intentHash":"${VENUE_INTENT_HASH}","issuedAt":1700000000,"nonce":"AAAAAAAAAAAAAAAAAAAAAA","policyHash":"${VENUE_POLICY_HASH}","type":"approve-intent","v":1,"walletId":"${WALLET}","workspaceId":"${WS}"}`;
+
 const VENUE_ENVELOPE_CHALLENGE = "4lbDbs7a1SSdmNuM3linOaNBTSVRK1HCVDYIPl0NhjY";
 
 describe("pinned digest vectors", () => {
@@ -120,11 +139,13 @@ describe("pinned digest vectors", () => {
     const withVenues = policy({ venues: { hyperliquid: hyperliquidRules() } });
     expect(canonicalJson(withVenues)).toBe(VENUE_POLICY_JSON);
     expect(policyHash(withVenues)).toBe(VENUE_POLICY_HASH);
+
     const envelope = approveIntent({
       chainId: HL_TESTNET,
       intentHash: VENUE_INTENT_HASH,
       policyHash: VENUE_POLICY_HASH,
     });
+
     expect(canonicalJson(envelope)).toBe(VENUE_ENVELOPE_JSON);
     expect(Buffer.from(envelopeChallenge(envelope)).toString("base64url")).toBe(
       VENUE_ENVELOPE_CHALLENGE,
@@ -135,6 +156,7 @@ describe("pinned digest vectors", () => {
     const { venues: _none, ...withoutVenues } = policy({
       venues: { hyperliquid: hyperliquidRules() },
     });
+
     expect(policyHash(withoutVenues)).toBe(POLICY_HASH);
     expect(canonicalJson(policy())).not.toContain("venues");
   });
@@ -154,6 +176,7 @@ describe("pinned digest vectors", () => {
     expect(Buffer.from(possessionChallenge(POSSESSION)).toString("base64url")).toBe(
       POSSESSION_CHALLENGE,
     );
+
     // Every field is bound, and a malformed one is refused rather than hashed.
     for (const change of [
       { approvalId: "apr_01jd000000000000000000000z" as const },
@@ -164,6 +187,7 @@ describe("pinned digest vectors", () => {
         Buffer.from(possessionChallenge({ ...POSSESSION, ...change })).toString("base64url"),
       ).not.toBe(POSSESSION_CHALLENGE);
     }
+
     expect(() => possessionChallenge({ ...POSSESSION, nonce: "short" })).toThrow();
   });
 
@@ -181,6 +205,7 @@ describe("pinned digest vectors", () => {
     const use = { approvalId: APPROVAL, mandateId: MANDATE, intentHash: INTENT_HASH };
     expect(canonicalJson({ v: 1, ...use })).toBe(MANDATE_USE_JSON);
     expect(mandateUseDigest(use)).toBe(MANDATE_USE_DIGEST);
+
     for (const change of [
       { approvalId: "apr_01jd000000000000000000000z" as const },
       { mandateId: "mnd_01jd000000000000000000000z" as const },
@@ -188,6 +213,7 @@ describe("pinned digest vectors", () => {
     ]) {
       expect(mandateUseDigest({ ...use, ...change })).not.toBe(MANDATE_USE_DIGEST);
     }
+
     expect(() => mandateUseDigest({ ...use, intentHash: "short" })).toThrow();
     // The same three identifiers under the envelope tag are not a use, and the reverse.
     expect(digestHex(DomainTag.authorize, { v: 1, ...use })).not.toBe(MANDATE_USE_DIGEST);
@@ -225,6 +251,7 @@ describe("every sweep field is bound", () => {
     to: BOB,
     maxFeeWei: "1000000000000001",
   };
+
   it.each(Object.entries(changes))("%s", (field, value) => {
     expect(sweepHash({ ...sweep(), [field]: value })).not.toBe(sweepHash(sweep()));
   });
@@ -252,6 +279,7 @@ describe("every mandate field is bound", () => {
     notAfter: T0 + 604_001,
     purpose: "pay supplier invoices next week",
   };
+
   it.each(Object.entries(changes))("%s", (field, value) => {
     expect(mandateHash({ ...mandate(), [field]: value })).not.toBe(MANDATE_HASH);
   });
@@ -325,6 +353,7 @@ describe("every intent field is bound", () => {
     { memo: "pay invoice 43" },
     { createdAt: T0 + 1 },
   ];
+
   it.each(changes.map((change) => [Object.keys(change)[0], change] as const))(
     "%s",
     (_field, change) => {
@@ -344,6 +373,7 @@ describe("every intent field is bound", () => {
 
 describe("every venue order field is bound", () => {
   const order = venueIntent().operation;
+
   if (order.type !== "hyperliquid.order") throw new TypeError("the fixture is an order");
   it.each([
     ["chainId", { chainId: "hyperliquid:mainnet" }],
@@ -388,6 +418,7 @@ describe("every envelope field is bound", () => {
     const challenges = envelopeVariants.map((v) =>
       Buffer.from(envelopeChallenge(v.base)).toString("hex"),
     );
+
     expect(new Set(challenges).size).toBe(envelopeVariants.length);
   });
 });

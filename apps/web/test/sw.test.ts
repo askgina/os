@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
  */
 
 const ORIGIN = "https://os.example";
+
 const APPROVAL = "/w/ws_01HZY/approvals/apr_01HZY";
 
 interface Shown {
@@ -57,6 +58,7 @@ interface LoadedWorker {
 function loadWorker(): LoadedWorker {
   const listeners = new Map<string, Listener>();
   const notifications: unknown[] = [];
+
   const scope: WorkerStandIn = {
     location: { origin: ORIGIN },
     registration: {
@@ -77,6 +79,7 @@ function loadWorker(): LoadedWorker {
     },
     addEventListener: (type: string, listener: Listener) => listeners.set(type, listener),
   };
+
   const context = createContext({ self: scope, URL });
   runInContext(readFileSync(new URL("../public/sw.js", import.meta.url), "utf8"), context);
   const helpers = context as unknown as WorkerHelpers;
@@ -84,15 +87,19 @@ function loadWorker(): LoadedWorker {
   async function fire(type: string, event: Record<string, unknown>): Promise<void> {
     const pending: Promise<unknown>[] = [];
     const listener = listeners.get(type);
+
     if (!listener) throw new Error(`the worker has no ${type} listener`);
     listener({ ...event, waitUntil: (promise: Promise<unknown>) => pending.push(promise) });
     await Promise.all(pending);
   }
+
   async function click(data: unknown): Promise<Mock<() => void>> {
     const close = vi.fn<() => void>();
     await fire("notificationclick", { notification: { data, close } });
+
     return close;
   }
+
   return { scope, listeners, helpers, fire, click };
 }
 
@@ -122,6 +129,7 @@ const GENERIC = {
 };
 
 let worker: LoadedWorker;
+
 beforeEach(() => {
   worker = loadWorker();
 });
@@ -193,6 +201,7 @@ describe("the worker's handlers", () => {
       focus: vi.fn(async () => undefined),
       navigate: vi.fn(async () => Promise.reject(new TypeError("not controlled"))),
     };
+
     worker.scope.clients.matchAll.mockResolvedValue([window]);
     await worker.click({ path: APPROVAL });
     expect(worker.scope.clients.openWindow).toHaveBeenCalledWith(`${ORIGIN}${APPROVAL}`);
@@ -241,6 +250,7 @@ describe("notificationFor", () => {
     const shown = show(
       declarative({ title: "Pay\u202e now\nURGENT", body: `${"long ".repeat(30)}end` }),
     );
+
     expect(shown.title).toBe("Pay now URGENT");
     expect(Array.from(shown.body)).toHaveLength(60);
     expect(shown.body.endsWith("…")).toBe(true);

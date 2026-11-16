@@ -11,6 +11,7 @@ export function AppShell() {
   useEffect(() => {
     if (productName) document.title = productName;
   }, [productName]);
+
   return (
     <Frame productName={productName} signedIn={Boolean(session.data?.user)}>
       <Outlet />
@@ -21,6 +22,7 @@ export function AppShell() {
 /** Shown when the session itself could not be loaded, for example while the server is down. */
 export function ShellError({ error }: ErrorComponentProps) {
   const router = useRouter();
+
   return (
     <Frame productName={null} signedIn={false}>
       <ErrorState error={error} retry={() => void router.invalidate()} />

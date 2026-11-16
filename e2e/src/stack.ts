@@ -4,6 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
+
 const ROOT = join(import.meta.dirname, "..", "..");
 
 /** Where the stack under test lives. `e2e/run.sh` starts it with exactly these values. */
@@ -30,13 +31,16 @@ export const stack = {
 
 /** `E2E_REPLICAS=1` (`e2e/run.sh`): two server replicas, from `e2e/compose.replicas.yaml`. */
 const REPLICAS = process.env.E2E_REPLICAS === "1";
+
 /** `E2E_OPENBAO=1` (`e2e/run.sh`): keys in OpenBao Transit, from `e2e/compose.openbao.yaml`. */
 const OPENBAO = process.env.E2E_OPENBAO === "1";
+
 /**
  * `E2E_VENUE=1` (`e2e/run.sh`, the venue gates' own stack): the fake Hyperliquid testnet and
  * mainnet venues and the server's `VENUES_FILE` naming both, from `e2e/compose.venue.yaml`.
  */
 const VENUE = process.env.E2E_VENUE === "1";
+
 /**
  * `E2E_LIFECYCLE=1` (`e2e/run.sh`, the lifecycle gates' own stack): Web Push on, from
  * `e2e/compose.lifecycle.yaml`, so erasing a person can remove a device they added.
@@ -79,8 +83,10 @@ const SPLIT_SERVICES: Record<Side, string[]> = {
   control: ["postgres", "server", "caddy", "agent-gateway", "anvil"],
   signer: ["signer", "approve", "caddy"],
 };
+
 /** Services of the signer project; every other name is the control project's. */
 const SIGNER_SIDE = ["signer", "approve"];
+
 /** Every service name a command may mention. */
 const SERVICE_NAMES = new Set([
   ...SPLIT_SERVICES.control,
@@ -93,6 +99,7 @@ const SERVICE_NAMES = new Set([
   "fake-hyperliquid",
   "fake-hyperliquid-mainnet",
 ]);
+
 /** The state volumes of {@link VOLUMES} that live in the signer project of a split stack. */
 const SIGNER_VOLUMES = ["signer-data", "signer-secrets"];
 
@@ -120,12 +127,14 @@ export const HELPER_IMAGE =
 /** Run `docker ...` and return its stdout. */
 export async function docker(...args: string[]): Promise<string> {
   const { stdout } = await run("docker", args, { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 });
+
   return stdout;
 }
 
 /** The project and the files of one side of the stack; there is one side unless split. */
 function projectArgs(side: Side): string[] {
   const profiles = ["--profile", "dev", "--profile", "agent"];
+
   if (!SPLIT) {
     const files = [
       ["-f", join(ROOT, "compose.yaml")],
@@ -135,19 +144,24 @@ function projectArgs(side: Side): string[] {
       VENUE ? ["-f", join(ROOT, "e2e", "compose.venue.yaml")] : [],
       LIFECYCLE ? ["-f", join(ROOT, "e2e", "compose.lifecycle.yaml")] : [],
     ];
+
     return ["-p", stack.project, ...files.flat(), ...profiles];
   }
+
   if (side === "signer") {
     const files = [
       ["-f", join(ROOT, "deploy", "split", "signer.compose.yaml")],
       ["-f", join(ROOT, "e2e", "compose.split-signer.yaml")],
     ];
+
     return ["-p", signerProject(), ...files.flat()];
   }
+
   const files = [
     ["-f", join(ROOT, "deploy", "split", "control.compose.yaml")],
     ["-f", join(ROOT, "e2e", "compose.split-control.yaml")],
   ];
+
   return ["-p", stack.project, ...files.flat(), ...profiles];
 }
 
@@ -161,21 +175,27 @@ function bySide(args: string[]): [Side, string[]][] {
   if (!SPLIT) return [["control", args]];
   const [command, ...rest] = args;
   const named = rest.filter((arg) => SERVICE_NAMES.has(arg));
+
   if (command === "exec" || command === "run") {
     return [[SIGNER_SIDE.includes(named[0] ?? "") ? "signer" : "control", args]];
   }
+
   if (named.length === 0) {
     return [
       ["signer", args],
       ["control", args],
     ];
   }
+
   const sides: [Side, string[]][] = [];
+
   for (const side of ["signer", "control"] as const) {
     const other = (arg: string) =>
       SERVICE_NAMES.has(arg) && SIGNER_SIDE.includes(arg) !== (side === "signer");
+
     if (named.some((name) => !other(name))) sides.push([side, args.filter((arg) => !other(arg))]);
   }
+
   return sides;
 }
 
@@ -186,18 +206,22 @@ function bySide(args: string[]): [Side, string[]][] {
 export function composeArgs(...args: string[]): string[] {
   const sides = bySide(args);
   const [first] = sides;
+
   if (sides.length !== 1 || first === undefined) {
     throw new Error(`one Compose command cannot act on both projects: ${args.join(" ")}`);
   }
+
   return ["compose", ...projectArgs(first[0]), ...first[1]];
 }
 
 /** Run `docker compose ...` against the project, or each project, it acts on; joins stdout. */
 export async function compose(...args: string[]): Promise<string> {
   let output = "";
+
   for (const [side, sideArgs] of bySide(args)) {
     output += await docker("compose", ...projectArgs(side), ...sideArgs);
   }
+
   return output;
 }
 
@@ -235,6 +259,7 @@ export function execWithInput(
     output: string;
     diagnostics: string;
   }>();
+
   const child = spawn("docker", composeArgs("exec", "-T", service, ...command), { cwd: ROOT });
   let output = "";
   let diagnostics = "";
@@ -249,6 +274,7 @@ export function execWithInput(
   child.on("error", reject);
   child.on("close", (code) => resolve({ exitCode: code ?? 1, output, diagnostics }));
   child.stdin.end(input);
+
   return promise;
 }
 
@@ -260,7 +286,9 @@ export async function setupToken(): Promise<string> {
   const printed = await exec("server", "node", "apps/server/src/cli.ts", "setup-token");
   const answer: unknown = JSON.parse(printed.trim().split("\n").at(-1) ?? "null");
   const token = (answer as { setupToken?: unknown } | null)?.setupToken;
+
   if (typeof token !== "string") throw new Error(`setup-token answered ${printed.trim()}`);
+
   return token;
 }
 
@@ -279,6 +307,7 @@ export async function containersOf(service: string): Promise<string[]> {
     "--format",
     "{{.Names}}",
   );
+
   return output
     .split("\n")
     .map((name) => name.trim())
@@ -309,6 +338,7 @@ export function execIn(container: string, ...command: string[]): Promise<string>
 /** A connection string for the stack's Postgres, through the port the e2e overlay publishes. */
 export async function databaseUrl(): Promise<string> {
   const password = (await exec("postgres", "cat", "/run/secrets/db/postgres-password")).trim();
+
   return `postgres://postgres:${encodeURIComponent(password)}@127.0.0.1:${stack.postgresPort}/postgres`;
 }
 
@@ -326,9 +356,11 @@ export async function fromAgentsNetwork(
       ["run", "--rm", "--network", `${stack.project}_agents`, HELPER_IMAGE, "node", "-e", script],
       { maxBuffer: 16 * 1024 * 1024 },
     );
+
     return { exitCode: 0, output: stdout, diagnostics: stderr };
   } catch (error) {
     const failure = error as { code?: number; stdout?: string; stderr?: string };
+
     return {
       exitCode: typeof failure.code === "number" ? failure.code : 1,
       output: failure.stdout ?? "",
@@ -340,12 +372,15 @@ export async function fromAgentsNetwork(
 /** Wait until the stack answers its health check through the public proxy. */
 export async function waitUntilHealthy(timeoutMs = 180_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+
   for (;;) {
     const healthy = await fetch(`${stack.origin}/healthz`).then(
       (response) => response.ok,
       () => false,
     );
+
     if (healthy) return;
+
     if (Date.now() > deadline) throw new Error("the stack did not become healthy in time");
     await delay(500);
   }
@@ -358,7 +393,9 @@ export async function waitUntilHealthy(timeoutMs = 180_000): Promise<void> {
  */
 export async function backUpInto(project: string): Promise<void> {
   const stateful = (side: Side) => servicesOn(side).filter((service) => service !== "anvil");
+
   for (const side of SIDES) await composeIn(side, "stop", ...stateful(side));
+
   for (const volume of VOLUMES) {
     // Split, the signer's volumes are in its own project, and so are their copies.
     const signerSide = SPLIT && SIGNER_VOLUMES.includes(volume);
@@ -378,9 +415,11 @@ export async function backUpInto(project: string): Promise<void> {
       "/to/",
     );
   }
+
   for (const side of SIDES) {
     await composeIn(side, "up", "-d", "--wait", "--wait-timeout", "300", ...stateful(side));
   }
+
   await waitUntilHealthy();
 }
 
@@ -395,14 +434,19 @@ export async function restoreFrom(project: string): Promise<number> {
   for (const side of SIDES) await composeIn(side, "down", "--remove-orphans");
   stack.project = project;
   const output = await compose("run", "--rm", "signer", "node", "src/admin.ts", "fence");
+
   const line = JSON.parse(output.trim().split("\n").at(-1) ?? "") as {
     ok: boolean;
     fenceAt: number;
   };
+
   if (!line.ok) throw new Error("the restored signer could not be fenced");
+
   for (const side of SIDES) {
     await composeIn(side, "up", "-d", "--wait", "--wait-timeout", "300", ...servicesOn(side));
   }
+
   await waitUntilHealthy();
+
   return line.fenceAt;
 }

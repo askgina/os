@@ -36,9 +36,13 @@ import {
 import { TEST_CHAIN_ID } from "../support/context.ts";
 
 const WEEK = 604_800;
+
 const ETH = 10n ** 18n;
+
 let f: Fixture;
+
 let receiver: Receiver;
+
 const secret = webhookSecret();
 
 beforeAll(async () => {
@@ -47,12 +51,14 @@ beforeAll(async () => {
   // The operator's webhook, so the D10 notices have somewhere to go.
   f.t.ctx.config.notify.webhook = { url: receiver.url, secret };
 });
+
 afterAll(async () => {
   await f?.close();
   await receiver?.close();
 });
 
 const api = () => f.t.owner.browser.api;
+
 const now = () => f.t.clock.now();
 
 /** Move the shared clock, and sign the owner in again: a session lasts less than a week. */
@@ -70,8 +76,10 @@ async function refusal(call: Promise<unknown>): Promise<{ code: string; detail?:
         ? { code: error.code }
         : { code: error.code, detail: error.detail };
     }
+
     throw error;
   }
+
   throw new Error("the call was not refused");
 }
 
@@ -81,6 +89,7 @@ async function workspaceWithAgent(name: string): Promise<{ ws: WorkspaceId; agen
   const agent = await f.newAgent("Bot", ws);
   await f.setPolicy(ws, agent.walletId, draftFor(agent.id));
   await fund(agent.address, 10n * ETH);
+
   return { ws, agent };
 }
 
@@ -103,12 +112,15 @@ async function grantMandate(ws: WorkspaceId, agent: TestAgent): Promise<MandateI
     notAfter: now() + 3 * 86_400,
     purpose: "pay the suppliers this week",
   };
+
   const opened = await api().call("proposeMandate", {
     params: { workspaceId: ws, walletId: agent.walletId },
     body: draft,
   });
+
   const row = await f.t.approve(opened.id as ApprovalId, [f.t.owner]);
   expect(row.status).toBe("executed");
+
   return row.subjectId as MandateId;
 }
 
@@ -196,6 +208,7 @@ describe("deleting a workspace", () => {
     const notices = (await deliveriesOf(approvalId)).filter((row) =>
       row.event.startsWith("lifecycle."),
     );
+
     expect(
       notices.map((row) => [row.event, row.target, Math.floor(row.dueAt.getTime() / 1000)]),
     ).toEqual([
@@ -203,10 +216,12 @@ describe("deleting a workspace", () => {
       ["lifecycle.due_soon", "webhook", destroyAfter - 86_400],
     ]);
     await sweep(f.t.ctx);
+
     const sent = receiver.requests.map((request) => ({
       request,
       body: JSON.parse(request.body) as Record<string, unknown>,
     }));
+
     const scheduled = sent.find(({ body }) => body.event === "lifecycle.scheduled");
     expect(scheduled?.body).toMatchObject({
       v: 1,
@@ -237,6 +252,7 @@ describe("deleting a workspace", () => {
       params: { workspaceId: ws },
       body: {},
     });
+
     expect(cancelled).toMatchObject({
       paused: true,
       lifecycle: { state: "active", destroyAfter: null, deletedAt: null },
@@ -251,23 +267,28 @@ describe("deleting a workspace", () => {
     // The second notice of a cancelled deletion never goes out.
     await advance(WEEK - 86_400 + 120);
     await sweep(f.t.ctx);
+
     const [dueSoon] = (await deliveriesOf(approvalId)).filter(
       (row) => row.event === "lifecycle.due_soon",
     );
+
     expect(dueSoon).toMatchObject({ state: "dropped", lastCode: "lifecycle_ended" });
   });
 
   it("a deleted workspace signs nothing, and nothing it stored can be opened", async () => {
     const { ws, agent } = await workspaceWithAgent("Delete for good");
+
     const treasury = await api().call("createTreasury", {
       params: { workspaceId: ws },
       body: { label: "Treasury" },
     });
+
     // A sweep signed and sent, not yet followed to its block: finalize must wait for it (D7).
     const sweepRequest = await api().call("requestSweep", {
       params: { workspaceId: ws, walletId: agent.walletId },
       body: { chainId: TEST_CHAIN_ID, asset: "native", to: treasury.address },
     });
+
     const sweepId = sweepRequest.id as ApprovalId;
     expect((await f.t.approve(sweepId, [f.t.owner])).status).toBe("executed");
     await api().call("pauseWorkspace", { params: { workspaceId: ws }, body: {} });
@@ -279,11 +300,13 @@ describe("deleting a workspace", () => {
     // A run of the workspace, keyed as the World keys it: by run id, with the workspace as tenant.
     const runId = `wrun_lifecycle_${ws}`;
     await f.t.ctx.keys.getOrCreate("run", runId, ws);
+
     const [someEvent] = await f.t.ctx.db
       .select()
       .from(auditEvents)
       .where(eq(auditEvents.workspaceId, ws))
       .limit(1);
+
     if (!someEvent) throw new Error("no audit event");
 
     // Not before the destroy time.
@@ -292,16 +315,20 @@ describe("deleting a workspace", () => {
     expect(await finalizeDue(f.t.ctx)).toEqual({ finalized: 0, skipped: 1 });
     expect(skipsOf(ws).at(-1)).toBe("unmined_transactions");
     const steps = engineOf(f.t.ctx).steps();
+
     for (let i = 0; i < 20 && !(await steps.followUp(sweepId)).done; i += 1);
+
     const [sent] = await f.t.ctx.db
       .select({ status: transactions.status })
       .from(transactions)
       .where(eq(transactions.approvalId, sweepId));
+
     expect(sent?.status).toBe("confirmed");
 
     // A crash between the signer's destruction and shredding: the next round finishes it.
     let crashes = 1;
     const keys = f.t.ctx.keys;
+
     const crashing: AppContext = {
       ...f.t.ctx,
       keys: new Proxy(keys, {
@@ -312,11 +339,14 @@ describe("deleting a workspace", () => {
               throw new Error("crashed");
             };
           }
+
           const value = Reflect.get(target, property, receiver);
+
           return typeof value === "function" ? value.bind(target) : value;
         },
       }),
     };
+
     expect(await finalizeDue(crashing)).toEqual({ finalized: 0, skipped: 1 });
     expect((await f.t.ctx.signer.getWorkspace(ws)).state).toBe("deleted");
     expect(await finalizeDue(f.t.ctx)).toEqual({ finalized: 1, skipped: 0 });
@@ -329,21 +359,26 @@ describe("deleting a workspace", () => {
     await expect(f.t.ctx.keys.get("run", runId)).rejects.toBeInstanceOf(DataKeyUnavailableError);
     // The chain still verifies without the key, and ends with the deletion.
     expect(await verifyAudit(f.t.ctx, ws)).toMatchObject({ ok: true, brokenAt: null });
+
     const [last] = await f.t.ctx.db
       .select({ action: auditEvents.action })
       .from(auditEvents)
       .where(eq(auditEvents.workspaceId, ws))
       .orderBy(desc(auditEvents.seq))
       .limit(1);
+
     expect(last?.action).toBe("workspace.deleted");
+
     const deletedEvents = await f.t.ctx.db
       .select({ seq: auditEvents.seq })
       .from(auditEvents)
       .where(and(eq(auditEvents.workspaceId, ws), eq(auditEvents.action, "workspace.deleted")));
+
     expect(deletedEvents).toHaveLength(1);
 
     // The signer destroyed every key and answers nothing of the workspace but its state.
     expect(await f.t.ctx.signer.getWorkspace(ws)).toMatchObject({ state: "deleted" });
+
     for (const walletId of [agent.walletId, treasury.id as WalletId]) {
       await expect(f.t.ctx.signer.getWallet(walletId)).rejects.toMatchObject({
         code: "workspace_deleted",
@@ -382,6 +417,7 @@ describe("deleting a workspace", () => {
     const listed = await api().call("listWorkspaces", {});
     expect(listed.items.map((item) => item.id)).not.toContain(ws);
     await expect(f.mcp(agent.token)).rejects.toThrow();
+
     // Every request of the workspace ended before its keys went.
     const open = await f.t.ctx.db
       .select({ id: approvals.id })
@@ -389,6 +425,7 @@ describe("deleting a workspace", () => {
       .where(
         and(eq(approvals.workspaceId, ws), sql`${approvals.status} IN ('pending', 'approved')`),
       );
+
     expect(open).toEqual([]);
   });
 
@@ -414,30 +451,36 @@ describe("deleting a workspace", () => {
     // A proposal holds the locks inserting rows that refer to the agent and the workspace
     // takes, then appends its audit event, which locks the workspace row.
     const proposal = await f.t.ctx.pool.connect();
+
     try {
       await proposal.query("BEGIN");
       await proposal.query("SELECT 1 FROM os.agents WHERE id = $1 FOR KEY SHARE", [agent.id]);
       await proposal.query("SELECT 1 FROM os.workspaces WHERE id = $1 FOR KEY SHARE", [ws]);
       const finalizing = finalizeDue(f.t.ctx);
+
       // Wait until finalize waits on the proposal. Postgres decides when a lock is granted, so
       // this polls its lock table; no clock the test controls can stand in for it.
       for (let i = 0; i < 400; i += 1) {
         const { rows } = await f.t.ctx.pool.query<{ waiting: number }>(
           "SELECT count(*)::int AS waiting FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'",
         );
+
         if ((rows[0]?.waiting ?? 0) > 0) break;
         await delay(25);
       }
+
       await proposal.query("SELECT 1 FROM os.workspaces WHERE id = $1 FOR NO KEY UPDATE", [ws]);
       await proposal.query("COMMIT");
       expect(await finalizing).toEqual({ finalized: 1, skipped: 0 });
     } finally {
       proposal.release();
     }
+
     const [tomb] = await f.t.ctx.db
       .select({ lifecycle: workspaces.lifecycle })
       .from(workspaces)
       .where(eq(workspaces.id, ws));
+
     expect(tomb?.lifecycle).toBe("deleted");
   });
 });

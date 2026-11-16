@@ -27,7 +27,9 @@ export function sweepDestinations(
         (candidate.lifecycle.state === "active" || candidate.lifecycle.state === "held"),
     )
     .map((treasury) => ({ address: treasury.address, label: treasury.label, reason: "treasury" }));
+
   const recipients = wallet.policy?.recipients;
+
   const allowed: SweepDestination[] =
     recipients?.mode === "allowlist"
       ? recipients.addresses
@@ -38,5 +40,6 @@ export function sweepDestinations(
           )
           .map((address) => ({ address, label: "Allowed recipient", reason: "allowlist" }))
       : [];
+
   return [...treasuries, ...allowed];
 }

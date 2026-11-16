@@ -81,7 +81,9 @@ export async function loadWallet(ctx: AppContext, workspaceId: WorkspaceId, wall
     .from(wallets)
     .leftJoin(agents, eq(agents.walletId, wallets.id))
     .where(and(eq(wallets.id, walletId as never), eq(wallets.workspaceId, workspaceId)));
+
   if (!row) throw new HttpError("not_found", "no such wallet");
+
   return row;
 }
 
@@ -99,6 +101,7 @@ export async function pendingApprovalCount(
         ne(approvals.kind, "mandate-use"),
       ),
     );
+
   return row?.n ?? 0;
 }
 
@@ -117,6 +120,7 @@ export async function listMembers(
     .innerJoin(users, eq(users.id, memberships.userId))
     .where(eq(memberships.workspaceId, workspaceId))
     .orderBy(asc(memberships.createdAt));
+
   const approverRows = await ctx.db
     .select({
       userId: approverCredentials.userId,
@@ -128,8 +132,10 @@ export async function listMembers(
     .from(approverCredentials)
     .innerJoin(credentials, eq(credentials.id, approverCredentials.credentialId))
     .where(eq(approverCredentials.workspaceId, workspaceId));
+
   return rows.map(({ membership, user }) => {
     const states = approverRows.filter((row) => row.userId === user.id).map((row) => row.state);
+
     // A passkey being removed is still accepted by the signer until the removal is applied.
     const approver: ApproverState =
       states.includes("active") || states.includes("removing")
@@ -137,6 +143,7 @@ export async function listMembers(
         : states.includes("pending")
           ? "pending"
           : "none";
+
     return {
       user: { id: user.id, displayName: user.displayName },
       role: membership.role,
@@ -162,17 +169,21 @@ export async function workspaceDetail(
   role: Role,
 ): Promise<WorkspaceDetail> {
   const [workspace] = await ctx.db.select().from(workspaces).where(eq(workspaces.id, workspaceId));
+
   if (!workspace) throw new HttpError("not_found", "no such workspace");
+
   const agentRows = await ctx.db
     .select()
     .from(agents)
     .where(eq(agents.workspaceId, workspaceId))
     .orderBy(asc(agents.createdAt));
+
   const walletRows = await ctx.db
     .select()
     .from(wallets)
     .where(eq(wallets.workspaceId, workspaceId))
     .orderBy(asc(wallets.createdAt));
+
   return {
     id: workspace.id,
     name: workspace.name,

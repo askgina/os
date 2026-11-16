@@ -21,6 +21,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, chownSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
 const KEYRING = "/secrets/server/keyring.json";
+
 // The user the server runs as in its image.
 const NODE_UID = 1000;
 
@@ -31,18 +32,22 @@ function fail(message) {
 
 function read() {
   let keyring;
+
   try {
     keyring = JSON.parse(readFileSync(KEYRING, "utf8"));
   } catch {
     // The file's text is key material: never quote the parser's message.
     fail("the keyring file is missing or is not valid JSON");
   }
+
   const validShape =
     typeof keyring?.active === "string" &&
     typeof keyring?.keys === "object" &&
     keyring.keys !== null &&
     typeof keyring.keys[keyring.active] === "string";
+
   if (!validShape) fail("the keyring file does not have an active key");
+
   return keyring;
 }
 
@@ -56,16 +61,20 @@ function write(keyring) {
 }
 
 const [command, flag] = process.argv.slice(2);
+
 const keyring = read();
 
 if (command === "add") {
   if (flag !== undefined && flag !== "--inactive") fail("add takes only --inactive");
+
   const numbers = Object.keys(keyring.keys)
     .map((id) => /^k([0-9]+)$/.exec(id)?.[1])
     .filter((digits) => digits !== undefined)
     .map(Number);
+
   const id = `k${Math.max(0, ...numbers) + 1}`;
   keyring.keys[id] = randomBytes(32).toString("base64");
+
   if (flag === undefined) keyring.active = id;
   write(keyring);
   process.stdout.write(
@@ -80,8 +89,10 @@ if (command === "add") {
   if (typeof flag !== "string" || !Object.hasOwn(keyring.keys, flag)) {
     fail("activate needs the id of a key in the keyring, as add printed it");
   }
+
   const previous = keyring.active;
   keyring.active = flag;
+
   if (previous !== flag) write(keyring);
   process.stdout.write(
     `${JSON.stringify({ event: "keyring.activated", active: flag, previous, keys: Object.keys(keyring.keys) })}\n`,
@@ -92,6 +103,7 @@ if (command === "add") {
       "prune removes old keys for good; pass --confirm-rewrapped after rewrap reported no failures",
     );
   }
+
   const removed = Object.keys(keyring.keys).filter((id) => id !== keyring.active);
   write({ active: keyring.active, keys: { [keyring.active]: keyring.keys[keyring.active] } });
   process.stdout.write(

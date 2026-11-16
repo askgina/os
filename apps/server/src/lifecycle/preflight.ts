@@ -31,19 +31,24 @@ export async function deletionPreflight(
   const state = await ctx.signer.getWorkspace(workspaceId).catch((error: unknown) => {
     throw fromSignerError(error);
   });
+
   const rows = await ctx.db
     .select({ wallet: wallets, agentId: agents.id })
     .from(wallets)
     .leftJoin(agents, eq(agents.walletId, wallets.id))
     .where(eq(wallets.workspaceId, workspaceId))
     .orderBy(asc(wallets.createdAt));
+
   const chains = ctx.chains.list().map((chain) => chain.chainId);
+
   const listed = await Promise.all(
     rows
       .filter(({ wallet }) => wallet.lifecycle !== "destroyed")
       .map(async ({ wallet, agentId }) => {
         const assets = new Map<string, { chainId: ChainId; asset: AssetRef }>();
+
         for (const chainId of chains) assets.set(`${chainId}/native`, { chainId, asset: "native" });
+
         for (const limit of wallet.policy?.assets ?? []) {
           if (!chains.includes(limit.chainId)) continue;
           assets.set(`${limit.chainId}/${limit.asset}`, {
@@ -51,21 +56,28 @@ export async function deletionPreflight(
             asset: limit.asset,
           });
         }
+
         const balances: AssetBalance[] | null = await ctx.chains
           .balances(wallet.address, [...assets.values()])
           .catch(() => null);
+
         return { wallet: walletSummary(wallet, agentId), balances };
       }),
   );
 
   const subject: Subject = { workspaceId, walletId: null };
   const blockers: DeletionBlocker[] = [];
+
   if ((await waitingRequests(ctx, subject)).length > 0) blockers.push("pending_approvals");
+
   if (await hasUnfinishedRuns(ctx, subject, false)) blockers.push("unfinished_runs");
+
   if (await hasUnminedTransactions(ctx, subject)) blockers.push("unmined_transactions");
+
   if (listed.some(({ balances }) => balances?.some((balance) => BigInt(balance.amount) > 0n))) {
     blockers.push("nonzero_balance");
   }
+
   return {
     workspaceId,
     source: "control-plane",

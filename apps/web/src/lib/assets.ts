@@ -18,17 +18,22 @@ export function assetInfo(
   balances: readonly AssetBalance[] = [],
 ): AssetInfo {
   const balance = balances.find((item) => item.chainId === chainId && item.asset === asset);
+
   if (balance) return { symbol: balance.symbol, decimals: balance.decimals };
+
   if (asset === "native") {
     const chain = chains.find((item) => item.chainId === chainId);
+
     return { symbol: chain?.nativeSymbol ?? "native coin", decimals: NATIVE_DECIMALS };
   }
+
   return { symbol: `token ${shortAddress(asset)}`, decimals: null };
 }
 
 /** "0.5 ETH", or "500000 base units of token 0x12…" when the decimals are unknown. */
 export function formatAsset(amount: string, info: AssetInfo): string {
   if (info.decimals === null) return `${amount} base units of ${info.symbol}`;
+
   return `${formatUnits(amount, info.decimals)} ${info.symbol}`;
 }
 

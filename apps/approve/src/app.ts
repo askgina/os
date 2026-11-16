@@ -60,6 +60,7 @@ export interface PageFiles {
 
 export function readPageFiles(directory = join(import.meta.dirname, "..", "public")): PageFiles {
   const read = (name: string) => readFileSync(join(directory, name), "utf8");
+
   return {
     html: read("index.html"),
     script: read("approve.js"),
@@ -80,16 +81,19 @@ export interface ApproveAppOptions {
 type Refusal = { status: 400 | 404 | 413 | 502; code: SignerErrorCode; message: string };
 
 const NOT_FOUND: Refusal = { status: 404, code: "not_found", message: "no such page" };
+
 const TOO_LARGE: Refusal = {
   status: 413,
   code: "invalid_request",
   message: "the request body is too large",
 };
+
 const MALFORMED: Refusal = {
   status: 400,
   code: "invalid_request",
   message: "expected one passkey assertion",
 };
+
 const UNREACHABLE: Refusal = {
   status: 502,
   code: "internal",
@@ -103,17 +107,23 @@ const UNREACHABLE: Refusal = {
 async function readLimited(c: Context): Promise<Uint8Array | null> {
   if (Number(c.req.header("content-length") ?? 0) > MAX_BODY_BYTES) return null;
   const stream = c.req.raw.body;
+
   if (stream === null) return new Uint8Array();
   const chunks: Uint8Array[] = [];
   let total = 0;
+
   for await (const chunk of stream) {
     total += chunk.byteLength;
+
     if (total > MAX_BODY_BYTES) {
       await stream.cancel().catch(() => undefined);
+
       return null;
     }
+
     chunks.push(chunk);
   }
+
   return Buffer.concat(chunks);
 }
 
@@ -131,13 +141,16 @@ export function createApproveApp(options: ApproveAppOptions): Hono {
 
   app.use(async (c, next) => {
     await next();
+
     for (const [name, value] of Object.entries(SECURITY_HEADERS)) c.header(name, value);
+
     if (https) c.header("strict-transport-security", "max-age=63072000");
   });
 
   const refuse = (c: Context, route: string, refusal: Refusal) => {
     log.info("request", { route, status: refusal.status, code: refusal.code });
     const body: SignerErrorBody = { error: { code: refusal.code, message: refusal.message } };
+
     return c.json(body, refusal.status);
   };
 
@@ -146,6 +159,7 @@ export function createApproveApp(options: ApproveAppOptions): Hono {
     try {
       const result = await call();
       log.info("request", { route, status: 200 });
+
       return c.json(result, 200);
     } catch (error) {
       if (!(error instanceof SignerError)) {
@@ -153,9 +167,12 @@ export function createApproveApp(options: ApproveAppOptions): Hono {
           route,
           kind: error instanceof Error ? error.name : "unknown",
         });
+
         return refuse(c, route, UNREACHABLE);
       }
+
       log.info("request", { route, status: error.status, code: error.code });
+
       const body: SignerErrorBody = {
         error: {
           code: error.code,
@@ -163,6 +180,7 @@ export function createApproveApp(options: ApproveAppOptions): Hono {
           ...(error.detail === undefined ? {} : { detail: error.detail }),
         },
       };
+
       return c.json(body, error.status as 400);
     }
   };
@@ -171,6 +189,7 @@ export function createApproveApp(options: ApproveAppOptions): Hono {
   const target = (c: Context) => {
     const approvalId = ApprovalId.safeParse(c.req.param("approvalId"));
     const token = ConfirmToken.safeParse(c.req.header(CONFIRM_TOKEN_HEADER) ?? "");
+
     return approvalId.success && token.success
       ? { approvalId: approvalId.data, token: token.data }
       : null;
@@ -178,6 +197,7 @@ export function createApproveApp(options: ApproveAppOptions): Hono {
 
   const file = (route: string, type: string, body: string) => (c: Context) => {
     log.info("request", { route, status: 200 });
+
     return c.body(body, 200, { "content-type": type });
   };
 
@@ -185,6 +205,7 @@ export function createApproveApp(options: ApproveAppOptions): Hono {
     if (!ApprovalId.safeParse(c.req.param("approvalId")).success) {
       return refuse(c, "page", NOT_FOUND);
     }
+
     return file("page", "text/html; charset=utf-8", files.html)(c);
   });
   app.get("/approve.js", file("script", "text/javascript; charset=utf-8", files.script));
@@ -193,7 +214,9 @@ export function createApproveApp(options: ApproveAppOptions): Hono {
 
   app.get("/api/approvals/:approvalId", async (c) => {
     const found = target(c);
+
     if (found === null) return refuse(c, "view", NOT_FOUND);
+
     return relay(c, "view", () => confirm.getConfirmation(found.approvalId, found.token));
   });
 
@@ -206,22 +229,29 @@ export function createApproveApp(options: ApproveAppOptions): Hono {
     schema: typeof SubmitConfirmationRequest | typeof SubmitPossessionRequest,
   ): Promise<{ response: AssertionResponse } | Refusal> => {
     const body = await readLimited(c);
+
     if (body === null) return TOO_LARGE;
     let parsed: unknown;
+
     try {
       parsed = JSON.parse(Buffer.from(body).toString("utf8"));
     } catch {
       return MALFORMED;
     }
+
     const request = schema.safeParse(parsed);
+
     return request.success ? request.data : MALFORMED;
   };
 
   app.post("/api/approvals/:approvalId/assertions", async (c) => {
     const found = target(c);
+
     if (found === null) return refuse(c, "submit", NOT_FOUND);
     const request = await readAssertion(c, SubmitConfirmationRequest);
+
     if ("status" in request) return refuse(c, "submit", request);
+
     return relay(c, "submit", () =>
       confirm.submitConfirmation(found.approvalId, found.token, request.response),
     );
@@ -231,15 +261,20 @@ export function createApproveApp(options: ApproveAppOptions): Hono {
   // passkey the request carries, that it is theirs.
   app.get("/api/approvals/:approvalId/possession", async (c) => {
     const found = target(c);
+
     if (found === null) return refuse(c, "challenge", NOT_FOUND);
+
     return relay(c, "challenge", () => confirm.getPossession(found.approvalId, found.token));
   });
 
   app.post("/api/approvals/:approvalId/possession", async (c) => {
     const found = target(c);
+
     if (found === null) return refuse(c, "prove", NOT_FOUND);
     const request = await readAssertion(c, SubmitPossessionRequest);
+
     if ("status" in request) return refuse(c, "prove", request);
+
     return relay(c, "prove", () =>
       confirm.submitPossession(found.approvalId, found.token, request.response),
     );
@@ -251,6 +286,7 @@ export function createApproveApp(options: ApproveAppOptions): Hono {
   app.onError((error, c) => {
     log.error("unexpected failure", { kind: error.name });
     const body: SignerErrorBody = { error: { code: "internal", message: "something went wrong" } };
+
     return c.json(body, 500);
   });
 

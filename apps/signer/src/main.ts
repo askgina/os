@@ -8,9 +8,11 @@ import { createLogger } from "./log.ts";
 
 // Everything the signer writes (SQLite, the vault) is readable by its own user only.
 process.umask(0o077);
+
 const log = createLogger("signer");
 
 let config: SignerConfig;
+
 try {
   config = loadConfig(process.env);
 } catch (error) {
@@ -30,6 +32,7 @@ if (config.tls !== null) {
     Object.fromEntries(expiry.map(({ variable, daysLeft }) => [variable, daysLeft])),
   );
   const expired = expiry.find((certificate) => certificate.expired);
+
   if (expired !== undefined) {
     log.error("refusing to start", {
       code: "tls_certificate_expired",
@@ -40,7 +43,9 @@ if (config.tls !== null) {
 }
 
 mkdirSync(config.vaultPath, { recursive: true, mode: 0o700 });
+
 let signer: Signer;
+
 try {
   signer = createSigner({
     sqlitePath: config.sqlitePath,
@@ -76,7 +81,9 @@ try {
 }
 
 let server: ServerType;
+
 let health: ServerType | null = null;
+
 if (config.tls === null) {
   server = serve({ fetch: signer.app.fetch, port: config.port, hostname: config.host }, () =>
     log.info("listening", { port: config.port }),
@@ -112,6 +119,7 @@ if (config.tls === null) {
 }
 
 let stopping = false;
+
 function shutdown(signal: string) {
   if (stopping) return;
   stopping = true;
@@ -128,5 +136,7 @@ function shutdown(signal: string) {
     process.exit(1);
   }, 10_000).unref();
 }
+
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+
 process.on("SIGINT", () => shutdown("SIGINT"));

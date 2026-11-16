@@ -21,8 +21,11 @@ import {
 } from "./support/transit-stub.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "os-keys-transit-stub-"));
+
 const opened: { close(): Promise<void> }[] = [];
+
 const dataKey = randomBytes(32);
+
 const aad = Buffer.from(JSON.stringify(["askgina.os/data-key/v1", "run", "wrun_x", null]));
 
 afterEach(async () => {
@@ -34,17 +37,20 @@ afterEach(async () => {
 function fakeTimers() {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
 }
+
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 function file(name: string, content: string): string {
   const path = join(dir, `${name}-${randomBytes(4).toString("hex")}`);
   writeFileSync(path, content, { mode: 0o600 });
+
   return path;
 }
 
 async function stub(options?: TransitStubOptions): Promise<TransitStub> {
   const started = await startTransitStub(options);
   opened.push(started);
+
   return started;
 }
 
@@ -66,7 +72,9 @@ function provider(
     refreshSeconds: 0,
     ...options,
   });
+
   opened.push(made);
+
   return made;
 }
 
@@ -88,9 +96,11 @@ describe("signing in", () => {
     const transit = provider(server);
     await transit.ready();
     expect(transit.activeKekId()).toBe("bao:transit/os-kek@1");
+
     const wrapped = await Promise.all(
       Array.from({ length: 5 }, () => transit.wrap("bao:transit/os-kek@1", dataKey, aad)),
     );
+
     expect(count(server, "POST /v1/auth/approle/login")).toBe(1);
     expect(Buffer.from(wrapped[0] ?? []).toString("utf8")).toMatch(/^vault:v1:/);
     const key = await transit.unwrap("bao:transit/os-kek@1", wrapped[0] ?? new Uint8Array(), aad);
@@ -99,11 +109,14 @@ describe("signing in", () => {
 
   test("a token file is read and looked up; Kubernetes logs in with its JWT file", async () => {
     const server = await stub();
+
     const byToken = provider(server, {
       auth: { kind: "token", tokenFile: file("token", `${server.rootToken}\n`) },
     });
+
     await byToken.ready();
     expect(count(server, "GET /v1/auth/token/lookup-self")).toBe(1);
+
     const byJwt = provider(server, {
       auth: {
         kind: "kubernetes",
@@ -111,12 +124,14 @@ describe("signing in", () => {
         jwtFile: file("jwt", server.kubernetesJwt),
       },
     });
+
     await byJwt.ready();
     expect(count(server, "POST /v1/auth/kubernetes/login")).toBe(1);
   });
 
   test("wrong AppRole credentials are refused; a missing credential file is unavailable", async () => {
     const server = await stub();
+
     const wrong = provider(server, {
       auth: {
         kind: "approle",
@@ -124,6 +139,7 @@ describe("signing in", () => {
         secretIdFile: file("secret-id", "not-the-secret"),
       },
     });
+
     const refused = await failure(wrong.ready());
     expect(refused).toBeInstanceOf(KeyProviderRefusedError);
     expect((refused as KeyProviderRefusedError).status).toBe(400);
@@ -132,6 +148,7 @@ describe("signing in", () => {
     const missing = provider(server, {
       auth: { kind: "token", tokenFile: join(dir, "no-such-token") },
     });
+
     const unavailable = await failure(missing.ready());
     expect(unavailable).toBeInstanceOf(KeyProviderUnavailableError);
     expect(unavailable.message).toBe("openbao: the tokenFile is empty or cannot be read");
@@ -148,6 +165,7 @@ describe("signing in", () => {
     const byToken = provider(server, {
       auth: { kind: "token", tokenFile: file("token", "s.revoked") },
     });
+
     const refused = await failure(byToken.ready());
     expect(refused).toBeInstanceOf(KeyProviderRefusedError);
     expect((refused as KeyProviderRefusedError).status).toBe(403);
@@ -186,6 +204,7 @@ describe("failures", () => {
     const server = await stub();
     const transit = provider(server);
     await transit.ready();
+
     for (const status of [400, 404]) {
       server.failNext(status);
       const before = count(server, "POST /v1/transit/encrypt/os-kek");
@@ -240,6 +259,7 @@ describe("what is checked", () => {
     await transit.ready();
     const wrapped = await transit.wrap("bao:transit/os-kek@1", dataKey, aad);
     const requests = server.requests.length;
+
     for (const attempt of [
       transit.wrap("bao:transit/other@1", dataKey, aad),
       transit.wrap("k1", dataKey, aad),
@@ -248,6 +268,7 @@ describe("what is checked", () => {
     ]) {
       expect(await failure(attempt)).toBeInstanceOf(KeyProviderRefusedError);
     }
+
     expect(server.requests).toHaveLength(requests);
   });
 
@@ -256,13 +277,16 @@ describe("what is checked", () => {
     const transit = provider(server);
     await transit.ready();
     const wrapped = await transit.wrap("bao:transit/os-kek@1", dataKey, aad);
+
     const error = await failure(
       transit.unwrap("bao:transit/os-kek@1", wrapped, Buffer.from("another row")),
     );
+
     expect(error).toBeInstanceOf(KeyProviderRefusedError);
     expect(error.message).toBe(
       "openbao: decrypt under bao:transit/os-kek@1 was refused with status 400",
     );
+
     for (const secret of [dataKey.toString("base64"), aad.toString("base64"), "another row"]) {
       expect(error.message).not.toContain(secret);
     }
@@ -299,6 +323,7 @@ describe("what is checked", () => {
     ["caFile", { caFile: "/etc/hosts" }],
   ])("a bad %s is a configuration error", (setting, options) => {
     let error: unknown;
+
     try {
       new TransitKeyProvider({
         address: new URL("http://127.0.0.1:1"),
@@ -308,6 +333,7 @@ describe("what is checked", () => {
     } catch (caught) {
       error = caught;
     }
+
     expect(error).toBeInstanceOf(KeyProviderConfigError);
     expect((error as KeyProviderConfigError).code).toBe(setting);
     expect((error as Error).message).not.toContain("pass");

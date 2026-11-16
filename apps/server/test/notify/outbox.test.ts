@@ -15,9 +15,13 @@ import {
 } from "./support.ts";
 
 let t: TestContext;
+
 let receiver: Receiver;
+
 let workspaceId: WorkspaceId;
+
 const secret = webhookSecret();
+
 const NOTHING = { sent: 0, retried: 0, held: 0, dropped: 0, failed: 0 };
 
 beforeAll(async () => {
@@ -30,10 +34,12 @@ beforeAll(async () => {
   const created = await t.owner.browser.api.call("createWorkspace", { body: { name: "Notified" } });
   workspaceId = created.id as WorkspaceId;
 });
+
 afterAll(async () => {
   await t?.close();
   await receiver?.close();
 });
+
 // Each test starts with nothing due: what an earlier test left pending is not sent here.
 beforeEach(async () => {
   await t.ctx.db
@@ -48,6 +54,7 @@ async function openApproval(): Promise<ApprovalId> {
     params: { workspaceId },
     body: { adminThreshold: 1 },
   });
+
   return opened.id as ApprovalId;
 }
 
@@ -61,7 +68,9 @@ async function deliveryOf(approvalId: ApprovalId) {
   const rows = await deliveriesOf(approvalId);
   expect(rows).toHaveLength(1);
   const [row] = rows;
+
   if (!row) throw new Error("no delivery row");
+
   return row;
 }
 
@@ -88,6 +97,7 @@ describe("the notification outbox", () => {
     expect(row.id).toMatch(/^ndl_[0-9a-hjkmnp-tv-z]{26}$/);
     expect(row.dueAt).toEqual(approval?.createdAt);
     expect(row.nextAttemptAt).toEqual(approval?.createdAt);
+
     // One transaction wrote the row and the approval's audit entry, which is never updated.
     const { rows } = await t.ctx.pool.query<{ delivery: string; audit: string }>(
       `SELECT (SELECT xmin::text FROM os.notification_deliveries WHERE approval_id = $1) AS delivery,
@@ -95,6 +105,7 @@ describe("the notification outbox", () => {
                 WHERE subject_id = $1 AND action = 'approval.opened') AS audit`,
       [approvalId],
     );
+
     expect(rows[0]?.delivery).toBe(rows[0]?.audit);
 
     const counts = async () => ({
@@ -103,6 +114,7 @@ describe("the notification outbox", () => {
         await t.ctx.db.select({ id: notificationDeliveries.id }).from(notificationDeliveries)
       ).length,
     });
+
     const before = await counts();
     await expect(
       engineOf(t.ctx).open({
@@ -126,11 +138,13 @@ describe("the notification outbox", () => {
     const configured = t.ctx.config.notify;
     t.ctx.config.notify = { webhook: null, webPush: null };
     let approvalId: ApprovalId;
+
     try {
       approvalId = await openApproval();
     } finally {
       t.ctx.config.notify = configured;
     }
+
     expect(await deliveriesOf(approvalId)).toEqual([]);
     const before = receiver.requests.length;
     expect(await deliverDueNotifications(t.ctx)).toEqual(NOTHING);
@@ -161,6 +175,7 @@ describe("the notification outbox", () => {
     expect(row).toMatchObject({ state: "sent", attempts: 0, lastCode: null });
     expect(row.sentAt).toEqual(new Date(t.clock.now() * 1000));
     const [request] = requestsFor(approvalId);
+
     if (!request) throw new Error("the receiver saw nothing");
     expect(request.headers["content-type"]).toBe("application/json");
     expect(request.headers["x-os-delivery"]).toBe(row.id);
@@ -206,6 +221,7 @@ describe("the notification outbox", () => {
     expect(seen[0]?.headers["x-os-delivery"]).toBe(retrying.id);
     expect(seen[1]?.headers["x-os-delivery"]).toBe(retrying.id);
     expect(seen[0]?.body).toBe(seen[1]?.body);
+
     for (const request of seen) {
       expect(request.headers["x-os-signature"]).toBe(
         expectedSignature(secret, String(request.headers["x-os-timestamp"]), request.body),
@@ -238,20 +254,24 @@ describe("the notification outbox", () => {
     receiver.answer(...Array.from({ length: 8 }, () => ({ status: 500 })));
     const approvalId = await openApproval();
     const delays: number[] = [];
+
     for (let attempt = 1; attempt <= 8; attempt += 1) {
       const counts = await deliverDueNotifications(t.ctx);
       const row = await deliveryOf(approvalId);
       expect(row.attempts).toBe(attempt);
+
       if (attempt === 8) {
         expect(counts).toEqual({ ...NOTHING, failed: 1 });
         expect(row).toMatchObject({ state: "failed", lastCode: "http_500" });
         break;
       }
+
       expect(counts).toEqual({ ...NOTHING, retried: 1 });
       const delay = seconds(row.nextAttemptAt) - t.clock.now();
       delays.push(delay);
       t.clock.advance(delay);
     }
+
     expect(delays).toEqual([10, 20, 40, 80, 160, 320, 600]);
     expect(requestsFor(approvalId)).toHaveLength(8);
     t.clock.advance(600);
@@ -281,6 +301,7 @@ describe("the notification outbox", () => {
     t.clock.advance(3_600);
     const before = receiver.requests.length;
     expect(await deliverDueNotifications(t.ctx)).toEqual({ ...NOTHING, dropped: 2 });
+
     for (const approvalId of [rejected, expired]) {
       expect(await deliveryOf(approvalId)).toMatchObject({
         state: "dropped",
@@ -288,17 +309,21 @@ describe("the notification outbox", () => {
         lastCode: "approval_ended",
       });
     }
+
     expect(receiver.requests).toHaveLength(before);
   });
 
   it("sends each row once when two passes run at the same time", async () => {
     receiver.answer(...Array.from({ length: 3 }, () => ({ status: 200, delayMs: 200 })));
     const ids = [await openApproval(), await openApproval(), await openApproval()];
+
     const [first, second] = await Promise.all([
       deliverDueNotifications(t.ctx),
       deliverDueNotifications(t.ctx),
     ]);
+
     expect((first?.sent ?? 0) + (second?.sent ?? 0)).toBe(3);
+
     for (const approvalId of ids) {
       expect(requestsFor(approvalId)).toHaveLength(1);
       expect((await deliveryOf(approvalId)).state).toBe("sent");
@@ -309,6 +334,7 @@ describe("the notification outbox", () => {
     const lines = t.log.lines
       .map((line) => JSON.parse(line) as Record<string, unknown>)
       .filter((line) => String(line.message).startsWith("notification "));
+
     expect(new Set(lines.map((line) => line.message))).toEqual(
       new Set([
         "notification delivered",
@@ -317,16 +343,20 @@ describe("the notification outbox", () => {
         "notification failed",
       ]),
     );
+
     for (const line of lines) {
       expect(Object.keys(line).sort()).toEqual(
         ["approvalId", "code", "deliveryId", "level", "message", "target"].sort(),
       );
       expect(line.target).toBe("webhook");
     }
+
     expect(t.log.lines.join("\n")).not.toContain("receiver body");
+
     const codes = await t.ctx.db
       .select({ code: notificationDeliveries.lastCode })
       .from(notificationDeliveries);
+
     for (const { code } of codes) expect(code ?? "").toMatch(/^[a-z0-9_]*$/);
   });
 });

@@ -22,25 +22,38 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const ADDRESS = process.env.OPENBAO_ADDR ?? "http://openbao:8200";
+
 const STATE_DIR = "/state";
+
 const STATE_FILE = join(STATE_DIR, "init.json");
+
 const SERVER_SECRETS = "/secrets/server";
+
 const POLICY_FILE = "/policy/policy.hcl";
+
 const MOUNT = "transit";
+
 const KEY = "os-kek";
+
 const ROLE = "os-server";
+
 /** The server's user in its image (`node`), as `deploy/init/init.mjs` uses. */
 const NODE_UID = 1000;
+
 /** Everything together; `e2e/run.sh` waits 300 seconds for the whole stack. */
 const OVERALL_MS = 240_000;
+
 const deadline = Date.now() + OVERALL_MS;
+
 /**
  * The first initialization bootstraps Raft, and this single node waits out an election timeout
  * (5 seconds) before it leads and can answer; the server itself gives up on a request after 90.
  */
 const INIT_TIMEOUT_MS = 100_000;
+
 /** An unseal, a health check, a configuration call. */
 const REQUEST_TIMEOUT_MS = 30_000;
+
 const HEALTH_TIMEOUT_MS = 10_000;
 
 let step = "start";
@@ -69,7 +82,9 @@ function neverArrived(error: unknown): boolean {
   const cause = error instanceof Error ? error.cause : undefined;
   const codes = [field(cause, "code")];
   const inner = field(cause, "errors");
+
   if (Array.isArray(inner)) codes.push(...inner.map((each) => field(each, "code")));
+
   return codes.some(
     (code) => code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EAI_AGAIN",
   );
@@ -86,11 +101,14 @@ async function call(
   options: { token?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<Answer> {
   const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+
   for (;;) {
     const left = deadline - Date.now();
+
     if (left <= 0) throw new Error(`${method} ${path}: OpenBao unreachable until the deadline`);
     const allowed = Math.min(timeoutMs, left);
     let response: Response;
+
     try {
       response = await fetch(new URL(`/v1/${path}`, ADDRESS), {
         method,
@@ -106,16 +124,21 @@ async function call(
         await delay(500);
         continue;
       }
+
       if (error instanceof Error && error.name === "TimeoutError") {
         throw new Error(`${method} ${path}: no answer within ${allowed} ms`);
       }
+
       throw new Error(`${method} ${path}: ${error instanceof Error ? error.message : error}`);
     }
+
     const text = await response.text();
     let parsed: unknown = {};
+
     try {
       parsed = text === "" ? {} : JSON.parse(text);
     } catch {}
+
     return { status: response.status, body: parsed };
   }
 }
@@ -123,6 +146,7 @@ async function call(
 /** OpenBao's own error texts; they name paths and reasons, never a secret. */
 function errorsOf(answer: Answer): string {
   const errors = field(answer.body, "errors");
+
   return Array.isArray(errors) ? errors.join("; ") : "";
 }
 
@@ -132,16 +156,20 @@ async function must(
   options: { token?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<Answer> {
   const answer = await call(method, path, options);
+
   if (answer.status >= 300) {
     throw new Error(`${method} ${path}: ${answer.status} ${errorsOf(answer)}`);
   }
+
   return answer;
 }
 
 /** Enable a secrets engine or auth method; one already at that path is left as it is. */
 async function enable(path: string, type: string, token: string): Promise<boolean> {
   const answer = await call("POST", path, { token, body: { type } });
+
   if (answer.status < 300) return true;
+
   if (answer.status === 400 && /already in use/.test(errorsOf(answer))) return false;
   throw new Error(`POST ${path}: ${answer.status} ${errorsOf(answer)}`);
 }
@@ -152,14 +180,17 @@ async function enable(path: string, type: string, token: string): Promise<boolea
  */
 async function until(what: string, check: () => Promise<boolean | string>): Promise<void> {
   let last = "nothing yet";
+
   for (;;) {
     try {
       const outcome = await check();
+
       if (outcome === true) return;
       last = outcome === false ? "not yet" : outcome;
     } catch (error) {
       last = error instanceof Error ? error.message : String(error);
     }
+
     if (Date.now() > deadline) throw new Error(`${what} before the deadline; last: ${last}`);
     await delay(500);
   }
@@ -168,12 +199,14 @@ async function until(what: string, check: () => Promise<boolean | string>): Prom
 /** Write a file the server reads: replaced whole, never half written, readable by it alone. */
 function writeSecret(name: string, value: string): boolean {
   const path = join(SERVER_SECRETS, name);
+
   if (existsSync(path) && readFileSync(path, "utf8") === value) return false;
   const temporary = `${path}.tmp`;
   writeFileSync(temporary, value, { mode: 0o400 });
   chownSync(temporary, NODE_UID, NODE_UID);
   chmodSync(temporary, 0o400);
   renameSync(temporary, path);
+
   return true;
 }
 
@@ -184,35 +217,43 @@ async function main(): Promise<void> {
     const answer = await call("GET", "sys/health?uninitcode=200&sealedcode=200&standbycode=200", {
       timeoutMs: HEALTH_TIMEOUT_MS,
     });
+
     return answer.status === 200 || `status ${answer.status}`;
   });
 
   begin("init");
   let initializedNow = false;
   const { body: init } = await must("GET", "sys/init");
+
   if (field(init, "initialized") !== true) {
     // Sent once: should its answer be lost, so is the unseal key, and only `down -v` helps.
     const { body } = await must("PUT", "sys/init", {
       body: { secret_shares: 1, secret_threshold: 1 },
       timeoutMs: INIT_TIMEOUT_MS,
     });
+
     const keys = field(body, "keys_base64");
     const rootToken = field(body, "root_token");
+
     if (!Array.isArray(keys) || typeof keys[0] !== "string" || typeof rootToken !== "string") {
       throw new Error("sys/init answered without an unseal key and a root token");
     }
+
     const state = { unsealKey: keys[0], rootToken };
     writeFileSync(`${STATE_FILE}.tmp`, JSON.stringify(state), { mode: 0o600 });
     renameSync(`${STATE_FILE}.tmp`, STATE_FILE);
     chmodSync(STATE_DIR, 0o700);
     initializedNow = true;
   }
+
   if (!existsSync(STATE_FILE)) {
     throw new Error(`OpenBao is initialized, but ${STATE_FILE} is missing: it cannot be unsealed`);
   }
+
   const saved: unknown = JSON.parse(readFileSync(STATE_FILE, "utf8"));
   const unsealKey = field(saved, "unsealKey");
   const token = field(saved, "rootToken");
+
   if (typeof unsealKey !== "string" || typeof token !== "string") {
     throw new Error(`${STATE_FILE} holds no unseal key and root token`);
   }
@@ -222,9 +263,11 @@ async function main(): Promise<void> {
   // Giving the key again is harmless, so a lost answer is simply asked again.
   await until("OpenBao did not unseal", async () => {
     const { body: seal } = await must("GET", "sys/seal-status");
+
     if (field(seal, "sealed") === false) return true;
     const { body } = await must("PUT", "sys/unseal", { body: { key: unsealKey } });
     unsealedNow = true;
+
     return field(body, "sealed") === false || "still sealed";
   });
 
@@ -232,12 +275,14 @@ async function main(): Promise<void> {
   // Raft elects this single node its leader again after each unseal.
   await until("OpenBao did not become active", async () => {
     const { status } = await call("GET", "sys/health", { timeoutMs: HEALTH_TIMEOUT_MS });
+
     return status === 200 || `status ${status}`;
   });
 
   begin("transit");
   const transitEnabled = await enable(`sys/mounts/${MOUNT}`, "transit", token);
   let keyCreated = false;
+
   if ((await call("GET", `${MOUNT}/keys/${KEY}`, { token })).status === 404) {
     await must("POST", `${MOUNT}/keys/${KEY}`, { token, body: { type: "aes256-gcm96" } });
     keyCreated = true;
@@ -259,12 +304,15 @@ async function main(): Promise<void> {
   begin("credentials");
   const { body: roleIdAnswer } = await must("GET", `auth/approle/role/${ROLE}/role-id`, { token });
   const roleId = field(field(roleIdAnswer, "data"), "role_id");
+
   if (typeof roleId !== "string") throw new Error("the role has no role id");
   const roleIdWritten = writeSecret("openbao-role-id", roleId);
   let secretIdWritten = false;
+
   if (!existsSync(join(SERVER_SECRETS, "openbao-secret-id"))) {
     const { body } = await must("POST", `auth/approle/role/${ROLE}/secret-id`, { token });
     const secretId = field(field(body, "data"), "secret_id");
+
     if (typeof secretId !== "string") throw new Error("the role gave no secret id");
     secretIdWritten = writeSecret("openbao-secret-id", secretId);
   }

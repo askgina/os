@@ -36,7 +36,9 @@ const preferencesOfMember = and(
   eq(notificationPreferences.userId, memberships.userId),
   eq(notificationPreferences.workspaceId, memberships.workspaceId),
 );
+
 const webPushOn = sql<boolean>`coalesce(${notificationPreferences.webPush}, true)`;
+
 const remindersOn = sql<boolean>`coalesce(${notificationPreferences.reminders}, true)`;
 
 /**
@@ -82,6 +84,7 @@ export async function recipientNow(
         webPushOn,
       ),
     );
+
   return found ?? null;
 }
 
@@ -110,6 +113,7 @@ export async function pendingFor(db: Executor, userId: UserId, now: number): Pro
         ),
       ),
     );
+
   return row?.pending ?? 0;
 }
 
@@ -125,5 +129,6 @@ export async function approvedBy(
     .where(
       and(eq(approvalAssertions.approvalId, approvalId), eq(approvalAssertions.userId, userId)),
     );
+
   return row !== undefined;
 }

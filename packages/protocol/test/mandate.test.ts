@@ -38,6 +38,7 @@ import {
 } from "./fixtures.ts";
 
 const ZERO = "0x0000000000000000000000000000000000000000" as const;
+
 const ok = (value: unknown) => MandateSchema.safeParse(value).success;
 
 /** A USDC payment from the fixture wallet by the fixture agent, inside every fixture cap. */
@@ -86,13 +87,16 @@ describe("mandate schema", () => {
       maxPerWindow: "1",
       maxTotal: "1",
     });
+
     expect(ok(mandate({ assets: [mandateAsset(), eth] }))).toBe(true);
     expect(ok(mandate({ assets: [eth, mandateAsset()] }))).toBe(false);
     expect(ok(mandate({ assets: [mandateAsset(), mandateAsset()] }))).toBe(false);
     expect(ok(mandate({ assets: [] }))).toBe(false);
+
     const many = Array.from({ length: 17 }, (_, index) =>
       mandateAsset({ chainId: `eip155:${index + 1}` }),
     ).sort((a, b) => (`${a.chainId}|${a.asset}` < `${b.chainId}|${b.asset}` ? -1 : 1));
+
     expect(ok(mandate({ assets: many.slice(0, 16) }))).toBe(true);
     expect(ok(mandate({ assets: many }))).toBe(false);
   });
@@ -100,6 +104,7 @@ describe("mandate schema", () => {
   it("orders the caps: per payment ≤ per window ≤ total, equal allowed", () => {
     const caps = (maxPerAction: string, maxPerWindow: string, maxTotal: string) =>
       ok(mandate({ assets: [mandateAsset({ maxPerAction, maxPerWindow, maxTotal })] }));
+
     expect(caps("5", "5", "5")).toBe(true);
     expect(caps("6", "5", "5")).toBe(false);
     expect(caps("5", "6", "5")).toBe(false);
@@ -118,10 +123,12 @@ describe("mandate schema", () => {
     expect(ok(mandate({ recipients: [] }))).toBe(false);
     expect(ok(mandate({ recipients: [BOB, ALICE] }))).toBe(false);
     expect(ok(mandate({ recipients: [ALICE, ALICE] }))).toBe(false);
+
     const addresses = Array.from(
       { length: 65 },
       (_, index) => `0x${(index + 1).toString(16).padStart(40, "0")}` as const,
     );
+
     expect(ok(mandate({ recipients: addresses.slice(0, 64) }))).toBe(true);
     expect(ok(mandate({ recipients: addresses }))).toBe(false);
   });
@@ -162,6 +169,7 @@ describe("mandate schema", () => {
       maxPerWindow: "1",
       maxTotal: "1",
     });
+
     const messy = mandate({ assets: [eth, mandateAsset()], recipients: [TOKEN, BOB, ALICE, BOB] });
     const normal = normalizeMandate(messy);
     expect(normal.assets).toEqual([mandateAsset(), eth]);
@@ -197,10 +205,12 @@ describe("checkMandateAgainstPolicy", () => {
 
   it("accepts a mandate inside the policy, at every boundary", () => {
     expect(check(mandate(), usdcPolicy())).toBe(null);
+
     // The policy's allowlist holds every recipient.
     const listed = usdcPolicy({
       recipients: { mode: "allowlist", addresses: [ALICE, BOB, TOKEN] },
     });
+
     expect(check(mandate(), listed)).toBe(null);
     expect(check(mandate({ maxFeePerActionWei: "10000000000000000" }), usdcPolicy())).toBe(null);
   });
@@ -242,9 +252,11 @@ describe("checkMandateAgainstPolicy", () => {
       ],
       ["over_fee_cap", mandate({ maxFeePerActionWei: "10000000000000001" }), usdcPolicy()],
     ];
+
     for (const [reason, subject, against] of cases) {
       expect(check(subject, against), reason).toBe(reason);
     }
+
     // The first failing rule decides: this one fails the agent and the fee ceiling.
     const both = mandate({ agentId: OTHER_AGENT, maxFeePerActionWei: "10000000000000001" });
     expect(check(both, usdcPolicy())).toBe("requester_not_allowed");
@@ -255,6 +267,7 @@ describe("checkMandateAgainstPolicy", () => {
       windowSeconds: 604_800,
       assets: [mandateAsset({ maxPerWindow: "1000000000" })],
     });
+
     expect(check(week, usdcPolicy())).toBe(null);
     expect(check({ ...week, windowSeconds: 86_400 }, usdcPolicy())).toBe("over_daily_cap");
   });
@@ -337,15 +350,18 @@ describe("evaluateMandate", () => {
   it("covers only its assets on their chains", () => {
     const native = intent({ maxFeeWei: "2000000000000000" });
     expect(denied(evaluateMandate(mandate(), native, usage()))).toBe("mandate_asset_not_allowed");
+
     const otherToken = pay("1", {
       operation: { type: "evm.erc20.transfer", token: TOKEN, to: ALICE, amount: "1" },
     });
+
     expect(denied(evaluateMandate(mandate(), otherToken, usage()))).toBe(
       "mandate_asset_not_allowed",
     );
     expect(denied(evaluateMandate(mandate(), pay("1", { chainId: MAINNET }), usage()))).toBe(
       "mandate_asset_not_allowed",
     );
+
     // A native limit covers a native transfer.
     const eth = mandate({
       assets: [
@@ -357,6 +373,7 @@ describe("evaluateMandate", () => {
         }),
       ],
     });
+
     expect(evaluateMandate(eth, native, usage()).allowed).toBe(true);
   });
 
@@ -365,11 +382,14 @@ describe("evaluateMandate", () => {
       const listed = pay("1", {
         operation: { type: "evm.erc20.transfer", token: USDC_BASE, to, amount: "1" },
       });
+
       expect(evaluateMandate(mandate(), listed, usage()).allowed).toBe(true);
     }
+
     const unlisted = pay("1", {
       operation: { type: "evm.erc20.transfer", token: USDC_BASE, to: ROUTER, amount: "1" },
     });
+
     expect(denied(evaluateMandate(mandate(), unlisted, usage()))).toBe(
       "mandate_recipient_not_allowed",
     );
@@ -414,17 +434,21 @@ describe("evaluateMandate", () => {
 
   it("asks the usage about the intent's own asset and chain", () => {
     const asked: string[] = [];
+
     const spy: MandateUsage = {
       uses: 0,
       total: (chainId, asset) => {
         asked.push(`total ${chainId}|${asset}`);
+
         return 0n;
       },
       inWindow: (chainId, asset) => {
         asked.push(`window ${chainId}|${asset}`);
+
         return 0n;
       },
     };
+
     evaluateMandate(mandate(), pay(), spy);
     expect(asked).toEqual([`window ${BASE}|${USDC_BASE}`, `total ${BASE}|${USDC_BASE}`]);
   });
@@ -434,6 +458,7 @@ describe("evaluateMandate", () => {
     const unlisted = pay("100000001", {
       operation: { type: "evm.erc20.transfer", token: USDC_BASE, to: ROUTER, amount: "100000001" },
     });
+
     expect(denied(evaluateMandate(mandate(), unlisted, usage({ uses: 20 })))).toBe(
       "mandate_recipient_not_allowed",
     );
@@ -464,6 +489,7 @@ describe("the wallet's policy stays the outer limit", () => {
   ) => {
     const byPolicy = evaluateIntent(against, payment, () => spent24h);
     const byMandate = evaluateMandate(subject, payment, used);
+
     return {
       policy: byPolicy.allowed ? null : byPolicy.code,
       mandate: byMandate.allowed ? null : byMandate.code,
@@ -475,6 +501,7 @@ describe("the wallet's policy stays the outer limit", () => {
       windowSeconds: 604_800,
       assets: [mandateAsset({ maxPerWindow: "1000000000" })],
     });
+
     expect(checkMandateAgainstPolicy(week, usdcPolicy(), GRANT)).toBe(null);
     expect(
       both(week, usdcPolicy(), pay(), 450_000_000n, usage({ inWindow: 450_000_000n })),
@@ -488,6 +515,7 @@ describe("the wallet's policy stays the outer limit", () => {
     const lowered = usdcPolicy({
       assets: [{ chainId: BASE, asset: USDC_BASE, maxPerTx: "50000000", maxPerDay: "500000000" }],
     });
+
     expect(both(mandate(), lowered, pay(), 0n, usage())).toEqual({
       policy: "over_per_tx_cap",
       mandate: null,
@@ -510,6 +538,7 @@ describe("the wallet's policy stays the outer limit", () => {
         { chainId: BASE, asset: USDC_BASE, maxPerTx: "10000000000", maxPerDay: "10000000000" },
       ],
     });
+
     expect(both(mandate(), raised, pay("100000001"), 0n, usage())).toEqual({
       policy: null,
       mandate: "mandate_over_per_action_cap",

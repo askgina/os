@@ -25,7 +25,9 @@ import { setupToken, stack, waitUntilHealthy } from "../src/stack.ts";
 test.describe.configure({ mode: "serial" });
 
 const RECIPIENT = "0x00000000000000000000000000000000000b0b0b";
+
 const HTTPS = stack.origin.startsWith("https:");
+
 /** A key fingerprint as the pages show it: four groups of four Crockford base32 letters. */
 const FINGERPRINT = /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){3}$/;
 
@@ -34,6 +36,7 @@ const chain = createPublicClient({
   transport: http(stack.anvilUrl),
   cacheTime: 0,
 });
+
 const chainAdmin = createTestClient({
   chain: foundry,
   mode: "anvil",
@@ -41,12 +44,15 @@ const chainAdmin = createTestClient({
 });
 
 let context: BrowserContext;
+
 let page: Page;
+
 /**
  * A console error or an uncaught exception on any page fails the gate that saw it: it is how a
  * blocked script or style under the Content-Security-Policy would show up.
  */
 const problems: string[] = [];
+
 /** The agent the first test creates, whose wallet the second test pays from again. */
 let agentToken = "";
 
@@ -106,6 +112,7 @@ test("setup, an agent with limits, and one payment approved with a passkey in th
     await page.getByLabel("Your name").fill("Ada Owner");
     await page.getByRole("button", { name: "Create owner passkey" }).click();
     await expect(page.getByRole("heading", { name: "Workspaces" })).toBeVisible();
+
     if (HTTPS) {
       const session = (await context.cookies()).find((c) => c.name.endsWith("os_session"));
       expect(session).toMatchObject({ name: "__Host-os_session", secure: true, httpOnly: true });
@@ -139,6 +146,7 @@ test("setup, an agent with limits, and one payment approved with a passkey in th
   const address = /0x[0-9a-fA-F]{40}/.exec(JSON.stringify(me))?.[0] as `0x${string}`;
   await chainAdmin.setBalance({ address, value: parseEther("1") });
   const before = await chain.getBalance({ address: RECIPIENT });
+
   const proposal = await agent.call("propose_transfer", {
     chainId: "eip155:31337",
     to: RECIPIENT,
@@ -190,12 +198,14 @@ test(`the confirmation page${HTTPS ? " over HTTPS" : ""} shows the payment and a
   const agent = await connectAgent(`${stack.origin}/mcp`, agentToken);
   const before = await chain.getBalance({ address: RECIPIENT });
   const memo = "Pay invoice #4412 to Northwind <i>not italic</i>";
+
   const proposal = await agent.call("propose_transfer", {
     chainId: "eip155:31337",
     to: RECIPIENT,
     amount: "0.02",
     memo,
   });
+
   const approvalPath = new URL(String(proposal.approvalUrl)).pathname;
   const approvalId = approvalPath.split("/").at(-1) ?? "";
   let confirmUrl = "";
@@ -259,17 +269,20 @@ test("a script on the control plane's page cannot get an approval", async () => 
   test.setTimeout(120_000);
   expect(agentToken, "the first gate creates the agent").toMatch(/^osa_/);
   const agent = await connectAgent(`${stack.origin}/mcp`, agentToken);
+
   const proposal = await agent.call("propose_transfer", {
     chainId: "eip155:31337",
     to: RECIPIENT,
     amount: "0.001",
     memo: "asked for on the wrong page",
   });
+
   await agent.close();
   const approvalPath = new URL(String(proposal.approvalUrl)).pathname;
   const approvalId = approvalPath.split("/").at(-1) ?? "";
   await page.goto(approvalPath);
   await expect(page.getByRole("heading", { name: /^Send 0\.001 ETH to 0x0000/ })).toBeVisible();
+
   const link = new URL(
     (await page
       .getByRole("link", { name: "Review and approve on the signer's page" })
@@ -281,15 +294,19 @@ test("a script on the control plane's page cannot get an approval", async () => 
   const detail = ApprovalDetail.parse(
     await (await page.request.get(`${stack.origin}/api/v1/approvals/${approvalId}`)).json(),
   );
+
   const challenge = Buffer.from(envelopeChallenge(detail.envelope)).toString("base64url");
+
   const response = await page.evaluate(async (digest) => {
     const fromBase64Url = (text: string) =>
       Uint8Array.from(atob(text.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+
     const toBase64Url = (buffer: ArrayBuffer) =>
       btoa(String.fromCharCode(...new Uint8Array(buffer)))
         .replace(/\+/g, "-")
         .replace(/\//g, "_")
         .replace(/=+$/, "");
+
     const credential = (await navigator.credentials.get({
       publicKey: {
         challenge: fromBase64Url(digest),
@@ -298,7 +315,9 @@ test("a script on the control plane's page cannot get an approval", async () => 
         timeout: 60_000,
       },
     })) as PublicKeyCredential;
+
     const answer = credential.response as AuthenticatorAssertionResponse;
+
     return {
       id: credential.id,
       rawId: toBase64Url(credential.rawId),
@@ -312,10 +331,12 @@ test("a script on the control plane's page cannot get an approval", async () => 
       clientExtensionResults: credential.getClientExtensionResults(),
     };
   }, challenge);
+
   // The passkey signed the request's exact digest; the browser wrote the page's origin in.
   const clientData = JSON.parse(
     Buffer.from(response.response.clientDataJSON, "base64url").toString("utf8"),
   );
+
   expect(clientData).toMatchObject({ type: "webauthn.get", challenge, origin: stack.origin });
 
   // Sent to the confirmation page, as a script could, the signer refuses it.
@@ -324,6 +345,7 @@ test("a script on the control plane's page cannot get an approval", async () => 
     headers: { "content-type": "application/json", "x-confirm-token": link.hash.slice(1) },
     body: JSON.stringify({ response }),
   });
+
   expect(submitted.ok).toBe(false);
   expect(SignerErrorBody.parse(await submitted.json()).error.code).toBe("assertion_invalid");
 
@@ -359,6 +381,7 @@ test("a new approver proves on the confirmation page that the passkey is theirs,
     baseURL: stack.origin,
     ignoreHTTPSErrors: HTTPS,
   });
+
   const grace = await graceContext.newPage();
   const graceProblems: string[] = [];
   grace.on("console", (message) => {
@@ -388,9 +411,11 @@ test("a new approver proves on the confirmation page that the passkey is theirs,
     await expect(
       grace.getByRole("link", { name: "Review and approve on the signer's page" }),
     ).toHaveCount(0);
+
     const prove = grace.getByRole("link", {
       name: "Prove the passkey is yours on the signer's page",
     });
+
     proveUrl = (await prove.getAttribute("href")) ?? "";
     expect(new URL(proveUrl).origin).toBe(stack.approveOrigin);
     expect(new URL(proveUrl).pathname).toBe(`/a/${approvalPath.split("/").at(-1)}`);
@@ -513,12 +538,14 @@ test("an owner approves payments in advance in the browser, the agent's covered 
   // The agent pays a listed recipient within the caps: signed and sent with no person asked.
   const agent = await connectAgent(`${stack.origin}/mcp`, agentToken);
   const before = await chain.getBalance({ address: RECIPIENT });
+
   const covered = await agent.call("propose_transfer", {
     chainId: "eip155:31337",
     to: RECIPIENT,
     amount: "0.005",
     memo: "Invoice 4413, approved in advance",
   });
+
   expect(covered).toMatchObject({
     authorizedBy: "mandate",
     mandateId: mandatePath.split("/").at(-1),
@@ -552,6 +579,7 @@ test("an owner approves payments in advance in the browser, the agent's covered 
     amount: "0.005",
     memo: "Invoice 4414, after the revocation",
   });
+
   expect(after).toMatchObject({ authorizedBy: "person", mandateId: null });
   expect(String(after.approvalUrl)).toMatch(/\/approvals\/apr_/);
   await agent.close();
@@ -579,15 +607,19 @@ test("the built app serves its manifest and its service worker, and the worker a
   // stacks served on localhost without TLS.
   if (!HTTPS) {
     await page.goto("/");
+
     const state = await page.evaluate(async () => {
       const registration = await navigator.serviceWorker.register("/sw.js");
       const ready = await navigator.serviceWorker.ready;
       const scriptURL = ready.active?.scriptURL ?? null;
       await registration.unregister();
+
       return { scriptURL, scope: registration.scope };
     });
+
     expect(state).toEqual({ scriptURL: `${stack.origin}/sw.js`, scope: `${stack.origin}/` });
   }
+
   expect(problems).toEqual([]);
 });
 
@@ -597,9 +629,11 @@ test("over HTTPS, plain HTTP is redirected and browsers are told to stay on HTTP
   const secure = await fetch(`${stack.origin}/healthz`);
   expect(secure.status).toBe(200);
   expect(secure.headers.get("strict-transport-security")).toMatch(/max-age=\d{7,}/);
+
   const plain = await fetch(`${stack.origin.replace("https:", "http:")}/healthz`, {
     redirect: "manual",
   });
+
   expect(plain.status).toBe(308);
   expect(plain.headers.get("location")).toBe(`${stack.origin}/healthz`);
 

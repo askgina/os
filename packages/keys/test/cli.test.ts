@@ -17,19 +17,26 @@ import {
 import { startTransitStub, type TransitStub } from "./support/transit-stub.ts";
 
 const execFileAsync = promisify(execFile);
+
 const cli = join(import.meta.dirname, "..", "src", "cli.ts");
+
 const dir = mkdtempSync(join(tmpdir(), "os-keys-cli-"));
+
 const k1 = LocalKeyring.generate("k1");
+
 const k2: KeyringFile = {
   active: "k2",
   keys: { ...k1.keys, k2: randomBytes(32).toString("base64") },
 };
+
 let db: TestDatabase;
+
 let pool: pg.Pool;
 
 function ringFile(name: string, file: KeyringFile): string {
   const path = join(dir, name);
   writeFileSync(path, JSON.stringify(file), { mode: 0o600 });
+
   return path;
 }
 
@@ -37,6 +44,7 @@ function ringFile(name: string, file: KeyringFile): string {
 async function runCli(args: string[], env: Record<string, string>) {
   let code = 0;
   let stdout: string;
+
   try {
     ({ stdout } = await execFileAsync(process.execPath, [cli, ...args], {
       env: { PATH: process.env.PATH ?? "", ...env },
@@ -47,10 +55,12 @@ async function runCli(args: string[], env: Record<string, string>) {
     code = failure.code;
     stdout = failure.stdout;
   }
+
   const lines = stdout
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line) as Record<string, unknown>);
+
   return { code, lines, stdout };
 }
 
@@ -69,19 +79,23 @@ describe("keys CLI", () => {
   test("rewrap moves keys to the new KEK; the old KEK can then be removed", async () => {
     const old = new DataKeyStore({ pool, provider: new LocalKeyring(k1), cacheTtlMs: 0 });
     const key = await old.getOrCreate("workspace", "ws_cli", "ws_cli");
+
     const result = await runCli(["rewrap", "--batch", "1"], {
       DATABASE_URL: db.url,
       KEYRING_FILE: ringFile("k2.json", k2),
     });
+
     expect(result.code).toBe(0);
     expect(result.lines).toEqual([
       { event: "keys.rewrap", activeKek: "k2", rewrapped: 1, failedCount: 0, failed: [] },
     ]);
+
     const k2Only = new DataKeyStore({
       pool,
       provider: new LocalKeyring({ active: "k2", keys: { k2: k2.keys.k2 ?? "" } }),
       cacheTtlMs: 0,
     });
+
     expect(Buffer.from(await k2Only.get("workspace", "ws_cli"))).toEqual(Buffer.from(key));
     expect(result.stdout).not.toContain(Buffer.from(key).toString("hex"));
     expect(result.stdout).not.toContain(k2.keys.k2);
@@ -101,6 +115,7 @@ describe("keys CLI", () => {
       ...env,
       DATABASE_PASSWORD_FILE: join(dir, "no-such-file"),
     });
+
     expect(unreadable.code).toBe(1);
     expect(unreadable.lines[0]).toMatchObject({ message: "DATABASE_PASSWORD_FILE cannot be read" });
   });
@@ -111,14 +126,17 @@ describe("keys CLI", () => {
     await pool.query(
       "UPDATE os_keys.data_keys SET wrapped_key = set_byte(wrapped_key, 15, get_byte(wrapped_key, 15) # 1) WHERE key_id = 'wrun_bad'",
     );
+
     const k3: KeyringFile = {
       active: "k3",
       keys: { ...k2.keys, k3: randomBytes(32).toString("base64") },
     };
+
     const result = await runCli(["rewrap"], {
       DATABASE_URL: db.url,
       KEYRING_FILE: ringFile("k3.json", k3),
     });
+
     expect(result.code).toBe(2);
     expect(result.lines[0]).toMatchObject({
       event: "keys.rewrap",
@@ -153,10 +171,12 @@ describe("keys CLI", () => {
     expect(first.lines).toEqual([
       { event: "keys.shred_tenant", scope: "run", tenantId: "ws_ta", shredded: 2 },
     ]);
+
     for (const id of ["wrun_ta1", "wrun_ta2"]) {
       await expect(store.get("run", id)).rejects.toBeInstanceOf(DataKeyUnavailableError);
       await expect(store.getOrCreate("run", id)).rejects.toBeInstanceOf(DataKeyUnavailableError);
     }
+
     expect(Buffer.from(await store.get("run", "wrun_tb1"))).toEqual(Buffer.from(other));
     const again = await runCli(["shred-tenant", "run", "ws_ta"], env);
     expect(again.code).toBe(0);
@@ -179,6 +199,7 @@ describe("keys CLI", () => {
       DATABASE_URL: "postgres://unused@127.0.0.1:1/x",
       KEYRING_FILE: "/nonexistent",
     });
+
     expect(result.code).toBe(1);
     expect(result.lines[0]).toMatchObject({ event: "keys.cli.usage_error" });
   });
@@ -213,10 +234,12 @@ describe("keys CLI", () => {
     test("rewrap with the keyring file still set moves file keys to Transit", async () => {
       const fileStore = new DataKeyStore({ pool: baoPool, provider: new LocalKeyring(k1) });
       const key = await fileStore.getOrCreate("workspace", "ws_bao", "ws_bao");
+
       const result = await runCli(["rewrap"], {
         ...env,
         KEYRING_FILE: ringFile("k1-bao.json", k1),
       });
+
       expect(result.code).toBe(0);
       expect(result.lines).toEqual([
         {
@@ -227,11 +250,13 @@ describe("keys CLI", () => {
           failed: [],
         },
       ]);
+
       const transit = new TransitKeyProvider({
         address: stub.address,
         auth: { kind: "token", tokenFile: env.OPENBAO_TOKEN_FILE ?? "" },
         refreshSeconds: 0,
       });
+
       try {
         const transitOnly = new DataKeyStore({ pool: baoPool, provider: transit, cacheTtlMs: 0 });
         expect(Buffer.from(await transitOnly.get("workspace", "ws_bao"))).toEqual(Buffer.from(key));

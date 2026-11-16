@@ -30,6 +30,7 @@ import {
 } from "./fixtures.ts";
 
 const ONE_ETH = 10n ** 18n;
+
 const nothingSpent = () => 0n;
 
 function decide(
@@ -38,15 +39,18 @@ function decide(
   spent: (c: Network, a: SpendAsset) => bigint = nothingSpent,
 ) {
   const decision = evaluateIntent(p, i, spent);
+
   return decision.allowed ? "allowed" : decision.code;
 }
 
 const send = (valueWei: bigint, to: `0x${string}` = ALICE) =>
   intent({ operation: { type: "evm.transfer", to, valueWei: valueWei.toString() } });
+
 const call = (valueWei: bigint, to: `0x${string}` = ROUTER) =>
   intent({
     operation: { type: "evm.call", to, valueWei: valueWei.toString(), data: "0xa9059cbb" },
   });
+
 const tokenSend = (amount: bigint) =>
   intent({
     operation: { type: "evm.erc20.transfer", token: TOKEN, to: ALICE, amount: amount.toString() },
@@ -91,9 +95,11 @@ describe("evaluateIntent", () => {
     expect(decide(allowlist, send(1n, ALICE))).toBe("allowed");
     expect(decide(allowlist, send(1n, BOB))).toBe("recipient_not_allowed");
     expect(decide(policy(), send(1n, BOB))).toBe("allowed");
+
     const tokenToBob = intent({
       operation: { type: "evm.erc20.transfer", token: TOKEN, to: BOB, amount: "1" },
     });
+
     expect(decide(allowlist, tokenToBob)).toBe("recipient_not_allowed");
   });
 
@@ -113,6 +119,7 @@ describe("evaluateIntent", () => {
       assets: [],
       contractCalls: { mode: "allowlist", targets: [ROUTER] },
     });
+
     expect(evaluateIntent(noAssets, call(0n), nothingSpent)).toEqual({
       allowed: true,
       spend: { chainId: BASE, asset: "native", amount: 0n },
@@ -141,10 +148,13 @@ describe("evaluateIntent", () => {
   it("over_daily_cap counts prior spend for that chain and asset only", () => {
     const day = 5n * ONE_ETH;
     const asked: string[] = [];
+
     const spent = (chainId: Network, asset: SpendAsset) => {
       asked.push(`${chainId}|${asset}`);
+
       return chainId === BASE && asset === "native" ? day - ONE_ETH : 999n * ONE_ETH;
     };
+
     expect(decide(policy(), send(ONE_ETH), spent)).toBe("allowed");
     expect(decide(policy(), send(ONE_ETH), () => day - ONE_ETH + 1n)).toBe("over_daily_cap");
     expect(asked).toEqual([`${BASE}|native`]);
@@ -157,6 +167,7 @@ describe("evaluateIntent", () => {
         { chainId: BASE, asset: TOKEN, maxPerTx: "100", maxPerDay: "150" },
       ],
     });
+
     expect(decide(withToken, tokenSend(100n))).toBe("allowed");
     expect(decide(withToken, tokenSend(101n))).toBe("over_per_tx_cap");
     expect(decide(withToken, tokenSend(100n), (_c, a) => (a === TOKEN ? 51n : 0n))).toBe(
@@ -171,6 +182,7 @@ describe("evaluateIntent", () => {
       chainId: MAINNET,
       maxFeeWei: "999999999999999999999",
     });
+
     expect(decide(policy(), everythingWrong)).toBe("requester_not_allowed");
   });
 
@@ -197,6 +209,7 @@ describe("evaluateIntent", () => {
 
 const venuePolicy = (rules: Partial<HyperliquidRules> = {}) =>
   policy({ venues: { hyperliquid: hyperliquidRules(rules) } });
+
 const order = (changes: Partial<HyperliquidOrderOperation> = {}) =>
   venueIntent({
     operation: {
@@ -210,10 +223,13 @@ const order = (changes: Partial<HyperliquidOrderOperation> = {}) =>
       ...changes,
     },
   });
+
 const withdraw = (amount = "25") =>
   venueIntent({ operation: { type: "hyperliquid.withdraw", amount } });
+
 /** 650 USD, the fixture order's notional, in micro-USD. */
 const ORDER_NOTIONAL = 650_000_000n;
+
 const btcCap = (cap: bigint) =>
   venuePolicy({
     markets: [{ asset: BTC_ASSET, coin: "BTC", maxNotionalPerOrderUsd6: cap.toString() }],
@@ -252,6 +268,7 @@ describe("evaluateIntent with a venue intent", () => {
       fees: { maxPerTxWei: "1" },
       venues: { hyperliquid: hyperliquidRules() },
     });
+
     expect(decide(noEvm, order())).toBe("allowed");
   });
 
@@ -276,10 +293,13 @@ describe("evaluateIntent with a venue intent", () => {
   it("over_daily_cap on both sides of the daily notional cap, in usd6 on that network only", () => {
     const day = 2_000_000_000n;
     const asked: string[] = [];
+
     const spent = (chainId: Network, asset: SpendAsset) => {
       asked.push(`${chainId}|${asset}`);
+
       return day - ORDER_NOTIONAL;
     };
+
     expect(decide(venuePolicy(), order(), spent)).toBe("allowed");
     expect(decide(venuePolicy(), order(), () => day - ORDER_NOTIONAL + 1n)).toBe("over_daily_cap");
     expect(asked).toEqual([`${HL_TESTNET}|usd6`]);
@@ -304,6 +324,7 @@ describe("evaluateIntent with a venue intent", () => {
       markets: [{ asset: BTC_ASSET, coin: "BTC", maxNotionalPerOrderUsd6: "1" }],
       timeInForce: ["Ioc"],
     });
+
     expect(decide(strict, order({ asset: 5, tif: "Gtc" }))).toBe("market_not_allowed");
     expect(decide(strict, order({ tif: "Gtc" }), () => 10n ** 12n)).toBe("order_type_not_allowed");
     expect(decide(strict, order(), () => 10n ** 12n)).toBe("over_per_tx_cap");

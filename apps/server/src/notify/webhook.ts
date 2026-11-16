@@ -73,6 +73,7 @@ function webhookBody(
 ): WebhookBody {
   if (delivery.event === "mandate.used") {
     if (approval.mandateId === null) throw new Error("a mandate use without its mandate");
+
     return {
       v: 1,
       deliveryId: delivery.id,
@@ -83,12 +84,16 @@ function webhookBody(
       link: mandateLink(origin, approval.workspaceId, approval.mandateId),
     };
   }
+
   if (approval.kind === "mandate-use") throw new Error("a mandate use is no approval to announce");
+
   if (delivery.event === "lifecycle.scheduled" || delivery.event === "lifecycle.due_soon") {
     const envelope = approval.envelope;
+
     if (envelope?.type !== "retire-wallet" && envelope?.type !== "delete-workspace") {
       throw new Error("a lifecycle notice without a retirement or deletion");
     }
+
     return {
       v: 1,
       deliveryId: delivery.id,
@@ -101,6 +106,7 @@ function webhookBody(
       link: approvalLink(origin, approval.workspaceId, approval.id),
     };
   }
+
   return {
     v: 1,
     deliveryId: delivery.id,
@@ -123,12 +129,15 @@ export async function sendWebhook(
   approval: ApprovalRow,
 ): Promise<DeliveryResult> {
   const webhook = ctx.config.notify.webhook;
+
   if (webhook === null) throw new Error("no webhook is configured");
   const body = canonicalJson(webhookBody(ctx.config.publicOrigin, delivery, approval));
   const timestamp = ctx.now();
+
   const signature = createHmac("sha256", webhook.secret)
     .update(`${timestamp}.${body}`)
     .digest("hex");
+
   const outcome = await postOnce(
     webhook.url,
     {
@@ -140,10 +149,14 @@ export async function sendWebhook(
     body,
     timestamp,
   );
+
   if (outcome.status === null) return { ok: false, retry: true, code: outcome.code };
+
   if (outcome.status >= 200 && outcome.status < 300) return { ok: true };
   const code = `http_${outcome.status}`;
+
   if (!isRetryable(outcome.status)) return { ok: false, retry: false, code };
+
   return outcome.retryAfter === undefined
     ? { ok: false, retry: true, code }
     : { ok: false, retry: true, code, retryAfter: outcome.retryAfter };

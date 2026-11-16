@@ -50,7 +50,9 @@ import {
 export const os = pgSchema("os");
 
 const bytea = customType<{ data: Buffer }>({ dataType: () => "bytea" });
+
 const time = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
+
 const createdAt = () => time("created_at").notNull().defaultNow();
 
 // --- installation and people ------------------------------------------------------------------

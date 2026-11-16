@@ -35,6 +35,7 @@ import {
 } from "./fixtures.ts";
 
 const SECRET = new Uint8Array(32).fill(7);
+
 const encode = (text: string) => new TextEncoder().encode(text);
 
 describe("request signatures", () => {
@@ -44,7 +45,9 @@ describe("request signatures", () => {
     timestamp: T0,
     body: encode('{"a":1}'),
   };
+
   const signature = signRequest(SECRET, parts);
+
   const check = (changed: Partial<SignedRequestParts & { now: number; signature: string }>) =>
     verifyRequestSignature(SECRET, { ...parts, signature, now: T0, ...changed });
 
@@ -94,12 +97,15 @@ type Recorded = { url: string; init: RequestInit };
 
 function fakeFetch(respond: (url: string) => { status: number; body: unknown; raw?: string }) {
   const calls: Recorded[] = [];
+
   const fetch = (async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = String(input);
     calls.push({ url, init });
     const { status, body, raw } = respond(url);
+
     return new Response(raw ?? JSON.stringify(body), { status });
   }) as typeof globalThis.fetch;
+
   return { fetch, calls };
 }
 
@@ -112,6 +118,7 @@ const workspaceState = {
   destroyAfter: null,
   minDestroyDelaySeconds: DESTROY_DELAY,
 };
+
 const approvalState = {
   approvalId: APPROVAL,
   state: "unknown",
@@ -122,6 +129,7 @@ const approvalState = {
 
 function client(respond: Parameters<typeof fakeFetch>[0]) {
   const fake = fakeFetch(respond);
+
   return {
     ...fake,
     signer: createSignerClient({
@@ -137,6 +145,7 @@ function verifyRecorded(call: Recorded, secret: Uint8Array = SECRET): boolean {
   const url = new URL(call.url);
   const headers = new Headers(call.init.headers);
   const body = call.init.body;
+
   return verifyRequestSignature(secret, {
     method: call.init.method ?? "GET",
     pathWithQuery: `${url.pathname}${url.search}`,
@@ -157,6 +166,7 @@ describe("signer client", () => {
       ["POST", `http://signer:8787/v1/workspaces/${WS}/pause`],
     ]);
     expect(calls[0]?.init.body).toBeUndefined();
+
     for (const call of calls) expect(verifyRecorded(call)).toBe(true);
   });
 
@@ -181,6 +191,7 @@ describe("signer client", () => {
     const { signer, calls } = client(() => ({ status: 200, body: workspaceState }));
     await signer.getWorkspace(WS);
     const [call] = calls;
+
     if (!call) throw new Error("no call");
     expect(
       verifyRecorded({ ...call, url: call.url.replace(WS, `ws_01jd000000000000000000000z`) }),
@@ -204,6 +215,7 @@ describe("signer client", () => {
           ? approvalState
           : workspaceState,
     }));
+
     await signer.health();
     await signer.revokeApproval(APPROVAL, WS);
     expect(calls.map((c) => `${c.init.method} ${new URL(c.url).pathname}`)).toEqual([
@@ -223,12 +235,15 @@ describe("signer client", () => {
       signedTransaction: "0x02",
       transactionHash: `0x${"ab".repeat(32)}`,
     };
+
     const { signer, calls } = client(() => ({ status: 200, body: signed }));
+
     const request = {
       sweep: sweep(),
       authorization: { envelope: sweepWallet(), assertions: [] },
       transaction: { nonce: 0, gas: "21000", maxFeePerGas: "1", maxPriorityFeePerGas: "1" },
     };
+
     expect(await signer.sweep(WALLET, request)).toEqual(signed);
     const [call] = calls;
     expect(`${call?.init.method} ${new URL(call?.url ?? "").pathname}`).toBe(
@@ -250,6 +265,7 @@ describe("signer client", () => {
       revokedReason: null,
       usage: { uses: 0, assets: [] },
     };
+
     const signed = {
       approvalId: APPROVAL,
       walletId: WALLET,
@@ -257,18 +273,24 @@ describe("signer client", () => {
       signedTransaction: "0x02",
       transactionHash: `0x${"ab".repeat(32)}`,
     };
+
     const { signer, calls } = client((url) => {
       const path = new URL(url).pathname;
+
       if (path.endsWith("/sign")) return { status: 200, body: signed };
+
       if (path.endsWith("/mandates") && path.startsWith("/v1/wallets/")) {
         return { status: 200, body: { mandates: [state] } };
       }
+
       return { status: 200, body: state };
     });
+
     const grant = {
       mandate: mandate(),
       authorization: { envelope: grantMandate(), assertions: [] },
     };
+
     const use = {
       approvalId: APPROVAL,
       intent: intent(),
@@ -288,6 +310,7 @@ describe("signer client", () => {
       `POST /v1/mandates/${MANDATE}/revoke`,
       `POST /v1/mandates/${MANDATE}/sign`,
     ]);
+
     for (const name of [
       "grantMandate",
       "getMandate",
@@ -297,11 +320,14 @@ describe("signer client", () => {
     ] as const) {
       expect(signerRoutes[name].scope).toBe("control");
     }
+
     for (const call of calls) expect(verifyRecorded(call)).toBe(true);
+
     const body = (call: Recorded | undefined) =>
       call?.init.body === undefined
         ? undefined
         : JSON.parse(new TextDecoder().decode(call.init.body as Uint8Array));
+
     expect(calls.map(body)).toEqual([grant, undefined, undefined, { workspaceId: WS }, use]);
   });
 
@@ -321,10 +347,12 @@ describe("signer client", () => {
       },
       signedTransaction: "0x02",
     };
+
     const { signer, calls } = client(() => ({ status: 200, body: attempted }));
     const fees = { attempt: 1, maxFeePerGas: "3", maxPriorityFeePerGas: "2" };
     const reprice = { intent: intent(), envelope: approveIntent(), ...fees };
     const byMandate = { intent: intent(), mandateId: MANDATE, ...fees };
+
     const cancel = {
       authorization: { envelope: cancelTransaction(), assertions: [] },
       ...fees,
@@ -342,6 +370,7 @@ describe("signer client", () => {
       "control",
       "control",
     ]);
+
     for (const call of calls) expect(verifyRecorded(call)).toBe(true);
     expect(
       calls.map((call) => JSON.parse(new TextDecoder().decode(call.init.body as Uint8Array))),
@@ -352,15 +381,18 @@ describe("signer client", () => {
       status: 403,
       body: { error: { code: "fee_not_raised", message: "raise both fees" } },
     }));
+
     await expect(refusing.signer.reprice(TARGET_APPROVAL, reprice)).rejects.toMatchObject({
       name: "SignerError",
       code: "fee_not_raised",
       status: 403,
     });
+
     const odd = client(() => ({
       status: 200,
       body: { ...attempted, attempt: { ...attempted.attempt, kind: "original" } },
     }));
+
     await expect(odd.signer.reprice(TARGET_APPROVAL, reprice)).rejects.not.toBeInstanceOf(
       SignerError,
     );
@@ -369,6 +401,7 @@ describe("signer client", () => {
   it("sends venue signing and cancels to their routes, signed, and keeps the body's key order", async () => {
     const cloid = `0x${"12".repeat(16)}` as const;
     const signature = { r: `0x${"ab".repeat(32)}`, s: `0x${"cd".repeat(32)}`, v: 27 };
+
     // The answer's keys out of the venue's order: the parsed body puts them back.
     const order = {
       approvalId: APPROVAL,
@@ -398,6 +431,7 @@ describe("signer client", () => {
         },
       },
     };
+
     const cancelled = {
       approvalId: APPROVAL,
       cloid,
@@ -409,14 +443,17 @@ describe("signer client", () => {
         expiresAfter: T0 * 1000 + 60_001,
       },
     };
+
     const { signer, calls } = client((url) => ({
       status: 200,
       body: url.endsWith("/cancel") ? cancelled : order,
     }));
+
     const request = {
       intent: venueIntent(),
       authorization: { envelope: approveIntent(), assertions: [] },
     };
+
     const signed = await signer.signVenue(request as never);
     expect(JSON.stringify(signed.request)).toBe(
       JSON.stringify({
@@ -450,6 +487,7 @@ describe("signer client", () => {
       "control",
       "control",
     ]);
+
     for (const call of calls) expect(verifyRecorded(call)).toBe(true);
     expect(
       calls.map((call) => JSON.parse(new TextDecoder().decode(call.init.body as Uint8Array))),
@@ -465,10 +503,12 @@ describe("signer client", () => {
       const odd = client(() => ({ status: 200, body }));
       await expect(odd.signer.signVenue(request as never)).rejects.not.toBeInstanceOf(SignerError);
     }
+
     const otherCancel = client(() => ({
       status: 200,
       body: { ...cancelled, cloid: `0x${"34".repeat(16)}` },
     }));
+
     await expect(otherCancel.signer.cancelVenueOrder(APPROVAL, WS)).rejects.not.toBeInstanceOf(
       SignerError,
     );
@@ -476,6 +516,7 @@ describe("signer client", () => {
 
   it("sends each retire and delete call to its route, signed, with its body, and parses the answer", async () => {
     const destroyAfter = T0 + DESTROY_DELAY;
+
     const retiring = {
       walletId: WALLET,
       workspaceId: WS,
@@ -489,11 +530,14 @@ describe("signer client", () => {
       state: "retiring",
       destroyAfter,
     };
+
     const deleting = { ...workspaceState, paused: true, state: "deleting", destroyAfter };
+
     const { signer, calls } = client((url) => ({
       status: 200,
       body: new URL(url).pathname.startsWith("/v1/wallets/") ? retiring : deleting,
     }));
+
     const retire = { envelope: retireWallet(), assertions: [] };
     const remove = { envelope: deleteWorkspace(), assertions: [] };
 
@@ -512,6 +556,7 @@ describe("signer client", () => {
       `POST /v1/workspaces/${WS}/delete/cancel`,
       `POST /v1/workspaces/${WS}/delete/finalize`,
     ]);
+
     for (const call of calls) expect(verifyRecorded(call)).toBe(true);
     expect(
       calls.map((call) => JSON.parse(new TextDecoder().decode(call.init.body as Uint8Array))),
@@ -529,6 +574,7 @@ describe("signer client", () => {
       status: 409,
       body: { error: { code: "destroy_not_due", message: "not yet" } },
     }));
+
     await expect(early.signer.finalizeDeleteWorkspace(WS)).rejects.toMatchObject({
       name: "SignerError",
       code: "destroy_not_due",
@@ -547,17 +593,20 @@ describe("signer client", () => {
         error: { code: "mandate_denied", message: "denied", detail: "mandate_over_window_cap" },
       },
     }));
+
     const use = {
       approvalId: APPROVAL,
       intent: intent(),
       transaction: { nonce: 0, gas: "21000", maxFeePerGas: "1", maxPriorityFeePerGas: "1" },
     };
+
     await expect(signer.signUnderMandate(MANDATE, use)).rejects.toMatchObject({
       name: "SignerError",
       code: "mandate_denied",
       status: 403,
       detail: "mandate_over_window_cap",
     });
+
     const forged = client(() => ({
       status: 200,
       body: {
@@ -572,6 +621,7 @@ describe("signer client", () => {
         usage: { uses: 0, assets: [] },
       },
     }));
+
     const error = await forged.signer.getMandate(MANDATE).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(SignerError);
@@ -579,14 +629,17 @@ describe("signer client", () => {
 
   it("gives up on a signer that never answers", async () => {
     let aborted = false;
+
     const hang = ((_input: string | URL | Request, init: RequestInit = {}) => {
       const { promise, reject } = Promise.withResolvers<Response>();
       init.signal?.addEventListener("abort", () => {
         aborted = true;
         reject(init.signal?.reason);
       });
+
       return promise;
     }) as typeof globalThis.fetch;
+
     const signer = createSignerClient({
       baseUrl: "http://signer:8787",
       secret: SECRET,
@@ -594,6 +647,7 @@ describe("signer client", () => {
       now: () => T0,
       timeoutMs: 50,
     });
+
     await expect(signer.health()).rejects.toMatchObject({ name: "TimeoutError" });
     expect(aborted).toBe(true);
   });
@@ -603,6 +657,7 @@ describe("signer client", () => {
       status: 403,
       body: { error: { code: "policy_denied", message: "denied", detail: "over_daily_cap" } },
     }));
+
     const error = await signer.getWallet(WALLET).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SignerError);
     expect(error).toMatchObject({
@@ -631,16 +686,21 @@ describe("signer client", () => {
     const CONFIRM_SECRET = new Uint8Array(32).fill(9);
     const TOKEN = "AAAAAAAAAAAAAAAAAAAAAA";
     const view = `/v1/confirm/${APPROVAL}`;
+
     const fake = fakeFetch((url) => {
       const path = new URL(url).pathname;
+
       if (path.endsWith("/confirmation"))
         return { status: 200, body: { path: `/a/${APPROVAL}#${TOKEN}` } };
+
       if (path.endsWith("/assertions") && !path.startsWith("/v1/confirm/")) {
         return { status: 200, body: { assertions: [] } };
       }
+
       if (path === view) {
         return { status: 409, body: { error: { code: "confirmation_closed", message: "closed" } } };
       }
+
       return {
         status: 200,
         body: {
@@ -650,22 +710,26 @@ describe("signer client", () => {
         },
       };
     });
+
     const control = createSignerClient({
       baseUrl: "http://signer:8787",
       secret: SECRET,
       fetch: fake.fetch,
       now: () => T0,
     });
+
     const confirm = createConfirmClient({
       baseUrl: "http://signer:8787",
       secret: CONFIRM_SECRET,
       fetch: fake.fetch,
       now: () => T0,
     });
+
     const request = {
       envelope: approveIntent(),
       subject: { kind: "approve-intent" as const, intent: intent() },
     };
+
     const response = {
       id: "Y3JlZC1h",
       rawId: "Y3JlZC1h",
@@ -693,17 +757,20 @@ describe("signer client", () => {
       Recorded,
       Recorded,
     ];
+
     expect(fake.calls.map((call) => `${call.init.method} ${new URL(call.url).pathname}`)).toEqual([
       `POST /v1/approvals/${APPROVAL}/confirmation`,
       `GET /v1/approvals/${APPROVAL}/assertions`,
       `GET ${view}`,
       `POST ${view}/assertions`,
     ]);
+
     for (const call of [opened, listed]) {
       expect(verifyRecorded(call, SECRET)).toBe(true);
       expect(verifyRecorded(call, CONFIRM_SECRET)).toBe(false);
       expect(new Headers(call.init.headers).has(CONFIRM_TOKEN_HEADER)).toBe(false);
     }
+
     for (const call of [viewed, submitted]) {
       expect(verifyRecorded(call, CONFIRM_SECRET)).toBe(true);
       expect(verifyRecorded(call, SECRET)).toBe(false);
@@ -711,8 +778,10 @@ describe("signer client", () => {
       // The token never travels in the URL, where a proxy's access log would keep it.
       expect(call.url).not.toContain(TOKEN);
     }
+
     const body = (call: Recorded) =>
       JSON.parse(new TextDecoder().decode(call.init.body as Uint8Array));
+
     expect(body(opened)).toEqual(request);
     expect(body(submitted)).toEqual({ response });
   });
@@ -720,6 +789,7 @@ describe("signer client", () => {
   it("sends the possession step to its routes, the token only in its header, signed with the confirm secret", async () => {
     const CONFIRM_SECRET = new Uint8Array(32).fill(9);
     const TOKEN = "AAAAAAAAAAAAAAAAAAAAAA";
+
     const options = {
       rpId: "os.example",
       challenge: "7voVoMiWeZwDat_WCB8R-xOqaIfjygPAYO7xmCsm8ec",
@@ -727,17 +797,20 @@ describe("signer client", () => {
       userVerification: "required",
       timeoutMs: 120_000,
     };
+
     const fake = fakeFetch((url) =>
       url.endsWith("/possession") && fake.calls.length === 1
         ? { status: 200, body: options }
         : { status: 200, body: { fingerprint: "0123-4567-89AB-CDEF" } },
     );
+
     const confirm = createConfirmClient({
       baseUrl: "http://signer:8787",
       secret: CONFIRM_SECRET,
       fetch: fake.fetch,
       now: () => T0,
     });
+
     const response = {
       id: "Y3JlZC1h",
       rawId: "Y3JlZC1h",
@@ -758,24 +831,28 @@ describe("signer client", () => {
       "confirm",
       "confirm",
     ]);
+
     for (const call of fake.calls) {
       expect(verifyRecorded(call, CONFIRM_SECRET)).toBe(true);
       expect(verifyRecorded(call, SECRET)).toBe(false);
       expect(new Headers(call.init.headers).get(CONFIRM_TOKEN_HEADER)).toBe(TOKEN);
       expect(call.url).not.toContain(TOKEN);
     }
+
     expect(JSON.parse(new TextDecoder().decode(fake.calls[1]?.init.body as Uint8Array))).toEqual({
       response,
     });
 
     // A fingerprint that is not one is not passed on.
     const odd = fakeFetch(() => ({ status: 200, body: { fingerprint: "0123-4567-89AB-CDEU" } }));
+
     const oddClient = createConfirmClient({
       baseUrl: "http://signer:8787",
       secret: CONFIRM_SECRET,
       fetch: odd.fetch,
       now: () => T0,
     });
+
     await expect(oddClient.submitPossession(APPROVAL, TOKEN, response)).rejects.toThrow();
   });
 

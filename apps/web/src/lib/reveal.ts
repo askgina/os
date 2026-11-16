@@ -23,7 +23,9 @@ export function revealToken(agentId: string, value: RevealedToken): void {
  */
 export function takeRevealedToken(agentId: string): RevealedToken | null {
   const value = pending.get(agentId) ?? null;
+
   if (value) setTimeout(() => pending.delete(agentId), 0);
+
   return value;
 }
 
@@ -40,6 +42,8 @@ export function revealCloneResult(result: CloneResult): void {
 /** Returns the result and forgets it, as `takeRevealedToken` does. */
 export function takeCloneResult(workspaceId: string): CloneResult | null {
   const value = pendingClones.get(workspaceId) ?? null;
+
   if (value) setTimeout(() => pendingClones.delete(workspaceId), 0);
+
   return value;
 }

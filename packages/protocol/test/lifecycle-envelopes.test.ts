@@ -41,6 +41,7 @@ const ok = (schema: { safeParse(v: unknown): { success: boolean } }, value: unkn
   schema.safeParse(value).success;
 
 const walletRef = { walletId: WALLET, address: WALLET_ADDRESS } as const;
+
 const otherRef = { walletId: OTHER_WALLET, address: OTHER_WALLET_ADDRESS } as const;
 
 // Written out by hand from RFC 8785 (keys in code-unit order, no whitespace, nested keys sorted
@@ -48,8 +49,11 @@ const otherRef = { walletId: OTHER_WALLET, address: OTHER_WALLET_ADDRESS } as co
 //   printf '%s\n%s' "askgina.os/v1/authorize" '<json>' | openssl dgst -sha256 -binary | basenc --base64url | tr -d '='
 // Added with retiring and deleting. Every earlier vector is unchanged (digests.test.ts).
 const RETIRE_ENVELOPE_JSON = `{"approvalId":"${APPROVAL}","destroyAfter":1700604800,"expiresAt":1700000600,"issuedAt":1700000000,"nonce":"AAAAAAAAAAAAAAAAAAAAAA","type":"retire-wallet","v":1,"wallet":{"address":"${WALLET_ADDRESS}","walletId":"${WALLET}"},"workspaceId":"${WS}"}`;
+
 const RETIRE_ENVELOPE_CHALLENGE = "sf-9sPBaI68XkcDwsMoRcvXRh0r9Hh-ZlGsDkt1mXSQ";
+
 const DELETE_ENVELOPE_JSON = `{"approvalId":"${APPROVAL}","destroyAfter":1700604800,"expiresAt":1700000600,"issuedAt":1700000000,"nonce":"AAAAAAAAAAAAAAAAAAAAAA","type":"delete-workspace","v":1,"wallets":[{"address":"${WALLET_ADDRESS}","walletId":"${WALLET}"},{"address":"${OTHER_WALLET_ADDRESS}","walletId":"${OTHER_WALLET}"}],"workspaceId":"${WS}"}`;
+
 const DELETE_ENVELOPE_CHALLENGE = "Eh-cbJJV6jfq43fRilytGeljY5_IabAPNBhMfw-GHX4";
 
 const challenge = (envelope: Envelope) =>
@@ -64,6 +68,7 @@ describe("retire-wallet", () => {
 
   it("refuses a destroy time that is not after issuedAt", () => {
     expect(ok(Envelope, retireWallet({ destroyAfter: T0 + 1 }))).toBe(true);
+
     for (const destroyAfter of [T0, T0 - 1]) {
       expect(ok(RetireWalletEnvelope, retireWallet({ destroyAfter }))).toBe(false);
       expect(ok(Envelope, retireWallet({ destroyAfter }))).toBe(false);
@@ -108,12 +113,14 @@ describe("delete-workspace", () => {
 
   it("lists at most 256 wallets", () => {
     const ULID_CHARACTERS = "0123456789abcdefghjkmnpqrstvwxyz";
+
     const many = [...ULID_CHARACTERS].flatMap((first) =>
       [...ULID_CHARACTERS].map((second) => ({
         walletId: `wal_01jd00000000000000000000${first}${second}` as const,
         address: WALLET_ADDRESS,
       })),
     );
+
     expect(ok(Envelope, deleteWorkspace({ wallets: many.slice(0, 256) }))).toBe(true);
     expect(ok(Envelope, deleteWorkspace({ wallets: many.slice(0, 257) }))).toBe(false);
   });
@@ -154,15 +161,18 @@ describe("pinned digest vectors", () => {
 
   it("binds every wallet's id and address, the set, and the destroy time", () => {
     const retire = challenge(retireWallet());
+
     for (const wallet of [
       { walletId: OTHER_WALLET, address: WALLET_ADDRESS },
       { walletId: WALLET, address: OTHER_WALLET_ADDRESS },
     ]) {
       expect(challenge(retireWallet({ wallet }))).not.toBe(retire);
     }
+
     expect(challenge(retireWallet({ destroyAfter: T0 + DESTROY_DELAY - 1 }))).not.toBe(retire);
 
     const remove = challenge(deleteWorkspace());
+
     for (const wallets of [
       [],
       [walletRef],
@@ -172,6 +182,7 @@ describe("pinned digest vectors", () => {
     ]) {
       expect(challenge(deleteWorkspace({ wallets }))).not.toBe(remove);
     }
+
     expect(challenge(deleteWorkspace({ destroyAfter: T0 + 1 }))).not.toBe(remove);
   });
 
@@ -194,6 +205,7 @@ describe("an assertion over one kind does not verify as another", () => {
       envelope,
       origin: ORIGIN,
     });
+
   const verify = async (envelope: Envelope, signedOver: Envelope) => {
     const verdict = await verifyAuthorization({
       authorization: { envelope, assertions: [sign(signedOver)] },
@@ -203,12 +215,14 @@ describe("an assertion over one kind does not verify as another", () => {
       maxTtlSeconds: 3600,
       now: T0 + 10,
     });
+
     return verdict.ok ? "ok" : verdict.code;
   };
 
   it("each verifies for itself, and travels in the signer's authorized request", async () => {
     expect(await verify(retireWallet(), retireWallet())).toBe("ok");
     expect(await verify(deleteWorkspace(), deleteWorkspace())).toBe("ok");
+
     for (const envelope of [retireWallet(), deleteWorkspace()]) {
       const authorization = { envelope, assertions: [sign(envelope)] };
       expect(ok(AuthorizedRequest, { authorization })).toBe(true);
@@ -249,6 +263,7 @@ describe("the signer contract", () => {
     destroyAfter: null,
     minDestroyDelaySeconds: DESTROY_DELAY,
   };
+
   const wallet = {
     walletId: WALLET,
     workspaceId: WS,
@@ -333,6 +348,7 @@ describe("the signer contract", () => {
       "destroy_delay_out_of_range",
       "destroy_not_due",
     ] as const;
+
     for (const code of codes) expect(SignerErrorCode.options).toContain(code);
     expect(codes.map((code) => signerErrorStatus[code])).toEqual([403, 403, 403, 403, 403, 409]);
   });

@@ -17,12 +17,15 @@ const STEPS = Symbol.for("askgina.os.steps");
 
 function steps(): StepImplementations {
   const registered = (globalThis as Record<symbol, StepImplementations | undefined>)[STEPS];
+
   if (registered === undefined) throw new Error("step implementations are not registered");
+
   return registered;
 }
 
 /** How long a waiting run sleeps before it looks at the request again: doubling, up to the cap. */
 const FIRST_LOOK_SECONDS = 5;
+
 const MAX_LOOK_SECONDS = 120;
 
 export interface ApprovalRunInput {
@@ -34,6 +37,7 @@ export interface ApprovalRunInput {
 export async function approval(input: ApprovalRunInput): Promise<SettledStatus> {
   "use workflow";
   const { approvalId } = input;
+
   // The token names this run, not just the request. A start can be repeated (a crash between
   // starting a run and recording it), and two runs asking for one token would leave the second
   // with a HookConflictError: if that one had recorded itself as the owner first, every wake-up
@@ -42,6 +46,7 @@ export async function approval(input: ApprovalRunInput): Promise<SettledStatus> 
   const hook = createHook<{ approvalId: string }>({
     token: `apr:${approvalId}:${getWorkflowMetadata().workflowRunId}`,
   });
+
   const wakeUps = hook[Symbol.asyncIterator]();
   const expiry = sleep(new Date(input.expiresAt * 1000));
 
@@ -52,49 +57,60 @@ export async function approval(input: ApprovalRunInput): Promise<SettledStatus> 
   let status = await settleStep(approvalId);
   let wakeUp = wakeUps.next().then(() => true);
   let lookSeconds = FIRST_LOOK_SECONDS;
+
   while (status === "pending") {
     const woken = await Promise.race([
       wakeUp,
       expiry.then(() => false),
       sleep(lookSeconds * 1000).then(() => false),
     ]);
+
     if (woken) wakeUp = wakeUps.next().then(() => true);
     lookSeconds = Math.min(lookSeconds * 2, MAX_LOOK_SECONDS);
     status = await settleStep(approvalId);
   }
+
   // Another run was recorded for this request first (a start was retried); that run owns it.
   if (status === "superseded") return status;
 
   if (status === "approved") {
     let outcome: { ok: true } | { ok: false; code: string };
+
     try {
       outcome = await executeStep(approvalId);
     } catch {
       // Retries ran out on an error that is not a refusal (signer or database unreachable).
       outcome = { ok: false, code: "execution_error" };
     }
+
     if (!outcome.ok) {
       await failStep(approvalId, outcome.code);
+
       return "failed";
     }
+
     status = "executed";
   }
 
   if (status === "executed") {
     for (;;) {
       const next = await followUpStep(approvalId);
+
       if (next.done) break;
       await sleep(next.waitSeconds * 1000);
     }
+
     return "executed";
   }
 
   await abandonStep(approvalId, status);
+
   return status;
 }
 
 async function settleStep(approvalId: string): Promise<SettledStatus> {
   "use step";
+
   return steps().settle(approvalId, getWorkflowMetadata().workflowRunId);
 }
 
@@ -102,23 +118,29 @@ async function executeStep(
   approvalId: string,
 ): Promise<{ ok: true } | { ok: false; code: string }> {
   "use step";
+
   return steps().execute(approvalId);
 }
+
 // A signer or chain outage should not end an approved request; keep trying for a while.
 executeStep.maxRetries = 12;
 
 async function failStep(approvalId: string, code: string): Promise<void> {
   "use step";
+
   return steps().fail(approvalId, code);
 }
 
 async function abandonStep(approvalId: string, status: SettledStatus): Promise<void> {
   "use step";
+
   return steps().abandon(approvalId, status);
 }
 
 async function followUpStep(approvalId: string): Promise<{ done: boolean; waitSeconds: number }> {
   "use step";
+
   return steps().followUp(approvalId);
 }
+
 followUpStep.maxRetries = 12;

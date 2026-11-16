@@ -30,6 +30,7 @@ export const TransferOperation = z.strictObject({
   to: Address,
   valueWei: PositiveAmount,
 });
+
 export type TransferOperation = z.infer<typeof TransferOperation>;
 
 /** Call `transfer(to, amount)` on an ERC-20 token contract. */
@@ -39,6 +40,7 @@ export const Erc20TransferOperation = z.strictObject({
   to: Address,
   amount: PositiveAmount,
 });
+
 export type Erc20TransferOperation = z.infer<typeof Erc20TransferOperation>;
 
 /**
@@ -51,6 +53,7 @@ export const CallOperation = z.strictObject({
   valueWei: Amount,
   data: Hex.refine((value) => value.length >= 10, "calldata must carry a 4-byte selector"),
 });
+
 export type CallOperation = z.infer<typeof CallOperation>;
 
 /** What an EVM intent does on its chain. */
@@ -59,6 +62,7 @@ export const Operation = z.discriminatedUnion("type", [
   Erc20TransferOperation,
   CallOperation,
 ]);
+
 export type Operation = z.infer<typeof Operation>;
 
 // Control characters and bidirectional overrides could make an approval card show something
@@ -70,8 +74,10 @@ function hasUnsafeMemoCharacter(value: string): boolean {
     const isLineBreak = code === 0x2028 || code === 0x2029;
     const isBidiMark = code === 0x200e || code === 0x200f || code === 0x061c;
     const isBidiOverride = (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
+
     if (isControl || isLineBreak || isBidiMark || isBidiOverride) return true;
   }
+
   return false;
 }
 
@@ -104,6 +110,7 @@ export const EvmIntent = z
   })
   .superRefine((intent, context) => {
     const { operation } = intent;
+
     // The zero address has no key: coins sent there are burned and a call there does nothing
     // useful, so it is almost always a mistake a person would not catch on an approval card.
     const addresses: [string, string][] =
@@ -113,6 +120,7 @@ export const EvmIntent = z
             ["token", operation.token],
           ]
         : [["to", operation.to]];
+
     for (const [field, value] of addresses) {
       if (value === ZERO_ADDRESS) {
         context.addIssue({
@@ -122,6 +130,7 @@ export const EvmIntent = z
         });
       }
     }
+
     // Most tokens keep what is sent to their own contract for good.
     if (operation.type === "evm.erc20.transfer" && operation.to === operation.token) {
       context.addIssue({
@@ -131,6 +140,7 @@ export const EvmIntent = z
       });
     }
   });
+
 export type EvmIntent = z.infer<typeof EvmIntent>;
 
 /**
@@ -148,6 +158,7 @@ export const HyperliquidOrderOperation = z.strictObject({
   tif: z.enum(["Alo", "Gtc", "Ioc"]),
   reduceOnly: z.boolean(),
 });
+
 export type HyperliquidOrderOperation = z.infer<typeof HyperliquidOrderOperation>;
 
 /**
@@ -159,6 +170,7 @@ export const HyperliquidWithdrawOperation = z.strictObject({
   /** In USDC. */
   amount: PositiveDecimal,
 });
+
 export type HyperliquidWithdrawOperation = z.infer<typeof HyperliquidWithdrawOperation>;
 
 /** What a venue intent does at its venue. */
@@ -166,6 +178,7 @@ export const VenueOperation = z.discriminatedUnion("type", [
   HyperliquidOrderOperation,
   HyperliquidWithdrawOperation,
 ]);
+
 export type VenueOperation = z.infer<typeof VenueOperation>;
 
 /**
@@ -185,6 +198,7 @@ export const VenueIntent = z.strictObject({
   memo: Memo,
   createdAt: EpochSeconds,
 });
+
 export type VenueIntent = z.infer<typeof VenueIntent>;
 
 /**
@@ -193,6 +207,7 @@ export type VenueIntent = z.infer<typeof VenueIntent>;
  * an EVM one or the other way round, because their `chainId` values never overlap.
  */
 export const Intent = z.union([EvmIntent, VenueIntent]);
+
 export type Intent = z.infer<typeof Intent>;
 
 export function isVenueIntent(intent: Intent): intent is VenueIntent {
@@ -218,6 +233,7 @@ export function intentSpend(intent: EvmIntent): {
 export function intentSpend(intent: Intent): { asset: SpendAsset; amount: bigint; daily: boolean };
 export function intentSpend(intent: Intent): { asset: SpendAsset; amount: bigint; daily: boolean } {
   const { operation } = intent;
+
   switch (operation.type) {
     case "evm.transfer":
       return { asset: "native", amount: BigInt(operation.valueWei), daily: true };

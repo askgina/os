@@ -16,6 +16,7 @@ export function createLogger(component: string): Logger {
       `${JSON.stringify({ at: new Date().toISOString(), level, component, message, ...fields })}\n`,
     );
   };
+
   return {
     info: (message, fields) => write("info", message, fields),
     warn: (message, fields) => write("warn", message, fields),

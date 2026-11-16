@@ -60,15 +60,20 @@ export function handle<N extends RouteName>(
     // come from our own page. SameSite=Strict already blocks most of this; this is the backstop.
     if (route.method !== "GET") {
       const origin = c.req.header("origin");
+
       if (origin === undefined || !ctx.config.relyingParty.origins.includes(origin)) {
         throw new HttpError("forbidden", "requests that change state must come from this site");
       }
     }
+
     const session = await ctx.sessions.resolve(c.req.raw);
+
     if (route.auth === "session" && session === null) {
       throw new HttpError("unauthenticated", "sign in first");
     }
+
     const workspaceId = (c.req.param() as Record<string, string | undefined>).workspaceId;
+
     if (
       route.method !== "GET" &&
       session !== null &&
@@ -83,6 +88,7 @@ export function handle<N extends RouteName>(
         .where(
           and(eq(workspaces.id, workspaceId as never), eq(memberships.userId, session.user.id)),
         );
+
       if (row && row.lifecycle !== "active") {
         throw new HttpError(
           "conflict",
@@ -91,9 +97,12 @@ export function handle<N extends RouteName>(
         );
       }
     }
+
     const body =
       route.body === null ? undefined : route.body.parse(await c.req.json().catch(() => null));
+
     const query = route.query === null ? undefined : route.query.parse(c.req.query());
+
     const output = await handler({
       params: c.req.param() as never,
       query: query as never,
@@ -101,6 +110,7 @@ export function handle<N extends RouteName>(
       session: session as never,
       c,
     });
+
     return c.json(route.response.parse(output) as object);
   });
 }
@@ -116,11 +126,14 @@ export function installErrorHandler(app: Hono, ctx: Pick<AppContext, "log">): vo
           ...(error.detail === undefined ? {} : { detail: error.detail }),
         },
       };
+
       return c.json(body, error.status as 400);
     }
+
     if (error instanceof z.ZodError) {
       const first = error.issues[0];
       const where = first?.path.join(".") ?? "";
+
       const body: ApiErrorBody = {
         error: {
           code: "invalid_request",
@@ -128,11 +141,14 @@ export function installErrorHandler(app: Hono, ctx: Pick<AppContext, "log">): vo
             where === "" ? (first?.message ?? "invalid request") : `${where}: ${first?.message}`,
         },
       };
+
       return c.json(body, 400);
     }
+
     // The message may quote user data; log only what kind of error it was and where.
     ctx.log.error("unhandled error", { name: error.name, path: new URL(c.req.url).pathname });
     const body: ApiErrorBody = { error: { code: "internal", message: "something went wrong" } };
+
     return c.json(body, 500);
   });
 }

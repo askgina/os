@@ -6,11 +6,13 @@ import { afterAll, describe, expect, test } from "vitest";
 import { KeyProviderRefusedError, LocalKeyring } from "../src/index.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "os-keys-keyring-"));
+
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 function writeRing(name: string, body: string): string {
   const path = join(dir, name);
   writeFileSync(path, body, { mode: 0o600 });
+
   return path;
 }
 
@@ -31,6 +33,7 @@ describe("LocalKeyring wrap and unwrap", () => {
       ring.wrap("k1", dataKey, aad),
       ring.wrap("k1", dataKey, aad),
     ]);
+
     expect(Buffer.from(a).equals(Buffer.from(b))).toBe(false);
   });
 
@@ -47,6 +50,7 @@ describe("LocalKeyring wrap and unwrap", () => {
 
   test("a flipped bit anywhere in the wrapped key is detected", async () => {
     const wrapped = Buffer.from(await ring.wrap("k1", dataKey, aad));
+
     for (const index of [0, 20, wrapped.length - 1]) {
       const tampered = Buffer.from(wrapped);
       tampered[index] = (tampered[index] ?? 0) ^ 1;
@@ -57,6 +61,7 @@ describe("LocalKeyring wrap and unwrap", () => {
   test("every refusal is a KeyProviderRefusedError that names the KEK, not the key or the AAD", async () => {
     const wrapped = Buffer.from(await ring.wrap("k1", dataKey, aad));
     wrapped[20] = (wrapped[20] ?? 0) ^ 1;
+
     for (const attempt of [
       ring.unwrap("k1", wrapped, aad),
       ring.unwrap("k1", wrapped.subarray(1), aad),
@@ -67,6 +72,7 @@ describe("LocalKeyring wrap and unwrap", () => {
         () => undefined,
         (failure: unknown) => failure,
       );
+
       expect(error).toBeInstanceOf(KeyProviderRefusedError);
       expect((error as KeyProviderRefusedError).kekId).toMatch(/^k[19]$/);
       expect((error as Error).message).not.toContain(dataKey.toString("base64"));
@@ -86,6 +92,7 @@ describe("LocalKeyring wrap and unwrap", () => {
       active: "k2",
       keys: { ...file.keys, k2: randomBytes(32).toString("base64") },
     });
+
     await expect(two.ready()).resolves.toBeUndefined();
     expect(two.activeKekId()).toBe("k2");
     await expect(two.close()).resolves.toBeUndefined();
@@ -119,11 +126,13 @@ describe("LocalKeyring configuration", () => {
     const secret = randomBytes(32).toString("base64");
     const path = writeRing("broken.json", `{"active":"k1","keys":{"k1":"${secret}"`);
     let message = "";
+
     try {
       LocalKeyring.fromFile(path);
     } catch (error) {
       message = (error as Error).message;
     }
+
     expect(message).toBe("keyring: the keyring file is not valid JSON");
     expect(message).not.toContain(secret.slice(0, 8));
   });

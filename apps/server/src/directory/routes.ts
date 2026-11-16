@@ -53,8 +53,11 @@ import {
 } from "./views.ts";
 
 const INVITE_TTL_SECONDS = 7 * 24 * 3600;
+
 const AUDIT_PAGE = 50;
+
 const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
+
 const actorOf = (session: Session) => ({ type: "user" as const, id: session.user.id });
 
 /** Ask the signer something; its refusals become the API's error codes. */
@@ -69,6 +72,7 @@ async function signerCall<T>(call: () => Promise<T>): Promise<T> {
 /** `osa_<agent ulid>_<32 random bytes>`: recognizable in a leaked-secret scan, unguessable. */
 function mintAgentToken(agentId: AgentId): { token: string; hash: string; prefix: string } {
   const token = `osa_${agentId.slice("agt_".length)}_${randomToken(32)}`;
+
   // The prefix names the agent and four characters of the secret: enough to tell tokens apart.
   return { token, hash: sha256Hex(token), prefix: token.slice(0, 35) };
 }
@@ -85,11 +89,13 @@ async function liveInvite(ctx: AppContext, token: string) {
         gt(invites.expiresAt, new Date(ctx.now() * 1000)),
       ),
     );
+
   // An invite is only as good as its creator's authority: once they are no longer an owner,
   // it does not let anyone in.
   if (!invite || !(await isOwner(ctx.db, invite.workspaceId, invite.createdBy))) {
     throw new HttpError("not_found", "this invite is not valid any more");
   }
+
   return invite;
 }
 
@@ -104,6 +110,7 @@ async function joinByInvite(
   userId: UserId,
 ): Promise<{ workspaceId: WorkspaceId; role: Role }> {
   const now = new Date(ctx.now() * 1000);
+
   const [invite] = await tx
     .update(invites)
     .set({ acceptedBy: userId, acceptedAt: now })
@@ -111,13 +118,16 @@ async function joinByInvite(
       and(eq(invites.tokenHash, tokenHash), isNull(invites.acceptedAt), gt(invites.expiresAt, now)),
     )
     .returning();
+
   if (!invite || !(await isOwner(tx, invite.workspaceId, invite.createdBy))) {
     throw new HttpError("not_found", "this invite is not valid any more");
   }
+
   const [already] = await tx
     .select({ role: memberships.role })
     .from(memberships)
     .where(and(eq(memberships.workspaceId, invite.workspaceId), eq(memberships.userId, userId)));
+
   if (already) throw new HttpError("conflict", "you are already a member of this workspace");
   // Every member starts without approving: the signer accepts their passkeys only once the
   // workspace's approvers authorize each one.
@@ -135,6 +145,7 @@ async function joinByInvite(
     },
     tx,
   );
+
   return { workspaceId: invite.workspaceId, role: invite.role };
 }
 
@@ -148,7 +159,9 @@ async function enrollPasskeys(
     .select({ id: credentials.id })
     .from(credentials)
     .where(and(eq(credentials.userId, userId), isNull(credentials.revokedAt)));
+
   const opened: ApprovalSummary[] = [];
+
   for (const row of rows) {
     opened.push(
       await openAddApprover(ctx, {
@@ -159,6 +172,7 @@ async function enrollPasskeys(
       }),
     );
   }
+
   return opened;
 }
 
@@ -169,7 +183,9 @@ async function memberRole(ctx: AppContext, workspaceId: WorkspaceId, userId: str
     .select({ role: memberships.role })
     .from(memberships)
     .where(and(eq(memberships.workspaceId, workspaceId), eq(memberships.userId, userId as UserId)));
+
   if (!row) throw new HttpError("not_found", "no such member");
+
   return row.role;
 }
 
@@ -178,7 +194,9 @@ async function loadAgent(ctx: AppContext, workspaceId: WorkspaceId, agentId: str
     .select()
     .from(agents)
     .where(and(eq(agents.id, agentId as AgentId), eq(agents.workspaceId, workspaceId)));
+
   if (!row) throw new HttpError("not_found", "no such agent");
+
   return row;
 }
 
@@ -204,9 +222,11 @@ async function createWallet(
     })
     .onConflictDoNothing();
   const [row] = await ctx.db.select().from(wallets).where(eq(wallets.id, input.walletId));
+
   // The only conflict other than a retry of this same wallet is a second treasury that lost a
   // race with the first (the unique index allows one per workspace).
   if (!row) throw new HttpError("conflict", "this workspace already has a treasury");
+
   return row;
 }
 
@@ -217,10 +237,12 @@ export async function createWorkspaceFor(
   name: string,
 ): Promise<WorkspaceId> {
   const workspaceId = newId("ws");
+
   const passkeys = await ctx.db
     .select({ id: credentials.id, publicKey: credentials.publicKey })
     .from(credentials)
     .where(and(eq(credentials.userId, session.user.id), isNull(credentials.revokedAt)));
+
   // Trust on first use: the signer learns the creator's passkeys here and from then on only
   // changes the set with their assertions.
   await signerCall(() =>
@@ -242,6 +264,7 @@ export async function createWorkspaceFor(
       adminThreshold: 1,
     });
     await tx.insert(memberships).values({ workspaceId, userId: session.user.id, role: "owner" });
+
     if (passkeys.length > 0) {
       await tx.insert(approverCredentials).values(
         passkeys.map((passkey) => ({
@@ -252,6 +275,7 @@ export async function createWorkspaceFor(
         })),
       );
     }
+
     await appendAudit(
       ctx,
       {
@@ -264,6 +288,7 @@ export async function createWorkspaceFor(
       tx,
     );
   });
+
   return workspaceId;
 }
 
@@ -288,14 +313,17 @@ export async function createAgentIn(
         isNull(agents.id),
       ),
     );
+
   const wallet = await createWallet(ctx, {
     workspaceId,
     walletId: orphan?.id ?? newId("wal"),
     kind: "agent",
     label: name,
   });
+
   const agentId = newId("agt");
   const minted = mintAgentToken(agentId);
+
   const agent = await ctx.db.transaction(async (tx) => {
     const [row] = await tx
       .insert(agents)
@@ -308,6 +336,7 @@ export async function createAgentIn(
         walletId: wallet.id,
       })
       .returning();
+
     await appendAudit(
       ctx,
       {
@@ -319,10 +348,13 @@ export async function createAgentIn(
       },
       tx,
     );
+
     return row;
   });
+
   if (!agent) throw new HttpError("internal", "the agent was not stored");
   ctx.log.info("agent created", { event: "agent.created", workspaceId, agentId });
+
   return { agent, wallet, token: minted.token, mcpUrl: `${ctx.config.publicOrigin}/mcp` };
 }
 
@@ -337,13 +369,16 @@ export async function createTreasuryIn(
     .select({ id: wallets.id })
     .from(wallets)
     .where(and(eq(wallets.workspaceId, workspaceId), eq(wallets.kind, "treasury")));
+
   if (existing) throw new HttpError("conflict", "this workspace already has a treasury");
+
   const wallet = await createWallet(ctx, {
     workspaceId,
     walletId: newId("wal"),
     kind: "treasury",
     label,
   });
+
   await appendAudit(ctx, {
     workspaceId,
     actor: actorOf(session),
@@ -351,6 +386,7 @@ export async function createTreasuryIn(
     subject: { type: "wallet", id: wallet.id },
     detail: { label, address: wallet.address },
   });
+
   return wallet;
 }
 
@@ -384,6 +420,7 @@ export async function createInviteIn(
       tx,
     );
   });
+
   // `/join/<token>` is the web app's route for accepting an invite.
   return { id: inviteId, url: `${ctx.config.publicOrigin}/join/${token}`, expiresAt };
 }
@@ -402,19 +439,25 @@ export async function openPolicyRequest(
 ): Promise<ApprovalSummary> {
   const { wallet } = await loadWallet(ctx, workspaceId, walletId);
   const [workspace] = await ctx.db.select().from(workspaces).where(eq(workspaces.id, workspaceId));
+
   if (!workspace) throw new HttpError("not_found", "no such workspace");
+
   if (draft.approvals.threshold > workspace.adminThreshold) {
     throw new HttpError(
       "invalid_request",
       `draft.approvals.threshold: may not exceed the workspace's admin threshold (${workspace.adminThreshold}); raise that first`,
     );
   }
+
   const configured = new Set<string>(ctx.chains.list().map((chain) => chain.chainId));
   const unknownChain = draft.chains.find((chainId) => !configured.has(chainId));
+
   if (unknownChain !== undefined) {
     throw new HttpError("invalid_request", "draft.chains: a chain is not configured here");
   }
+
   const venueNetwork = draft.venues?.hyperliquid?.network;
+
   if (
     venueNetwork !== undefined &&
     !ctx.config.venues.some((venue) => venue.network === venueNetwork)
@@ -425,16 +468,20 @@ export async function openPolicyRequest(
       "venue_not_configured",
     );
   }
+
   if (draft.requesters.length > 0) {
     const found = await ctx.db
       .select({ id: agents.id })
       .from(agents)
       .where(and(eq(agents.workspaceId, workspaceId), inArray(agents.id, draft.requesters)));
+
     if (found.length !== new Set(draft.requesters).size) {
       throw new HttpError("invalid_request", "draft.requesters: not an agent of this workspace");
     }
   }
+
   const current = await signerCall(() => ctx.signer.getWallet(wallet.id));
+
   const policy: WalletPolicy = normalizePolicy({
     ...draft,
     v: PROTOCOL_VERSION,
@@ -443,6 +490,7 @@ export async function openPolicyRequest(
     revision: (current.policy?.revision ?? 0) + 1,
     previousHash: current.policyHash,
   } as WalletPolicy);
+
   // One draft at a time per wallet: a newer draft replaces the one still waiting.
   const waiting = await ctx.db
     .select({ id: approvals.id })
@@ -455,8 +503,10 @@ export async function openPolicyRequest(
         eq(approvals.status, "pending"),
       ),
     );
+
   for (const approval of waiting) await ctx.approvals.cancel(approval.id);
   const detail: SetPolicyDetail = { policy };
+
   return ctx.approvals.open({
     workspaceId,
     kind: "set-policy",
@@ -483,7 +533,9 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
       .innerJoin(workspaces, eq(workspaces.id, memberships.workspaceId))
       .where(eq(memberships.userId, session.user.id))
       .orderBy(asc(workspaces.createdAt));
+
     const items = [];
+
     for (const { workspace, role } of rows) {
       items.push({
         id: workspace.id,
@@ -494,17 +546,20 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
         lifecycle: workspaceLifecycle(workspace),
       });
     }
+
     return { items };
   });
 
   handle(app, ctx, "createWorkspace", async ({ session, body }) => {
     const workspaceId = await createWorkspaceFor(ctx, session, body.name);
+
     return workspaceDetail(ctx, workspaceId, "owner");
   });
 
   handle(app, ctx, "getWorkspace", async ({ session, params }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     const role = await requireMember(ctx, session, workspaceId);
+
     try {
       await reconcileApprovers(ctx, workspaceId);
     } catch (error) {
@@ -515,6 +570,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
         code: error instanceof SignerError ? error.code : "unavailable",
       });
     }
+
     return workspaceDetail(ctx, workspaceId, role);
   });
 
@@ -529,6 +585,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
         .set({ paused: true })
         .where(and(eq(workspaces.id, workspaceId), eq(workspaces.paused, false)))
         .returning({ id: workspaces.id });
+
       if (changed.length === 0) return;
       await appendAudit(
         ctx,
@@ -541,17 +598,21 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
         tx,
       );
     });
+
     return workspaceDetail(ctx, workspaceId, role);
   });
 
   handle(app, ctx, "requestResume", async ({ session, params }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "approver");
+
     const [workspace] = await ctx.db
       .select()
       .from(workspaces)
       .where(eq(workspaces.id, workspaceId));
+
     if (!workspace?.paused) throw new HttpError("conflict", "this workspace is not paused");
+
     return ctx.approvals.open({
       workspaceId,
       kind: "resume-workspace",
@@ -567,22 +628,28 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   handle(app, ctx, "requestAdminThreshold", async ({ session, params, body }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "owner");
+
     const [workspace] = await ctx.db
       .select()
       .from(workspaces)
       .where(eq(workspaces.id, workspaceId));
+
     if (!workspace) throw new HttpError("not_found", "no such workspace");
+
     const policies = await ctx.db
       .select({ policy: wallets.policy })
       .from(wallets)
       .where(eq(wallets.workspaceId, workspaceId));
+
     const highest = Math.max(0, ...policies.map((row) => row.policy?.approvals.threshold ?? 0));
+
     if (body.adminThreshold < highest) {
       throw new HttpError(
         "invalid_request",
         `adminThreshold: a wallet policy needs ${highest} approvals, and policies may not need more than the admin threshold; lower those policies first`,
       );
     }
+
     return ctx.approvals.open({
       workspaceId,
       kind: "set-admin-threshold",
@@ -601,12 +668,14 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   handle(app, ctx, "createInvite", async ({ session, params, body }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "owner");
+
     return createInviteIn(ctx, session, workspaceId, body.role);
   });
 
   handle(app, ctx, "listInvites", async ({ session, params }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "owner");
+
     const rows = await ctx.db
       .select({ invite: invites, creator: users })
       .from(invites)
@@ -619,6 +688,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
         ),
       )
       .orderBy(asc(invites.createdAt));
+
     return {
       items: rows.map(({ invite, creator }) => ({
         id: invite.id,
@@ -644,6 +714,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
           ),
         )
         .returning({ id: invites.id });
+
       if (deleted.length === 0) throw new HttpError("not_found", "no such invite");
       await appendAudit(
         ctx,
@@ -656,22 +727,27 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
         tx,
       );
     });
+
     return {};
   });
 
   handle(app, ctx, "getInvite", async ({ params }) => {
     const invite = await liveInvite(ctx, params.token);
+
     const [row] = await ctx.db
       .select({ workspaceName: workspaces.name, invitedBy: users.displayName })
       .from(workspaces)
       .innerJoin(users, eq(users.id, invite.createdBy))
       .where(eq(workspaces.id, invite.workspaceId));
+
     if (!row) throw new HttpError("not_found", "this invite is not valid any more");
+
     return { workspaceName: row.workspaceName, role: invite.role, invitedBy: row.invitedBy };
   });
 
   handle(app, ctx, "startInviteRegistration", async ({ params, body }) => {
     const invite = await liveInvite(ctx, params.token);
+
     return startRegistration(ctx, {
       kind: "invite",
       userId: newId("usr"),
@@ -686,20 +762,26 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
       kind: "invite",
       response: body.response,
     });
+
     // The ceremony was started for one invite; it cannot finish another.
     if (ceremony.context.tokenHash !== sha256Hex(params.token)) {
       throw new HttpError("not_found", "this invite is not valid any more");
     }
+
     const userId = ceremony.userId as UserId;
     const displayName = ceremony.context.displayName ?? "Member";
+
     const joined = await ctx.db.transaction(async (tx) => {
       await tx.insert(users).values({ id: userId, displayName });
       await insertPasskey(tx, userId, passkey, "First passkey");
       const result = await joinByInvite(ctx, tx, sha256Hex(params.token), userId);
       await issueSession(ctx, c, { userId, credentialId: passkey.id }, tx);
+
       return result;
     });
+
     if (joined.role !== "viewer") await enrollPasskeys(ctx, joined.workspaceId, userId);
+
     return sessionInfo(ctx, { id: userId, displayName });
   });
 
@@ -707,7 +789,9 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
     const joined = await ctx.db.transaction((tx) =>
       joinByInvite(ctx, tx, sha256Hex(params.token), session.user.id),
     );
+
     if (joined.role !== "viewer") await enrollPasskeys(ctx, joined.workspaceId, session.user.id);
+
     return { workspaceId: joined.workspaceId };
   });
 
@@ -717,18 +801,22 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
     const userId = params.userId as UserId;
     const current = await memberRole(ctx, workspaceId, userId);
     const demotingOwner = current === "owner" && body.role !== "owner";
+
     // Checked early for a clear answer, and again inside the transaction that changes the role.
     if (demotingOwner && !(await anotherOwnerRemains(ctx.db, workspaceId, userId))) {
       throw new HttpError("conflict", LAST_OWNER);
     }
+
     const setRole = async (role: Role) => {
       await ctx.db.transaction(async (tx) => {
         if (demotingOwner) {
           if (!(await anotherOwnerRemains(tx, workspaceId, userId))) {
             throw new HttpError("conflict", LAST_OWNER);
           }
+
           await dropInvitesOf(tx, workspaceId, userId);
         }
+
         await tx
           .update(memberships)
           .set({ role })
@@ -746,7 +834,9 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
         );
       });
     };
+
     let opened: ApprovalSummary[] = [];
+
     if (body.role === current) {
       // Nothing to change.
     } else if (body.role === "viewer") {
@@ -757,13 +847,18 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
         afterwards: "viewer",
         requestedBy: actorOf(session),
       });
+
       if (opened.length === 0) await setRole("viewer");
     } else {
       await setRole(body.role);
+
       if (current === "viewer") opened = await enrollPasskeys(ctx, workspaceId, userId);
     }
+
     const member = (await listMembers(ctx, workspaceId, "owner")).find((m) => m.user.id === userId);
+
     if (!member) throw new HttpError("not_found", "no such member");
+
     return { member, approvals: opened };
   });
 
@@ -772,15 +867,18 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
     await requireMember(ctx, session, workspaceId, "owner");
     const userId = params.userId as UserId;
     const current = await memberRole(ctx, workspaceId, userId);
+
     if (current === "owner" && !(await anotherOwnerRemains(ctx.db, workspaceId, userId))) {
       throw new HttpError("conflict", LAST_OWNER);
     }
+
     const opened = await withdrawApprover(ctx, {
       workspaceId,
       userId,
       afterwards: "remove",
       requestedBy: actorOf(session),
     });
+
     if (opened.length === 0) {
       await ctx.db.transaction(async (tx) => {
         if (current === "owner") {
@@ -788,6 +886,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
             throw new HttpError("conflict", LAST_OWNER);
           }
         }
+
         await dropInvitesOf(tx, workspaceId, userId);
         await tx
           .delete(memberships)
@@ -804,6 +903,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
         );
       });
     }
+
     return { approvals: opened };
   });
 
@@ -813,6 +913,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "owner");
     const created = await createAgentIn(ctx, session, workspaceId, body.name);
+
     return {
       agent: agentSummary(created.agent),
       wallet: walletSummary(created.wallet, created.agent.id),
@@ -825,6 +926,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "owner");
     const agent = await loadAgent(ctx, workspaceId, params.agentId);
+
     if (agent.status !== "active") throw new HttpError("conflict", "this agent is disabled");
     const minted = mintAgentToken(agent.id);
     await ctx.db.transaction(async (tx) => {
@@ -843,6 +945,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
         tx,
       );
     });
+
     return { token: minted.token };
   });
 
@@ -850,12 +953,14 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "owner");
     const agent = await loadAgent(ctx, workspaceId, params.agentId);
+
     const updated = await ctx.db.transaction(async (tx) => {
       const [row] = await tx
         .update(agents)
         .set({ status: "disabled" })
         .where(eq(agents.id, agent.id))
         .returning();
+
       if (agent.status === "active") {
         await appendAudit(
           ctx,
@@ -868,8 +973,10 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
           tx,
         );
       }
+
       return row;
     });
+
     if (!updated) throw new HttpError("not_found", "no such agent");
     // The gateway already refuses the agent; its mandates end at the signer too, so nothing is
     // signed under them even by a control plane that ignored the status. Done after the status
@@ -889,6 +996,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
           code: error instanceof SignerError ? error.code : "unreachable",
         }),
     );
+
     // Disabling is removal (D12): the agent's payments still waiting for people end too, and
     // the signer is told at once, so none of them can be approved and signed later.
     const payments = await ctx.db
@@ -902,6 +1010,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
           sql`${approvals.envelope}->>'agentId' = ${agent.id}`,
         ),
       );
+
     await cancelRequests(ctx, payments).then(
       (cancelled) =>
         ctx.log.info("agent payments cancelled", {
@@ -917,12 +1026,14 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
           error: error instanceof Error ? error.name : "unknown",
         }),
     );
+
     return agentSummary(updated);
   });
 
   handle(app, ctx, "createTreasury", async ({ session, params, body }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "owner");
+
     return walletSummary(await createTreasuryIn(ctx, session, workspaceId, body.label), null);
   });
 
@@ -933,17 +1044,21 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
     const state = await signerCall(() => ctx.signer.getWallet(wallet.id));
     const policy = state.policy;
     const chains = policy?.chains ?? ctx.chains.list().map((chain) => chain.chainId);
+
     const assets: { chainId: ChainId; asset: AssetRef }[] = chains.map((chainId) => ({
       chainId,
       asset: "native",
     }));
+
     for (const limit of policy?.assets ?? []) {
       if (limit.asset !== "native") assets.push({ chainId: limit.chainId, asset: limit.asset });
     }
+
     const [balances, venue] = await Promise.all([
       ctx.chains.balances(wallet.address, assets),
       walletVenueAccount(ctx, wallet, policy, state.venueSpent),
     ]);
+
     const [pending] = await ctx.db
       .select({ id: approvals.id })
       .from(approvals)
@@ -955,6 +1070,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
           eq(approvals.status, "pending"),
         ),
       );
+
     return {
       // The signer's copy of the policy is the one that is enforced.
       ...walletSummary({ ...wallet, policy, policyHash: state.policyHash }, agentId),
@@ -968,6 +1084,7 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   handle(app, ctx, "requestPolicy", async ({ session, params, body }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId, "owner");
+
     return openPolicyRequest(ctx, session, workspaceId, params.walletId, body.draft);
   });
 
@@ -977,9 +1094,11 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId);
     const before = query.cursor === undefined ? null : Number.parseInt(query.cursor, 10);
+
     if (before !== null && !Number.isSafeInteger(before)) {
       throw new HttpError("invalid_request", "cursor: not a cursor from this list");
     }
+
     const rows = await ctx.db
       .select()
       .from(auditEvents)
@@ -991,9 +1110,11 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
       )
       .orderBy(desc(auditEvents.seq))
       .limit(AUDIT_PAGE + 1);
+
     const pageRows = rows.slice(0, AUDIT_PAGE);
     const names = await actorNames(ctx, pageRows);
     const items: AuditEvent[] = [];
+
     for (const row of pageRows) {
       const detail = await openAuditDetail(ctx, row);
       items.push({
@@ -1014,7 +1135,9 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
         hash: row.hash,
       });
     }
+
     const last = pageRows.at(-1);
+
     return {
       items,
       nextCursor: rows.length > AUDIT_PAGE && last ? String(last.seq) : null,
@@ -1024,18 +1147,21 @@ export function registerDirectoryRoutes(app: Hono, ctx: AppContext): void {
   handle(app, ctx, "verifyAudit", async ({ session, params }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId);
+
     return verifyAudit(ctx, workspaceId);
   });
 
   handle(app, ctx, "listSignerDecisions", async ({ session, params, query }) => {
     const workspaceId = params.workspaceId as WorkspaceId;
     await requireMember(ctx, session, workspaceId);
+
     const response = await signerCall(() =>
       ctx.signer.listDecisions(
         workspaceId,
         query.after === undefined ? {} : { after: Number(query.after) },
       ),
     );
+
     return { items: response.decisions };
   });
 }
@@ -1047,19 +1173,24 @@ async function actorNames(
   const userIds = rows.filter((r) => r.actorType === "user" && r.actorId).map((r) => r.actorId);
   const agentIds = rows.filter((r) => r.actorType === "agent" && r.actorId).map((r) => r.actorId);
   const names = new Map<string, string>();
+
   if (userIds.length > 0) {
     const found = await ctx.db
       .select({ id: users.id, name: users.displayName })
       .from(users)
       .where(inArray(users.id, userIds as UserId[]));
+
     for (const row of found) names.set(row.id, row.name);
   }
+
   if (agentIds.length > 0) {
     const found = await ctx.db
       .select({ id: agents.id, name: agents.name })
       .from(agents)
       .where(inArray(agents.id, agentIds as AgentId[]));
+
     for (const row of found) names.set(row.id, row.name);
   }
+
   return names;
 }

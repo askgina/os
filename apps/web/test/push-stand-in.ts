@@ -21,23 +21,29 @@
 export function standInPushManager(): void {
   if (!("PushManager" in window)) return;
   const storageKey = "fixture.push-subscription";
+
   interface Stored {
     endpoint: string;
     p256dh: string;
     auth: string;
     serverKey: string;
   }
+
   const encode = (bytes: Uint8Array) =>
     btoa(String.fromCharCode(...bytes))
       .replace(/\+/g, "-")
       .replace(/\//g, "_")
       .replace(/=+$/, "");
+
   const decode = (text: string) =>
     Uint8Array.from(atob(text.replace(/-/g, "+").replace(/_/g, "/")), (char) => char.charCodeAt(0));
+
   const read = (): Stored | null => {
     const raw = localStorage.getItem(storageKey);
+
     return raw === null ? null : (JSON.parse(raw) as Stored);
   };
+
   const asSubscription = (stored: Stored): PushSubscription => {
     const subscription = {
       endpoint: stored.endpoint,
@@ -52,43 +58,57 @@ export function standInPushManager(): void {
       }),
       unsubscribe: async () => {
         localStorage.removeItem(storageKey);
+
         return true;
       },
     };
+
     return subscription as unknown as PushSubscription;
   };
 
   PushManager.prototype.getSubscription = async function getSubscription() {
     const stored = read();
+
     return stored === null ? null : asSubscription(stored);
   };
+
   PushManager.prototype.subscribe = async function subscribe(options) {
     if (Notification.permission !== "granted") {
       throw new DOMException("Registration failed - permission denied", "NotAllowedError");
     }
+
     const key = options?.applicationServerKey;
+
     if (!key || typeof key === "string") throw new TypeError("the stand-in takes a key's bytes");
+
     const serverKey = encode(
       ArrayBuffer.isView(key)
         ? new Uint8Array(key.buffer, key.byteOffset, key.byteLength)
         : new Uint8Array(key),
     );
+
     const existing = read();
+
     if (existing !== null) {
       if (existing.serverKey === serverKey) return asSubscription(existing);
       throw new DOMException("A subscription with a different key exists.", "InvalidStateError");
     }
+
     const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, [
       "deriveBits",
     ]);
+
     const publicKey = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+
     const stored: Stored = {
       endpoint: `https://fcm.googleapis.com/fcm/send/stand-in-${crypto.randomUUID()}`,
       p256dh: encode(publicKey),
       auth: encode(crypto.getRandomValues(new Uint8Array(16))),
       serverKey,
     };
+
     localStorage.setItem(storageKey, JSON.stringify(stored));
+
     return asSubscription(stored);
   };
 }

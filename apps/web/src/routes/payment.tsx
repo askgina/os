@@ -33,10 +33,13 @@ export function PaymentPage() {
   const { workspaceId, intentId } = useParams({ from: "/w/$workspaceId/payments/$intentId" });
   const workspace = useWorkspace(workspaceId);
   const intent = useIntent(intentId);
+
   if (intent.isPending || !workspace.data) return <Loading label="Loading the payment" />;
+
   if (intent.isError) {
     return <ErrorState error={intent.error} retry={() => void intent.refetch()} />;
   }
+
   return <PaymentView intent={intent.data} workspace={workspace.data} />;
 }
 
@@ -45,6 +48,7 @@ function PaymentView({ intent, workspace }: { intent: IntentDetail; workspace: W
   const wallet = workspace.wallets.find((item) => item.id === intent.walletId);
   const chain = workspace.chains.find((item) => item.chainId === intent.chainId);
   const nativeSymbol = chain?.nativeSymbol ?? "native coin";
+
   return (
     <div className="grid grid-cols-1 gap-6">
       <PageHeader

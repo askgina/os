@@ -44,6 +44,7 @@ function lastOwner(name: string, lifecycle: string): HttpError {
     lifecycle === "deleting"
       ? "wait until its deletion is finished"
       : "make another member an owner, or delete the workspace";
+
   return new HttpError(
     "conflict",
     `the only owner of the workspace "${name}": ${next}, first`,
@@ -65,6 +66,7 @@ async function requiredApprovers(
     .select({ policy: wallets.policy })
     .from(wallets)
     .where(eq(wallets.workspaceId, workspaceId));
+
   return Math.max(adminThreshold, ...rows.map((row) => row.policy?.approvals.threshold ?? 0));
 }
 
@@ -93,8 +95,10 @@ export async function checkErasable(
     .innerJoin(workspaces, eq(workspaces.id, memberships.workspaceId))
     .where(eq(memberships.userId, userId))
     .orderBy(asc(memberships.workspaceId));
+
   for (const row of member) {
     if (row.role !== "owner") continue;
+
     const [other] = await ctx.db
       .select({ userId: memberships.userId })
       .from(memberships)
@@ -106,6 +110,7 @@ export async function checkErasable(
         ),
       )
       .limit(1);
+
     if (!other) throw lastOwner(row.name, row.lifecycle);
   }
 
@@ -114,10 +119,12 @@ export async function checkErasable(
     .from(approverCredentials)
     .where(eq(approverCredentials.userId, userId))
     .orderBy(asc(approverCredentials.workspaceId), asc(approverCredentials.credentialId));
+
   // Where the signer accepts one of their passkeys: `active`, or `removing` until that is applied.
   const accepted = [
     ...new Set(approving.filter((row) => row.state !== "pending").map((row) => row.workspaceId)),
   ];
+
   for (const workspaceId of accepted) {
     const [workspace] = await ctx.db
       .select({
@@ -127,7 +134,9 @@ export async function checkErasable(
       })
       .from(workspaces)
       .where(eq(workspaces.id, workspaceId));
+
     if (!workspace) continue;
+
     if (workspace.lifecycle !== "active") {
       throw new HttpError(
         "conflict",
@@ -135,7 +144,9 @@ export async function checkErasable(
         "workspace_deleting",
       );
     }
+
     const needed = await requiredApprovers(ctx, workspaceId, workspace.adminThreshold);
+
     const [others] = await ctx.db
       .select({ n: sql<number>`count(DISTINCT ${approverCredentials.userId})::int` })
       .from(approverCredentials)
@@ -146,6 +157,7 @@ export async function checkErasable(
           inArray(approverCredentials.state, ["active", "removing"]),
         ),
       );
+
     if ((others?.n ?? 0) < needed) {
       throw new HttpError(
         "conflict",
@@ -154,6 +166,7 @@ export async function checkErasable(
       );
     }
   }
+
   return approving;
 }
 
@@ -170,7 +183,9 @@ async function waitingRemoval(ctx: AppContext, row: ApproverRow): Promise<Approv
         inArray(approvals.status, ["pending", "approved"]),
       ),
     );
+
   const engine = engineOf(ctx);
+
   return Promise.all(rows.filter(isRequest).map((request) => engine.summary(request)));
 }
 
@@ -186,10 +201,12 @@ export async function eraseOnRequest(ctx: AppContext, userId: UserId): Promise<E
   const approving = await checkErasable(ctx, userId);
   const requestedBy = { type: "user" as const, id: userId };
   const pendingIn = new Map<WorkspaceId, string[]>();
+
   for (const row of approving) {
     if (row.state !== "pending") continue;
     pendingIn.set(row.workspaceId, [...(pendingIn.get(row.workspaceId) ?? []), row.credentialId]);
   }
+
   for (const [workspaceId, credentialIds] of pendingIn) {
     await withdrawApprover(ctx, {
       workspaceId,
@@ -199,7 +216,9 @@ export async function eraseOnRequest(ctx: AppContext, userId: UserId): Promise<E
       requestedBy,
     });
   }
+
   const waiting: ApprovalSummary[] = [];
+
   for (const row of approving) {
     if (row.state === "active") {
       waiting.push(
@@ -218,8 +237,10 @@ export async function eraseOnRequest(ctx: AppContext, userId: UserId): Promise<E
       waiting.push(...(await waitingRemoval(ctx, row)));
     }
   }
+
   if (waiting.length > 0) return { status: "waiting", approvals: waiting };
   await eraseUser(ctx, userId, "self");
+
   return { status: "erased", approvals: [] };
 }
 
@@ -247,13 +268,17 @@ export async function eraseUser(
       .from(users)
       .where(eq(users.id, userId))
       .for("no key update");
+
     if (!user) throw new HttpError("not_found", "no such person");
+
     if (user.erasedAt !== null) return null;
+
     const [approving] = await tx
       .select({ workspaceId: approverCredentials.workspaceId })
       .from(approverCredentials)
       .where(eq(approverCredentials.userId, userId))
       .limit(1);
+
     if (approving) {
       throw new HttpError(
         "conflict",
@@ -273,13 +298,16 @@ export async function eraseUser(
       .innerJoin(workspaces, eq(workspaces.id, memberships.workspaceId))
       .where(eq(memberships.userId, userId))
       .orderBy(asc(memberships.workspaceId));
+
     const actor =
       by === "self" ? { type: "user" as const, id: userId } : { type: "system" as const, id: null };
+
     // As `removeMember` does it, one workspace after another in id order.
     for (const row of member) {
       if (row.role === "owner" && !(await anotherOwnerRemains(tx, row.workspaceId, userId))) {
         throw lastOwner(row.name, row.lifecycle);
       }
+
       await dropInvitesOf(tx, row.workspaceId, userId);
       await tx
         .delete(memberships)
@@ -297,6 +325,7 @@ export async function eraseUser(
     }
 
     const count = async (query: PromiseLike<unknown[]>) => (await query).length;
+
     const removed = {
       sessions: await count(
         tx.delete(sessions).where(eq(sessions.userId, userId)).returning({ id: sessions.idHash }),
@@ -335,13 +364,17 @@ export async function eraseUser(
           .returning({ id: credentials.id }),
       ),
     };
+
     await tx
       .update(users)
       .set({ displayName: ERASED_NAME, quietHours: null, erasedAt: new Date(ctx.now() * 1000) })
       .where(eq(users.id, userId));
+
     return { workspaces: member.length, ...removed };
   });
+
   if (done === null) return { alreadyErased: true };
   ctx.log.info("person erased", { event: "person.erased", userId, by, ...done });
+
   return { alreadyErased: false };
 }

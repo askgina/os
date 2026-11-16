@@ -20,6 +20,7 @@ export async function anotherOwnerRemains(
     .from(memberships)
     .where(and(eq(memberships.workspaceId, workspaceId), eq(memberships.role, "owner")))
     .for("update");
+
   return owners.some((owner) => owner.userId !== userId);
 }
 
@@ -59,5 +60,6 @@ export async function isOwner(
         eq(memberships.role, "owner"),
       ),
     );
+
   return row !== undefined;
 }

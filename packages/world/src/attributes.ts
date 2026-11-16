@@ -25,6 +25,7 @@ export const ALWAYS_READABLE_ATTRIBUTE_KEYS: readonly string[] = [
 ];
 
 type Attributes = Record<string, string>;
+
 type Change = { key: string; value: string | null };
 
 /**
@@ -51,9 +52,11 @@ export function withholdRunAttributes(world: World, readableKeys: readonly strin
 
   const attributes = (given: Attributes): Attributes => {
     const kept: Attributes = {};
+
     for (const [key, value] of Object.entries(given)) {
       kept[key] = readable.has(key) ? value : WITHHELD_ATTRIBUTE_VALUE;
     }
+
     return kept;
   };
 
@@ -68,22 +71,30 @@ export function withholdRunAttributes(world: World, readableKeys: readonly strin
   const event = <T extends CreateEventRequest | RunCreatedEventRequest>(given: T): T => {
     if (given.eventType === "run_created" || given.eventType === "run_started") {
       const data = given.eventData;
+
       if (!data?.attributes) return given;
+
       return { ...given, eventData: { ...data, attributes: attributes(data.attributes) } };
     }
+
     if (given.eventType === "attr_set") {
       const data = given.eventData;
+
       if (data.writer.type === "workflow") {
         const refused = data.changes.find(({ key, value }) => value !== null && !readable.has(key));
+
         if (refused) {
           throw new AttributeValidationError(
             `run attribute ${JSON.stringify(refused.key)} is not listed as readable, so its value cannot be stored; set it from a step or list the key`,
           );
         }
+
         return given;
       }
+
       return { ...given, eventData: { ...data, changes: changes(data.changes) } };
     }
+
     return given;
   };
 
@@ -91,7 +102,9 @@ export function withholdRunAttributes(world: World, readableKeys: readonly strin
   const message = (given: QueuePayload): QueuePayload => {
     if (!("runInput" in given)) return given;
     const runInput = given.runInput;
+
     if (!runInput?.attributes) return given;
+
     return { ...given, runInput: { ...runInput, attributes: attributes(runInput.attributes) } };
   };
 
@@ -101,6 +114,7 @@ export function withholdRunAttributes(world: World, readableKeys: readonly strin
     create(runId, event(data), params)) as typeof events.create;
 
   const createBatch = events.createBatch?.bind(events);
+
   if (createBatch) {
     events.createBatch = (runId, batch, params) =>
       createBatch(
@@ -112,6 +126,7 @@ export function withholdRunAttributes(world: World, readableKeys: readonly strin
 
   const runs = world.runs;
   const setAttributes = runs.experimentalSetAttributes?.bind(runs);
+
   if (setAttributes) {
     runs.experimentalSetAttributes = (runId, given, options) =>
       setAttributes(runId, changes(given), options);
@@ -121,6 +136,7 @@ export function withholdRunAttributes(world: World, readableKeys: readonly strin
   world.queue = (name, payload, options) => queue(name, message(payload), options);
 
   const queueBatch = world.queueBatch?.bind(world);
+
   if (queueBatch) {
     world.queueBatch = (name, messages) =>
       queueBatch(

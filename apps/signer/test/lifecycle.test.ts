@@ -68,9 +68,11 @@ async function walletRefs(world: World, walletIds: readonly WalletId[]): Promise
   const refs = await Promise.all(
     walletIds.map(async (walletId) => {
       const state = await world.t.client.getWallet(walletId);
+
       return { walletId, address: state.address };
     }),
   );
+
   return refs.sort((a, b) => (a.walletId < b.walletId ? -1 : 1));
 }
 
@@ -90,6 +92,7 @@ function deleteEnvelope(
 
 async function pay(world: World) {
   const intent = intentFor(world, { type: "evm.transfer", to: RECIPIENT, valueWei: "1" });
+
   return world.t.client.sign({
     intent,
     authorization: approveIntent(world, intent),
@@ -108,6 +111,7 @@ async function sweep(world: World, to: Address) {
     to,
     maxFeeWei: String(10n ** 15n),
   };
+
   return world.t.client.sweep(world.walletId, {
     sweep: swept,
     authorization: authorize(
@@ -127,6 +131,7 @@ async function sweep(world: World, to: Address) {
 /** What the decision log records as allowed, in order; refusals are logged too. */
 async function actions(world: World): Promise<string[]> {
   const { decisions } = await world.t.client.listDecisions(world.workspaceId, { limit: 1000 });
+
   return decisions
     .filter((decision) => decision.outcome === "allowed")
     .map((decision) => decision.action);
@@ -143,6 +148,7 @@ function vaultHolds(t: TestSigner, walletId: WalletId): boolean {
       maxFeePerGas: 1n,
       maxPriorityFeePerGas: 1n,
     });
+
     return true;
   } catch (error) {
     return !(error instanceof VaultError && error.reason === "wallet_missing");
@@ -153,12 +159,14 @@ describe("retiring a wallet", () => {
   it("stops signing, revokes the wallet's live mandates only, and destroys the key after the delay", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
+
     const treasury = await t.client.createWallet({
       workspaceId: world.workspaceId,
       walletId: newId("wal"),
       kind: "treasury",
       label: "treasury",
     });
+
     const { mandate } = await grantMandate(world);
     const signed = await pay(world);
 
@@ -249,6 +257,7 @@ describe("retiring a wallet", () => {
   it("a key store that fails or crashes mid-destroy leaves the wallet retiring, and the next finalize completes", async () => {
     const honest = createTestVault();
     const faults = { before: 1, after: 1 };
+
     const vault: Vault = {
       createWallet: (walletId) => honest.createWallet(walletId),
       signEvmTransaction: (...args) => honest.signEvmTransaction(...args),
@@ -258,7 +267,9 @@ describe("retiring a wallet", () => {
           faults.before -= 1;
           throw new VaultError("failed", "the disk is full");
         }
+
         honest.destroyWallet(walletId);
+
         // Deleted from the key store, then the process dies before the database commits.
         if (faults.after > 0) {
           faults.after -= 1;
@@ -266,11 +277,13 @@ describe("retiring a wallet", () => {
         }
       },
     };
+
     const t = startSigner({ vault });
     const world = await setUpWorld(t);
     const signed = await pay(world);
     await retire(world);
     t.clock.value += WEEK;
+
     for (let failure = 0; failure < 2; failure += 1) {
       await refused(
         t.client.finalizeRetireWallet(world.walletId, world.workspaceId),
@@ -279,6 +292,7 @@ describe("retiring a wallet", () => {
       expect((await t.client.getWallet(world.walletId)).state).toBe("retiring");
       expect((await t.client.getApproval(signed.approvalId)).attempts).toHaveLength(1);
     }
+
     expect((await t.client.finalizeRetireWallet(world.walletId, world.workspaceId)).state).toBe(
       "destroyed",
     );
@@ -288,6 +302,7 @@ describe("retiring a wallet", () => {
 
 function grantArgs(world: World) {
   const mandate = mandateFor(world);
+
   return [
     mandate.id,
     {
@@ -316,15 +331,19 @@ describe("deleting a workspace", () => {
   it("names exactly the signer's wallets, within the delay bounds and the restore fence", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
+
     const second = await t.client.createWallet({
       workspaceId: world.workspaceId,
       walletId: newId("wal"),
       kind: "treasury",
       label: "treasury",
     });
+
     const both = await walletRefs(world, [world.walletId, second.walletId]);
+
     const remove = (envelope: DeleteWorkspaceEnvelope) =>
       t.client.deleteWorkspace(world.workspaceId, authorize(envelope, world.people));
+
     await refused(remove(deleteEnvelope(world, both.slice(0, 1))), "wallet_set_mismatch");
     const stranger = { walletId: newId("wal"), address: `0x${"22".repeat(20)}` as const };
     await refused(
@@ -350,12 +369,14 @@ describe("deleting a workspace", () => {
   it("pauses and stops every change while it waits; cancelling puts each wallet back and stays paused", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
+
     const heldWallet = await t.client.createWallet({
       workspaceId: world.workspaceId,
       walletId: newId("wal"),
       kind: "treasury",
       label: "held",
     });
+
     const heldWorld = { ...world, walletId: heldWallet.walletId, address: heldWallet.address };
     await retire(heldWorld);
     await t.client.cancelRetireWallet(heldWallet.walletId, world.workspaceId);
@@ -363,10 +384,12 @@ describe("deleting a workspace", () => {
 
     const refs = await walletRefs(world, [world.walletId, heldWallet.walletId]);
     const envelope = deleteEnvelope(world, refs);
+
     const deleting = await t.client.deleteWorkspace(
       world.workspaceId,
       authorize(envelope, world.people),
     );
+
     expect([deleting.state, deleting.paused, deleting.destroyAfter]).toEqual([
       "deleting",
       true,
@@ -446,10 +469,12 @@ describe("deleting a workspace", () => {
     // An open confirmation of another kind, superseded once the deletion applies.
     const intent = intentFor(world);
     const pending = approveIntent(world, intent, { people: [] }).envelope;
+
     const { path } = await t.client.openConfirmation(pending.approvalId, {
       envelope: pending,
       subject: { kind: "approve-intent", intent },
     });
+
     const token = path.slice(path.indexOf("#") + 1);
 
     const envelope = deleteEnvelope(world, await walletRefs(world, [world.walletId]));
@@ -480,6 +505,7 @@ describe("deleting a workspace", () => {
     ]) {
       await refused(call(), "workspace_deleted");
     }
+
     await refused(t.confirm.getConfirmation(pending.approvalId, token), "not_found");
     await refused(
       t.client.createWorkspace({
@@ -491,9 +517,11 @@ describe("deleting a workspace", () => {
     );
     // Its envelope nonces stay used for good, in every workspace.
     const fresh = await setUpWorld(t);
+
     const reused = deleteEnvelope(fresh, await walletRefs(fresh, [fresh.walletId]), {
       nonce: envelope.nonce,
     });
+
     await refused(
       t.client.deleteWorkspace(fresh.workspaceId, authorize(reused, fresh.people)),
       "nonce_reused",
@@ -532,12 +560,14 @@ describe("the database's schema version 7", () => {
     const dir = mkdtempSync(join(tmpdir(), "os-signer-lifecycle-"));
     dirs.push(dir);
     const sqlitePath = join(dir, "signer.sqlite");
+
     const host = {
       sqlitePath,
       clock: new Clock(),
       vault: createTestVault(),
       tokenKey: randomBytes(32),
     };
+
     let t = startSigner(host);
     const world = await setUpWorld(t);
     const signed = await pay(world);

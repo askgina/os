@@ -34,6 +34,7 @@ export class CompositeKeyProvider implements KeyProvider {
         ),
       );
     }
+
     return this.#active.wrap(kekId, dataKey, aad);
   }
 

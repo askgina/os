@@ -28,9 +28,11 @@ import {
 
 const MAKE_PEER_CERTS = new URL("../../../deploy/split/make-peer-certs.sh", import.meta.url)
   .pathname;
+
 const SIGNER_DIR = join(import.meta.dirname, "..");
 
 const dir = mkdtempSync(join(tmpdir(), "os-signer-tls-"));
+
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 /** The certificates an operator makes with `deploy/split/make-peer-certs.sh`, in `out`. */
@@ -38,6 +40,7 @@ function makePeerCerts(out: string) {
   execFileSync(MAKE_PEER_CERTS, ["signer.test", out], { stdio: "ignore" });
   const path = (name: string) => join(out, name);
   const read = (name: string) => readFileSync(path(name));
+
   return {
     path,
     signer: { cert: read("signer.crt"), key: read("signer.key") },
@@ -47,6 +50,7 @@ function makePeerCerts(out: string) {
 }
 
 const peers = makePeerCerts(join(dir, "peers"));
+
 /** A second set nobody trusts: self-signed, with the same names. */
 const strangers = makePeerCerts(join(dir, "strangers"));
 
@@ -106,18 +110,24 @@ function expiredCertificate(out: string): string {
     "20200102000000Z",
     "-notext",
   ]);
+
   return join(out, "control.crt");
 }
 
 const requestSecret = new Uint8Array(randomBytes(32));
+
 const confirmSecret = new Uint8Array(randomBytes(32));
+
 const secretFile = (name: string, bytes: Uint8Array) => {
   writeFileSync(join(dir, name), Buffer.from(bytes).toString("base64"));
+
   return join(dir, name);
 };
+
 /** A signer process's environment with mutual TLS, listening on `port` and `healthPort`. */
 function signerEnvironment(port: number, healthPort: number): Record<string, string> {
   const dataDir = join(dir, `data-${port}`);
+
   return {
     PATH: process.env.PATH ?? "",
     SIGNER_PORT: String(port),
@@ -143,11 +153,13 @@ function startProcess(environment: Record<string, string>, until: string[]) {
     env: environment,
     stdio: ["ignore", "pipe", "inherit"],
   });
+
   let output = "";
   const ready = Promise.withResolvers<string>();
   const exited = Promise.withResolvers<number | null>();
   child.stdout?.on("data", (chunk: Buffer) => {
     output += chunk.toString();
+
     if (until.every((message) => output.includes(`"message":"${message}"`))) ready.resolve(output);
   });
   child.once("exit", (code) => {
@@ -155,6 +167,7 @@ function startProcess(environment: Record<string, string>, until: string[]) {
     ready.reject(new Error(`signer exited with ${code}: ${output}`));
   });
   ready.promise.catch(() => undefined);
+
   return { child, ready: ready.promise, exited: exited.promise, output: () => output };
 }
 
@@ -167,6 +180,7 @@ async function freePort(): Promise<number> {
   const closed = Promise.withResolvers<void>();
   server.close(() => closed.resolve());
   await closed.promise;
+
   return port;
 }
 
@@ -182,6 +196,7 @@ async function exchange(socket: Socket): Promise<string> {
   socket.on("close", () => ended.resolve());
   socket.write("GET /healthz HTTP/1.1\r\nHost: signer\r\nConnection: close\r\n\r\n");
   await ended.promise;
+
   return Buffer.concat(received).toString("latin1");
 }
 
@@ -200,10 +215,12 @@ describe("a signer on its own host, behind mutual TLS", () => {
   beforeAll(async () => {
     port = await freePort();
     healthPort = await freePort();
+
     const started = startProcess(signerEnvironment(port, healthPort), [
       "listening",
       "health listening",
     ]);
+
     signer = started.child;
     await started.ready;
   });
@@ -221,19 +238,23 @@ describe("a signer on its own host, behind mutual TLS", () => {
       secret: requestSecret,
       fetch: createSignerFetch(tlsOf(peers, "control"), "signer"),
     });
+
     expect(await control.health()).toEqual({ ok: true, version: "0.1.0" });
     const workspaceId = newId("ws");
+
     const workspace = await control.createWorkspace({
       workspaceId,
       adminThreshold: 1,
       approvers: [newPerson().credential],
     });
+
     expect(workspace.workspaceId).toBe(workspaceId);
   });
 
   it("binds each certificate to its scope, whatever secret signs the request", async () => {
     const controlFetch = createSignerFetch(tlsOf(peers, "control"), "signer");
     const approveFetch = createSignerFetch(tlsOf(peers, "approve"), "signer");
+
     // The `approve` service's certificate reaches a confirm-scope route: past authentication,
     // the signer looks the approval up.
     const approve = createConfirmClient({
@@ -241,7 +262,9 @@ describe("a signer on its own host, behind mutual TLS", () => {
       secret: confirmSecret,
       fetch: approveFetch,
     });
+
     await refused(approve.getConfirmation(newId("apr"), "token"), "not_found");
+
     // With the control secret, from the `approve` certificate: refused, as a stolen control
     // secret on the signer host would be.
     const approveAsControl = createSignerClient({
@@ -249,7 +272,9 @@ describe("a signer on its own host, behind mutual TLS", () => {
       secret: requestSecret,
       fetch: approveFetch,
     });
+
     await refused(approveAsControl.getWorkspace(newId("ws")), "unauthenticated");
+
     // With the confirm secret, from the control certificate: refused, so a stolen confirm
     // secret is useless from the control host.
     const controlAsApprove = createConfirmClient({
@@ -257,6 +282,7 @@ describe("a signer on its own host, behind mutual TLS", () => {
       secret: confirmSecret,
       fetch: controlFetch,
     });
+
     await refused(controlAsApprove.getConfirmation(newId("apr"), "token"), "unauthenticated");
   });
 
@@ -264,14 +290,17 @@ describe("a signer on its own host, behind mutual TLS", () => {
     const path = `/v1/workspaces/${newId("ws")}`;
     let session: Buffer | undefined;
     const answers: { reused: boolean; status: string }[] = [];
+
     for (let attempt = 0; attempt < 2; attempt++) {
       const timestamp = Math.floor(Date.now() / 1000);
+
       const signature = signRequest(requestSecret, {
         method: "GET",
         pathWithQuery: path,
         timestamp,
         body: new Uint8Array(),
       });
+
       const socket = connectTls({
         host: "127.0.0.1",
         port,
@@ -280,6 +309,7 @@ describe("a signer on its own host, behind mutual TLS", () => {
         ...peers.control,
         session,
       });
+
       socket.on("session", (ticket: Buffer) => {
         session = ticket;
       });
@@ -296,6 +326,7 @@ describe("a signer on its own host, behind mutual TLS", () => {
       const response = await received.promise;
       answers.push({ reused: socket.isSessionReused(), status: response.split("\r\n")[0] ?? "" });
     }
+
     // The second connection resumed the first one's session and still reached the control
     // route: past authentication, the signer looked the workspace up.
     expect(answers).toEqual([
@@ -313,18 +344,21 @@ describe("a signer on its own host, behind mutual TLS", () => {
         servername: "signer",
         ...options,
       });
+
     // No client certificate.
     expect(await exchange(tlsConnection({}))).not.toContain("HTTP/");
     // A self-signed certificate the signer does not trust.
     expect(await exchange(tlsConnection(strangers.control))).not.toContain("HTTP/");
     // Plain HTTP on the TLS port.
     expect(await exchange(connectTcp({ host: "127.0.0.1", port }))).not.toContain("HTTP/");
+
     // And through the client transport, a refused handshake rejects like an unreachable signer.
     const stranger = createSignerClient({
       baseUrl: baseUrl(),
       secret: requestSecret,
       fetch: createSignerFetch(tlsOf(strangers, "control"), "signer"),
     });
+
     await expect(stranger.health()).rejects.toThrow(TypeError);
     // The trusted certificate on the same raw path gets an answer, so the checks above are not
     // passing because the helper never sees one.
@@ -335,6 +369,7 @@ describe("a signer on its own host, behind mutual TLS", () => {
     const health = await fetch(`http://127.0.0.1:${healthPort}/healthz`);
     expect(health.status).toBe(200);
     expect(await health.json()).toEqual({ ok: true, version: "0.1.0" });
+
     for (const [method, path] of [
       ["POST", "/healthz"],
       ["GET", `/v1/workspaces/${newId("ws")}`],
@@ -344,12 +379,14 @@ describe("a signer on its own host, behind mutual TLS", () => {
       const response = await fetch(`http://127.0.0.1:${healthPort}${path}`, { method });
       expect(response.status, `${method} ${path}`).toBe(404);
     }
+
     // Another loopback address reaches the same host but not a listener bound to 127.0.0.1.
     await expect(fetch(`http://127.0.0.2:${healthPort}/healthz`)).rejects.toThrow(TypeError);
   });
 
   it("refuses to start when a certificate has expired", async () => {
     const otherPort = await freePort();
+
     const started = startProcess(
       {
         ...signerEnvironment(otherPort, await freePort()),
@@ -357,12 +394,15 @@ describe("a signer on its own host, behind mutual TLS", () => {
       },
       ["listening"],
     );
+
     expect(await started.exited).toBe(1);
+
     const lines = started
       .output()
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
+
     // Every start logs the days left on each certificate: about two years for the two made by
     // the script, years ago for the expired one.
     const expiry = lines.find((line) => line.message === "tls_expiry");
@@ -394,20 +434,25 @@ describe("the signer's scope binding in process", () => {
       maxAdminTtlSeconds: 86_400,
       clientCertificates: { control: peers.control.cert, approve: peers.approve.cert },
     });
+
     const fetch: typeof globalThis.fetch = (url, init) =>
       Promise.resolve(signer.app.request(String(url), init));
+
     const control = createSignerClient({
       baseUrl: "http://signer.test",
       secret: requestSecret,
       fetch,
     });
+
     expect(await control.health()).toEqual({ ok: true, version: "0.1.0" });
     await refused(control.getWorkspace(newId("ws")), "unauthenticated");
+
     const approve = createConfirmClient({
       baseUrl: "http://signer.test",
       secret: confirmSecret,
       fetch,
     });
+
     await refused(approve.getConfirmation(newId("apr"), "token"), "unauthenticated");
     signer.close();
   });
@@ -432,16 +477,20 @@ describe("the signer's scope binding in process", () => {
 
 describe("the signer's TLS configuration", () => {
   const base = { ...signerEnvironment(8787, 8789) };
+
   const plain = Object.fromEntries(
     Object.entries(base).filter(([name]) => !name.startsWith("SIGNER_TLS_")),
   );
+
   const refusal = (environment: Record<string, string>) => {
     try {
       loadConfig(environment);
     } catch (error) {
       if (!(error instanceof ConfigError)) throw error;
+
       return error.message;
     }
+
     return null;
   };
 

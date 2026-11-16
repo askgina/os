@@ -11,6 +11,7 @@ import { enqueueLifecycleNotifications } from "../notify/outbox.ts";
 import { cancelRequests, mirrorWallet, mirrorWorkspace, waitingRequests } from "./state.ts";
 
 type RetireWalletEnvelope = Extract<Envelope, { type: "retire-wallet" }>;
+
 type DeleteWorkspaceEnvelope = Extract<Envelope, { type: "delete-workspace" }>;
 
 const systemActor = { type: "system", id: null } as const;
@@ -25,19 +26,23 @@ const retireWallet: ApprovalKindHandler<"retire-wallet"> = {
   kind: "retire-wallet",
   async title(ctx, approval) {
     const envelope = approval.envelope as RetireWalletEnvelope;
+
     const [wallet] = await ctx.db
       .select({ label: wallets.label })
       .from(wallets)
       .where(eq(wallets.id, envelope.wallet.walletId));
+
     return `Retire ${wallet?.label || "a wallet"} and destroy its key`;
   },
   async describe(ctx, approval) {
     const envelope = approval.envelope as RetireWalletEnvelope;
+
     const { wallet, agentId } = await loadWallet(
       ctx,
       approval.workspaceId,
       envelope.wallet.walletId,
     );
+
     return {
       kind: "retire-wallet",
       wallet: walletSummary(wallet, agentId),
@@ -49,13 +54,16 @@ const retireWallet: ApprovalKindHandler<"retire-wallet"> = {
     const envelope = approval.envelope as RetireWalletEnvelope;
     const { workspaceId } = approval;
     const walletId = envelope.wallet.walletId;
+
     if (!(await alreadyApplied(ctx, approval.id))) {
       await atSigner(() => ctx.signer.retireWallet(walletId, authorization));
     }
+
     // Mirror what the signer holds now: a cancel that came first must not be undone here.
     const state = await atSigner(() => ctx.signer.getWallet(walletId));
     await ctx.db.transaction(async (tx) => {
       if (!(await mirrorWallet(tx, state))) return;
+
       if (state.state !== "retiring" || state.destroyAfter !== envelope.destroyAfter) return;
       await appendAudit(
         ctx,
@@ -93,6 +101,7 @@ const deleteWorkspace: ApprovalKindHandler<"delete-workspace"> = {
   kind: "delete-workspace",
   async title(_ctx, approval) {
     const count = (approval.envelope as DeleteWorkspaceEnvelope).wallets.length;
+
     return count === 1
       ? "Delete this workspace and destroy 1 wallet key"
       : `Delete this workspace and destroy ${count} wallet keys`;
@@ -100,6 +109,7 @@ const deleteWorkspace: ApprovalKindHandler<"delete-workspace"> = {
   async describe(ctx, approval) {
     const envelope = approval.envelope as DeleteWorkspaceEnvelope;
     const ids = envelope.wallets.map((wallet) => wallet.walletId);
+
     const rows =
       ids.length === 0
         ? []
@@ -108,10 +118,12 @@ const deleteWorkspace: ApprovalKindHandler<"delete-workspace"> = {
             .from(wallets)
             .leftJoin(agents, eq(agents.walletId, wallets.id))
             .where(and(eq(wallets.workspaceId, approval.workspaceId), inArray(wallets.id, ids)));
+
     return {
       kind: "delete-workspace",
       wallets: ids.flatMap((id) => {
         const row = rows.find((candidate) => candidate.wallet.id === id);
+
         return row ? [walletSummary(row.wallet, row.agentId)] : [];
       }),
       destroyAfter: envelope.destroyAfter,
@@ -121,18 +133,25 @@ const deleteWorkspace: ApprovalKindHandler<"delete-workspace"> = {
   async execute(ctx, approval, authorization) {
     const envelope = approval.envelope as DeleteWorkspaceEnvelope;
     const { workspaceId } = approval;
+
     if (!(await alreadyApplied(ctx, approval.id))) {
       await atSigner(() => ctx.signer.deleteWorkspace(workspaceId, authorization));
     }
+
     const state = await atSigner(() => ctx.signer.getWorkspace(workspaceId));
+
     const walletStates = await Promise.all(
       envelope.wallets.map((wallet) => atSigner(() => ctx.signer.getWallet(wallet.walletId))),
     );
+
     await ctx.db.transaction(async (tx) => {
       // The workspace row first: the audit append below takes the same lock.
       const changed = await mirrorWorkspace(tx, state);
+
       for (const wallet of walletStates) await mirrorWallet(tx, wallet);
+
       if (!changed || state.state !== "deleting") return;
+
       if (state.destroyAfter !== envelope.destroyAfter) return;
       await appendAudit(
         ctx,

@@ -33,6 +33,7 @@ export async function vapidAuthorization(input: {
   now: number;
 }): Promise<string> {
   const header = base64url(JSON.stringify({ typ: "JWT", alg: "ES256" }));
+
   const claims = base64url(
     JSON.stringify({
       aud: input.endpoint.origin,
@@ -40,12 +41,15 @@ export async function vapidAuthorization(input: {
       sub: input.subject,
     }),
   );
+
   const signingInput = `${header}.${claims}`;
+
   // WebCrypto's ECDSA signature is r and s concatenated, the form JWS ES256 uses.
   const signature = await crypto.subtle.sign(
     { name: "ECDSA", hash: "SHA-256" },
     input.privateKey,
     new TextEncoder().encode(signingInput),
   );
+
   return `vapid t=${signingInput}.${base64url(new Uint8Array(signature))}, k=${base64url(input.publicKeyRaw)}`;
 }

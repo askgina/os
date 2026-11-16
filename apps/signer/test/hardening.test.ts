@@ -27,6 +27,7 @@ function vaultThatSigns(
   sign: (honest: Vault, ...args: Parameters<Vault["signEvmTransaction"]>) => `0x${string}`,
 ): Vault {
   const honest = createTestVault();
+
   return {
     createWallet: (walletId) => honest.createWallet(walletId),
     signEvmTransaction: (...args) => sign(honest, ...args),
@@ -40,6 +41,7 @@ describe("a vault that misbehaves", () => {
     const other = createTestVault();
     const otherId = newId("wal");
     const otherWallet = other.createWallet(otherId);
+
     const world = await setUpWorld(
       startSigner({
         vault: vaultThatSigns((_honest, _walletId, _credential, transaction) =>
@@ -47,6 +49,7 @@ describe("a vault that misbehaves", () => {
         ),
       }),
     );
+
     const intent = intentFor(world);
     const authorization = approveIntent(world, intent);
     await refused(
@@ -71,6 +74,7 @@ describe("a vault that misbehaves", () => {
         ),
       }),
     );
+
     const intent = intentFor(world);
     const authorization = approveIntent(world, intent);
     await refused(
@@ -84,12 +88,14 @@ describe("a vault that misbehaves", () => {
     // The order of secp256k1's group: (r, n - s) with the other parity is the same signature
     // mathematically and recovers to the same key, but EIP-2 makes nodes refuse it.
     const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+
     const world = await setUpWorld(
       startSigner({
         vault: vaultThatSigns((honest, walletId, credential, transaction) => {
           const { r, s, yParity } = parseTransaction(
             honest.signEvmTransaction(walletId, credential, transaction),
           );
+
           return serializeTransaction(
             { ...transaction, type: "eip1559" },
             {
@@ -101,6 +107,7 @@ describe("a vault that misbehaves", () => {
         }),
       }),
     );
+
     const intent = intentFor(world);
     const authorization = approveIntent(world, intent);
     await refused(
@@ -123,6 +130,7 @@ describe("requests the router cannot place", () => {
 
   it("has no route that takes typed data, an action, a message or a hash", async () => {
     const t = startSigner();
+
     for (const path of [
       "/v1/sign-typed-data",
       "/v1/venue/sign-action",
@@ -132,6 +140,7 @@ describe("requests the router cannot place", () => {
     ]) {
       const body = new TextEncoder().encode("{}");
       const timestamp = t.clock.value;
+
       const response = await t.signer.app.request(`http://signer.test${path}`, {
         method: "POST",
         body,
@@ -145,6 +154,7 @@ describe("requests the router cannot place", () => {
           }),
         },
       });
+
       expect(response.status, path).toBe(404);
     }
   });
@@ -176,6 +186,7 @@ function venueOrder(world: World): VenueIntent {
 async function venueWorld(vault?: Vault) {
   const t = startSigner(vault === undefined ? {} : { vault });
   const world = await setUpWorld(t);
+
   const policy = await replacePolicy(world, {
     venues: {
       hyperliquid: {
@@ -188,6 +199,7 @@ async function venueWorld(vault?: Vault) {
       },
     },
   });
+
   return { t, world: { ...world, policy } };
 }
 
@@ -213,6 +225,7 @@ describe("venue intents", () => {
 
   it("are refused on the venue routes when signed with the confirm secret", async () => {
     const { t, world } = await venueWorld();
+
     for (const [path, value] of [
       [
         "/v1/venue/sign",
@@ -222,6 +235,7 @@ describe("venue intents", () => {
     ] as const) {
       const body = new TextEncoder().encode(JSON.stringify(value));
       const timestamp = t.clock.value;
+
       const response = await t.signer.app.request(`http://signer.test${path}`, {
         method: "POST",
         body,
@@ -235,6 +249,7 @@ describe("venue intents", () => {
           }),
         },
       });
+
       expect(response.status, path).toBe(401);
       expect(await response.json()).toMatchObject({ error: { code: "unauthenticated" } });
     }
@@ -246,6 +261,7 @@ describe("venue intents", () => {
     const otherId = newId("wal");
     const otherWallet = other.createWallet(otherId);
     const honest = createTestVault();
+
     const liars: Vault["signHyperliquid"][] = [
       (_walletId, _credential, payload) =>
         other.signHyperliquid(otherId, otherWallet.credential, payload),
@@ -257,6 +273,7 @@ describe("venue intents", () => {
         }),
       (walletId, credential, payload) => {
         const signature = honest.signHyperliquid(walletId, credential, payload);
+
         return {
           r: signature.r,
           s: `0x${(N - BigInt(signature.s)).toString(16).padStart(64, "0")}`,
@@ -264,6 +281,7 @@ describe("venue intents", () => {
         };
       },
     ];
+
     for (const lie of liars) {
       const { world } = await venueWorld({
         createWallet: (walletId) => honest.createWallet(walletId),
@@ -271,6 +289,7 @@ describe("venue intents", () => {
         signHyperliquid: lie,
         destroyWallet: (walletId) => honest.destroyWallet(walletId),
       });
+
       const intent = venueOrder(world);
       const authorization = approveIntent(world, intent);
       await refused(world.t.client.signVenue({ intent, authorization }), "vault_error");
@@ -286,6 +305,7 @@ describe("venue intents", () => {
 describe("limits on what the signer accepts", () => {
   it("refuses a policy whose approvals would outlive what this signer accepts", async () => {
     const world = await setUpWorld(startSigner());
+
     // The harness's signer accepts approvals of intents for at most an hour.
     const policy = {
       ...world.policy,
@@ -293,6 +313,7 @@ describe("limits on what the signer accepts", () => {
       previousHash: policyHash(world.policy),
       approvals: { threshold: 1, ttlSeconds: 7200 },
     };
+
     await refused(
       world.t.client.setPolicy(world.walletId, {
         policy,
@@ -314,11 +335,13 @@ describe("limits on what the signer accepts", () => {
 
   it("refuses a request body far larger than any valid request", async () => {
     const { signer } = startSigner();
+
     const response = await signer.app.request("http://signer.test/v1/sign", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ padding: "x".repeat(300 * 1024) }),
     });
+
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ error: { code: "invalid_request" } });
   });
@@ -326,6 +349,7 @@ describe("limits on what the signer accepts", () => {
   it("stops reading a body with no Content-Length once it passes the limit, before authenticating", async () => {
     const { signer } = startSigner();
     let pulls = 0;
+
     // An endless stream: a signer that buffered before checking would never answer.
     const body = new ReadableStream<Uint8Array>({
       pull(controller) {
@@ -333,11 +357,13 @@ describe("limits on what the signer accepts", () => {
         controller.enqueue(new Uint8Array(64 * 1024).fill(0x20));
       },
     });
+
     const request = new Request("http://signer.test/v1/sign", {
       method: "POST",
       body,
       duplex: "half",
     } as RequestInit);
+
     expect(request.headers.get("content-length")).toBeNull();
     const response = await signer.app.request(request);
     // Unsigned, yet refused as too large: the limit applies before the signature is checked.
@@ -352,11 +378,13 @@ describe("a Hyperliquid signature the vault returns", () => {
   const vault = createTestVault();
   const walletId = newId("wal");
   const { address, credential } = vault.createWallet(walletId);
+
   const payload: HyperliquidPayload = {
     kind: "l1",
     network: "hyperliquid:testnet",
     connectionId: `0x${"ab".repeat(32)}`,
   };
+
   const signature = vault.signHyperliquid(walletId, credential, payload);
 
   it("is accepted only from the wallet's key, over the payload the signer built", () => {
@@ -373,6 +401,7 @@ describe("a Hyperliquid signature the vault returns", () => {
     expect(
       isTypedSignedBy(signature, { ...payload, network: "hyperliquid:mainnet" }, address),
     ).toBe(false);
+
     const withdraw: HyperliquidPayload = {
       kind: "withdraw",
       network: "hyperliquid:testnet",
@@ -380,6 +409,7 @@ describe("a Hyperliquid signature the vault returns", () => {
       amount: "1",
       time: 1,
     };
+
     expect(
       isTypedSignedBy(vault.signHyperliquid(walletId, credential, withdraw), withdraw, address),
     ).toBe(true);
@@ -392,6 +422,7 @@ describe("a Hyperliquid signature the vault returns", () => {
       s: `0x${(SECP256K1_N - BigInt(signature.s)).toString(16).padStart(64, "0")}`,
       v: signature.v === 27 ? 28 : 27,
     } as const;
+
     expect(isTypedSignedBy(highS, payload, address)).toBe(false);
     expect(isTypedSignedBy({ ...signature, v: 29 as 27 }, payload, address)).toBe(false);
     expect(isTypedSignedBy({ ...signature, r: `0x${"00".repeat(32)}` }, payload, address)).toBe(
@@ -422,22 +453,26 @@ describe("the OWS vault after a crash during wallet creation", () => {
     const t = startSigner({ vault });
     const workspaceId = newId("ws");
     const person = (await setUpWorld(t)).people[0];
+
     if (!person) throw new Error("the test world has no approver");
     await t.client.createWorkspace({
       workspaceId,
       adminThreshold: 1,
       approvers: [person.credential],
     });
+
     const wallet = await t.client.createWallet({
       workspaceId,
       walletId,
       kind: "agent",
       label: "retried",
     });
+
     expect(wallet.address).toBe(orphan.address);
 
     // The adopted wallet signs with its new credential.
     const adopted = vault.createWallet(walletId);
+
     const signed = vault.signEvmTransaction(walletId, adopted.credential, {
       chainId: 31337,
       nonce: 0,
@@ -447,9 +482,11 @@ describe("the OWS vault after a crash during wallet creation", () => {
       maxFeePerGas: 2n,
       maxPriorityFeePerGas: 1n,
     });
+
     const from = await recoverTransactionAddress({
       serializedTransaction: signed as `0x02${string}`,
     });
+
     expect(from.toLowerCase()).toBe(orphan.address);
   });
 });

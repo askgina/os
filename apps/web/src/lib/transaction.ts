@@ -11,6 +11,7 @@ export function paymentTitle(
   display: Pick<TransferDisplay, "rawCall" | "amount" | "amountFormatted" | "assetSymbol" | "to">,
 ): string {
   const amount = `${display.amountFormatted} ${display.assetSymbol}`;
+
   return display.rawCall
     ? `Call contract ${shortAddress(display.to)}${display.amount === "0" ? "" : ` with ${amount}`}`
     : `Send ${amount} to ${shortAddress(display.to)}`;
@@ -52,6 +53,7 @@ export function transactionActions(
   role: Role,
 ): { speedUp: boolean; cancel: boolean } {
   const acts = role !== "viewer";
+
   return { speedUp: acts && transaction.canSpeedUp, cancel: acts && transaction.canCancel };
 }
 

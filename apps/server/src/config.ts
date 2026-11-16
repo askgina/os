@@ -22,6 +22,7 @@ export const ChainConfig = z.strictObject({
   /** Blocks on top of a transaction before it counts as confirmed. */
   confirmations: z.number().int().min(1).max(64).default(1),
 });
+
 export type ChainConfig = z.infer<typeof ChainConfig>;
 
 /** One venue the control plane posts signed requests to and reads state from. */
@@ -30,6 +31,7 @@ export const VenueConfig = z.strictObject({
   /** The venue's API base, for example `https://api.hyperliquid-testnet.xyz`. */
   apiUrl: z.url({ protocol: /^https?$/ }),
 });
+
 export type VenueConfig = z.infer<typeof VenueConfig>;
 
 /**
@@ -346,22 +348,28 @@ export interface Config {
 
 function webhookSecret(file: string): Uint8Array {
   const text = readFileSync(file, "utf8").trim();
+
   if (text.length < MIN_WEBHOOK_SECRET_LENGTH) {
     throw new Error(
       `NOTIFY_WEBHOOK_SECRET_FILE must hold at least ${MIN_WEBHOOK_SECRET_LENGTH} characters`,
     );
   }
+
   return new Uint8Array(Buffer.from(text, "utf8"));
 }
 
 /** Read the VAPID key; anything but a P-256 private key stops the boot. */
 function vapidKeys(file: string): Pick<WebPushConfig, "vapidPrivateKey" | "vapidPublicKey"> {
   const key = createPrivateKey(readFileSync(file, "utf8"));
+
   if (key.asymmetricKeyType !== "ec" || key.asymmetricKeyDetails?.namedCurve !== "prime256v1") {
     throw new Error("WEB_PUSH_VAPID_KEY_FILE must hold a P-256 (prime256v1) private key");
   }
+
   const jwk = createPublicKey(key).export({ format: "jwk" });
+
   if (jwk.x === undefined || jwk.y === undefined) throw new Error("VAPID key has no public point");
+
   return {
     vapidPrivateKey: new Uint8Array(key.export({ format: "der", type: "pkcs8" })),
     vapidPublicKey: new Uint8Array(
@@ -381,6 +389,7 @@ function vapidKeys(file: string): Pick<WebPushConfig, "vapidPrivateKey" | "vapid
 function venues(file: string | undefined): VenueConfig[] {
   if (file === undefined) return [];
   let entries: VenueConfig[];
+
   try {
     entries = z
       .array(VenueConfig)
@@ -389,10 +398,13 @@ function venues(file: string | undefined): VenueConfig[] {
   } catch {
     throw new ConfigError("VENUES_FILE: expected a JSON array of { network, apiUrl }");
   }
+
   for (const entry of entries) {
     const host = new URL(entry.apiUrl).hostname.toLowerCase();
+
     for (const network of VenueNetwork.options) {
       const api = HYPERLIQUID_API_HOSTS[network];
+
       if (host === api.host && entry.network !== network) {
         throw new ConfigError(
           `VENUES_FILE: ${api.host} is Hyperliquid's ${api.name} API; its entry must name ${network}`,
@@ -400,9 +412,11 @@ function venues(file: string | undefined): VenueConfig[] {
       }
     }
   }
+
   if (new Set(entries.map((entry) => entry.network)).size !== entries.length) {
     throw new ConfigError("VENUES_FILE: at most one entry per network");
   }
+
   return entries;
 }
 
@@ -416,8 +430,10 @@ function signerTls(parsed: {
     SIGNER_TLS_KEY_FILE: key,
     SIGNER_TLS_PEER_CERT_FILE: peerCert,
   } = parsed;
+
   // The schema allows all three or none, by the scheme of SIGNER_URL.
   if (cert === undefined || key === undefined || peerCert === undefined) return null;
+
   try {
     return readSignerTls({ cert, key, peerCert });
   } catch (error) {
@@ -431,9 +447,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const parsed = Environment.parse(env);
   const origin = new URL(parsed.PUBLIC_ORIGIN).origin;
   const databaseUrl = new URL(parsed.DATABASE_URL);
+
   if (parsed.DATABASE_PASSWORD_FILE !== undefined) {
     databaseUrl.password = readFileSync(parsed.DATABASE_PASSWORD_FILE, "utf8").trim();
   }
+
   return {
     publicOrigin: origin,
     relyingParty: {

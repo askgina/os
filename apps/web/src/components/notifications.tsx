@@ -85,6 +85,7 @@ const refreshDevices = () => queryClient.invalidateQueries({ queryKey: ["push"] 
  */
 export function NotificationSettings({ userId }: { userId: string }) {
   const config = usePushConfig();
+
   return (
     <Card aria-labelledby="notifications-title">
       <CardHeader>
@@ -140,11 +141,13 @@ function PushOn({ userId, serverKey }: { userId: string; serverKey: string }) {
   const preferences = useNotificationPreferences();
   // Read again after asking for permission: the answer can block notifications for good.
   const [support, setSupport] = useState<PushSupport>(() => pushSupport());
+
   const local = useQuery({
     queryKey: keys.thisBrowser,
     queryFn: async () => ({ browser: await browserSubscription(), record: readDeviceRecord() }),
     enabled: support === "available",
   });
+
   const state: DeviceState | null =
     devices.data && (local.data || support !== "available")
       ? deviceState({
@@ -155,6 +158,7 @@ function PushOn({ userId, serverKey }: { userId: string; serverKey: string }) {
           devices: devices.data.items,
         })
       : null;
+
   const thisDeviceId = state && state.kind !== "off" ? state.subscriptionId : null;
 
   return (
@@ -230,19 +234,25 @@ function ThisDevice({
   onAsked: () => void;
 }) {
   const labelId = useId();
+
   const [label, setLabel] = useState(() =>
     suggestDeviceLabel(navigator.userAgent, navigator.maxTouchPoints),
   );
+
   const [labelProblem, setLabelProblem] = useState<string | null>(null);
+
   const enable = useMutation({
     mutationFn: async (permission: Promise<NotificationPermission>) => {
       const record = readDeviceRecord();
+
       const body = await subscribeThisBrowser({
         permission,
         applicationServerKey: serverKey,
         label: label.trim() === "" ? undefined : label.trim(),
       });
+
       let saved: PushSubscriptionSummary;
+
       try {
         saved = await api.call("addPushSubscription", { body });
       } catch (error) {
@@ -250,13 +260,17 @@ function ThisDevice({
         if (error instanceof ApiError && Object.hasOwn(DEVICE_REFUSED, error.detail ?? "")) {
           await unsubscribeThisBrowser();
         }
+
         throw error;
       }
+
       writeDeviceRecord({ userId, subscriptionId: saved.id, endpoint: body.endpoint });
+
       // The device this browser was before (a replaced subscription) reaches nobody any more.
       if (record?.userId === userId && record.subscriptionId !== saved.id) {
         await removeDevice(record.subscriptionId);
       }
+
       return saved;
     },
     onSettled: async () => {
@@ -264,6 +278,7 @@ function ThisDevice({
       await refreshDevices();
     },
   });
+
   const disable = useMutation({
     mutationFn: async (subscriptionId: string) => {
       await removeDevice(subscriptionId);
@@ -284,6 +299,7 @@ function ThisDevice({
       </Alert>
     );
   }
+
   if (support === "needs-install") {
     return (
       <Alert tone="accent" className="items-start">
@@ -301,6 +317,7 @@ function ThisDevice({
       </Alert>
     );
   }
+
   if (support === "blocked") {
     return (
       <Alert tone="warning" className="items-start">
@@ -312,7 +329,9 @@ function ThisDevice({
       </Alert>
     );
   }
+
   if (state === null) return <Loading />;
+
   if (state.kind === "on") {
     return (
       <div className="grid grid-cols-1 gap-3">
@@ -339,14 +358,18 @@ function ThisDevice({
   const submit = (event: SubmitEvent) => {
     event.preventDefault();
     const trimmed = label.trim();
+
     if (trimmed !== "" && !DeviceLabel.safeParse(trimmed).success) {
       setLabelProblem("A name has at most 40 characters, with no control characters.");
+
       return;
     }
+
     setLabelProblem(null);
     // First, while the press still counts as one: browsers ask for permission only then.
     enable.mutate(Notification.requestPermission());
   };
+
   return (
     <form className="grid grid-cols-1 gap-3" onSubmit={submit}>
       {state.kind === "stopped" ? (
@@ -396,14 +419,17 @@ function ThisDevice({
 
 function DeviceRow({ device, isThis }: { device: PushSubscriptionSummary; isThis: boolean }) {
   const name = device.label ?? "Unnamed device";
+
   const remove = useMutation({
     // This browser's own entry is turned off here as well, not only on the server.
     mutationFn: async () => {
       await removeDevice(device.id);
+
       if (isThis) await unsubscribeThisBrowser();
     },
     onSettled: refreshDevices,
   });
+
   return (
     <li className="grid grid-cols-1 gap-2 px-4 py-3">
       <div className="flex flex-wrap items-center gap-3">
@@ -445,8 +471,10 @@ function useSavePreferences() {
 function WorkspaceSwitches({ preferences }: { preferences: NotificationPreferences }) {
   const workspaces = useWorkspaces();
   const save = useSavePreferences();
+
   const change = (item: WorkspaceNotifications) =>
     save.mutate({ workspaces: [item], quietHours: preferences.quietHours });
+
   return (
     <section aria-labelledby="per-workspace-title" className="grid grid-cols-1 gap-3">
       <div className="grid grid-cols-1 gap-1">
@@ -466,6 +494,7 @@ function WorkspaceSwitches({ preferences }: { preferences: NotificationPreferenc
             const name =
               workspaces.data?.items.find((workspace) => workspace.id === item.workspaceId)?.name ??
               item.workspaceId;
+
             return (
               <li key={item.workspaceId} className="grid grid-cols-1 gap-3 px-4 py-3">
                 <p className="font-medium wrap-anywhere">{name}</p>
@@ -529,27 +558,34 @@ function QuietHoursEditor({ saved }: { saved: QuietHours | null }) {
   const [problem, setProblem] = useState<QuietHoursProblem | null>(null);
   const save = useSavePreferences();
   const zones = timeZoneChoices(Intl.supportedValuesOf("timeZone"), deviceZone, form.timeZone);
+
   const update = (patch: Partial<QuietHoursForm>) => {
     setForm((current) => ({ ...current, ...patch }));
     setProblem(null);
     save.reset();
   };
+
   const submit = (event: SubmitEvent) => {
     event.preventDefault();
     const parsed = parseQuietHours(form);
+
     if (!parsed.ok) {
       setProblem(parsed.problem);
+
       return;
     }
+
     // Only the hours: an empty list leaves every workspace's switches as they are.
     save.mutate({ workspaces: [], quietHours: parsed.value });
   };
+
   const fieldProblem = (field: QuietHoursProblem["field"]) =>
     problem?.field === field ? (
       <p role="alert" className="text-sm text-danger">
         {problem.message}
       </p>
     ) : null;
+
   return (
     <form
       aria-labelledby={`${id}-title`}
@@ -646,7 +682,9 @@ function levelText(
         "“Approval waiting · 1 request needs your passkey”. Someone who sees the screen learns that something waits and how much, nothing else.",
     };
   }
+
   const requester = workspace.agents[0]?.name ?? "Your agent";
+
   return {
     label: "Also the kind of request, who asked and this workspace",
     detail: `“Payment waiting · ${requester} in ${workspace.name}”. These names show on locked screens and stay in each device's notification history. They are as members typed them, so a name can read like an instruction.`,
@@ -663,6 +701,7 @@ export function NotificationLevelCard({ workspace }: { workspace: WorkspaceDetai
   const id = useId();
   const isOwner = workspace.role === "owner";
   const [chosen, setChosen] = useState<NotificationDetail>(workspace.notificationDetail);
+
   const save = useMutation({
     mutationFn: (detail: NotificationDetail) =>
       api.call("setNotificationDetail", {
@@ -674,7 +713,9 @@ export function NotificationLevelCard({ workspace }: { workspace: WorkspaceDetai
       await queryClient.invalidateQueries({ queryKey: keys.audit(workspace.id) });
     },
   });
+
   const current = levelText(workspace.notificationDetail, workspace);
+
   return (
     <Card aria-labelledby={`${id}-title`}>
       <CardHeader>
@@ -701,6 +742,7 @@ export function NotificationLevelCard({ workspace }: { workspace: WorkspaceDetai
               </legend>
               {LEVELS.map((level) => {
                 const text = levelText(level, workspace);
+
                 return (
                   <Choice
                     key={level}

@@ -1,7 +1,9 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
 const VERSION = 1;
+
 const IV_BYTES = 12;
+
 const TAG_BYTES = 16;
 
 /**
@@ -16,18 +18,22 @@ export function seal(key: Uint8Array, plaintext: Uint8Array, context: string): B
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   cipher.setAAD(Buffer.from(context, "utf8"));
   const body = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+
   return Buffer.concat([Buffer.of(VERSION), iv, body, cipher.getAuthTag()]);
 }
 
 /** Reverse {@link seal}. Throws when the key, the context or the bytes do not match. */
 export function open(key: Uint8Array, sealed: Uint8Array, context: string): Buffer {
   const buffer = Buffer.from(sealed);
+
   if (buffer.length < 1 + IV_BYTES + TAG_BYTES || buffer[0] !== VERSION) {
     throw new Error("sealed value is malformed or has an unknown version");
   }
+
   const decipher = createDecipheriv("aes-256-gcm", key, buffer.subarray(1, 1 + IV_BYTES));
   decipher.setAAD(Buffer.from(context, "utf8"));
   decipher.setAuthTag(buffer.subarray(buffer.length - TAG_BYTES));
+
   return Buffer.concat([
     decipher.update(buffer.subarray(1 + IV_BYTES, buffer.length - TAG_BYTES)),
     decipher.final(),

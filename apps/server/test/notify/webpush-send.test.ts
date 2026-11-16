@@ -20,7 +20,9 @@ import {
 const NOW = 1_800_000_000;
 
 let service: PushService;
+
 let port: number;
+
 let config: Config;
 
 beforeAll(async () => {
@@ -38,12 +40,14 @@ const subscription = (path = "/push/subscription-1") =>
   browserSubscription(`${service.origin}${path}`);
 
 const approvalId = newId("apr");
+
 const message: PushMessage = {
   payload: { web_push: 8030, notification: { title: "Approval waiting", navigate: "/" } },
   topic: pushTopic(approvalId),
   ttlSeconds: 120,
   urgency: "high",
 };
+
 const ctx = () => ({ config, now: () => NOW });
 
 describe("sending a Web Push message", () => {
@@ -53,6 +57,7 @@ describe("sending a Web Push message", () => {
     expect(await sendPush(ctx(), keys, message)).toEqual({ ok: true });
     expect(service.pushed).toHaveLength(before + 1);
     const request = service.pushed.at(-1);
+
     if (!request) throw new Error("nothing was pushed");
     expect(request.method).toBe("POST");
     expect(request.path).toBe("/push/subscription-1");
@@ -70,6 +75,7 @@ describe("sending a Web Push message", () => {
     const match = /^vapid t=([\w-]+)\.([\w-]+)\.([\w-]+), k=([\w-]+)$/.exec(
       request.headers.authorization ?? "",
     );
+
     if (!match) throw new Error("no VAPID authorization");
     const [, header = "", claims = "", signature = "", key = ""] = match;
     expect(JSON.parse(Buffer.from(claims, "base64url").toString("utf8"))).toEqual({
@@ -80,6 +86,7 @@ describe("sending a Web Push message", () => {
     expect(Buffer.from(key, "base64url")).toEqual(
       Buffer.from(config.notify.webPush?.vapidPublicKey ?? []),
     );
+
     const verifier = await crypto.subtle.importKey(
       "raw",
       new Uint8Array(Buffer.from(key, "base64url")),
@@ -87,6 +94,7 @@ describe("sending a Web Push message", () => {
       false,
       ["verify"],
     );
+
     expect(
       await crypto.subtle.verify(
         { name: "ECDSA", hash: "SHA-256" },
@@ -110,6 +118,7 @@ describe("sending a Web Push message", () => {
       { status: 302, headers: { location: "https://elsewhere.example/" } },
     );
     const results = [];
+
     for (let i = 0; i < 8; i += 1) results.push(await sendPush(ctx(), keys, message));
     expect(results).toEqual([
       { ok: false, code: "gone", reason: "http_410" },
@@ -145,6 +154,7 @@ describe("sending a Web Push message", () => {
   it("refuses, without any request, an endpoint that is not https: or not under an allowed host", async () => {
     const { keys } = await subscription();
     const before = service.pushed.length;
+
     for (const endpoint of [
       `http://localhost:${port}/push/x`,
       `https://127.0.0.1:${port}/push/x`,
@@ -159,6 +169,7 @@ describe("sending a Web Push message", () => {
         reason: "endpoint_refused",
       });
     }
+
     expect(service.pushed).toHaveLength(before);
 
     const browsers = ["fcm.googleapis.com", "push.apple.com", "notify.windows.com"];
@@ -175,8 +186,10 @@ describe("sending a Web Push message", () => {
   it("refuses, without any request, a subscription with bad keys, a bad topic and a message too long to pad", async () => {
     const { keys } = await subscription();
     const before = service.pushed.length;
+
     const refused = (result: unknown, reason: string) =>
       expect(result).toEqual({ ok: false, code: "rejected", reason });
+
     refused(await sendPush(ctx(), { ...keys, p256dh: "not+base64" }, message), "bad_subscription");
     refused(
       await sendPush(ctx(), { ...keys, p256dh: keys.p256dh.slice(0, -2) }, message),

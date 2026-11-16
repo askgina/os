@@ -3,8 +3,10 @@ import { encryptPayload, PushEncryptionError } from "../../src/notify/webpush/en
 import { decryptPush } from "./support.ts";
 
 type Bytes = Uint8Array<ArrayBuffer>;
+
 const b64 = (text: string): Bytes =>
   new Uint8Array(Buffer.from(text.replace(/\s+/g, ""), "base64url"));
+
 const utf8 = (text: string): Bytes => new TextEncoder().encode(text);
 
 /** RFC 8291 §5 and Appendix A, verbatim (whitespace removed). */
@@ -34,7 +36,9 @@ async function keyPair(privateScalar: string, publicPoint: Bytes) {
     x: Buffer.from(publicPoint.subarray(1, 33)).toString("base64url"),
     y: Buffer.from(publicPoint.subarray(33, 65)).toString("base64url"),
   };
+
   const algorithm = { name: "ECDH", namedCurve: "P-256" };
+
   return {
     privateKey: await crypto.subtle.importKey("jwk", jwk, algorithm, false, ["deriveBits"]),
     publicKey: await crypto.subtle.importKey("raw", publicPoint, algorithm, true, []),
@@ -50,6 +54,7 @@ describe("Web Push encryption (RFC 8291)", () => {
       salt: RFC.salt,
       asKeyPair: await keyPair(RFC.asPrivate, RFC.asPublic),
     });
+
     expect(Buffer.from(body).toString("base64url")).toBe(RFC.body);
     // Header, the plaintext and its delimiter, and the tag. The RFC's example request says
     // `Content-Length: 145`; the body it shows is these 144 bytes.
@@ -59,10 +64,12 @@ describe("Web Push encryption (RFC 8291)", () => {
   it("refuses a key that is not an uncompressed point on P-256, and an auth secret that is not 16 bytes", async () => {
     const offCurve = new Uint8Array(RFC.uaPublic);
     offCurve[64] = (offCurve[64] ?? 0) ^ 0x01;
+
     const compressed = new Uint8Array([
       0x02 | ((RFC.uaPublic[64] ?? 0) & 1),
       ...RFC.uaPublic.subarray(1, 33),
     ]);
+
     for (const uaPublicKey of [
       RFC.uaPublic.subarray(1),
       offCurve,
@@ -73,6 +80,7 @@ describe("Web Push encryption (RFC 8291)", () => {
         encryptPayload({ plaintext: utf8("x"), uaPublicKey, authSecret: RFC.authSecret }),
       ).rejects.toMatchObject({ name: "PushEncryptionError", code: "bad_key" });
     }
+
     await expect(
       encryptPayload({
         plaintext: utf8("x"),
@@ -86,6 +94,7 @@ describe("Web Push encryption (RFC 8291)", () => {
     const ua = await keyPair(RFC.uaPrivate, RFC.uaPublic);
     const short = '{"web_push":8030}';
     const long = JSON.stringify({ web_push: 8030, notification: { title: "x".repeat(300) } });
+
     const bodies = await Promise.all(
       [short, long].map((text) =>
         encryptPayload({
@@ -96,17 +105,20 @@ describe("Web Push encryption (RFC 8291)", () => {
         }),
       ),
     );
+
     // 86 bytes of header, the 512-byte record and the 16-byte tag, whatever the message.
     expect(bodies.map((body) => body.length)).toEqual([614, 614]);
     // A fresh salt and sender key per message.
     expect(Buffer.from(bodies[0] ?? []).subarray(0, 16)).not.toEqual(
       Buffer.from(bodies[1] ?? []).subarray(0, 16),
     );
+
     const reader = {
       privateKey: ua.privateKey,
       publicKey: RFC.uaPublic,
       authSecret: RFC.authSecret,
     };
+
     expect(await decryptPush(bodies[0] ?? new Uint8Array(), reader)).toBe(short);
     expect(await decryptPush(bodies[1] ?? new Uint8Array(), reader)).toBe(long);
   });

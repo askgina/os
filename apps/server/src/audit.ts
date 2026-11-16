@@ -25,6 +25,7 @@ export const SealedDetail = z.strictObject({
   salt: z.string(),
   detail: z.record(z.string(), z.unknown()),
 });
+
 export type SealedDetail = z.infer<typeof SealedDetail>;
 
 /** What an entry's hash covers. An exported record carries these fields, so it verifies offline. */
@@ -42,8 +43,10 @@ export interface ChainedFields {
 }
 
 export const entryHash = (fields: ChainedFields) => digestHex(DomainTag.audit, { entry: fields });
+
 /** The digest of a sealed detail that the chain carries in `detailDigest`. */
 export const sealedDetailDigest = (sealed: SealedDetail) => digestHex(DomainTag.audit, sealed);
+
 const sealContext = (workspaceId: string, seq: number) =>
   `audit_events.detail:${workspaceId}:${seq}`;
 
@@ -71,13 +74,16 @@ export async function appendAudit(
       .from(workspaces)
       .where(eq(workspaces.id, input.workspaceId))
       .for("no key update");
+
     if (!head) throw new Error("audit append for a workspace that does not exist");
     const seq = head.seq + 1;
     const at = ctx.now();
+
     const sealed: SealedDetail = {
       salt: randomBytes(16).toString("base64url"),
       detail: input.detail ?? {},
     };
+
     const fields: ChainedFields = {
       workspaceId: input.workspaceId,
       seq,
@@ -90,6 +96,7 @@ export async function appendAudit(
       detailDigest: sealedDetailDigest(sealed),
       previousHash: head.hash,
     };
+
     const hash = entryHash(fields);
     await executor.insert(auditEvents).values({
       workspaceId: input.workspaceId,
@@ -110,6 +117,7 @@ export async function appendAudit(
       .set({ auditSeq: seq, auditHead: hash })
       .where(eq(workspaces.id, input.workspaceId));
   };
+
   await (tx ? write(tx) : ctx.db.transaction(write));
 }
 
@@ -123,6 +131,7 @@ export async function openAuditSealed(
     sealContext(row.workspaceId, row.seq),
     row.detail,
   );
+
   return SealedDetail.parse(opened);
 }
 
@@ -147,13 +156,16 @@ export async function verifyAudit(
     .select({ seq: workspaces.auditSeq, head: workspaces.auditHead })
     .from(workspaces)
     .where(eq(workspaces.id, workspaceId));
+
   const rows = await ctx.db
     .select()
     .from(auditEvents)
     .where(eq(auditEvents.workspaceId, workspaceId))
     .orderBy(asc(auditEvents.seq));
+
   let previousHash: string | null = null;
   let expectedSeq = 1;
+
   for (const row of rows) {
     const expected = entryHash({
       workspaceId: row.workspaceId,
@@ -167,16 +179,21 @@ export async function verifyAudit(
       detailDigest: row.detailDigest,
       previousHash,
     });
+
     if (row.seq !== expectedSeq || row.previousHash !== previousHash || row.hash !== expected) {
       return { ok: false, checked: expectedSeq - 1, brokenAt: row.seq };
     }
+
     previousHash = row.hash;
     expectedSeq += 1;
   }
+
   const headSeq = workspace?.seq ?? 0;
   const headHash = workspace?.head ?? null;
+
   if (rows.length !== headSeq || previousHash !== headHash) {
     return { ok: false, checked: rows.length, brokenAt: rows.length + 1 };
   }
+
   return { ok: true, checked: rows.length, brokenAt: null };
 }

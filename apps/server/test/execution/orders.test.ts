@@ -17,6 +17,7 @@ import { createFixture, draftFor, type Fixture, type TestAgent, toolJson } from 
  * would the venue. A fetch the fake drops (its `drop` failure) closes the connection unanswered.
  */
 let f: Fixture;
+
 const venue = new FakeHyperliquid({
   network: "testnet",
   now: () => f.t.clock.now() * 1000,
@@ -29,6 +30,7 @@ const venue = new FakeHyperliquid({
     { name: "OLD", szDecimals: 2, maxLeverage: 3, isDelisted: true },
   ],
 });
+
 /** The accepted bodies posted to `/exchange` with this action type, oldest first. */
 const posted = (type: string) =>
   venue
@@ -37,25 +39,32 @@ const posted = (type: string) =>
     .map((entry) => entry.body);
 
 let server: Server;
+
 let bob: TestPerson;
+
 let trader: TestAgent;
+
 let client: Client;
 
 const read = async (request: IncomingMessage) => {
   const chunks: Buffer[] = [];
+
   for await (const chunk of request) chunks.push(chunk as Buffer);
+
   return Buffer.concat(chunks).toString("utf8");
 };
 
 async function startVenue(): Promise<string> {
   server = createServer(async (request, response) => {
     const body = await read(request);
+
     try {
       const answer = await venue.fetch(`http://fake-hyperliquid${request.url ?? "/"}`, {
         method: request.method ?? "POST",
         headers: { "content-type": "application/json" },
         body,
       });
+
       response.writeHead(answer.status, { "content-type": "application/json" });
       response.end(await answer.text());
     } catch {
@@ -65,6 +74,7 @@ async function startVenue(): Promise<string> {
   const { promise, resolve } = Promise.withResolvers<void>();
   server.listen(0, "127.0.0.1", resolve);
   await promise;
+
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 
@@ -110,7 +120,9 @@ async function intentRow(intentId: unknown) {
     .select()
     .from(intents)
     .where(eq(intents.id, intentId as IntentId));
+
   if (!row?.approvalId) throw new Error("an intent without its approval");
+
   return { ...row, approvalId: row.approvalId };
 }
 
@@ -125,6 +137,7 @@ async function approvedOrder(args: Record<string, unknown> = {}) {
   const row = await intentRow(answer.intentId);
   const approved = await f.t.approve(row.approvalId, [f.t.owner]);
   expect(approved.status).toBe("executed");
+
   return row;
 }
 
@@ -150,10 +163,12 @@ beforeAll(async () => {
   venue.seedAccount(trader.address, "1234.5");
   client = await f.mcp(trader.token);
 });
+
 afterAll(async () => {
   await f?.close();
   server?.close();
 });
+
 beforeEach(() => {
   venue.setBook(3, { bid: "59000", ask: "64500" });
 });
@@ -161,11 +176,14 @@ beforeEach(() => {
 describe("proposing an order", () => {
   it("refuses, before any approval opens, what the policy or the venue's metadata does not allow", async () => {
     const before = await f.t.ctx.db.select({ id: approvals.id }).from(approvals);
+
     const refused = async (args: Record<string, unknown>) => {
       const result = await client.callTool({ name: "propose_order", arguments: order(args) });
       expect(result.isError).toBe(true);
+
       return toolJson(result);
     };
+
     expect(await refused({ coin: "XRP" })).toMatchObject({
       error: "policy_denied",
       detail: "market_not_allowed",
@@ -213,10 +231,12 @@ describe("proposing an order", () => {
       notAfter: f.t.clock.now() + 86_400,
       purpose: "pay the supplier",
     };
+
     const opened = await f.t.owner.browser.api.call("proposeMandate", {
       params: { workspaceId: f.workspaceId, walletId: trader.walletId },
       body: draft,
     });
+
     const granted = await f.t.approve(opened.id as ApprovalId, [bob]);
     expect(granted.status).toBe("executed");
     expect(granted.subjectId as MandateId).toMatch(/^mnd_/);
@@ -229,9 +249,11 @@ describe("proposing an order", () => {
     });
     expect(answer.approvalUrl).toEqual(expect.any(String));
     const row = await intentRow(answer.intentId);
+
     const detail = await f.t.owner.browser.api.call("getApproval", {
       params: { approvalId: row.approvalId },
     });
+
     expect(detail.subject).toMatchObject({
       kind: "approve-intent",
       limits: null,
@@ -265,15 +287,18 @@ describe("after approval", () => {
     expect(await status(row.id)).toBe("signed");
     expect(await followUp(row.approvalId)).toEqual({ done: true, waitSeconds: 0 });
     expect(posted("order")).toHaveLength(sent + 1);
+
     const [stored] = await f.t.ctx.db
       .select()
       .from(venueOrders)
       .where(eq(venueOrders.approvalId, row.approvalId));
+
     const body = await f.t.ctx.sealer.open(
       row.workspaceId,
       `venue_orders.request:${row.approvalId}`,
       stored?.request ?? new Uint8Array(),
     );
+
     expect(posted("order").at(-1)).toBe(body);
     expect(venue.exchangeLog().at(-1)?.signer).toBe(trader.address.toLowerCase());
     expect(await status(row.id)).toBe("filled");
@@ -297,15 +322,18 @@ describe("after approval", () => {
   it("after a crash between signing and storing, posts the identical request once", async () => {
     const sent = posted("order").length;
     const row = await approvedOrder();
+
     const [first] = await f.t.ctx.db
       .select()
       .from(venueOrders)
       .where(eq(venueOrders.approvalId, row.approvalId));
+
     const body = await f.t.ctx.sealer.open(
       row.workspaceId,
       `venue_orders.request:${row.approvalId}`,
       first?.request ?? new Uint8Array(),
     );
+
     // The process died after the signer answered and before the row was stored.
     await f.t.ctx.db.delete(venueOrders).where(eq(venueOrders.approvalId, row.approvalId));
     await f.t.ctx.db.update(intents).set({ status: "approved" }).where(eq(intents.id, row.id));
@@ -352,10 +380,12 @@ describe("after approval", () => {
     const seen = await stranger.callTool({ name: "get_intent", arguments: { intentId: row.id } });
     expect(seen.isError).toBe(true);
     expect(toolJson(seen)).toMatchObject({ error: "not_found" });
+
     const cancelledByOther = await stranger.callTool({
       name: "cancel_intent",
       arguments: { intentId: row.id },
     });
+
     expect(toolJson(cancelledByOther)).toMatchObject({ error: "not_found" });
 
     const cancels = posted("cancelByCloid").length;
@@ -379,20 +409,25 @@ describe("after approval", () => {
     const cancels = posted("cancelByCloid").length;
     const route = routes.cancelOrder;
     const path = route.path.replace(":intentId", row.id);
+
     const init = {
       method: route.method,
       headers: { "content-type": "application/json" },
       body: "{}",
     };
+
     const missing = await f.t.owner.browser.fetch(path, { ...init, origin: null });
+
     const foreign = await f.t.owner.browser.fetch(path, {
       ...init,
       origin: "https://evil.example",
     });
+
     for (const response of [missing, foreign]) {
       expect(response.status).toBe(403);
       expect(ApiErrorBody.parse(await response.json()).error.code).toBe("forbidden");
     }
+
     expect(posted("cancelByCloid")).toHaveLength(cancels);
     expect(await status(row.id)).toBe("placed");
   });
@@ -400,10 +435,12 @@ describe("after approval", () => {
   it("lets a person cancel a resting order without a passkey", async () => {
     const row = await approvedOrder();
     await followUp(row.approvalId);
+
     const detail = await f.t.owner.browser.api.call("cancelOrder", {
       params: { intentId: row.id },
       body: {},
     });
+
     expect(detail).toMatchObject({ status: "cancelled", order: { canCancel: false } });
   });
 });
@@ -420,6 +457,7 @@ describe("withdrawing from the venue", () => {
         memo: "take profits home",
       },
     });
+
     expect(toolJson(elsewhere)).toMatchObject({ detail: "withdrawal_not_own_address" });
 
     const answer = await call("propose_transfer", {
@@ -429,6 +467,7 @@ describe("withdrawing from the venue", () => {
       asset: "usdc",
       memo: "take profits home",
     });
+
     expect(answer).toMatchObject({ authorizedBy: "person", status: "pending_approval" });
     const row = await intentRow(answer.intentId);
     expect((await f.t.approve(row.approvalId, [f.t.owner])).status).toBe("executed");
@@ -452,10 +491,13 @@ describe("withdrawing from the venue", () => {
       asset: "usdc",
       memo: "rebalance",
     });
+
     const row = await intentRow(answer.intentId);
     expect((await f.t.approve(row.approvalId, [f.t.owner])).status).toBe("executed");
+
     return row;
   }
+
   const withdrawalsPosted = () =>
     venue.exchangeLog().filter((entry) => entry.actionType === "withdraw3").length;
 

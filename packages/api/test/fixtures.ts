@@ -26,19 +26,33 @@ import type {
 
 // Realistic values as the server would send them; one per DTO.
 const ULID = "01jd000000000000000000000";
+
 export const WS = `ws_${ULID}1` as const;
+
 export const AGENT = `agt_${ULID}2` as const;
+
 export const WALLET = `wal_${ULID}3` as const;
+
 export const INTENT = `int_${ULID}4` as const;
+
 export const APPROVAL = `apr_${ULID}5` as const;
+
 export const USER = `usr_${ULID}6` as const;
+
 export const MANDATE = `mnd_${ULID}7` as const;
+
 export const SUBSCRIPTION = `psb_${ULID}8` as const;
+
 export const CANCEL_APPROVAL = `apr_${ULID}9` as const;
+
 const T0 = 1_700_000_000;
+
 const ADDRESS = "0x1111111111111111111111111111111111111111" as const;
+
 const HASH = "c".repeat(64);
+
 const TX = `0x${"d".repeat(64)}` as const;
+
 const TX_REPRICED = `0x${"e".repeat(64)}` as const;
 
 export const user = { id: USER, displayName: "Ada" };

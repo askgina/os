@@ -45,25 +45,33 @@ import {
 
 /** The signer's reprice window here: short, so one test can pass it. */
 const WINDOW_SECONDS = 2_000;
+
 const ETH = 10n ** 18n;
+
 const AMOUNT = 10n ** 16n;
 
 let f: Fixture;
+
 let bob: TestPerson;
 
 beforeAll(async () => {
   f = await createFixture("exec_repricing", 1, { repriceWindowSeconds: WINDOW_SECONDS });
   bob = await f.addApprover(f.workspaceId, "Bob Approver");
 });
+
 afterAll(async () => {
   await f?.close();
 });
 
 const randomAddress = () => `0x${randomBytes(20).toString("hex")}` as `0x${string}`;
+
 const steps = () => engineOf(f.t.ctx).steps();
+
 const followUp = (approvalId: ApprovalId) => steps().followUp(approvalId);
+
 /** Move the clock past the point where an automatic reprice is due. */
 const due = () => f.t.clock.advance(f.t.ctx.config.reprice.afterSeconds + 1);
+
 const intentOf = (intentId: IntentId) =>
   f.t.owner.browser.api.call("getIntent", { params: { intentId } });
 
@@ -76,6 +84,7 @@ async function patched<T extends object, K extends keyof T>(
 ) {
   const own = Object.getOwnPropertyDescriptor(target, key);
   Object.defineProperty(target, key, { value: replacement, configurable: true, writable: true });
+
   try {
     await run();
   } finally {
@@ -110,6 +119,7 @@ async function countingReprices(run: (requests: RepriceRequest[]) => Promise<voi
     "reprice",
     async (approvalId: ApprovalId, request: RepriceRequest) => {
       requests.push(request);
+
       return real(approvalId, request);
     },
     () => run(requests),
@@ -128,6 +138,7 @@ async function agentClient(name: string, workspaceId: WorkspaceId = f.workspaceI
   const agent = await f.newAgent(name, workspaceId);
   await f.setPolicy(workspaceId, agent.walletId, draftFor(agent.id));
   await fund(agent.address, 50n * ETH);
+
   return { agent, client: await f.mcp(agent.token) };
 }
 
@@ -138,12 +149,16 @@ async function propose(client: Client, to: `0x${string}`) {
       arguments: { chainId: TEST_CHAIN_ID, to, amount: formatEther(AMOUNT), memo: "test" },
     }),
   );
+
   if (typeof answer.intentId !== "string") throw new Error(JSON.stringify(answer));
+
   const [row] = await f.t.ctx.db
     .select()
     .from(intents)
     .where(eq(intents.id, answer.intentId as IntentId));
+
   if (!row?.approvalId) throw new Error("an intent without its approval");
+
   return { intentId: row.id, approvalId: row.approvalId };
 }
 
@@ -159,6 +174,7 @@ async function sendPayment(
   expect(await steps().execute(approvalId)).toEqual({ ok: true });
   await followUp(approvalId);
   expect((await transactionRow(approvalId)).status).toBe("broadcast");
+
   return { agent, workspaceId, intentId, approvalId, to };
 }
 
@@ -167,7 +183,9 @@ async function transactionRow(approvalId: ApprovalId) {
     .select()
     .from(transactions)
     .where(eq(transactions.approvalId, approvalId));
+
   if (!row) throw new Error("no transaction");
+
   return row;
 }
 
@@ -182,14 +200,18 @@ const attemptRows = (approvalId: ApprovalId) =>
 async function rawOf(payment: Payment, attempt: number): Promise<Hex> {
   if (attempt === 0) {
     const row = await transactionRow(payment.approvalId);
+
     return (await f.t.ctx.sealer.open(
       payment.workspaceId,
       `transactions.raw:${payment.approvalId}`,
       row.raw,
     )) as Hex;
   }
+
   const stored = (await attemptRows(payment.approvalId)).find((row) => row.attempt === attempt);
+
   if (!stored) throw new Error(`no attempt ${attempt}`);
+
   return (await f.t.ctx.sealer.open(
     payment.workspaceId,
     `transactions.raw:${payment.approvalId}:${attempt}`,
@@ -216,6 +238,7 @@ async function signerHashes(approvalId: ApprovalId) {
 
 async function localHashes(payment: Payment) {
   const row = await transactionRow(payment.approvalId);
+
   return [row.hash, ...(await attemptRows(payment.approvalId)).map((attempt) => attempt.hash)];
 }
 
@@ -226,6 +249,7 @@ async function localHashes(payment: Payment) {
 async function cancelOf(payment: Payment): Promise<AttemptResponse> {
   const row = await transactionRow(payment.approvalId);
   const now = f.t.clock.now();
+
   const envelope: CancelTransactionEnvelope = {
     v: PROTOCOL_VERSION,
     approvalId: newId("apr"),
@@ -240,6 +264,7 @@ async function cancelOf(payment: Payment): Promise<AttemptResponse> {
     txNonce: row.nonce,
     maxFeeWei: String(10n ** 16n),
   };
+
   const response = AssertionResponse.parse(
     f.t.authenticator.authenticate({
       credentialId: f.t.owner.credentialId,
@@ -247,8 +272,11 @@ async function cancelOf(payment: Payment): Promise<AttemptResponse> {
       origin: TEST_APPROVAL_ORIGIN,
     }),
   );
+
   const latest = (await f.t.ctx.signer.getApproval(payment.approvalId)).attempts.at(-1);
+
   if (!latest) throw new Error("nothing signed");
+
   const cancelled = await f.t.ctx.signer.cancelTransaction(payment.approvalId, {
     authorization: {
       envelope,
@@ -258,6 +286,7 @@ async function cancelOf(payment: Payment): Promise<AttemptResponse> {
     maxFeePerGas: String(BigInt(latest.maxFeePerGas) * 2n),
     maxPriorityFeePerGas: String(BigInt(latest.maxPriorityFeePerGas) * 2n + 1n),
   });
+
   await f.t.ctx.db.transaction(async (tx) => {
     await lockAttempts(tx, payment.approvalId);
     await recordAttempt(f.t.ctx, tx, {
@@ -267,6 +296,7 @@ async function cancelOf(payment: Payment): Promise<AttemptResponse> {
       cancelApprovalId: null,
     });
   });
+
   return cancelled;
 }
 
@@ -355,10 +385,12 @@ describe("automatic repricing", () => {
         bumped(original.maxPriorityFeePerGas ?? 0n),
       );
       const { intent } = await intentOf(payment.intentId);
+
       if (!("maxFeeWei" in intent)) throw new Error("a payment is an EVM intent");
       expect((repriced.gas ?? 0n) * (repriced.maxFeePerGas ?? 0n)).toBeLessThanOrEqual(
         BigInt(intent.maxFeeWei),
       );
+
       // Only the fees changed: the nonce, gas, recipient, value, data and chain are the first's.
       const unchanged = ({ nonce, gas, to, value, data, chainId }: typeof original) => ({
         nonce,
@@ -368,6 +400,7 @@ describe("automatic repricing", () => {
         data,
         chainId,
       });
+
       expect(unchanged(repriced)).toEqual(unchanged(original));
       expect(sent.at(-1)).toBe(first?.hash);
       expect(await signerHashes(payment.approvalId)).toEqual(await localHashes(payment));
@@ -422,6 +455,7 @@ describe("automatic repricing", () => {
     await holding(async (sent) => {
       const payment = await sendPayment("Manual");
       f.t.ctx.config.reprice.auto = false;
+
       try {
         await countingReprices(async (requests) => {
           due();
@@ -437,6 +471,7 @@ describe("automatic repricing", () => {
       } finally {
         f.t.ctx.config.reprice.auto = true;
       }
+
       await mine(payment, 1);
       await followUntilDone(payment.approvalId);
       expect((await intentOf(payment.intentId)).status).toBe("confirmed");
@@ -473,11 +508,13 @@ describe("automatic repricing", () => {
       const { client, agent } = await agentClient("Queue");
       const first = await propose(client, randomAddress());
       const second = await propose(client, randomAddress());
+
       for (const { approvalId } of [first, second]) {
         await f.t.approveOnPage(f.t.owner, approvalId);
         await steps().execute(approvalId);
         await followUp(approvalId);
       }
+
       due();
       await followUp(second.approvalId);
       expect(await transactionRow(second.approvalId)).toMatchObject({
@@ -507,10 +544,12 @@ describe("automatic repricing", () => {
     await holding(async () => {
       const payment = await sendPayment("Ceiling");
       f.t.ctx.config.reprice.bumpPercent = 100;
+
       try {
         for (let i = 0; i < 6; i += 1) {
           due();
           await followUp(payment.approvalId);
+
           if ((await transactionRow(payment.approvalId)).stuckReason === "fee_ceiling_reached") {
             break;
           }
@@ -518,14 +557,18 @@ describe("automatic repricing", () => {
       } finally {
         f.t.ctx.config.reprice.bumpPercent = 12;
       }
+
       expect((await transactionRow(payment.approvalId)).stuckReason).toBe("fee_ceiling_reached");
       const { intent } = await intentOf(payment.intentId);
+
       if (!("maxFeeWei" in intent)) throw new Error("a payment is an EVM intent");
+
       for (const row of await attemptRows(payment.approvalId)) {
         expect(BigInt(row.gas) * BigInt(row.maxFeePerGas)).toBeLessThanOrEqual(
           BigInt(intent.maxFeeWei),
         );
       }
+
       await countingReprices(async (requests) => {
         due();
         await followUp(payment.approvalId);
@@ -600,6 +643,7 @@ describe("automatic repricing", () => {
         params: { workspaceId },
         body: {},
       });
+
       expect((await f.t.approve(resume.id as ApprovalId, [f.t.owner])).status).toBe("executed");
       due();
       await followUp(payment.approvalId);
@@ -614,6 +658,7 @@ describe("automatic repricing", () => {
     await holding(async () => {
       const { agent, client } = await agentClient("Mandated");
       const to = randomAddress();
+
       const draft: MandateDraft = {
         agentId: agent.id,
         assets: [
@@ -632,10 +677,12 @@ describe("automatic repricing", () => {
         notAfter: f.t.clock.now() + 3 * 86_400,
         purpose: "pay the supplier",
       };
+
       const opened = await f.t.owner.browser.api.call("proposeMandate", {
         params: { workspaceId: f.workspaceId, walletId: agent.walletId },
         body: draft,
       });
+
       const granted = await f.t.approve(opened.id as ApprovalId, [bob]);
       expect(granted.status).toBe("executed");
       const mandateId = granted.subjectId as MandateId;
@@ -692,9 +739,11 @@ describe("recovery and races", () => {
             );
             expect(await attemptRows(payment.approvalId)).toEqual([]);
             expect(await signerHashes(payment.approvalId)).toHaveLength(2);
+
             // The same fees again answer with the stored bytes; other fees are a conflict, and
             // the attempt is read back from the signer.
             if (path === "other fees") f.t.ctx.config.reprice.bumpPercent = 20;
+
             try {
               due();
               await followUp(payment.approvalId);
@@ -721,10 +770,12 @@ describe("recovery and races", () => {
     await holding(async () => {
       const payment = await sendPayment("Racing");
       due();
+
       const [followed, spedUp] = await Promise.all([
         followUp(payment.approvalId),
         speedUp(f.t.ctx, payment.approvalId, f.t.owner.userId),
       ]);
+
       expect(followed.done).toBe(false);
       expect(["repriced", "not_due"]).toContain(spedUp);
       const numbers = (await attemptRows(payment.approvalId)).map((row) => row.attempt);
@@ -836,6 +887,7 @@ describe("outcomes after a cancel or another transaction", () => {
       const payment = await sendPayment("Superseded");
       const { nonce } = await transactionRow(payment.approvalId);
       await anvil.impersonateAccount({ address: payment.agent.address });
+
       try {
         const hash = await anvil.sendTransaction({
           account: payment.agent.address,
@@ -844,10 +896,12 @@ describe("outcomes after a cancel or another transaction", () => {
           value: 0n,
           nonce,
         });
+
         await anvil.waitForTransactionReceipt({ hash });
       } finally {
         await anvil.stopImpersonatingAccount({ address: payment.agent.address });
       }
+
       await followUntilDone(payment.approvalId);
       expect(await transactionRow(payment.approvalId)).toMatchObject({
         status: "superseded",

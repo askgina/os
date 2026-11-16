@@ -3,6 +3,7 @@ import { z } from "zod";
 
 /** Every call to the venue gives up after this long. */
 export const VENUE_TIMEOUT_MS = 10_000;
+
 /** The longest venue text kept or shown: a refusal reason or a cancel status. */
 export const VENUE_TEXT_MAX = 200;
 
@@ -112,10 +113,13 @@ const OrderStatus = z.union([
 ]);
 
 const Resting = z.looseObject({ resting: z.looseObject({ oid: z.number().int().min(0) }) });
+
 const Filled = z.looseObject({
   filled: z.looseObject({ oid: z.number().int().min(0), totalSz: z.string(), avgPx: z.string() }),
 });
+
 const Refused = z.looseObject({ error: z.string() });
+
 const OrderStatusEntry = z.union([z.literal("success"), Resting, Filled, Refused]);
 
 const Exchange = z.union([
@@ -173,6 +177,7 @@ const LedgerUpdates = z.array(
 export function venueText(value: unknown): string {
   const text = typeof value === "string" ? value : JSON.stringify(value ?? null);
   const flat = text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").trim();
+
   return Array.from(flat).slice(0, VENUE_TEXT_MAX).join("");
 }
 
@@ -197,6 +202,7 @@ export function createHyperliquidClient(options: {
   ): Promise<{ refused: false; data: z.infer<T> } | { refused: true; text: string }> => {
     let response: Response;
     let text: string;
+
     try {
       response = await send(`${base}${path}`, {
         method: "POST",
@@ -208,31 +214,40 @@ export function createHyperliquidClient(options: {
     } catch {
       throw new VenueError("the venue could not be reached");
     }
+
     // A client error is the venue's decision about this request; a server error is not.
     if (response.status >= 400 && response.status < 500) {
       return { refused: true, text: venueText(text) };
     }
+
     if (!response.ok) throw new VenueError(`the venue answered HTTP ${response.status}`);
     let parsed: unknown;
+
     try {
       parsed = JSON.parse(text);
     } catch {
       throw new VenueError("the venue's answer is not JSON");
     }
+
     const result = schema.safeParse(parsed);
+
     if (!result.success) throw new VenueError("the venue's answer has an unexpected shape");
+
     return { refused: false, data: result.data };
   };
 
   const read = async <T extends z.ZodType>(body: unknown, schema: T): Promise<z.infer<T>> => {
     const answer = await call("/info", JSON.stringify(body), schema);
+
     if (answer.refused) throw new VenueError(`the venue refused a read: ${answer.text}`);
+
     return answer.data;
   };
 
   return {
     async meta() {
       const { universe } = await read({ type: "meta" }, Meta);
+
       return universe.map((perp) => ({
         name: perp.name,
         szDecimals: perp.szDecimals,
@@ -242,7 +257,9 @@ export function createHyperliquidClient(options: {
 
     async orderStatus(user, cloid) {
       const answer = await read({ type: "orderStatus", user, oid: cloid }, OrderStatus);
+
       if (answer.status === "unknownOid") return { found: false };
+
       return {
         found: true,
         status: answer.order.status,
@@ -254,15 +271,21 @@ export function createHyperliquidClient(options: {
 
     async post(body) {
       const answer = await call("/exchange", body, Exchange);
+
       if (answer.refused) return { kind: "refused", text: answer.text };
       const { data } = answer;
+
       if (data.status === "err") return { kind: "refused", text: venueText(data.response) };
+
       if (data.response.type === "default") return { kind: "accepted" };
       const entry = data.response.data.statuses[0];
+
       if (entry === "success") return { kind: "accepted" };
       const resting = Resting.safeParse(entry);
+
       if (resting.success) return { kind: "resting", venueOrderId: resting.data.resting.oid };
       const filled = Filled.safeParse(entry);
+
       if (filled.success) {
         return {
           kind: "filled",
@@ -271,18 +294,22 @@ export function createHyperliquidClient(options: {
           averagePrice: filled.data.filled.avgPx,
         };
       }
+
       const refused = Refused.safeParse(entry);
+
       if (refused.success) return { kind: "refused", text: venueText(refused.data.error) };
       throw new VenueError("the venue's answer has no status");
     },
 
     async accountValue(user) {
       const state = await read({ type: "clearinghouseState", user }, ClearinghouseState);
+
       return state.marginSummary.accountValue;
     },
 
     async accountState(user) {
       const state = await read({ type: "clearinghouseState", user }, AccountStateAnswer);
+
       return {
         accountValue: state.marginSummary.accountValue,
         withdrawable: state.withdrawable,
@@ -297,6 +324,7 @@ export function createHyperliquidClient(options: {
 
     async openOrders(user) {
       const orders = await read({ type: "openOrders", user }, OpenOrders);
+
       return orders.map((order) => ({
         coin: order.coin,
         side: order.side === "B" ? "buy" : "sell",
@@ -312,6 +340,7 @@ export function createHyperliquidClient(options: {
         { type: "userNonFundingLedgerUpdates", user, startTime },
         LedgerUpdates,
       );
+
       return updates.flatMap(({ delta }) =>
         delta.type === "withdraw" && delta.nonce !== undefined ? [delta.nonce] : [],
       );

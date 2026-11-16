@@ -18,6 +18,7 @@ import { useWorkspaceId } from "@/routes/workspace.tsx";
 
 export function ActivityPage() {
   const workspaceId = useWorkspaceId();
+
   return (
     <div className="grid grid-cols-1 gap-6">
       <AuditLog workspaceId={workspaceId} />
@@ -28,10 +29,13 @@ export function ActivityPage() {
 
 function AuditLog({ workspaceId }: { workspaceId: string }) {
   const audit = useAudit(workspaceId);
+
   const verify = useMutation({
     mutationFn: () => api.call("verifyAudit", { params: { workspaceId } }),
   });
+
   const events = audit.data?.pages.flatMap((page) => page.items) ?? [];
+
   return (
     <Card>
       <CardHeader>
@@ -122,6 +126,7 @@ function AuditLog({ workspaceId }: { workspaceId: string }) {
 
 function SignerDecisions({ workspaceId }: { workspaceId: string }) {
   const decisions = useSignerDecisions(workspaceId);
+
   return (
     <Card>
       <CardHeader>

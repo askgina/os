@@ -43,6 +43,7 @@ describe("attempts in words", () => {
       assetSymbol: "ETH",
       to: RECIPIENT,
     } as const;
+
     expect(paymentTitle(transfer)).toMatch(/^Send 0\.015 ETH to 0x5290…/);
     expect(paymentTitle({ ...transfer, rawCall: true, amount: "0" })).toMatch(
       /^Call contract 0x5290…[0-9a-fA-F]{4}$/,

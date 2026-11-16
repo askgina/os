@@ -29,6 +29,7 @@ function policyTemplate(
     // An agent left out of the template (disabled) is dropped from every requester list.
     requesters: policy.requesters.flatMap((agentId) => {
       const ref = refOfAgent.get(agentId);
+
       return ref === undefined ? [] : [ref];
     }),
     assets: policy.assets.map((limit) => ({
@@ -56,31 +57,42 @@ export async function toTemplate(
   workspaceId: WorkspaceId,
 ): Promise<WorkspaceTemplate> {
   const [workspace] = await ctx.db.select().from(workspaces).where(eq(workspaces.id, workspaceId));
+
   if (!workspace) throw new HttpError("not_found", "no such workspace");
+
   const walletRows = await ctx.db
     .select()
     .from(wallets)
     .where(eq(wallets.workspaceId, workspaceId))
     .orderBy(asc(wallets.createdAt), asc(wallets.id));
+
   const agentRows = await ctx.db.select().from(agents).where(eq(agents.workspaceId, workspaceId));
   const agentOfWallet = new Map(agentRows.map((agent) => [agent.walletId, agent]));
+
   const kept = walletRows.filter((wallet) => {
     if (ENDING[wallet.lifecycle]) return false;
+
     if (wallet.kind === "treasury") return true;
+
     return agentOfWallet.get(wallet.id)?.status === "active";
   });
+
   const refOfWallet = new Map(kept.map((wallet, index) => [wallet.id, `w${index + 1}`]));
   const refOfAgent = new Map<AgentId, TemplateWalletRef>();
+
   for (const wallet of kept) {
     const agent = agentOfWallet.get(wallet.id);
     const ref = refOfWallet.get(wallet.id);
+
     if (agent && ref) refOfAgent.set(agent.id, ref);
   }
+
   const members = await ctx.db
     .select({ userId: memberships.userId, role: memberships.role })
     .from(memberships)
     .where(eq(memberships.workspaceId, workspaceId))
     .orderBy(asc(memberships.userId));
+
   return WorkspaceTemplate.parse({
     format: "askgina.os/workspace-template/v1",
     name: workspace.name,
@@ -88,6 +100,7 @@ export async function toTemplate(
     notificationDetail: workspace.notificationDetail,
     wallets: kept.map((wallet) => {
       const agent = agentOfWallet.get(wallet.id);
+
       return {
         ref: refOfWallet.get(wallet.id),
         kind: wallet.kind,
@@ -114,6 +127,7 @@ export function instantiatePolicy(
     ...policy,
     requesters: policy.requesters.flatMap((ref) => {
       const agentId = ids.agents.get(ref);
+
       return agentId === undefined ? [] : [agentId];
     }),
     approvals: {

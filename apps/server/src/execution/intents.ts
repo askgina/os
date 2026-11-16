@@ -70,7 +70,9 @@ import {
 } from "./transactions.ts";
 
 type IntentRow = typeof intents.$inferSelect;
+
 type AgentRow = typeof agents.$inferSelect;
+
 type WalletRow = typeof wallets.$inferSelect;
 
 /** What people are shown about an intent, sealed beside it. A venue intent has no simulation. */
@@ -85,11 +87,14 @@ interface IntentApprovalDetail {
 }
 
 const PAGE_SIZE = 50;
+
 /** Proposals one agent may have waiting for people at once; more is a loop, not a request. */
 export const MAX_PENDING_PER_AGENT = 20;
 
 const payloadLocation = (id: string) => `intents.payload:${id}`;
+
 const presentationLocation = (id: string) => `intents.presentation:${id}`;
+
 const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
 
 // --- reading intents --------------------------------------------------------------------------
@@ -102,16 +107,20 @@ export async function readIntent(
     ctx.sealer.open(row.workspaceId, payloadLocation(row.id), row.payload),
     ctx.sealer.open(row.workspaceId, presentationLocation(row.id), row.presentation),
   ]);
+
   const presentation = opened as Presentation;
   // Displays stored before venue intents existed were all transfers and carry no `kind`.
   const display = { kind: "transfer", ...(presentation.display as object) } as IntentDisplay;
+
   return { intent: Intent.parse(intent), presentation: { ...presentation, display } };
 }
 
 /** An intent that can only be an EVM one here (a transaction's, a reprice's). */
 export async function readEvmIntent(ctx: AppContext, row: IntentRow): Promise<EvmIntent> {
   const { intent } = await readIntent(ctx, row);
+
   if (isVenueIntent(intent)) throw new Error("expected an EVM intent, found a venue intent");
+
   return intent;
 }
 
@@ -120,7 +129,9 @@ async function intentRow(ctx: AppContext, id: string, executor: Executor = ctx.d
     .select()
     .from(intents)
     .where(eq(intents.id, id as IntentId));
+
   if (!row) throw new HttpError("not_found", "no such intent");
+
   return row;
 }
 
@@ -130,11 +141,14 @@ async function venueOrderView(
   approvalId: ApprovalId | null,
 ): Promise<VenueOrderView | null> {
   if (approvalId === null) return null;
+
   const [order] = await ctx.db
     .select()
     .from(venueOrders)
     .where(eq(venueOrders.approvalId, approvalId));
+
   if (!order || order.cloid === null || order.expiresAfter === null) return null;
+
   return {
     cloid: order.cloid as Cloid,
     venueOrderId: order.venueOrderId,
@@ -153,6 +167,7 @@ export async function intentSummary(ctx: AppContext, row: IntentRow): Promise<In
     transactionOf(ctx, row.approvalId),
     venueOrderView(ctx, row.approvalId),
   ]);
+
   return {
     id: row.id,
     agent: { id: row.agentId, name: agent?.name ?? "" },
@@ -177,6 +192,7 @@ export async function intentDetail(ctx: AppContext, row: IntentRow): Promise<Int
     readIntent(ctx, row),
     transactionOf(ctx, row.approvalId),
   ]);
+
   return {
     ...summary,
     intent,
@@ -193,6 +209,7 @@ export async function getIntentRow(ctx: AppContext, id: string): Promise<IntentR
 /** One line for an intent, for example "Send 0.01 ETH to 0x12ab…89ef" or "Buy 0.01 BTC at 65000". */
 export async function intentTitle(ctx: AppContext, row: IntentRow): Promise<string> {
   const { display } = (await readIntent(ctx, row)).presentation;
+
   return display.kind === "order"
     ? display.title
     : `${display.title} to ${shortAddress(display.to)}`;
@@ -211,27 +228,37 @@ export async function listIntentRows(
 ): Promise<{ rows: IntentRow[]; nextCursor: string | null }> {
   const limit = filter.limit ?? PAGE_SIZE;
   const conditions = [eq(intents.workspaceId, filter.workspaceId)];
+
   if (filter.agentId !== undefined) conditions.push(eq(intents.agentId, filter.agentId));
+
   if (filter.mandateId !== undefined) conditions.push(eq(intents.mandateId, filter.mandateId));
+
   if (filter.status !== undefined) conditions.push(eq(intents.status, filter.status));
+
   if (filter.cursor !== undefined) {
     const [at, id] = Buffer.from(filter.cursor, "base64url").toString("utf8").split("|");
     const time = Number(at);
+
     if (!id || !Number.isSafeInteger(time)) throw new HttpError("invalid_request", "bad cursor");
+
     const before = or(
       lt(intents.createdAt, new Date(time)),
       and(eq(intents.createdAt, new Date(time)), lt(intents.id, id as IntentId)),
     );
+
     if (before) conditions.push(before);
   }
+
   const rows = await ctx.db
     .select()
     .from(intents)
     .where(and(...conditions))
     .orderBy(desc(intents.createdAt), desc(intents.id))
     .limit(limit + 1);
+
   const page = rows.slice(0, limit);
   const last = page.at(-1);
+
   return {
     rows: page,
     nextCursor:
@@ -261,6 +288,7 @@ export async function moveIntent(
       })
       .where(and(eq(intents.id, row.id), inArray(intents.status, [...from])))
       .returning({ id: intents.id });
+
     if (!updated) return false;
     await appendAudit(
       ctx,
@@ -273,8 +301,10 @@ export async function moveIntent(
       },
       executor,
     );
+
     return true;
   };
+
   return extra.executor ? write(extra.executor) : ctx.db.transaction(write);
 }
 
@@ -309,25 +339,34 @@ async function resolveWallet(
     .where(
       and(eq(wallets.id, walletId ?? agent.walletId), eq(wallets.workspaceId, agent.workspaceId)),
     );
+
   if (!wallet) throw new HttpError("not_found", "no such wallet");
+
   const usable =
     wallet.id === agent.walletId ||
     (wallet.kind === "treasury" && (wallet.policy?.requesters.includes(agent.id) ?? false));
+
   if (!usable) throw new HttpError("not_found", "no such wallet");
+
   return wallet;
 }
 
 /** Whole units ("1.5") to base units with `decimals`, refusing more precision than the asset has. */
 export function toBaseUnits(amount: string, decimals: number): bigint {
   const match = /^(\d{1,78})(?:\.(\d{1,78}))?$/.exec(amount.trim());
+
   if (!match) throw new HttpError("invalid_request", "amount must be a decimal number");
   const [, whole = "0", fraction = ""] = match;
+
   if (fraction.length > decimals) {
     throw new HttpError("invalid_request", `amount has more than ${decimals} decimal places`);
   }
+
   const value =
     BigInt(whole) * 10n ** BigInt(decimals) + BigInt(fraction.padEnd(decimals, "0") || "0");
+
   if (value <= 0n) throw new HttpError("invalid_request", "amount must be greater than zero");
+
   return value;
 }
 
@@ -353,13 +392,16 @@ export async function proposalBasis(
   walletId: WalletId | undefined,
 ): Promise<ProposalBasis> {
   const wallet = await resolveWallet(ctx, agent, walletId);
+
   const [workspace] = await ctx.db
     .select({ paused: workspaces.paused })
     .from(workspaces)
     .where(eq(workspaces.id, agent.workspaceId));
+
   if (workspace?.paused) {
     throw new HttpError("conflict", "this workspace is paused", "workspace_paused");
   }
+
   const state = await ctx.signer.getWallet(wallet.id).catch((error: unknown) => {
     throw new HttpError(
       "internal",
@@ -367,6 +409,7 @@ export async function proposalBasis(
       error instanceof SignerError ? error.code : undefined,
     );
   });
+
   if (state.policy === null || state.policyHash === null) {
     throw new HttpError(
       "policy_denied",
@@ -374,18 +417,22 @@ export async function proposalBasis(
       "policy_missing",
     );
   }
+
   return { wallet, state, policy: state.policy, policyHash: state.policyHash };
 }
 
 /** The policy's verdict on `intent`, with what the signer counted in the last 24 hours. */
 export function checkPolicy(basis: ProposalBasis, intent: Intent): void {
   const spent = new Map<string, string>();
+
   for (const entry of [...basis.state.spent, ...basis.state.venueSpent]) {
     spent.set(`${entry.chainId}|${entry.asset}`, entry.amount);
   }
+
   const decision = evaluateIntent(basis.policy, intent, (chain, asset) =>
     BigInt(spent.get(`${chain}|${asset}`) ?? "0"),
   );
+
   if (!decision.allowed) {
     throw new HttpError("policy_denied", "the wallet's policy would refuse this", decision.code);
   }
@@ -410,6 +457,7 @@ export async function recordProposal(
   const { wallet } = basis;
   const id = intent.id;
   const hash = intentHash(intent);
+
   // The intent's sealed columns, in whichever transaction records it below.
   const sealed = async () => ({
     payload: await ctx.sealer.seal(agent.workspaceId, payloadLocation(id), intent),
@@ -453,10 +501,12 @@ export async function recordProposal(
         );
       },
     });
+
     const [stored] = await ctx.db
       .select({ status: intents.status })
       .from(intents)
       .where(eq(intents.id, id));
+
     return {
       intentId: id,
       status: stored?.status ?? "approved",
@@ -487,10 +537,12 @@ export async function recordProposal(
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtextextended(${`pending:${agent.id}`}, 0))`,
       );
+
       const [waiting] = await tx
         .select({ n: count() })
         .from(intents)
         .where(and(eq(intents.agentId, agent.id), eq(intents.status, "pending_approval")));
+
       if ((waiting?.n ?? 0) >= MAX_PENDING_PER_AGENT) {
         throw new HttpError(
           "rate_limited",
@@ -498,6 +550,7 @@ export async function recordProposal(
           "too_many_pending",
         );
       }
+
       await tx.insert(intents).values({
         id,
         workspaceId: agent.workspaceId,
@@ -524,10 +577,12 @@ export async function recordProposal(
       );
     },
   });
+
   const [stored] = await ctx.db
     .select({ status: intents.status })
     .from(intents)
     .where(eq(intents.id, id));
+
   return {
     intentId: id,
     status: stored?.status ?? "pending_approval",
@@ -558,14 +613,18 @@ async function propose(
   },
 ): Promise<ProposalResult> {
   const chains = chainAccess(ctx);
+
   if (!chains.has(input.chainId)) {
     throw new HttpError("invalid_request", "this chain is not configured");
   }
+
   const chainId = input.chainId;
   const basis = await proposalBasis(ctx, agent, input.walletId);
   const { wallet, policy } = basis;
+
   const read = async () => {
     const built = await input.build(wallet, chainId);
+
     const simulated = await chains.simulate({
       chainId,
       from: wallet.address,
@@ -573,20 +632,25 @@ async function propose(
       value: built.call.value,
       data: built.call.data,
     });
+
     return { ...built, simulated, fees: await chains.fees(chainId) };
   };
+
   const { operation, display, simulated, fees } = await read().catch((error: unknown) => {
     if (error instanceof ChainError) {
       throw new HttpError("internal", "the chain could not be read", error.code);
     }
+
     throw error;
   });
+
   const gas = ((simulated.gasEstimate ?? FALLBACK_GAS) * GAS_MARGIN_PERCENT) / 100n;
   const wanted = 2n * gas * (2n * fees.baseFeePerGas + fees.maxPriorityFeePerGas);
   const ceiling = BigInt(policy.fees.maxPerTxWei);
   // biome-ignore lint/complexity/useMathMinMax: Math.min does not take bigints
   const maxFeeWei = wanted < ceiling ? wanted : ceiling;
   const id = newId("int");
+
   const intent = EvmIntent.parse({
     v: PROTOCOL_VERSION,
     id,
@@ -599,7 +663,9 @@ async function propose(
     memo: input.memo,
     createdAt: ctx.now(),
   });
+
   checkPolicy(basis, intent);
+
   const presentation: Presentation = {
     display,
     simulation: {
@@ -609,7 +675,9 @@ async function propose(
       error: simulated.error,
     },
   };
+
   const mandateId = await findCoveringMandate(ctx, agent, wallet.id, intent, input.mandateId);
+
   return recordProposal(ctx, agent, { basis, intent, presentation, mandateId });
 }
 
@@ -628,6 +696,7 @@ export function proposeTransfer(
 ): Promise<ProposalResult> {
   const to = input.to.toLowerCase() as `0x${string}`;
   const asset = (input.asset ?? "native").toLowerCase() as "native" | `0x${string}`;
+
   return propose(ctx, agent, {
     chainId: input.chainId,
     walletId: input.walletId,
@@ -635,9 +704,11 @@ export function proposeTransfer(
     memo: input.memo,
     build: async (_wallet, chainId) => {
       const chains = chainAccess(ctx);
+
       if (asset === "native") {
         const value = toBaseUnits(input.amount, 18);
         const symbol = chains.config(chainId).nativeSymbol;
+
         return {
           operation: { type: "evm.transfer", to, valueWei: value.toString() },
           display: {
@@ -654,10 +725,13 @@ export function proposeTransfer(
           call: { to, value, data: undefined },
         };
       }
+
       const token = await chains.token(chainId, asset).catch(() => {
         throw new HttpError("invalid_request", "this token could not be read on this chain");
       });
+
       const amount = toBaseUnits(input.amount, token.decimals);
+
       return {
         operation: { type: "evm.erc20.transfer", token: asset, to, amount: amount.toString() },
         display: {
@@ -696,12 +770,14 @@ export function proposeContractCall(
   const to = input.to.toLowerCase() as `0x${string}`;
   const data = input.data.toLowerCase() as `0x${string}`;
   const value = BigInt(input.valueWei ?? "0");
+
   return propose(ctx, agent, {
     chainId: input.chainId,
     walletId: input.walletId,
     memo: input.memo,
     build: async (_wallet, chainId) => {
       const symbol = chainAccess(ctx).config(chainId).nativeSymbol;
+
       return {
         operation: { type: "evm.call", to, valueWei: value.toString(), data },
         display: {
@@ -730,6 +806,7 @@ export async function cancelIntent(ctx: AppContext, row: IntentRow): Promise<Int
       moveIntent(ctx, row, ["pending_approval"], "cancelled", { executor: tx }),
     );
   }
+
   return (await intentRow(ctx, row.id)).status;
 }
 
@@ -737,11 +814,14 @@ export async function cancelIntent(ctx: AppContext, row: IntentRow): Promise<Int
 
 async function walletSummary(ctx: AppContext, walletId: WalletId): Promise<WalletSummary> {
   const [wallet] = await ctx.db.select().from(wallets).where(eq(wallets.id, walletId));
+
   if (!wallet) throw new HttpError("not_found", "no such wallet");
+
   const [owner] = await ctx.db
     .select({ id: agents.id })
     .from(agents)
     .where(and(eq(agents.walletId, walletId), eq(agents.workspaceId, wallet.workspaceId)));
+
   return {
     id: wallet.id,
     kind: wallet.kind,
@@ -768,14 +848,18 @@ async function executeIntent(
   sign: (intent: EvmIntent, transaction: TransactionParams) => Promise<SignResponse>,
 ): Promise<void> {
   const row = await intentRow(ctx, detail.intentId);
+
   if (await transactionOf(ctx, approval.id)) return;
   const { intent, presentation } = await readIntent(ctx, row);
+
   // A venue intent is signed through its own route, and never under a mandate (D7).
   if (isVenueIntent(intent)) {
     throw new ApprovalFailure("invalid_request", "a venue intent is never a transaction");
   }
+
   await moveIntent(ctx, row, ["pending_approval"], "approved");
   const [wallet] = await ctx.db.select().from(wallets).where(eq(wallets.id, row.walletId));
+
   if (!wallet) throw new ApprovalFailure("wallet_missing", "the wallet no longer exists");
   await signOnce(ctx, {
     approval,
@@ -837,9 +921,11 @@ async function followUpIntent(
   reprice: Reprice,
 ): Promise<{ done: boolean; waitSeconds: number }> {
   const transaction = await transactionOf(ctx, approval.id);
+
   if (!transaction?.intentId) return { done: true, waitSeconds: 0 };
   const intent = await intentRow(ctx, transaction.intentId);
   const sent: IntentRow["status"][] = ["broadcast", "stuck", "signed"];
+
   return followUpTransaction(ctx, approval, transaction, options, {
     ...(ctx.config.reprice.auto ? { reprice: () => reprice(ctx, approval.id) } : {}),
     async moved(status, tx, { cancelAttempted }) {
@@ -885,43 +971,57 @@ export function approveIntentKind(venue: VenueHooks): ApprovalKindHandler<"appro
     },
     async describe(ctx, _approval, detail) {
       const row = await intentRow(ctx, (detail as IntentApprovalDetail).intentId);
+
       const [intent, wallet] = await Promise.all([
         intentDetail(ctx, row),
         walletSummary(ctx, row.walletId),
       ]);
+
       if (isVenueIntent(intent.intent)) {
         const subject = await venue.describe(ctx, intent.intent, wallet);
+
         return { kind: "approve-intent", intent, wallet, limits: null, venue: subject };
       }
+
       const spend = intentSpend(intent.intent);
+
       const limit = wallet.policy?.assets.find(
         (candidate) =>
           candidate.chainId === intent.intent.chainId && candidate.asset === spend.asset,
       );
+
       let limits: { maxPerTx: string; maxPerDay: string; spentToday: string } | null = null;
       const rawCall = intent.display.kind === "transfer" && intent.display.rawCall;
+
       if (limit && !(rawCall && spend.amount === 0n)) {
         const state = await ctx.signer.getWallet(row.walletId).catch(() => null);
+
         const spentToday =
           state?.spent.find(
             (entry) => entry.chainId === intent.intent.chainId && entry.asset === spend.asset,
           )?.amount ?? "0";
+
         limits = { maxPerTx: limit.maxPerTx, maxPerDay: limit.maxPerDay, spentToday };
       }
+
       return { kind: "approve-intent", intent, wallet, limits, venue: null };
     },
     async confirmationSubject(ctx, _approval, detail) {
       const row = await intentRow(ctx, (detail as IntentApprovalDetail).intentId);
       const { intent } = await readIntent(ctx, row);
+
       return { kind: "approve-intent", intent };
     },
     async execute(ctx, approval, authorization, detail) {
       const row = await intentRow(ctx, (detail as IntentApprovalDetail).intentId);
       const { intent } = await readIntent(ctx, row);
+
       if (isVenueIntent(intent)) {
         await venue.execute(ctx, approval, authorization, row, intent);
+
         return;
       }
+
       await executeIntent(ctx, approval, detail as IntentApprovalDetail, (evm, transaction) =>
         ctx.signer.sign({ intent: evm, authorization, transaction }),
       );
@@ -941,6 +1041,7 @@ export function mandateUseKind(): MandateUseHandler {
     kind: "mandate-use",
     async execute(ctx, use, detail) {
       const { mandateId } = use;
+
       if (mandateId === null) throw new Error("a mandate use without its mandate");
       await executeIntent(ctx, use, detail as IntentApprovalDetail, (intent, transaction) =>
         ctx.signer.signUnderMandate(mandateId, { approvalId: use.id, intent, transaction }),
@@ -960,19 +1061,24 @@ async function abandonIntent(
   // Ended without a signature we stored: a reserved nonce goes back to the wallet.
   await releaseNonce(ctx, approval.id);
   const row = await intentRow(ctx, (detail as IntentApprovalDetail).intentId);
+
   if (status === "failed") {
     const code = approval.failureCode ?? "failed";
+
     // A policy's or a mandate's reason, which the signer passes on as the detail of
     // `policy_denied` and `mandate_denied`, means it was refused, not that something broke.
     const refused =
       code === "policy_denied" ||
       (POLICY_DENY_CODES as readonly string[]).includes(code) ||
       (MANDATE_DENY_CODES as readonly string[]).includes(code);
+
     await moveIntent(ctx, row, ["pending_approval", "approved"], refused ? "denied" : "failed", {
       failureCode: code,
     });
+
     return;
   }
+
   await moveIntent(ctx, row, ["pending_approval", "approved"], status);
 }
 
@@ -990,8 +1096,10 @@ export function registerIntentKind(
   const engine = engineOf(ctx);
   engine.register(approveIntentKind(venue));
   engine.registerUse(mandateUseKind());
+
   const followUp = (context: AppContext, approval: ApprovalRow) =>
     followUpIntent(context, approval, options, reprice);
+
   engine.registerFollowUp(
     "approve-intent",
     async (context, approval) =>

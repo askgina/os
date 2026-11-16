@@ -8,6 +8,7 @@ import { createLogger } from "./log.ts";
 const log = createLogger("approve");
 
 let config: ApproveConfig;
+
 try {
   config = loadConfig(process.env);
 } catch (error) {
@@ -39,6 +40,7 @@ const server = serve({ fetch: app.fetch, port: config.port, hostname: "0.0.0.0" 
 );
 
 let stopping = false;
+
 function shutdown(signal: string) {
   if (stopping) return;
   stopping = true;
@@ -52,5 +54,7 @@ function shutdown(signal: string) {
     process.exit(1);
   }, 10_000).unref();
 }
+
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+
 process.on("SIGINT", () => shutdown("SIGINT"));

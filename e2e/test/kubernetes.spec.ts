@@ -25,10 +25,15 @@ import { stack } from "../src/stack.ts";
 test.describe.configure({ mode: "serial" });
 
 const run = promisify(execFile);
+
 const ROOT = join(import.meta.dirname, "..", "..");
+
 const OVERLAY = "deploy/k8s/overlays/kind";
+
 const PROBE = "deploy/k8s/isolation-probe.yaml";
+
 const PROBE_LABEL = "app.kubernetes.io/name=isolation-probe";
+
 /** The probe's Jobs, as `deploy/k8s/isolation-probe.yaml` names them. */
 const PROBE_JOBS = [
   "isolation-probe-agent",
@@ -37,7 +42,9 @@ const PROBE_JOBS = [
 ] as const;
 
 const CHAIN = "eip155:31337";
+
 const RECIPIENT = "0x00000000000000000000000000000000000a11ce";
+
 const ada = new Person(stack.origin, "Ada");
 
 /** A `${NAME}` placeholder the probe fills from the environment of the pod it runs in. */
@@ -46,6 +53,7 @@ const fromEnv = (name: string): string => `$\{${name}}`;
 /** Run `kubectl ...` from the repository root and return its stdout. */
 async function kubectl(...args: string[]): Promise<string> {
   const { stdout } = await run("kubectl", args, { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 });
+
   return stdout;
 }
 
@@ -96,6 +104,7 @@ async function runProbe(): Promise<Record<string, ProbeResult>> {
   );
   await kubectl("apply", "--filename", PROBE);
   const deadline = Date.now() + 240_000;
+
   for (;;) {
     const jobs = z
       .object({ items: z.array(Job) })
@@ -104,17 +113,23 @@ async function runProbe(): Promise<Record<string, ProbeResult>> {
           await kubectl("get", "jobs", "--all-namespaces", "--selector", PROBE_LABEL, "-o", "json"),
         ),
       ).items;
+
     const finished = jobs.flatMap((job) => {
       const condition = job.status.conditions?.find(
         (c) => (c.type === "Complete" || c.type === "Failed") && c.status === "True",
       );
+
       if (!condition) return [];
+
       const outcome: ProbeResult["outcome"] =
         condition.type === "Complete" ? "succeeded" : "failed";
+
       return [{ job, outcome }];
     });
+
     if (jobs.length === PROBE_JOBS.length && finished.length === jobs.length) {
       const results: Record<string, ProbeResult> = {};
+
       for (const { job, outcome } of finished) {
         const log = await kubectl(
           "logs",
@@ -122,19 +137,24 @@ async function runProbe(): Promise<Record<string, ProbeResult>> {
           job.metadata.namespace,
           `job/${job.metadata.name}`,
         ).catch((error: unknown) => `no log: ${String(error)}`);
+
         results[job.metadata.name] = { outcome, log };
       }
+
       return results;
     }
+
     if (Date.now() > deadline) {
       throw new Error(`the isolation probe did not finish:\n${JSON.stringify(jobs, null, 2)}`);
     }
+
     await delay(1000);
   }
 }
 
 function expectAllSucceeded(results: Record<string, ProbeResult>): void {
   expect(Object.keys(results).sort()).toEqual([...PROBE_JOBS].sort());
+
   for (const [job, result] of Object.entries(results)) {
     expect(result.outcome, `${job}:\n${result.log}`).toBe("succeeded");
   }
@@ -154,7 +174,9 @@ async function probeScript(): Promise<string> {
     "-o",
     "jsonpath={.spec.template.spec.containers[0].args[0]}",
   );
+
   if (!script.includes("PROBE_CHECKS")) throw new Error(`no probe script in ${PROBE}'s agent Job`);
+
   return script;
 }
 
@@ -165,6 +187,7 @@ async function probeInside(
   checks: object[],
 ): Promise<{ ok: boolean; output: string }> {
   const script = await probeScript();
+
   try {
     const output = await kubectl(
       "exec",
@@ -178,6 +201,7 @@ async function probeInside(
       JSON.stringify(checks),
       "0",
     );
+
     return { ok: true, output };
   } catch (error) {
     // execFile's error carries the command's stdout: the probe's lines, the evidence.
@@ -185,6 +209,7 @@ async function probeInside(
       error instanceof Error && "stdout" in error && typeof error.stdout === "string"
         ? error.stdout
         : "";
+
     return { ok: false, output: `${output}\n${String(error)}` };
   }
 }
@@ -206,9 +231,12 @@ async function clusterIp(namespace: string, service: string): Promise<string> {
 async function intentSettles(intentId: string, timeoutMs = 120_000): Promise<string> {
   const pending = ["proposed", "pending_approval", "approved", "signed", "broadcast"];
   const deadline = Date.now() + timeoutMs;
+
   for (;;) {
     const { status } = await ada.api.call("getIntent", { params: { intentId } });
+
     if (!pending.includes(status)) return status;
+
     if (Date.now() > deadline) throw new Error(`intent ${intentId} is still ${status}`);
     await delay(250);
   }
@@ -218,8 +246,10 @@ test("two server replicas are ready, each pod with one container that no mesh ma
   const deployment = Deployment.parse(
     JSON.parse(await kubectl("get", "deployment", "--namespace", "os", "server", "-o", "json")),
   );
+
   expect(deployment.spec.replicas).toBe(2);
   expect(deployment.status.readyReplicas).toBe(2);
+
   const pods = z
     .object({ items: z.array(Pod) })
     .parse(
@@ -236,7 +266,9 @@ test("two server replicas are ready, each pod with one container that no mesh ma
         ),
       ),
     ).items;
+
   expect(pods.map((pod) => pod.metadata.name)).toHaveLength(2);
+
   for (const pod of pods) {
     const ready = pod.status.conditions?.find((condition) => condition.type === "Ready");
     expect(ready?.status, `${pod.metadata.name} is not Ready`).toBe("True");
@@ -255,12 +287,14 @@ test("the isolation probe passes, and fails once a namespace's default-deny poli
   // The control: without `default-deny` in `os`, a pod there with no role reaches DNS, the
   // Kubernetes API and the edge, and the probe must say so.
   let broken: Record<string, ProbeResult>;
+
   try {
     await kubectl("delete", "networkpolicy", "--namespace", "os", "default-deny");
     broken = await runProbe();
   } finally {
     await kubectl("apply", "--kustomize", OVERLAY);
   }
+
   const bystander = broken["isolation-probe-bystander"];
   expect(bystander?.outcome, bystander?.log).toBe("failed");
   expect(bystander?.log).toContain('"got":"open"');
@@ -272,6 +306,7 @@ test("the signer reaches nothing, and the confirmation service reaches only the 
   const server = await clusterIp("os", "server");
   const postgres = await clusterIp("os", "postgres");
   const approveEdge = await clusterIp("os-signer", "approve-edge");
+
   const shared = [
     { name: "no DNS", dns: "kubernetes.default.svc.cluster.local", expect: "blocked" },
     {
@@ -292,6 +327,7 @@ test("the signer reaches nothing, and the confirmation service reaches only the 
       expect: "blocked",
     },
   ]);
+
   expect(signer.ok, signer.output).toBe(true);
 
   const approve = await probeInside("os-signer", "deployment/approve", [
@@ -305,6 +341,7 @@ test("the signer reaches nothing, and the confirmation service reaches only the 
     },
     { name: "not its own edge", tcp: { host: approveEdge, port: 8081 }, expect: "blocked" },
   ]);
+
   expect(approve.ok, approve.output).toBe(true);
 });
 
@@ -329,6 +366,7 @@ test("the installation is claimed with a setup token from the operator's command
     "apps/server/src/cli.ts",
     "setup-token",
   );
+
   const answer = z
     .object({ ok: z.literal(true), setupToken: z.string().min(16) })
     .parse(JSON.parse(printed.trim().split("\n").at(-1) ?? ""));
@@ -341,6 +379,7 @@ test("the installation is claimed with a setup token from the operator's command
     "app.kubernetes.io/name=server",
     "--tail=-1",
   );
+
   expect(logs).toContain("setup.token_pending");
   expect(logs).not.toContain(answer.setupToken);
 
@@ -353,10 +392,12 @@ test("an agent's payment approved on the signer's confirmation page lands once",
   const workspace = await ada.api.call("createWorkspace", {
     body: { name: `Kubernetes ${Date.now().toString(36)}` },
   });
+
   const created = await ada.api.call("createAgent", {
     params: { workspaceId: workspace.id },
     body: { name: "Payer" },
   });
+
   const draft: PolicyDraft = {
     chains: [CHAIN],
     requesters: [created.agent.id as PolicyDraft["requesters"][number]],
@@ -373,24 +414,29 @@ test("an agent's payment approved on the signer's confirmation page lands once",
     fees: { maxPerTxWei: parseEther("0.01").toString() },
     approvals: { threshold: 1, ttlSeconds: 3600 },
   };
+
   const request = await ada.api.call("requestPolicy", {
     params: { workspaceId: workspace.id, walletId: created.wallet.id },
     body: { draft },
   });
+
   await ada.confirm(request.id);
   expect((await ada.settled(request.id)).status).toBe("executed");
   await chainAdmin.setBalance({ address: created.wallet.address, value: parseEther("1") });
 
   const agent = await connectAgent(`${stack.origin}/mcp`, created.token);
+
   try {
     const before = await chain.getBalance({ address: RECIPIENT });
     const nonceBefore = await chain.getTransactionCount({ address: created.wallet.address });
+
     const proposal = await agent.call("propose_transfer", {
       chainId: CHAIN,
       to: RECIPIENT,
       amount: "0.01",
       memo: "paid through Kubernetes",
     });
+
     const approvalId = String(proposal.approvalUrl).split("/").at(-1) ?? "";
     const link = await ada.confirmationLink(approvalId);
     expect(link.origin).toBe(stack.approveOrigin);

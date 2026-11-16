@@ -20,7 +20,9 @@ export interface ReceivedRequest {
 /** Every request the receiver has recorded, oldest first. */
 export async function receivedRequests(): Promise<ReceivedRequest[]> {
   const response = await fetch(`${stack.webhookReceiverUrl}/requests`);
+
   if (!response.ok) throw new Error(`the webhook receiver answered ${response.status}`);
+
   return (await response.json()) as ReceivedRequest[];
 }
 
@@ -34,6 +36,7 @@ export async function failFirstAttempts(on: boolean): Promise<void> {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ failFirstAttempt: on }),
   });
+
   if (response.status !== 204) throw new Error(`the webhook receiver answered ${response.status}`);
 }
 
@@ -56,9 +59,12 @@ export function signatureVerifies(
 ): boolean {
   const timestamp = request.headers["x-os-timestamp"];
   const signature = request.headers["x-os-signature"];
+
   if (timestamp === undefined || signature === undefined) return false;
+
   if (!/^v1=[0-9a-f]{64}$/.test(signature)) return false;
   const expected = createHmac("sha256", secret).update(`${timestamp}.${request.body}`).digest();
+
   return timingSafeEqual(Buffer.from(signature.slice(3), "hex"), expected);
 }
 
@@ -71,11 +77,13 @@ export async function acknowledged(
     .poll(
       async () => {
         matching = (await receivedRequests()).filter((request) => match(bodyOf(request)));
+
         return matching.some((request) => request.status === 200);
       },
       { timeout: 120_000 },
     )
     .toBe(true);
+
   return matching;
 }
 
@@ -86,11 +94,13 @@ export async function webhookDeliveries(
 ): Promise<{ id: string; state: string; attempts: number }[]> {
   const db = new pg.Client({ connectionString: await databaseUrl() });
   await db.connect();
+
   try {
     const { rows } = await db.query<{ id: string; state: string; attempts: number }>(
       "SELECT id, state, attempts FROM os.notification_deliveries WHERE approval_id = $1 AND event = $2 AND target = 'webhook' ORDER BY id",
       [approvalId, event],
     );
+
     return rows;
   } finally {
     await db.end();
@@ -123,7 +133,9 @@ export function expectSignedDelivery(
   expect(request.body).toBe(JSON.stringify(body));
   expect(body).toMatchObject({ v: 1, deliveryId: request.headers["x-os-delivery"] });
   const seen = `${JSON.stringify(request.headers)}\n${request.body}`.toLowerCase();
+
   for (const value of secrets) expect(seen).not.toContain(value.toLowerCase());
+
   return body;
 }
 
@@ -131,6 +143,7 @@ export function expectSignedDelivery(
 export function bodyOf(request: Pick<ReceivedRequest, "body">): Record<string, unknown> {
   try {
     const parsed: unknown = JSON.parse(request.body);
+
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : {};

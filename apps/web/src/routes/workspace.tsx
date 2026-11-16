@@ -53,22 +53,29 @@ export function useWorkspaceId(): string {
 export function WorkspaceLayout() {
   const workspaceId = useWorkspaceId();
   const workspace = useWorkspace(workspaceId);
+
   if (workspace.isPending) return <Loading />;
+
   if (workspace.isError) {
     // Read while it was being deleted, then gone: the deletion finished while this page was open.
     if (deletedWhileOpen(workspace.error, workspace.data)) {
       return <DeletedWorkspace name={workspace.data.name} />;
     }
+
     // Opened afresh after its deletion finished, or never one of this person's: the server says
     // only `not_found`, and so does this page.
     if (workspace.error instanceof ApiError && workspace.error.code === "not_found") {
       return <MissingWorkspace />;
     }
+
     return <ErrorState error={workspace.error} retry={() => void workspace.refetch()} />;
   }
+
   const data = workspace.data;
+
   if (data.lifecycle.state === "deleted") return <DeletedWorkspace name={data.name} />;
   const deleting = data.lifecycle.state === "deleting";
+
   const tabs = [
     { to: "/w/$workspaceId", label: "Overview", exact: true },
     {
@@ -79,6 +86,7 @@ export function WorkspaceLayout() {
     { to: "/w/$workspaceId/members", label: "Members", exact: false },
     { to: "/w/$workspaceId/activity", label: "Activity", exact: false },
   ] as const;
+
   return (
     <div className="grid grid-cols-1 gap-6">
       <div className="grid grid-cols-1 gap-3">
@@ -140,6 +148,7 @@ export function WorkspaceLayout() {
 export function WorkspaceOverview() {
   const workspaceId = useWorkspaceId();
   const workspace = useWorkspace(workspaceId);
+
   if (!workspace.data) return null;
   const data = workspace.data;
   const active = data.lifecycle.state === "active";
@@ -187,6 +196,7 @@ export function WorkspaceOverview() {
               {data.agents.map((agent) => {
                 const wallet = data.wallets.find((item) => item.id === agent.walletId);
                 const walletState = wallet ? walletLifecycleLabel(wallet.lifecycle) : null;
+
                 return (
                   <li key={agent.id}>
                     <Link
@@ -296,6 +306,7 @@ export function WorkspaceOverview() {
 function NextStep({ workspace }: { workspace: WorkspaceDetail }) {
   if (workspace.role !== "owner") return null;
   const firstAgent = workspace.agents[0];
+
   if (!firstAgent) {
     return (
       <Alert tone="accent">
@@ -309,8 +320,11 @@ function NextStep({ workspace }: { workspace: WorkspaceDetail }) {
       </Alert>
     );
   }
+
   const unset = workspace.wallets.find((wallet) => wallet.policy === null && wallet.agentId);
+
   if (!unset) return null;
+
   return (
     <Alert tone="accent">
       <CircleAlert aria-hidden />
@@ -336,6 +350,7 @@ function NextStep({ workspace }: { workspace: WorkspaceDetail }) {
 
 function WalletRow({ workspaceId, wallet }: { workspaceId: string; wallet: WalletSummary }) {
   const walletState = walletLifecycleLabel(wallet.lifecycle);
+
   return (
     <Link
       to="/w/$workspaceId/wallets/$walletId"
@@ -360,6 +375,7 @@ function WalletRow({ workspaceId, wallet }: { workspaceId: string; wallet: Walle
 function AddAgent({ workspaceId }: { workspaceId: string }) {
   const navigate = useNavigate();
   const [name, setName] = useState("");
+
   const create = useMutation({
     mutationFn: () => api.call("createAgent", { params: { workspaceId }, body: { name } }),
     onSuccess: async (created) => {
@@ -371,6 +387,7 @@ function AddAgent({ workspaceId }: { workspaceId: string }) {
       });
     },
   });
+
   return (
     <form
       className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end"
@@ -403,10 +420,12 @@ function AddAgent({ workspaceId }: { workspaceId: string }) {
 
 function CreateTreasury({ workspaceId }: { workspaceId: string }) {
   const [label, setLabel] = useState("Treasury");
+
   const create = useMutation({
     mutationFn: () => api.call("createTreasury", { params: { workspaceId }, body: { label } }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.workspace(workspaceId) }),
   });
+
   return (
     <form
       className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end"
@@ -440,6 +459,7 @@ function PauseCard({ workspace }: { workspace: WorkspaceDetail }) {
   const navigate = useNavigate();
   // While it is being deleted it stays paused: resuming waits until the deletion is cancelled.
   const canAct = workspace.role !== "viewer" && workspace.lifecycle.state === "active";
+
   const pause = useMutation({
     mutationFn: () =>
       api.call("pauseWorkspace", { params: { workspaceId: workspace.id }, body: {} }),
@@ -448,6 +468,7 @@ function PauseCard({ workspace }: { workspace: WorkspaceDetail }) {
       await queryClient.invalidateQueries({ queryKey: keys.workspaces });
     },
   });
+
   const resume = useMutation({
     mutationFn: () =>
       api.call("requestResume", { params: { workspaceId: workspace.id }, body: {} }),
@@ -459,7 +480,9 @@ function PauseCard({ workspace }: { workspace: WorkspaceDetail }) {
       });
     },
   });
+
   const busy = pause.isPending || resume.isPending;
+
   return (
     <Card className={cn(workspace.paused && "border-danger/50")}>
       <CardHeader>

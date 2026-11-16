@@ -67,15 +67,20 @@ export async function requestSweep(
   },
 ): Promise<ApprovalSummary> {
   const chains = chainAccess(ctx);
+
   if (!chains.has(input.chainId)) {
     throw new HttpError("invalid_request", "chainId: this chain is not configured");
   }
+
   const { wallet } = await loadWallet(ctx, input.workspaceId, input.walletId);
+
   const [workspace] = await ctx.db
     .select({ adminThreshold: workspaces.adminThreshold })
     .from(workspaces)
     .where(eq(workspaces.id, input.workspaceId));
+
   if (!workspace) throw new HttpError("not_found", "no such workspace");
+
   // The signer's copy of the policy decides the fee ceiling it will accept.
   const state = await ctx.signer.getWallet(wallet.id).catch((error: unknown) => {
     throw new HttpError(
@@ -89,7 +94,9 @@ export async function requestSweep(
     const [balance] = await chains.balances(wallet.address, [
       { chainId: input.chainId, asset: input.asset },
     ]);
+
     if (!balance) throw new HttpError("internal", "the balance could not be read");
+
     // The gas of the transfer does not depend on the amount, so one base unit stands in for it.
     const simulated = await chains.simulate({
       chainId: input.chainId,
@@ -106,12 +113,15 @@ export async function requestSweep(
             }),
           }),
     });
+
     return { balance, simulated, fees: await chains.fees(input.chainId) };
   };
+
   const { balance, simulated, fees } = await read().catch((error: unknown) => {
     if (error instanceof ChainError) {
       throw new HttpError("internal", "the chain could not be read", error.code);
     }
+
     throw error;
   });
 
@@ -123,6 +133,7 @@ export async function requestSweep(
   const maxFeeWei = wanted < ceiling ? wanted : ceiling;
   const held = BigInt(balance.amount);
   const amount = input.asset === "native" ? held - maxFeeWei : held;
+
   if (amount <= 0n) {
     throw new HttpError(
       "conflict",
@@ -143,17 +154,21 @@ export async function requestSweep(
     to: input.to,
     maxFeeWei: maxFeeWei.toString(),
   });
+
   if (!parsed.success) {
     // The zero address, or a token sent to its own contract: both lose the funds.
     throw new HttpError("invalid_request", "to: a sweep cannot be sent there");
   }
+
   const sweep = parsed.data;
+
   const detail: SweepDetail = {
     sweep,
     assetSymbol: balance.symbol,
     assetDecimals: balance.decimals,
     gasEstimate: estimate.toString(),
   };
+
   return ctx.approvals.open({
     workspaceId: input.workspaceId,
     kind: "sweep-wallet",
@@ -183,11 +198,13 @@ const sweepWallet: ApprovalKindHandler<"sweep-wallet"> = {
   async title(_ctx, _approval, detail) {
     const { sweep, assetSymbol, assetDecimals } = detail as SweepDetail;
     const amount = formatUnits(BigInt(sweep.amount), assetDecimals);
+
     return `Empty ${amount} ${assetSymbol} from the wallet to ${sweep.to.slice(0, 6)}…${sweep.to.slice(-4)}`;
   },
   async describe(ctx, approval, detail) {
     const { sweep, assetSymbol, assetDecimals } = detail as SweepDetail;
     const { wallet, agentId } = await loadWallet(ctx, approval.workspaceId, sweep.walletId);
+
     const [treasury] = await ctx.db
       .select({ id: wallets.id })
       .from(wallets)
@@ -199,8 +216,10 @@ const sweepWallet: ApprovalKindHandler<"sweep-wallet"> = {
           ne(wallets.id, wallet.id),
         ),
       );
+
     const recipients = wallet.policy?.recipients;
     const transaction = await transactionOf(ctx, approval.id);
+
     return {
       kind: "sweep-wallet",
       wallet: walletSummary(wallet, agentId),
@@ -224,11 +243,14 @@ const sweepWallet: ApprovalKindHandler<"sweep-wallet"> = {
   },
   async execute(ctx, approval, authorization, detail) {
     const { sweep, gasEstimate } = detail as SweepDetail;
+
     if (await transactionOf(ctx, approval.id)) return;
+
     const [wallet] = await ctx.db
       .select()
       .from(wallets)
       .where(eq(wallets.id, sweep.walletId as WalletId));
+
     if (!wallet) throw new ApprovalFailure("wallet_missing", "the wallet no longer exists");
     await signOnce(ctx, {
       approval,
@@ -263,7 +285,9 @@ export function registerSweepKind(ctx: AppContext, options: ExecutionOptions): v
   engine.register(sweepWallet);
   engine.registerFollowUp("sweep-wallet", async (context, approval) => {
     const transaction = await transactionOf(context, approval.id);
+
     if (!transaction) return { done: true, waitSeconds: 0 };
+
     return followUpTransaction(context, approval, transaction, options);
   });
 }

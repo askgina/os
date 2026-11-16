@@ -20,6 +20,7 @@ export interface TestDatabase {
 export async function createTestDatabase(label: string): Promise<TestDatabase> {
   const name = `test_${label.replace(/[^a-z0-9]/gi, "_").toLowerCase()}_${randomBytes(6).toString("hex")}`;
   const admin = new pg.Client({ connectionString: TEST_POSTGRES_URL });
+
   try {
     await admin.connect();
   } catch (cause) {
@@ -28,32 +29,39 @@ export async function createTestDatabase(label: string): Promise<TestDatabase> {
       { cause },
     );
   }
+
   try {
     await admin.query(`CREATE DATABASE ${name}`);
   } finally {
     await admin.end();
   }
+
   const url = new URL(TEST_POSTGRES_URL);
   url.pathname = `/${name}`;
+
   return {
     url: url.toString(),
     async drop() {
       const client = new pg.Client({ connectionString: TEST_POSTGRES_URL });
       await client.connect();
+
       try {
         // A `pg` pool reports itself ended before its connections have finished closing.
         // Dropping the database under one of those makes the server end it with a FATAL
         // message, which surfaces as an unhandled error in the test process. Give closing
         // connections a moment to leave; FORCE then removes whatever a test really leaked.
         const deadline = Date.now() + 5_000;
+
         for (;;) {
           const { rows } = await client.query<{ open: number }>(
             "SELECT count(*)::int AS open FROM pg_stat_activity WHERE datname = $1",
             [name],
           );
+
           if ((rows[0]?.open ?? 0) === 0 || Date.now() > deadline) break;
           await delay(25);
         }
+
         await client.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
       } finally {
         await client.end();

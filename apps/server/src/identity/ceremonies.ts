@@ -17,6 +17,7 @@ import { randomToken } from "./secrets.ts";
 const CEREMONY_TTL_SECONDS = 300;
 
 type Kind = (typeof ceremonies.$inferSelect)["kind"];
+
 type Deps = Pick<AppContext, "db" | "config" | "now">;
 
 async function insertCeremony(
@@ -32,6 +33,7 @@ async function insertCeremony(
     context: input.context,
     expiresAt: new Date((ctx.now() + CEREMONY_TTL_SECONDS) * 1000),
   });
+
   return id;
 }
 
@@ -52,7 +54,9 @@ async function consumeCeremony(ctx: Deps, id: string, kind: Kind) {
       ),
     )
     .returning();
+
   if (!row) throw new HttpError("not_found", "this sign-in step expired; start again");
+
   return row;
 }
 
@@ -80,12 +84,14 @@ export async function startRegistration(
     authenticatorSelection: { residentKey: "required", userVerification: "required" },
     excludeCredentials: input.exclude ?? [],
   });
+
   const ceremonyId = await insertCeremony(ctx, {
     kind: input.kind,
     challenge: options.challenge,
     userId: input.userId,
     context: input.context,
   });
+
   return { ceremonyId, options: { ...options } };
 }
 
@@ -107,6 +113,7 @@ export async function finishRegistration(
   input: { ceremonyId: string; kind: Exclude<Kind, "login">; response: unknown },
 ): Promise<{ ceremony: typeof ceremonies.$inferSelect; passkey: NewPasskey }> {
   const ceremony = await consumeCeremony(ctx, input.ceremonyId, input.kind);
+
   const verified = await verifyRegistrationResponse({
     response: input.response as RegistrationResponseJSON,
     expectedChallenge: ceremony.challenge,
@@ -114,8 +121,10 @@ export async function finishRegistration(
     expectedRPID: ctx.config.relyingParty.id,
     requireUserVerification: true,
   }).catch(() => ({ verified: false as const }));
+
   if (!verified.verified) throw new HttpError("forbidden", "the passkey could not be verified");
   const info = verified.registrationInfo;
+
   return {
     ceremony,
     passkey: {
@@ -157,12 +166,14 @@ export async function startLogin(
     userVerification: "required",
     allowCredentials: [],
   });
+
   const ceremonyId = await insertCeremony(ctx, {
     kind: "login",
     challenge: options.challenge,
     userId: null,
     context: {},
   });
+
   return { ceremonyId, options: { ...options } };
 }
 
@@ -172,12 +183,16 @@ export async function finishLogin(
   input: { ceremonyId: string; response: AuthenticationResponseJSON },
 ): Promise<{ userId: UserId; credentialId: string }> {
   const ceremony = await consumeCeremony(ctx, input.ceremonyId, "login");
+
   const [credential] = await ctx.db
     .select()
     .from(credentials)
     .where(and(eq(credentials.id, input.response.id), isNull(credentials.revokedAt)));
+
   const refused = new HttpError("unauthenticated", "this passkey is not registered here");
+
   if (!credential) throw refused;
+
   const verified = await verifyAuthenticationResponse({
     response: input.response,
     expectedChallenge: ceremony.challenge,
@@ -191,6 +206,7 @@ export async function finishLogin(
     },
     requireUserVerification: true,
   }).catch(() => ({ verified: false, authenticationInfo: undefined }));
+
   if (!verified.verified || verified.authenticationInfo === undefined) throw refused;
   await ctx.db
     .update(credentials)
@@ -199,5 +215,6 @@ export async function finishLogin(
       lastUsedAt: new Date(ctx.now() * 1000),
     })
     .where(eq(credentials.id, credential.id));
+
   return { userId: credential.userId, credentialId: credential.id };
 }

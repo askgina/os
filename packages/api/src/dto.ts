@@ -51,6 +51,7 @@ export const ApiErrorCode = z.enum([
   "policy_denied",
   "internal",
 ]);
+
 export type ApiErrorCode = z.infer<typeof ApiErrorCode>;
 
 export const ApiErrorBody = z.strictObject({
@@ -60,6 +61,7 @@ export const ApiErrorBody = z.strictObject({
     detail: z.string().optional(),
   }),
 });
+
 export type ApiErrorBody = z.infer<typeof ApiErrorBody>;
 
 /** An opaque position in a list. Pass it back to get the next page. */
@@ -95,6 +97,7 @@ export const DisplayName = z
   .refine((value) => Memo.safeParse(value).success, "contains control or bidi characters");
 
 export const UserSummary = z.strictObject({ id: UserId, displayName: z.string() });
+
 export type UserSummary = z.infer<typeof UserSummary>;
 
 export const SessionInfo = z.strictObject({
@@ -103,6 +106,7 @@ export const SessionInfo = z.strictObject({
   user: UserSummary.nullable(),
   relyingParty: z.strictObject({ id: z.string(), name: z.string() }),
 });
+
 export type SessionInfo = z.infer<typeof SessionInfo>;
 
 /**
@@ -110,6 +114,7 @@ export type SessionInfo = z.infer<typeof SessionInfo>;
  * `@simplewebauthn/browser` unchanged, so this contract treats them as opaque JSON.
  */
 export const WebAuthnOptions = z.record(z.string(), z.unknown());
+
 export type WebAuthnOptions = z.infer<typeof WebAuthnOptions>;
 
 /** A WebAuthn registration response as `@simplewebauthn/browser` returns it. */
@@ -120,12 +125,14 @@ export const RegistrationResponse = z.looseObject({
   response: z.looseObject({ clientDataJSON: Base64Url, attestationObject: Base64Url }),
   clientExtensionResults: z.record(z.string(), z.unknown()),
 });
+
 export type RegistrationResponse = z.infer<typeof RegistrationResponse>;
 
 /** A sign-in or registration in progress. Opaque; single use; expires after five minutes. */
 export const CeremonyId = z.string().min(16).max(128);
 
 export const CeremonyStart = z.strictObject({ ceremonyId: CeremonyId, options: WebAuthnOptions });
+
 export type CeremonyStart = z.infer<typeof CeremonyStart>;
 
 export const PasskeySummary = z.strictObject({
@@ -137,11 +144,13 @@ export const PasskeySummary = z.strictObject({
   deviceType: z.enum(["singleDevice", "multiDevice"]),
   backedUp: z.boolean(),
 });
+
 export type PasskeySummary = z.infer<typeof PasskeySummary>;
 
 // --- workspaces -------------------------------------------------------------------------------
 
 export const Role = z.enum(["owner", "approver", "viewer"]);
+
 export type Role = z.infer<typeof Role>;
 
 /**
@@ -150,6 +159,7 @@ export type Role = z.infer<typeof Role>;
  * a memo. Only an owner may change it; the change is in the workspace's audit log.
  */
 export const NotificationDetail = z.enum(["count", "summary"]);
+
 export type NotificationDetail = z.infer<typeof NotificationDetail>;
 
 /**
@@ -157,6 +167,7 @@ export type NotificationDetail = z.infer<typeof NotificationDetail>;
  * existing approver to authorize it; until then the member can look but not approve.
  */
 export const ApproverState = z.enum(["none", "pending", "active"]);
+
 export type ApproverState = z.infer<typeof ApproverState>;
 
 /**
@@ -168,6 +179,7 @@ export const PendingPasskey = z.strictObject({
   publicKey: Base64Url,
   label: z.string(),
 });
+
 export type PendingPasskey = z.infer<typeof PendingPasskey>;
 
 /**
@@ -179,6 +191,7 @@ export type PendingPasskey = z.infer<typeof PendingPasskey>;
 export const SignerAdminCommand = z.string().regex(/^[A-Za-z0-9_./:-]+( [A-Za-z0-9_./:-]+)*$/, {
   message: "must be words of [A-Za-z0-9_./:-] separated by single spaces",
 });
+
 export type SignerAdminCommand = z.infer<typeof SignerAdminCommand>;
 
 export const Member = z.strictObject({
@@ -189,6 +202,7 @@ export const Member = z.strictObject({
   /** Filled for owners only; empty for everyone else. */
   pendingPasskeys: z.array(PendingPasskey),
 });
+
 export type Member = z.infer<typeof Member>;
 
 export const ChainInfo = z.strictObject({
@@ -197,6 +211,7 @@ export const ChainInfo = z.strictObject({
   nativeSymbol: z.string(),
   explorerUrl: z.string().nullable(),
 });
+
 export type ChainInfo = z.infer<typeof ChainInfo>;
 
 export const AgentSummary = z.strictObject({
@@ -209,6 +224,7 @@ export const AgentSummary = z.strictObject({
   createdAt: EpochSeconds,
   lastSeenAt: EpochSeconds.nullable(),
 });
+
 export type AgentSummary = z.infer<typeof AgentSummary>;
 
 /**
@@ -230,6 +246,7 @@ export const WalletLifecycle = z
       (wallet.destroyAfter !== null),
     { path: ["destroyAfter"], message: "only a retiring or destroyed wallet has a destroy time" },
   );
+
 export type WalletLifecycle = z.infer<typeof WalletLifecycle>;
 
 /**
@@ -254,6 +271,7 @@ export const WorkspaceLifecycle = z
     path: ["deletedAt"],
     message: "only a deleted workspace has a deletion time",
   });
+
 export type WorkspaceLifecycle = z.infer<typeof WorkspaceLifecycle>;
 
 export const WalletSummary = z.strictObject({
@@ -268,6 +286,7 @@ export const WalletSummary = z.strictObject({
   policyHash: Digest.nullable(),
   lifecycle: WalletLifecycle,
 });
+
 export type WalletSummary = z.infer<typeof WalletSummary>;
 
 export const AssetBalance = z.strictObject({
@@ -277,6 +296,7 @@ export const AssetBalance = z.strictObject({
   decimals: z.number().int().min(0).max(36),
   amount: Amount,
 });
+
 export type AssetBalance = z.infer<typeof AssetBalance>;
 
 /** A decimal as a venue writes it; a signed one may start with "-". Shown, never computed with. */
@@ -324,6 +344,7 @@ export const VenueAccount = z.strictObject({
     })
     .nullable(),
 });
+
 export type VenueAccount = z.infer<typeof VenueAccount>;
 
 export const WalletDetail = WalletSummary.extend({
@@ -338,6 +359,7 @@ export const WalletDetail = WalletSummary.extend({
    */
   venue: VenueAccount.optional(),
 });
+
 export type WalletDetail = z.infer<typeof WalletDetail>;
 
 export const WorkspaceSummary = z.strictObject({
@@ -348,6 +370,7 @@ export const WorkspaceSummary = z.strictObject({
   pendingApprovals: z.number().int().min(0),
   lifecycle: WorkspaceLifecycle,
 });
+
 export type WorkspaceSummary = z.infer<typeof WorkspaceSummary>;
 
 export const WorkspaceDetail = WorkspaceSummary.extend({
@@ -367,6 +390,7 @@ export const WorkspaceDetail = WorkspaceSummary.extend({
   /** The venue networks this server is configured for, testnet first; empty when none. */
   venueNetworks: z.array(VenueNetwork),
 });
+
 export type WorkspaceDetail = z.infer<typeof WorkspaceDetail>;
 
 /**
@@ -386,6 +410,7 @@ export const DeletionBlocker = z.enum([
   "unmined_transactions",
   "nonzero_balance",
 ]);
+
 export type DeletionBlocker = z.infer<typeof DeletionBlocker>;
 
 /**
@@ -409,6 +434,7 @@ export const DeletionPreflight = z.strictObject({
   /** The earliest `destroyAfter` a request opened now may name. */
   earliestDestroyAfter: EpochSeconds,
 });
+
 export type DeletionPreflight = z.infer<typeof DeletionPreflight>;
 
 /** The parts of a wallet policy a person edits. The server fills in ids, revision and hash chain. */
@@ -436,6 +462,7 @@ export const PolicyDraft = z.strictObject({
   /** What the wallet may do at venues; absent, nothing. The network must be configured here. */
   venues: VenueRules.optional(),
 });
+
 export type PolicyDraft = z.infer<typeof PolicyDraft>;
 
 // --- intents ----------------------------------------------------------------------------------
@@ -480,6 +507,7 @@ export const IntentStatus = z.enum([
   "filled",
   "partially_filled",
 ]);
+
 export type IntentStatus = z.infer<typeof IntentStatus>;
 
 /**
@@ -504,6 +532,7 @@ export const TransferDisplay = z.strictObject({
   /** True for a raw contract call, whose effect per-asset caps cannot measure. */
   rawCall: z.boolean(),
 });
+
 export type TransferDisplay = z.infer<typeof TransferDisplay>;
 
 /** How to show a venue order to a person. Derived from the intent and the policy's market. */
@@ -526,9 +555,11 @@ export const OrderDisplay = z.strictObject({
   /** Approving an order includes the right to cancel it, for the agent too (D4). */
   cancellableByAgent: z.literal(true),
 });
+
 export type OrderDisplay = z.infer<typeof OrderDisplay>;
 
 export const IntentDisplay = z.discriminatedUnion("kind", [TransferDisplay, OrderDisplay]);
+
 export type IntentDisplay = z.infer<typeof IntentDisplay>;
 
 /**
@@ -551,6 +582,7 @@ export const VenueOrderView = z.strictObject({
   /** Whether a cancel can be asked for now: the order was posted and is not final. */
   canCancel: z.boolean(),
 });
+
 export type VenueOrderView = z.infer<typeof VenueOrderView>;
 
 export const IntentSummary = z.strictObject({
@@ -575,6 +607,7 @@ export const IntentSummary = z.strictObject({
   /** The venue order once signed; null for anything else, a venue withdrawal included. */
   order: VenueOrderView.nullable(),
 });
+
 export type IntentSummary = z.infer<typeof IntentSummary>;
 
 export const Simulation = z.strictObject({
@@ -584,6 +617,7 @@ export const Simulation = z.strictObject({
   /** The revert reason when `ok` is false. */
   error: z.string().nullable(),
 });
+
 export type Simulation = z.infer<typeof Simulation>;
 
 /**
@@ -607,6 +641,7 @@ export const StuckReason = z.enum([
   "attempts_exhausted",
   "reprice_refused",
 ]);
+
 export type StuckReason = z.infer<typeof StuckReason>;
 
 /**
@@ -638,6 +673,7 @@ export const TransactionAttemptView = z.strictObject({
   status: z.enum(["pending", "mined", "not_mined"]),
   explorerUrl: z.string().nullable(),
 });
+
 export type TransactionAttemptView = z.infer<typeof TransactionAttemptView>;
 
 /** The one transaction an approval signed, as the chain last showed it. */
@@ -683,6 +719,7 @@ export const TransactionInfo = z.strictObject({
   /** A `cancel-transaction` request for this transaction that waits for approval, if any. */
   pendingCancelApprovalId: ApprovalId.nullable(),
 });
+
 export type TransactionInfo = z.infer<typeof TransactionInfo>;
 
 export const IntentDetail = IntentSummary.extend({
@@ -692,6 +729,7 @@ export const IntentDetail = IntentSummary.extend({
   simulation: Simulation.nullable(),
   transaction: TransactionInfo.nullable(),
 });
+
 export type IntentDetail = z.infer<typeof IntentDetail>;
 
 // --- mandates ---------------------------------------------------------------------------------
@@ -714,6 +752,7 @@ export const MandateDraft = z.strictObject({
   /** The person's own reason, shown with the mandate. */
   purpose: Memo,
 });
+
 export type MandateDraft = z.infer<typeof MandateDraft>;
 
 /**
@@ -724,6 +763,7 @@ export type MandateDraft = z.infer<typeof MandateDraft>;
  * - `revoked`: ended for good.
  */
 export const MandateStatus = z.enum(["active", "not_yet_valid", "expired", "exhausted", "revoked"]);
+
 export type MandateStatus = z.infer<typeof MandateStatus>;
 
 /**
@@ -740,6 +780,7 @@ export const MandateEndedReason = z.enum([
   "exhausted",
   "agent_disabled",
 ]);
+
 export type MandateEndedReason = z.infer<typeof MandateEndedReason>;
 
 /** One asset of a mandate as a person reads it. */
@@ -754,6 +795,7 @@ export const MandateAssetView = z.strictObject({
   /** The wallet policy's caps for this asset, which still apply to every payment; null when the policy lists none. */
   policy: z.strictObject({ maxPerTx: Amount, maxPerDay: Amount }).nullable(),
 });
+
 export type MandateAssetView = z.infer<typeof MandateAssetView>;
 
 /** What the signer counted under a mandate. Counted payments are never given back. */
@@ -772,6 +814,7 @@ export const MandateUsageSummary = z.strictObject({
     )
     .max(16),
 });
+
 export type MandateUsageSummary = z.infer<typeof MandateUsageSummary>;
 
 export const MandateSummary = z.strictObject({
@@ -797,6 +840,7 @@ export const MandateSummary = z.strictObject({
    */
   usage: MandateUsageSummary.nullable(),
 });
+
 export type MandateSummary = z.infer<typeof MandateSummary>;
 
 export const MandateDetail = MandateSummary.extend({
@@ -805,6 +849,7 @@ export const MandateDetail = MandateSummary.extend({
   /** Pass to `listIntents` with this `mandateId` for the next page. */
   intentsCursor: Cursor.nullable(),
 });
+
 export type MandateDetail = z.infer<typeof MandateDetail>;
 
 // --- approvals --------------------------------------------------------------------------------
@@ -825,6 +870,7 @@ export const ApprovalStatus = z.enum([
   "cancelled",
   "failed",
 ]);
+
 export type ApprovalStatus = z.infer<typeof ApprovalStatus>;
 
 export const ApprovalKind = z.enum([
@@ -840,12 +886,14 @@ export const ApprovalKind = z.enum([
   "retire-wallet",
   "delete-workspace",
 ]);
+
 export type ApprovalKind = z.infer<typeof ApprovalKind>;
 
 export const Requester = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("agent"), id: AgentId, name: z.string() }),
   z.strictObject({ type: z.literal("user"), id: UserId, name: z.string() }),
 ]);
+
 export type Requester = z.infer<typeof Requester>;
 
 export const ApprovalSummary = z.strictObject({
@@ -863,6 +911,7 @@ export const ApprovalSummary = z.strictObject({
   approvals: z.number().int().min(0),
   failureCode: z.string().nullable(),
 });
+
 export type ApprovalSummary = z.infer<typeof ApprovalSummary>;
 
 export const ApprovalSubject = z.discriminatedUnion("kind", [
@@ -976,6 +1025,7 @@ export const ApprovalSubject = z.discriminatedUnion("kind", [
     destroyAfter: EpochSeconds,
   }),
 ]);
+
 export type ApprovalSubject = z.infer<typeof ApprovalSubject>;
 
 export const ApprovalDetail = ApprovalSummary.extend({
@@ -994,6 +1044,7 @@ export const ApprovalDetail = ApprovalSummary.extend({
    */
   confirmUrl: z.url({ protocol: /^https?$/ }).nullable(),
 });
+
 export type ApprovalDetail = z.infer<typeof ApprovalDetail>;
 
 // --- audit ------------------------------------------------------------------------------------
@@ -1003,6 +1054,7 @@ export const AuditActor = z.strictObject({
   id: z.string().nullable(),
   name: z.string().nullable(),
 });
+
 export type AuditActor = z.infer<typeof AuditActor>;
 
 /** One entry of a workspace's append-only log. Entries are hash-chained in `seq` order. */
@@ -1017,6 +1069,7 @@ export const AuditEvent = z.strictObject({
   previousHash: Digest.nullable(),
   hash: Digest,
 });
+
 export type AuditEvent = z.infer<typeof AuditEvent>;
 
 /** An invite still waiting to be used. Its token is never shown again. */
@@ -1027,6 +1080,7 @@ export const InviteSummary = z.strictObject({
   createdAt: EpochSeconds,
   expiresAt: EpochSeconds,
 });
+
 export type InviteSummary = z.infer<typeof InviteSummary>;
 
 export const AuditVerification = z.strictObject({
@@ -1038,6 +1092,7 @@ export const AuditVerification = z.strictObject({
    */
   brokenAt: z.number().int().nullable(),
 });
+
 export type AuditVerification = z.infer<typeof AuditVerification>;
 
 // --- notifications ----------------------------------------------------------------------------
@@ -1051,6 +1106,7 @@ export const PushConfig = z.strictObject({
   enabled: z.boolean(),
   applicationServerKey: Base64Url.nullable(),
 });
+
 export type PushConfig = z.infer<typeof PushConfig>;
 
 /** A name a person gives one of their devices, for example "Phone". */
@@ -1074,6 +1130,7 @@ export const PushSubscriptionInput = z.strictObject({
   }),
   label: DeviceLabel.optional(),
 });
+
 export type PushSubscriptionInput = z.infer<typeof PushSubscriptionInput>;
 
 /** One of the signed-in person's devices that gets notifications. No endpoint, no keys. */
@@ -1084,6 +1141,7 @@ export const PushSubscriptionSummary = z.strictObject({
   /** The last time a notification reached its push service. */
   lastSuccessAt: EpochSeconds.nullable(),
 });
+
 export type PushSubscriptionSummary = z.infer<typeof PushSubscriptionSummary>;
 
 /** A time of day, `HH:MM` on a 24-hour clock. */
@@ -1092,6 +1150,7 @@ export const ClockTime = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, "expect
 function isTimeZone(value: string): boolean {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: value });
+
     return true;
   } catch {
     return false;
@@ -1109,6 +1168,7 @@ export const TimeZone = z.string().min(1).max(64).refine(isTimeZone, "unknown ti
 export const QuietHours = z
   .strictObject({ start: ClockTime, end: ClockTime, timeZone: TimeZone })
   .refine((value) => value.start !== value.end, "start and end must differ");
+
 export type QuietHours = z.infer<typeof QuietHours>;
 
 /** One workspace's notification switches for the signed-in person. Both are on by default. */
@@ -1119,6 +1179,7 @@ export const WorkspaceNotifications = z.strictObject({
   /** One more notification shortly before a request expires. */
   reminders: z.boolean(),
 });
+
 export type WorkspaceNotifications = z.infer<typeof WorkspaceNotifications>;
 
 /**
@@ -1136,12 +1197,14 @@ export const NotificationPreferences = z.strictObject({
     ),
   quietHours: QuietHours.nullable(),
 });
+
 export type NotificationPreferences = z.infer<typeof NotificationPreferences>;
 
 // --- export and clone -------------------------------------------------------------------------
 
 /** A wallet's name inside a template: `requesters` point at agents through their wallets' refs. */
 export const TemplateWalletRef = z.string().regex(/^w[1-9][0-9]{0,3}$/, "a wallet ref: w1, w2, …");
+
 export type TemplateWalletRef = z.infer<typeof TemplateWalletRef>;
 
 /**
@@ -1151,6 +1214,7 @@ export type TemplateWalletRef = z.infer<typeof TemplateWalletRef>;
 export const PolicyTemplate = PolicyDraft.extend({
   requesters: z.array(TemplateWalletRef).max(64),
 });
+
 export type PolicyTemplate = z.infer<typeof PolicyTemplate>;
 
 /**
@@ -1182,15 +1246,19 @@ export const WorkspaceTemplate = z
   })
   .superRefine((template, issue) => {
     const refs = new Set(template.wallets.map((wallet) => wallet.ref));
+
     if (refs.size !== template.wallets.length) {
       issue.addIssue({ code: "custom", path: ["wallets"], message: "each ref at most once" });
     }
+
     if (template.wallets.filter((wallet) => wallet.kind === "treasury").length > 1) {
       issue.addIssue({ code: "custom", path: ["wallets"], message: "at most one treasury" });
     }
+
     const agentRefs = new Set(
       template.wallets.filter((wallet) => wallet.agent !== null).map((wallet) => wallet.ref),
     );
+
     template.wallets.forEach((wallet, index) => {
       if ((wallet.kind === "agent") !== (wallet.agent !== null)) {
         issue.addIssue({
@@ -1199,6 +1267,7 @@ export const WorkspaceTemplate = z
           message: "an agent wallet names its agent, a treasury none",
         });
       }
+
       for (const ref of wallet.policy?.requesters ?? []) {
         if (!agentRefs.has(ref)) {
           issue.addIssue({
@@ -1209,10 +1278,12 @@ export const WorkspaceTemplate = z
         }
       }
     });
+
     if (new Set(template.members.map((member) => member.userId)).size !== template.members.length) {
       issue.addIssue({ code: "custom", path: ["members"], message: "each person at most once" });
     }
   });
+
 export type WorkspaceTemplate = z.infer<typeof WorkspaceTemplate>;
 
 /**
@@ -1223,6 +1294,7 @@ export type WorkspaceTemplate = z.infer<typeof WorkspaceTemplate>;
  * session, sealed value, confirmation link, push endpoint or signed transaction.
  */
 export const WorkspaceRecordExport = z.strictObject({ record: z.string() });
+
 export type WorkspaceRecordExport = z.infer<typeof WorkspaceRecordExport>;
 
 /** What a clone takes from its source besides the wallets' configuration. */
@@ -1233,6 +1305,7 @@ export const CloneOptions = z.strictObject({
   /** Create an invite for each member this installation knows, with the member's role. */
   includeMembers: z.boolean(),
 });
+
 export type CloneOptions = z.infer<typeof CloneOptions>;
 
 /**
@@ -1260,6 +1333,7 @@ export const CloneResult = z.strictObject({
   /** The source's admin threshold, to raise to once enough approvers have joined. */
   templateAdminThreshold: z.number().int().min(1).max(16),
 });
+
 export type CloneResult = z.infer<typeof CloneResult>;
 
 /**
@@ -1277,4 +1351,5 @@ export const ErasureResult = z.strictObject({
   status: z.enum(["erased", "waiting"]),
   approvals: z.array(ApprovalSummary),
 });
+
 export type ErasureResult = z.infer<typeof ErasureResult>;

@@ -44,9 +44,12 @@ import { registerNotify } from "../../src/notify/routes.ts";
 
 /** Where the test browser pretends to be. Passkeys are bound to its host. */
 export const TEST_ORIGIN = "http://localhost:55710";
+
 /** Where the signer's confirmation page would be: another port on the same host. */
 export const TEST_APPROVAL_ORIGIN = "http://localhost:55711";
+
 export const TEST_CHAIN_ID = "eip155:31337";
+
 export const TEST_RPC_URL = process.env.TEST_RPC_URL ?? "http://127.0.0.1:55545";
 
 /** A clock tests move by hand. Shared by the control plane and the in-process signer. */
@@ -62,11 +65,13 @@ export interface RecordingLogger extends Logger {
 
 function recordingLogger(): RecordingLogger {
   const lines: string[] = [];
+
   const write =
     (level: string) =>
     (message: string, fields: LogFields = {}) => {
       lines.push(JSON.stringify({ level, message, ...fields }));
     };
+
   return { lines, info: write("info"), warn: write("warn"), error: write("error") };
 }
 
@@ -164,6 +169,7 @@ function testConfig(
       { chainId: TEST_CHAIN_ID, name: "Local", rpcUrl: TEST_RPC_URL, nativeSymbol: "ETH" },
     ]),
   );
+
   const config = {
     ...loadConfig({
       PUBLIC_ORIGIN: TEST_ORIGIN,
@@ -175,6 +181,7 @@ function testConfig(
     }),
     ...overrides,
   };
+
   return { config, keyringFile };
 }
 
@@ -188,17 +195,20 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
   const database: TestDatabase = await createTestDatabase(options.label);
   const { config, keyringFile } = testConfig(database.url, options.config ?? {});
   let time = 1_800_000_000;
+
   const clock: TestClock = {
     now: () => time,
     advance: (seconds) => {
       time += seconds;
     },
   };
+
   const pool = new pg.Pool({ connectionString: config.databaseUrl, max: 8 });
   await migrateDatabase(pool);
   const keys = new DataKeyStore({ pool, provider: LocalKeyring.fromFile(keyringFile) });
   await keys.ensureMigrated();
   const confirmSecret = new Uint8Array(randomBytes(32));
+
   const signer = createSigner({
     sqlitePath: ":memory:",
     vault: createTestVault(),
@@ -220,8 +230,10 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
     ...options.signer,
     now: clock.now,
   });
+
   const db = drizzle(pool, { schema });
   const log = recordingLogger();
+
   const ctx: AppContext = {
     config,
     pool,
@@ -240,6 +252,7 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
     log,
     now: clock.now,
   };
+
   ctx.approvals = createApprovalEngine(ctx);
 
   const app = new Hono();
@@ -254,25 +267,33 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
   const browser = (): TestBrowser => {
     const jar = new Map<string, string>();
     const cookie = () => [...jar].map(([name, value]) => `${name}=${value}`).join("; ");
+
     const send = async (url: string, init: RequestInit & { origin?: string | null } = {}) => {
       const headers = new Headers(init.headers);
       const origin = init.origin === undefined ? TEST_ORIGIN : init.origin;
+
       if (origin !== null) headers.set("origin", origin);
+
       if (jar.size > 0) headers.set("cookie", cookie());
+
       const response = await app.fetch(
         new Request(new URL(url, TEST_ORIGIN), { ...init, headers }),
       );
+
       for (const line of response.headers.getSetCookie()) {
         const [pair = "", ...attributes] = line.split(";");
         const separator = pair.indexOf("=");
         const name = pair.slice(0, separator).trim();
         const value = pair.slice(separator + 1).trim();
         const expired = attributes.some((attribute) => attribute.trim() === "Max-Age=0");
+
         if (expired || value === "") jar.delete(name);
         else jar.set(name, value);
       }
+
       return response;
     };
+
     return {
       api: createApiClient({ fetch: (input, init) => send(String(input), init ?? {}) }),
       cookie,
@@ -286,37 +307,47 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
       challenge: options.challenge as string,
       origin: TEST_ORIGIN,
     });
+
     return { response, credentialId: response.id };
   };
 
   const signIn = async (credentialId: string, existing?: TestBrowser) => {
     const target = existing ?? browser();
     const { ceremonyId, options } = await target.api.call("startLogin", { body: {} });
+
     const response = authenticator.authenticate({
       credentialId,
       challenge: options.challenge as string,
       origin: TEST_ORIGIN,
     });
+
     await target.api.call("finishLogin", {
       body: { ceremonyId, response: response as AssertionResponse },
     });
+
     return target;
   };
 
   // The first owner, through the same setup flow an operator uses.
   await prepareSetup(ctx);
   const token = await rotateSetupToken(ctx);
+
   if (token === null) throw new Error("a fresh database must need setup");
   await options.beforeOwner?.({ token, browser: browser() });
   const ownerBrowser = browser();
+
   const setup = await ownerBrowser.api.call("startSetup", {
     body: { setupToken: token, displayName: "Olivia Owner" },
   });
+
   const ownerPasskey = register(setup.options);
+
   const session = await ownerBrowser.api.call("finishSetup", {
     body: { ceremonyId: setup.ceremonyId, response: ownerPasskey.response as never },
   });
+
   if (session.user === null) throw new Error("setup did not sign the owner in");
+
   const owner: TestPerson = {
     userId: session.user.id,
     displayName: session.user.displayName,
@@ -325,9 +356,11 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
   };
 
   const engine = engineOf(ctx);
+
   const settle = async (approvalId: ApprovalId) => {
     const row = await engine.row(approvalId);
     await engine.steps().abandon(approvalId, row.status);
+
     return engine.row(approvalId);
   };
 
@@ -337,16 +370,21 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
     fetch: async (input, init) => signer.app.fetch(new Request(input, init)),
     now: clock.now,
   });
+
   /** The confirmation page a link opens: its origin, and the token from the fragment. */
   const pageAt = (link: string) => {
     const url = new URL(link);
+
     if (url.origin !== config.approveOrigin)
       throw new Error(`${link} is not the confirmation page`);
+
     return { origin: url.origin, token: url.hash.slice(1) };
   };
+
   /** What the confirmation page at `link` sends after `person` approved `envelope` there. */
   const approveAt = async (link: string, person: TestPerson, envelope: Envelope) => {
     const page = pageAt(link);
+
     const response = AssertionResponse.parse(
       authenticator.authenticate({
         credentialId: person.credentialId,
@@ -354,11 +392,14 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
         origin: page.origin,
       }),
     );
+
     await confirm.submitConfirmation(envelope.approvalId, page.token, response);
   };
+
   const provePossession = async (link: string, envelope: AddApproverEnvelope) => {
     const page = pageAt(link);
     const options = await confirm.getPossession(envelope.approvalId, page.token);
+
     const response = AssertionResponse.parse(
       authenticator.authenticate({
         credentialId: envelope.credentialId,
@@ -366,6 +407,7 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
         origin: page.origin,
       }),
     );
+
     return confirm.submitPossession(envelope.approvalId, page.token, response);
   };
 
@@ -385,27 +427,36 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
     signIn,
     async approveOnPage(person, approvalId) {
       const shown = await person.browser.api.call("getApproval", { params: { approvalId } });
+
       if (shown.confirmUrl === null) throw new Error(`${approvalId} shows no confirmation page`);
       await approveAt(shown.confirmUrl, person, shown.envelope);
+
       return person.browser.api.call("collectApproval", { params: { approvalId }, body: {} });
     },
     async approve(approvalId, people) {
       const opened = await engine.request(approvalId);
+
       if (opened.status === "pending" && opened.envelope.type === "add-approver") {
         const link = await engine.ensureConfirmation(opened);
+
         if (link === null) throw new Error(`${approvalId} has no confirmation page`);
         const view = await confirm.getConfirmation(approvalId, pageAt(link).token);
+
         if (view.warnings.includes("possession_unproven")) {
           await provePossession(link, opened.envelope);
         }
       }
+
       for (const person of people) {
         const row = await engine.request(approvalId);
+
         if (row.status !== "pending") break;
         const link = await engine.ensureConfirmation(row);
+
         if (link === null) throw new Error(`${approvalId} has no confirmation page`);
         await approveAt(link, person, row.envelope);
         await engine.collect(await engine.request(approvalId));
+
         const [counted] = await ctx.db
           .select({ userId: schema.approvalAssertions.userId })
           .from(schema.approvalAssertions)
@@ -415,13 +466,18 @@ export async function createTestContext(options: TestContextOptions): Promise<Te
               eq(schema.approvalAssertions.userId, person.userId),
             ),
           );
+
         if (!counted) throw new Error(`${person.displayName}'s approval was not counted`);
       }
+
       const steps = engine.steps();
+
       if ((await engine.row(approvalId)).status === "approved") {
         const result = await steps.execute(approvalId);
+
         if (!result.ok) await steps.fail(approvalId, result.code);
       }
+
       return engine.row(approvalId);
     },
     settle,

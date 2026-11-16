@@ -20,6 +20,7 @@ export const DomainTag = {
   /** One use of a mandate, the signer's record of a transfer it signed under that mandate. */
   mandateUse: "askgina.os/v1/mandate-use",
 } as const;
+
 export type DomainTag = (typeof DomainTag)[keyof typeof DomainTag];
 
 /**
@@ -28,9 +29,11 @@ export type DomainTag = (typeof DomainTag)[keyof typeof DomainTag];
  */
 export function canonicalJson(value: unknown): string {
   const text = canonicalize(value);
+
   if (text === undefined) {
     throw new TypeError("value has no canonical JSON form");
   }
+
   return text;
 }
 

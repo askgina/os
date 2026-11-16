@@ -8,6 +8,7 @@ let f: Fixture;
 beforeAll(async () => {
   f = await createFixture("exec_mcp");
 });
+
 afterAll(async () => {
   await f?.close();
 });
@@ -94,10 +95,12 @@ describe("the MCP gateway", () => {
 
   it("answers a proposal the policy would refuse with its code and stores nothing", async () => {
     const client = await f.mcp(f.agent.token);
+
     const result = await client.callTool({
       name: "propose_transfer",
       arguments: { chainId: TEST_CHAIN_ID, to: RECIPIENT, amount: "6", memo: "too much" },
     });
+
     expect(result.isError).toBe(true);
     expect(toolJson(result)).toMatchObject({ error: "policy_denied", detail: "over_per_tx_cap" });
     const list = toolJson(await client.callTool({ name: "list_intents", arguments: {} }));
@@ -106,6 +109,7 @@ describe("the MCP gateway", () => {
 
   it("refuses an amount more precise than the asset", async () => {
     const client = await f.mcp(f.agent.token);
+
     const result = await client.callTool({
       name: "propose_transfer",
       arguments: {
@@ -115,17 +119,20 @@ describe("the MCP gateway", () => {
         memo: "dust",
       },
     });
+
     expect(toolJson(result)).toMatchObject({ error: "invalid_request" });
   });
 
   it("shows an agent only its own intents", async () => {
     const mine = await f.mcp(f.agent.token);
+
     const proposed = toolJson(
       await mine.callTool({
         name: "propose_transfer",
         arguments: { chainId: TEST_CHAIN_ID, to: RECIPIENT, amount: "0.01", memo: "rent" },
       }),
     );
+
     expect(proposed).toMatchObject({
       status: "pending_approval",
       authorizedBy: "person",
@@ -142,10 +149,12 @@ describe("the MCP gateway", () => {
 
     const sibling = await f.newAgent("Sibling");
     const theirs = await f.mcp(sibling.token);
+
     const peek = await theirs.callTool({
       name: "get_intent",
       arguments: { intentId: proposed.intentId },
     });
+
     expect(toolJson(peek)).toMatchObject({ error: "not_found" });
     expect(
       toolJson(await theirs.callTool({ name: "list_intents", arguments: {} })).intents,
@@ -166,6 +175,7 @@ describe("the MCP gateway", () => {
     const cancelled = toolJson(
       await mine.callTool({ name: "cancel_intent", arguments: { intentId: proposed.intentId } }),
     );
+
     expect(cancelled.status).toBe("cancelled");
   });
 });

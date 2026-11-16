@@ -15,6 +15,7 @@ const ROLE_NAMES = { owner: "Owner", approver: "Approver", viewer: "Viewer" } as
 
 export function WorkspacesPage() {
   const workspaces = useWorkspaces();
+
   return (
     <>
       <PageHeader
@@ -82,6 +83,7 @@ export function WorkspacesPage() {
 function CreateWorkspace() {
   const navigate = useNavigate();
   const [name, setName] = useState("");
+
   const create = useMutation({
     mutationFn: () => api.call("createWorkspace", { body: { name } }),
     onSuccess: async (workspace) => {
@@ -90,6 +92,7 @@ function CreateWorkspace() {
       await navigate({ to: "/w/$workspaceId", params: { workspaceId: workspace.id } });
     },
   });
+
   return (
     <Card>
       <CardContent>

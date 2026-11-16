@@ -14,6 +14,7 @@ import { signInHref } from "@/lib/return-path.ts";
  */
 export function SignInAgain({ returnTo, children }: { returnTo: string; children: ReactNode }) {
   const navigate = useNavigate();
+
   const signInAgain = useMutation({
     mutationFn: () => api.call("logout", { body: {} }),
     onSuccess: async () => {
@@ -21,6 +22,7 @@ export function SignInAgain({ returnTo, children }: { returnTo: string; children
       await navigate({ href: signInHref(returnTo) });
     },
   });
+
   return (
     <Alert tone="warning" className="items-start">
       <LogIn aria-hidden />

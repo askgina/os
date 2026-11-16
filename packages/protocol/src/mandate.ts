@@ -39,6 +39,7 @@ export const MandateAssetLimit = z.strictObject({
   /** Most all payments may move over the mandate's whole life, in base units. */
   maxTotal: PositiveAmount,
 });
+
 export type MandateAssetLimit = z.infer<typeof MandateAssetLimit>;
 
 /**
@@ -80,6 +81,7 @@ export const Mandate = z
         message: "must be sorted by chainId|asset without duplicates",
       });
     }
+
     mandate.assets.forEach((limit, index) => {
       if (limit.asset === ZERO_ADDRESS) {
         context.addIssue({
@@ -88,12 +90,15 @@ export const Mandate = z
           message: "the zero address is not a token",
         });
       }
+
       // This refinement also runs when an amount already failed its own pattern; BigInt would
       // throw on such text, so compare only amounts that parsed.
       const parsed = [limit.maxPerAction, limit.maxPerWindow, limit.maxTotal].every(
         (amount) => PositiveAmount.safeParse(amount).success,
       );
+
       if (!parsed) return;
+
       if (BigInt(limit.maxPerAction) > BigInt(limit.maxPerWindow)) {
         context.addIssue({
           code: "custom",
@@ -101,6 +106,7 @@ export const Mandate = z
           message: "maxPerAction cannot exceed maxPerWindow",
         });
       }
+
       if (BigInt(limit.maxPerWindow) > BigInt(limit.maxTotal)) {
         context.addIssue({
           code: "custom",
@@ -109,6 +115,7 @@ export const Mandate = z
         });
       }
     });
+
     if (mandate.notAfter <= mandate.notBefore) {
       context.addIssue({
         code: "custom",
@@ -122,6 +129,7 @@ export const Mandate = z
         message: "a mandate cannot last longer than 30 days",
       });
     }
+
     mandate.recipients.forEach((recipient, index) => {
       if (recipient === ZERO_ADDRESS) {
         context.addIssue({
@@ -132,6 +140,7 @@ export const Mandate = z
       }
     });
   });
+
 export type Mandate = z.infer<typeof Mandate>;
 
 /** The digest a `grant-mandate` envelope binds. */
@@ -158,7 +167,9 @@ export function mandateWorstCase(
   return mandate.assets.map((limit) => {
     let amount = BigInt(limit.maxTotal);
     const byUses = BigInt(mandate.maxUses) * BigInt(limit.maxPerAction);
+
     if (byUses < amount) amount = byUses;
+
     return { chainId: limit.chainId, asset: limit.asset, amount };
   });
 }
@@ -168,7 +179,9 @@ export type MandateTimeState = "not_yet_valid" | "live" | "expired";
 /** Where `now` falls in the mandate's span. `notAfter` itself is already expired. */
 export function mandateTimeState(mandate: Mandate, now: number): MandateTimeState {
   if (now < mandate.notBefore) return "not_yet_valid";
+
   if (now >= mandate.notAfter) return "expired";
+
   return "live";
 }
 
@@ -192,6 +205,7 @@ export const MANDATE_GRANT_REFUSALS = [
   "lifetime_too_long",
   "too_many_live_mandates",
 ] as const;
+
 export type MandateGrantRefusal = (typeof MANDATE_GRANT_REFUSALS)[number];
 
 /**
@@ -207,17 +221,23 @@ export function checkMandateAgainstPolicy(
   if (policy.walletId !== mandate.walletId || policy.workspaceId !== mandate.workspaceId) {
     return "wallet_mismatch";
   }
+
   if (!policy.requesters.includes(mandate.agentId)) return "requester_not_allowed";
+
   if (mandate.assets.some((limit) => !policy.chains.includes(limit.chainId))) {
     return "chain_not_allowed";
   }
+
   const limits: { limit: MandateAssetLimit; policyLimit: AssetLimit }[] = [];
+
   for (const limit of mandate.assets) {
     const key = assetLimitKey(limit);
     const policyLimit = policy.assets.find((candidate) => assetLimitKey(candidate) === key);
+
     if (policyLimit === undefined) return "asset_not_allowed";
     limits.push({ limit, policyLimit });
   }
+
   if (
     limits.some(
       ({ limit, policyLimit }) => BigInt(limit.maxPerAction) > BigInt(policyLimit.maxPerTx),
@@ -225,6 +245,7 @@ export function checkMandateAgainstPolicy(
   ) {
     return "over_per_tx_cap";
   }
+
   // A window longer than a day may hold more than one day's cap; the policy's 24-hour cap still
   // applies to every use.
   if (
@@ -235,18 +256,24 @@ export function checkMandateAgainstPolicy(
   ) {
     return "over_daily_cap";
   }
+
   const { recipients } = policy;
+
   if (
     recipients.mode === "allowlist" &&
     mandate.recipients.some((recipient) => !recipients.addresses.includes(recipient))
   ) {
     return "recipient_not_allowed";
   }
+
   if (BigInt(mandate.maxFeePerActionWei) > BigInt(policy.fees.maxPerTxWei)) return "over_fee_cap";
+
   if (mandate.notAfter <= options.now) return "already_expired";
+
   if (mandate.notAfter - Math.max(options.now, mandate.notBefore) > options.maxSeconds) {
     return "lifetime_too_long";
   }
+
   return null;
 }
 
@@ -270,6 +297,7 @@ export const MANDATE_DENY_CODES = [
   "mandate_over_total_cap",
   "mandate_grant_below_threshold",
 ] as const;
+
 export type MandateDenyCode = (typeof MANDATE_DENY_CODES)[number];
 
 export type MandateDecision =
@@ -299,43 +327,56 @@ export function evaluateMandate(
   if (intent.workspaceId !== mandate.workspaceId || intent.walletId !== mandate.walletId) {
     return { allowed: false, code: "mandate_wallet_mismatch" };
   }
+
   if (intent.agentId !== mandate.agentId) {
     return { allowed: false, code: "mandate_agent_mismatch" };
   }
+
   // Mandates cover transfers only: an order or a withdrawal at a venue always needs people.
   if (isVenueIntent(intent)) {
     return { allowed: false, code: "mandate_operation_not_allowed" };
   }
+
   const { operation } = intent;
+
   // The signer cannot measure what calldata moves, so no call is ever signed under a mandate,
   // not even one that sends no coin.
   if (operation.type === "evm.call") {
     return { allowed: false, code: "mandate_operation_not_allowed" };
   }
+
   const { asset, amount } = intentSpend(intent);
   const key = assetLimitKey({ chainId: intent.chainId, asset });
   const limit = mandate.assets.find((candidate) => assetLimitKey(candidate) === key);
+
   if (limit === undefined) {
     return { allowed: false, code: "mandate_asset_not_allowed" };
   }
+
   if (!mandate.recipients.includes(operation.to)) {
     return { allowed: false, code: "mandate_recipient_not_allowed" };
   }
+
   if (BigInt(intent.maxFeeWei) > BigInt(mandate.maxFeePerActionWei)) {
     return { allowed: false, code: "mandate_over_fee_cap" };
   }
+
   if (usage.uses + 1 > mandate.maxUses) {
     return { allowed: false, code: "mandate_uses_exhausted" };
   }
+
   if (amount > BigInt(limit.maxPerAction)) {
     return { allowed: false, code: "mandate_over_per_action_cap" };
   }
+
   if (usage.inWindow(intent.chainId, asset) + amount > BigInt(limit.maxPerWindow)) {
     return { allowed: false, code: "mandate_over_window_cap" };
   }
+
   if (usage.total(intent.chainId, asset) + amount > BigInt(limit.maxTotal)) {
     return { allowed: false, code: "mandate_over_total_cap" };
   }
+
   return { allowed: true, spend: { chainId: intent.chainId, asset, amount } };
 }
 
@@ -345,6 +386,7 @@ export const MandateUseInput = z.strictObject({
   mandateId: MandateId,
   intentHash: Digest,
 });
+
 export type MandateUseInput = z.infer<typeof MandateUseInput>;
 
 /**

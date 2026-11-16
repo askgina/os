@@ -74,6 +74,7 @@ export function FormError({
   explain?: (error: unknown) => string | null;
 }) {
   if (!error) return null;
+
   return (
     <p role="alert" className="flex items-start gap-1.5 text-sm text-danger">
       <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
@@ -105,8 +106,10 @@ export function CopyButton({ value, label }: { value: string; label: string }) {
   useEffect(() => {
     if (!copied) return;
     const timer = setTimeout(() => setCopied(false), 2_000);
+
     return () => clearTimeout(timer);
   }, [copied]);
+
   return (
     <Button
       variant="outline"
@@ -247,7 +250,9 @@ export function useNow(): number {
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => {
     const timer = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1_000);
+
     return () => clearInterval(timer);
   }, []);
+
   return now;
 }

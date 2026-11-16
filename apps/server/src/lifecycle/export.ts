@@ -32,9 +32,11 @@ import {
 const SetPolicyDetail = z.object({ policy: WalletPolicy });
 
 const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
+
 const byKey = (a: RecordLine, b: RecordLine) => {
   const left = recordLineKey(a);
   const right = recordLineKey(b);
+
   return left < right ? -1 : left > right ? 1 : 0;
 };
 
@@ -63,6 +65,7 @@ export async function writeRecord(
     subject: { type: "workspace", id: workspaceId },
     detail: { format: RECORD_FORMAT },
   });
+
   // One snapshot of the control plane's rows, so the sections agree with each other.
   const rows = await ctx.db.transaction(
     async (tx) => ({
@@ -104,18 +107,23 @@ export async function writeRecord(
   );
 
   const decisions: z.infer<typeof SignerDecisionLine>[] = [];
+
   for (let after = 0; ; ) {
     const page = await ctx.signer.listDecisions(workspaceId, { after });
     const last = page.decisions.at(-1);
+
     if (!last) break;
+
     for (const { workspaceId: _, ...decision } of page.decisions) {
       decisions.push({ type: "signer-decision", ...decision });
     }
+
     after = last.seq;
   }
 
   // What the signer counts of each mandate. A wallet whose key is gone no longer answers.
   const signerMandates = new Map<string, MandateState>();
+
   for (const walletId of new Set(rows.mandates.map((row) => row.walletId))) {
     try {
       for (const state of (await ctx.signer.listMandates(walletId)).mandates) {
@@ -128,6 +136,7 @@ export async function writeRecord(
 
   const engine = engineOf(ctx);
   const attemptsOf = new Map<string, z.infer<typeof TransactionLine>["attempts"]>();
+
   for (const { attempt } of rows.attempts) {
     const list = attemptsOf.get(attempt.approvalId) ?? [];
     list.push({
@@ -153,6 +162,7 @@ export async function writeRecord(
     "mandate-use": [],
     "signer-decision": decisions,
   };
+
   for (const row of rows.audit) {
     const sealed = await openAuditSealed(ctx, row);
     sections.audit.push({
@@ -171,6 +181,7 @@ export async function writeRecord(
       detail: sealed.detail,
     });
   }
+
   for (const row of rows.intents) {
     const { intent, presentation } = await readIntent(ctx, row);
     sections.intent.push({
@@ -189,6 +200,7 @@ export async function writeRecord(
       createdAt: seconds(row.createdAt),
     });
   }
+
   for (const { transaction } of rows.transactions) {
     sections.transaction.push({
       type: "transaction",
@@ -206,6 +218,7 @@ export async function writeRecord(
       attempts: attemptsOf.get(transaction.approvalId) ?? [],
     });
   }
+
   for (const row of rows.policies) {
     if (row.envelope?.type !== "set-policy") continue;
     const { policy } = SetPolicyDetail.parse(await engine.openDetail(row));
@@ -219,6 +232,7 @@ export async function writeRecord(
       policy,
     });
   }
+
   for (const row of rows.mandates) {
     const state = signerMandates.get(row.id);
     sections.mandate.push({
@@ -240,6 +254,7 @@ export async function writeRecord(
         : null,
     });
   }
+
   for (const row of rows.uses) {
     if (row.mandateId === null) continue;
     sections["mandate-use"].push({
@@ -255,6 +270,7 @@ export async function writeRecord(
 
   const lastAudit = rows.audit.at(-1);
   const lastDecision = decisions.at(-1);
+
   const header: RecordHeader = {
     format: RECORD_FORMAT,
     workspaceId,
@@ -262,10 +278,13 @@ export async function writeRecord(
     auditHead: { seq: lastAudit?.seq ?? 0, hash: lastAudit?.hash ?? null },
     signerDecisionHead: { seq: lastDecision?.seq ?? 0, hash: lastDecision?.hash ?? null },
   };
+
   await sink(JSON.stringify(header));
+
   for (const name of RECORD_SECTIONS) {
     for (const line of sections[name].sort(byKey)) await sink(JSON.stringify(line));
   }
+
   const end: RecordEnd = {
     type: "end",
     counts: {
@@ -278,6 +297,8 @@ export async function writeRecord(
       "signer-decision": sections["signer-decision"].length,
     },
   };
+
   await sink(JSON.stringify(end));
+
   return { lines: 2 + RECORD_SECTIONS.reduce((sum, name) => sum + sections[name].length, 0) };
 }

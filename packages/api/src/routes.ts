@@ -75,9 +75,13 @@ export interface RouteDefinition<
 }
 
 const Empty = z.strictObject({});
+
 const NoBody = z.strictObject({});
+
 const items = <T extends z.ZodType>(item: T) => z.strictObject({ items: z.array(item) });
+
 const approvals = z.strictObject({ approvals: z.array(ApprovalSummary) });
+
 const cursorQuery = z.strictObject({ cursor: Cursor.optional() });
 
 // One helper per method and kind of access, each with a fixed `auth` literal in its return type.
@@ -522,6 +526,7 @@ export const routes = {
 } as const satisfies Record<string, RouteDefinition>;
 
 export type Routes = typeof routes;
+
 export type RouteName = keyof Routes;
 
 /** `{ workspaceId: string; agentId: string }` for `/…/:workspaceId/…/:agentId`. */
@@ -534,9 +539,11 @@ export type PathParams<Path extends string> = Path extends `${string}:${infer Na
 type BodyInput<R extends RouteDefinition> = R["body"] extends z.ZodType
   ? { body: z.input<R["body"]> }
   : unknown;
+
 type QueryInput<R extends RouteDefinition> = R["query"] extends z.ZodType
   ? { query?: z.input<R["query"]> }
   : unknown;
+
 type ParamsInput<R extends RouteDefinition> = keyof PathParams<R["path"]> extends never
   ? unknown
   : { params: PathParams<R["path"]> };
@@ -544,4 +551,5 @@ type ParamsInput<R extends RouteDefinition> = keyof PathParams<R["path"]> extend
 export type RouteInput<N extends RouteName> = ParamsInput<Routes[N]> &
   BodyInput<Routes[N]> &
   QueryInput<Routes[N]>;
+
 export type RouteOutput<N extends RouteName> = z.infer<Routes[N]["response"]>;

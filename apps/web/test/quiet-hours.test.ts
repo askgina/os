@@ -83,6 +83,7 @@ describe("parseQuietHours", () => {
   ])("asks to fix %s", (_name, changes, field, message) => {
     const parsed = parseQuietHours(form(changes));
     expect(parsed.ok).toBe(false);
+
     if (parsed.ok) return;
     expect(parsed.problem.field).toBe(field);
     expect(parsed.problem.message).toMatch(message);

@@ -29,6 +29,7 @@ export async function takeToken(
       SET tokens = ${refilled(perMinute, burst)} - 1, at = greatest(${rateLimits.at}, now())
       WHERE ${refilled(perMinute, burst)} >= 1
     RETURNING ${rateLimits.tokens}`);
+
   return rows.length > 0;
 }
 
@@ -42,5 +43,6 @@ export async function hasToken(
   const { rows } = await db.execute<{ tokens: number }>(sql`
     SELECT ${refilled(perMinute, burst)} AS tokens FROM ${rateLimits}
     WHERE ${rateLimits.bucket} = ${bucket}`);
+
   return rows.length === 0 || Number(rows[0]?.tokens) >= 1;
 }

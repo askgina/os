@@ -48,6 +48,7 @@ export const ApproveIntentEnvelope = z.strictObject({
   chainId: Network,
   policyHash: Digest,
 });
+
 export type ApproveIntentEnvelope = z.infer<typeof ApproveIntentEnvelope>;
 
 /** Replace a wallet's policy. `previousPolicyHash` is null only for the wallet's first policy. */
@@ -58,6 +59,7 @@ export const SetPolicyEnvelope = z.strictObject({
   policyHash: Digest,
   previousPolicyHash: Digest.nullable(),
 });
+
 export type SetPolicyEnvelope = z.infer<typeof SetPolicyEnvelope>;
 
 /** Let one more passkey approve for this workspace. */
@@ -69,6 +71,7 @@ export const AddApproverEnvelope = z.strictObject({
   /** The credential's COSE public key, base64url. */
   publicKey: Base64Url,
 });
+
 export type AddApproverEnvelope = z.infer<typeof AddApproverEnvelope>;
 
 /** Stop one passkey from approving for this workspace. */
@@ -78,6 +81,7 @@ export const RemoveApproverEnvelope = z.strictObject({
   userId: UserId,
   credentialId: Base64Url,
 });
+
 export type RemoveApproverEnvelope = z.infer<typeof RemoveApproverEnvelope>;
 
 /** Change how many people must approve changes to approvers and policies. */
@@ -86,6 +90,7 @@ export const SetAdminThresholdEnvelope = z.strictObject({
   type: z.literal("set-admin-threshold"),
   adminThreshold: z.number().int().min(1).max(16),
 });
+
 export type SetAdminThresholdEnvelope = z.infer<typeof SetAdminThresholdEnvelope>;
 
 /** Let a paused workspace sign again. Pausing needs no envelope: it only removes authority. */
@@ -93,6 +98,7 @@ export const ResumeWorkspaceEnvelope = z.strictObject({
   ...envelopeHeader,
   type: z.literal("resume-workspace"),
 });
+
 export type ResumeWorkspaceEnvelope = z.infer<typeof ResumeWorkspaceEnvelope>;
 
 /**
@@ -106,6 +112,7 @@ export const SweepWalletEnvelope = z.strictObject({
   chainId: ChainId,
   sweepHash: Digest,
 });
+
 export type SweepWalletEnvelope = z.infer<typeof SweepWalletEnvelope>;
 
 /**
@@ -121,6 +128,7 @@ export const GrantMandateEnvelope = z.strictObject({
   agentId: AgentId,
   mandateHash: Digest,
 });
+
 export type GrantMandateEnvelope = z.infer<typeof GrantMandateEnvelope>;
 
 /**
@@ -145,6 +153,7 @@ export const CancelTransactionEnvelope = z
     path: ["targetApprovalId"],
     message: "a cancel cannot target its own approval",
   });
+
 export type CancelTransactionEnvelope = z.infer<typeof CancelTransactionEnvelope>;
 
 /**
@@ -152,6 +161,7 @@ export type CancelTransactionEnvelope = z.infer<typeof CancelTransactionEnvelope
  * holds them, so the person approving reads the exact address whose key is destroyed.
  */
 export const WalletRef = z.strictObject({ walletId: WalletId, address: Address });
+
 export type WalletRef = z.infer<typeof WalletRef>;
 
 const destroyAfterIssue = {
@@ -173,6 +183,7 @@ export const RetireWalletEnvelope = z
     destroyAfter: EpochSeconds,
   })
   .refine((envelope) => envelope.destroyAfter > envelope.issuedAt, destroyAfterIssue);
+
 export type RetireWalletEnvelope = z.infer<typeof RetireWalletEnvelope>;
 
 /**
@@ -196,6 +207,7 @@ export const DeleteWorkspaceEnvelope = z
     destroyAfter: EpochSeconds,
   })
   .refine((envelope) => envelope.destroyAfter > envelope.issuedAt, destroyAfterIssue);
+
 export type DeleteWorkspaceEnvelope = z.infer<typeof DeleteWorkspaceEnvelope>;
 
 export const Envelope = z
@@ -216,7 +228,9 @@ export const Envelope = z
     path: ["expiresAt"],
     message: "expiresAt must be after issuedAt",
   });
+
 export type Envelope = z.infer<typeof Envelope>;
+
 export type EnvelopeType = Envelope["type"];
 
 /**
@@ -255,6 +269,7 @@ export const AssertionResponse = z.looseObject({
   }),
   clientExtensionResults: z.record(z.string(), z.unknown()),
 });
+
 export type AssertionResponse = z.infer<typeof AssertionResponse>;
 
 /** One person's passkey assertion over an envelope's challenge. */
@@ -263,6 +278,7 @@ export const Assertion = z.strictObject({
   credentialId: Base64Url,
   response: AssertionResponse,
 });
+
 export type Assertion = z.infer<typeof Assertion>;
 
 /** An envelope together with the assertions that authorize it. */
@@ -270,6 +286,7 @@ export const Authorization = z.strictObject({
   envelope: Envelope,
   assertions: z.array(Assertion).min(1).max(16),
 });
+
 export type Authorization = z.infer<typeof Authorization>;
 
 /** A passkey that may approve for a workspace, as the signer stores it. */
@@ -279,4 +296,5 @@ export const ApproverCredential = z.strictObject({
   /** The credential's COSE public key, base64url. */
   publicKey: Base64Url,
 });
+
 export type ApproverCredential = z.infer<typeof ApproverCredential>;

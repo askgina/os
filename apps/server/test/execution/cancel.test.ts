@@ -35,24 +35,32 @@ import {
 } from "./fixture.ts";
 
 const ETH = 10n ** 18n;
+
 const AMOUNT = 10n ** 16n;
 
 let f: Fixture;
+
 let bob: TestPerson;
 
 beforeAll(async () => {
   f = await createFixture("exec_cancel");
   bob = await f.addApprover(f.workspaceId, "Bob Approver");
 });
+
 afterAll(async () => {
   await f?.close();
 });
 
 const api = () => f.t.owner.browser.api;
+
 const randomAddress = () => `0x${randomBytes(20).toString("hex")}` as `0x${string}`;
+
 const steps = () => engineOf(f.t.ctx).steps();
+
 const followUp = (approvalId: ApprovalId) => steps().followUp(approvalId);
+
 const intentOf = (intentId: IntentId) => api().call("getIntent", { params: { intentId } });
+
 /** Far enough past the newest attempt for a person's speed-up to make another. */
 const pastSpacing = () => f.t.clock.advance(16);
 
@@ -65,6 +73,7 @@ async function patched<T extends object, K extends keyof T>(
 ) {
   const own = Object.getOwnPropertyDescriptor(target, key);
   Object.defineProperty(target, key, { value: replacement, configurable: true, writable: true });
+
   try {
     await run();
   } finally {
@@ -93,6 +102,7 @@ async function agentClient(
   const agent = await f.newAgent(name, workspaceId);
   await f.setPolicy(workspaceId, agent.walletId, draftFor(agent.id));
   await fund(agent.address, 50n * ETH);
+
   return { agent, client: await f.mcp(agent.token) };
 }
 
@@ -103,12 +113,16 @@ async function propose(client: Client, to: `0x${string}`) {
       arguments: { chainId: TEST_CHAIN_ID, to, amount: formatEther(AMOUNT), memo: "test" },
     }),
   );
+
   if (typeof answer.intentId !== "string") throw new Error(JSON.stringify(answer));
+
   const [row] = await f.t.ctx.db
     .select()
     .from(intents)
     .where(eq(intents.id, answer.intentId as IntentId));
+
   if (!row?.approvalId) throw new Error("an intent without its approval");
+
   return { intentId: row.id, approvalId: row.approvalId };
 }
 
@@ -129,10 +143,12 @@ async function sendPayment(
 ): Promise<Payment> {
   const to = randomAddress();
   const { intentId, approvalId } = await propose(sender.client, to);
+
   for (const person of people) await f.t.approveOnPage(person, approvalId);
   expect(await steps().execute(approvalId)).toEqual({ ok: true });
   await followUp(approvalId);
   expect((await transactionRow(approvalId)).status).toBe("broadcast");
+
   return { ...sender, workspaceId, intentId, approvalId, to };
 }
 
@@ -141,7 +157,9 @@ async function transactionRow(approvalId: ApprovalId) {
     .select()
     .from(transactions)
     .where(eq(transactions.approvalId, approvalId));
+
   if (!row) throw new Error("no transaction");
+
   return row;
 }
 
@@ -158,9 +176,12 @@ async function mine(workspaceId: WorkspaceId, approvalId: ApprovalId, attempt: n
     attempt === 0
       ? (await transactionRow(approvalId)).raw
       : (await attemptRows(approvalId)).find((row) => row.attempt === attempt)?.raw;
+
   if (!sealed) throw new Error(`no attempt ${attempt}`);
+
   const location =
     attempt === 0 ? `transactions.raw:${approvalId}` : `transactions.raw:${approvalId}:${attempt}`;
+
   const raw = (await f.t.ctx.sealer.open(workspaceId, location, sealed)) as Hex;
   await anvil.sendRawTransaction({ serializedTransaction: raw });
 }
@@ -183,15 +204,18 @@ async function invited(workspaceId: WorkspaceId, role: "viewer" | "approver", na
   const invite = await api().call("createInvite", { params: { workspaceId }, body: { role } });
   const token = invite.url.split("/").at(-1) ?? "";
   const browser: TestBrowser = f.t.browser();
+
   const start = await browser.api.call("startInviteRegistration", {
     params: { token },
     body: { displayName: name },
   });
+
   const passkey = f.t.register(start.options);
   await browser.api.call("finishInviteRegistration", {
     params: { token },
     body: { ceremonyId: start.ceremonyId, response: passkey.response as never },
   });
+
   return browser;
 }
 
@@ -249,6 +273,7 @@ describe("speeding up a payment", () => {
           arguments: { intentId: payment.intentId },
         }),
       );
+
       expect(read).toMatchObject({
         status: "broadcast",
         transactionHash: second?.hash,
@@ -266,12 +291,15 @@ describe("speeding up a payment", () => {
         },
         expect.objectContaining({ attempt: 1, kind: "reprice", hash: second?.hash }),
       ]);
+
       for (const key of ["canSpeedUp", "canCancel", "pendingCancelApprovalId"]) {
         expect(read).not.toHaveProperty(key);
       }
+
       const listed = toolJson(
         await payment.client.callTool({ name: "list_intents", arguments: {} }),
       );
+
       expect(listed.intents).toEqual([
         expect.objectContaining({ intentId: payment.intentId, attempts: read.attempts }),
       ]);
@@ -306,6 +334,7 @@ describe("speeding up a payment", () => {
     await holding(async () => {
       const first = await sendPayment(sender, workspaceId);
       const second = await sendPayment(sender, workspaceId);
+
       const speedUp = (intentId: IntentId) =>
         api().call("speedUp", { params: { intentId }, body: {} });
 
@@ -368,17 +397,21 @@ describe("cancelling a payment", () => {
   it("is approved on the confirmation page at the wallet's threshold, signed and sent, and voids the payment when mined; the spend still counts", async () => {
     const workspaceId = await f.newWorkspace("Two to cancel");
     const second = await f.addApprover(workspaceId, "Bea Second");
+
     // A policy may ask two people only once the workspace's admin threshold is two.
     const raise = await api().call("requestAdminThreshold", {
       params: { workspaceId },
       body: { adminThreshold: 2 },
     });
+
     expect((await f.t.approve(raise.id as ApprovalId, [f.t.owner])).status).toBe("executed");
     const agent = await f.newAgent("Cancelled", workspaceId);
+
     const policy = await api().call("requestPolicy", {
       params: { workspaceId, walletId: agent.walletId },
       body: { draft: draftFor(agent.id, { approvals: { threshold: 2, ttlSeconds: 3_600 } }) },
     });
+
     expect((await f.t.approve(policy.id as ApprovalId, [f.t.owner, second])).status).toBe(
       "executed",
     );
@@ -396,18 +429,22 @@ describe("cancelling a payment", () => {
         webPush: null,
       };
       let opened: ApprovalSummary;
+
       try {
         opened = await second.browser.api.call("requestCancel", { params, body: {} });
       } finally {
         f.t.ctx.config.notify = notify;
       }
+
       expect(opened).toMatchObject({ kind: "cancel-transaction", status: "pending", threshold: 2 });
       expect(opened.title).toMatch(/^Cancel payment: Send 0\.01 ETH to 0x/);
       const cancelId = opened.id as ApprovalId;
+
       const outbox = await f.t.ctx.db
         .select({ event: notificationDeliveries.event, target: notificationDeliveries.target })
         .from(notificationDeliveries)
         .where(eq(notificationDeliveries.approvalId, cancelId));
+
       expect(outbox).toEqual([{ event: "approval.opened", target: "webhook" }]);
       // While it waits, asking again answers the same request.
       const repeated = await api().call("requestCancel", { params, body: {} });
@@ -477,6 +514,7 @@ describe("cancelling a payment", () => {
   it("stores an attempt the signer holds and this record lacks before its own, with automatic repricing off", async () => {
     const sender = await agentClient("Caught up");
     f.t.ctx.config.reprice.auto = false;
+
     try {
       await holding(async (sent) => {
         const payment = await sendPayment(sender);
@@ -499,10 +537,12 @@ describe("cancelling a payment", () => {
             });
           },
         );
+
         const signerHashes = async () =>
           (await signer.getApproval(payment.approvalId)).attempts.map(
             (attempt) => attempt.transactionHash,
           );
+
         expect(await signerHashes()).toHaveLength(2);
         // With automatic repricing off nobody else stores it.
         await followUp(payment.approvalId);
@@ -565,10 +605,12 @@ describe("cancelling a payment", () => {
 
       // Approved, but mined before it could be signed: it ends failed, and nothing is signed.
       const raced = await sendPayment(sender);
+
       const late = await api().call("requestCancel", {
         params: { intentId: raced.intentId },
         body: {},
       });
+
       expect((await f.t.approveOnPage(f.t.owner, late.id as ApprovalId)).status).toBe("approved");
       await mine(raced.workspaceId, raced.approvalId, 0);
       await followUntilDone(raced.approvalId);
@@ -583,15 +625,18 @@ describe("cancelling a payment", () => {
   it("cancels a sweep while the workspace is paused, and a payment a mandate covered", async () => {
     const workspaceId = await f.newWorkspace("Cancel a sweep");
     const sender = await agentClient("Swept", workspaceId);
+
     const treasury = await api().call("createTreasury", {
       params: { workspaceId },
       body: { label: "Reserve" },
     });
+
     await holding(async () => {
       const sweep = await api().call("requestSweep", {
         params: { workspaceId, walletId: sender.agent.walletId },
         body: { chainId: TEST_CHAIN_ID, asset: "native", to: treasury.address },
       });
+
       const sweepId = sweep.id as ApprovalId;
       expect((await f.t.approve(sweepId, [f.t.owner])).status).toBe("executed");
       await followUp(sweepId);
@@ -602,10 +647,12 @@ describe("cancelling a payment", () => {
         kind: "sweep-wallet",
         transaction: { status: "broadcast", canSpeedUp: false, canCancel: true },
       });
+
       const opened = await api().call("requestSweepCancel", {
         params: { approvalId: sweepId },
         body: {},
       });
+
       expect(opened.title).toMatch(/^Cancel sweep: Empty /);
       const cancelId = opened.id as ApprovalId;
       const detail = await api().call("getApproval", { params: { approvalId: cancelId } });
@@ -631,6 +678,7 @@ describe("cancelling a payment", () => {
 
     const mandated = await agentClient("Mandated");
     const to = randomAddress();
+
     const draft: MandateDraft = {
       agentId: mandated.agent.id,
       assets: [
@@ -649,10 +697,12 @@ describe("cancelling a payment", () => {
       notAfter: f.t.clock.now() + 3 * 86_400,
       purpose: "pay the supplier",
     };
+
     const grant = await api().call("proposeMandate", {
       params: { workspaceId: f.workspaceId, walletId: mandated.agent.walletId as WalletId },
       body: draft,
     });
+
     const granted = await f.t.approve(grant.id as ApprovalId, [bob]);
     expect(granted.status).toBe("executed");
     const mandateId = granted.subjectId as MandateId;
@@ -661,10 +711,12 @@ describe("cancelling a payment", () => {
       expect(await steps().execute(approvalId)).toEqual({ ok: true });
       await followUp(approvalId);
       const usage = (await f.t.ctx.signer.getMandate(mandateId)).usage;
+
       const opened = await bob.browser.api.call("requestCancel", {
         params: { intentId },
         body: {},
       });
+
       expect((await f.t.approve(opened.id as ApprovalId, [f.t.owner])).status).toBe("executed");
       await mine(f.workspaceId, approvalId, 1);
       await followUntilDone(approvalId);

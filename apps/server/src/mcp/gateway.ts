@@ -35,11 +35,15 @@ type AgentRow = typeof agents.$inferSelect;
 
 /** Requests an agent may make per minute. Generous for a model, tight for a runaway loop. */
 const REQUESTS_PER_MINUTE = 120;
+
 /** Failed authentications one client may make per minute before it is refused unread. */
 export const FAILED_AUTH_PER_MINUTE = 10;
+
 const LAST_SEEN_INTERVAL_SECONDS = 60;
+
 /** How often `get_intent` re-reads the status while it waits. */
 const WAIT_POLL_MS = 1_000;
+
 const TERMINAL: readonly IntentRow["status"][] = [
   "confirmed",
   "reverted",
@@ -60,14 +64,17 @@ const WalletIdInput = z
   .string()
   .regex(/^wal_[0-9a-hjkmnp-tv-z]{26}$/)
   .transform((value) => value as WalletId);
+
 const MandateIdInput = z
   .string()
   .regex(/^mnd_[0-9a-hjkmnp-tv-z]{26}$/)
   .transform((value) => value as MandateId);
+
 const CalldataInput = z
   .string()
   .regex(/^0x[0-9a-fA-F]{8}(?:[0-9a-fA-F]{2})*$/)
   .transform((value) => value.toLowerCase() as `0x${string}`);
+
 const MemoInput = z
   .string()
   .max(280)
@@ -115,12 +122,14 @@ async function answer<T>(ctx: AppContext, tool: string, run: () => Promise<T>) {
       error instanceof HttpError
         ? error
         : new HttpError("internal", "something went wrong; try again later");
+
     if (!(error instanceof HttpError)) {
       ctx.log.error("mcp tool failed", {
         tool,
         error: error instanceof Error ? error.name : "unknown",
       });
     }
+
     return {
       isError: true as const,
       content: [
@@ -138,6 +147,7 @@ async function walletsFor(ctx: AppContext, agent: AgentRow) {
     .select()
     .from(wallets)
     .where(eq(wallets.workspaceId, agent.workspaceId));
+
   return rows.filter(
     (wallet) =>
       wallet.id === agent.walletId ||
@@ -156,10 +166,12 @@ async function intentView(ctx: AppContext, row: IntentRow) {
     intentSummary(ctx, row),
     transactionOf(ctx, row.approvalId),
   ]);
+
   const attempts = transaction ? await attemptViews(ctx, row.workspaceId, transaction) : [];
   const sent = transaction?.status === "broadcast" || transaction?.status === "stuck";
   const { display } = summary;
   const transfer = display.kind === "transfer" ? display : null;
+
   return {
     intentId: summary.id,
     status: summary.status,
@@ -216,6 +228,7 @@ async function intentView(ctx: AppContext, row: IntentRow) {
 // and the signer signs. Cancelling withdraws a waiting proposal, and a second cancel changes
 // nothing more.
 const READ_ONLY = { readOnlyHint: true } as const;
+
 const PROPOSES = { readOnlyHint: false, destructiveHint: false, idempotentHint: false } as const;
 
 function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
@@ -223,9 +236,11 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
 
   const ownIntent = async (intentId: string) => {
     const row = await getIntentRow(ctx, intentId).catch(() => null);
+
     // Another agent's intent looks exactly like one that does not exist.
     if (row === null || row.agentId !== agent.id)
       throw new HttpError("not_found", "no such intent");
+
     return row;
   };
 
@@ -240,11 +255,13 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
     async () =>
       answer(ctx, "whoami", async () => {
         const usable = await walletsFor(ctx, agent);
+
         const live = await activeMandatesOf(
           ctx,
           agent,
           usable.map((wallet) => wallet.id),
         );
+
         return json({
           agent: { id: agent.id, name: agent.name },
           workspaceId: agent.workspaceId,
@@ -281,6 +298,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
               const used = usage.assets.find(
                 (entry) => entry.chainId === limit.chainId && entry.asset === limit.asset,
               );
+
               return {
                 chainId: limit.chainId,
                 asset: limit.asset,
@@ -313,9 +331,11 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
       answer(ctx, "get_balances", async () => {
         const usable = await walletsFor(ctx, agent);
         const wallet = usable.find((candidate) => candidate.id === (walletId ?? agent.walletId));
+
         if (!wallet) throw new HttpError("not_found", "no such wallet");
         const chains = chainAccess(ctx);
         const chainIds = wallet.policy?.chains ?? chains.list().map((chain) => chain.chainId);
+
         const assets = [
           ...chainIds
             .filter((id) => chains.has(id))
@@ -324,6 +344,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
             .filter((limit) => limit.asset !== "native" && chains.has(limit.chainId))
             .map((limit) => ({ chainId: limit.chainId, asset: limit.asset })),
         ];
+
         return json({
           walletId: wallet.id,
           address: wallet.address,
@@ -366,9 +387,11 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
         if (isVenueNetwork(input.chainId)) {
           return json(await proposeVenueWithdrawal(ctx, agent, input));
         }
+
         if (input.asset === "usdc") {
           throw new HttpError("invalid_request", 'asset "usdc" is only for a venue withdrawal');
         }
+
         return json(await proposeTransfer(ctx, agent, { ...input, asset: input.asset }));
       }),
   );
@@ -464,6 +487,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
         const initial = row.status;
         const deadline = Date.now() + (waitSeconds ?? 0) * 1000;
         const signal = (extra as { signal?: AbortSignal } | undefined)?.signal;
+
         while (
           row.status === initial &&
           !TERMINAL.includes(row.status) &&
@@ -473,6 +497,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
           await delay(Math.min(WAIT_POLL_MS, deadline - Date.now()));
           row = await ownIntent(intentId);
         }
+
         return json(await intentView(ctx, row));
       }),
   );
@@ -496,6 +521,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
           ...(status === undefined ? {} : { status }),
           limit: limit ?? 20,
         });
+
         return json({ intents: await Promise.all(rows.map((row) => intentView(ctx, row))) });
       }),
   );
@@ -514,6 +540,7 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
       answer(ctx, "cancel_intent", async () => {
         const row = await ownIntent(intentId);
         const status = await cancelIntentOrOrder(ctx, row, { type: "agent", id: agent.id });
+
         return json({ intentId: row.id, status });
       }),
   );
@@ -551,37 +578,48 @@ export function mountMcp(app: Hono, ctx: AppContext): void {
    */
   const clientOf = (request: Request) => {
     const entries = request.headers.get("x-forwarded-for")?.split(",") ?? [];
+
     return entries[Math.max(0, entries.length - ctx.config.forwardedHops)]?.trim() || "direct";
   };
 
   // Both limits are buckets in the database, so every replica counts against the same ones.
   const authenticate = async (request: Request): Promise<AgentRow | Response> => {
     const bucket = `auth-fail:${clientOf(request)}`;
+
     // Checked before the agents are read, so guessing tokens costs no lookup there.
     if (!(await hasToken(ctx.db, bucket, FAILED_AUTH_PER_MINUTE))) {
       return deny(429, "rate_limited", "too many failed authentications; slow down");
     }
+
     const fail = async () => {
       await takeToken(ctx.db, bucket, FAILED_AUTH_PER_MINUTE);
+
       return deny(401, "unauthenticated", "a valid agent token is required");
     };
+
     const header = request.headers.get("authorization") ?? "";
     const match = /^Bearer (osa_[A-Za-z0-9_-]{16,200})$/.exec(header);
+
     if (!match?.[1]) return fail();
     const hash = sha256(match[1]);
     const [agent] = await ctx.db.select().from(agents).where(eq(agents.tokenHash, hash));
+
     // The lookup is by hash; the constant-time compare keeps the final check free of timing.
     if (!agent || !timingSafeEqual(Buffer.from(agent.tokenHash), Buffer.from(hash))) {
       return fail();
     }
+
     if (agent.status !== "active") return deny(403, "forbidden", "this agent is disabled");
+
     const [workspace] = await ctx.db
       .select({ lifecycle: workspaces.lifecycle })
       .from(workspaces)
       .where(eq(workspaces.id, agent.workspaceId));
+
     if (workspace?.lifecycle !== "active") {
       return deny(403, "forbidden", "this agent's workspace is being deleted");
     }
+
     return agent;
   };
 
@@ -590,15 +628,21 @@ export function mountMcp(app: Hono, ctx: AppContext): void {
     // DNS rebinding and cross-site requests: the SDK checks neither, so this does.
     // The Node adapter builds the URL from the Host header; a plain web Request has only its URL.
     const host = request.headers.get("host") ?? new URL(request.url).host;
+
     if (host !== publicUrl.host) {
       return deny(403, "forbidden", "unexpected Host");
     }
+
     const origin = request.headers.get("origin");
+
     if (origin !== null && origin !== ctx.config.publicOrigin) {
       return deny(403, "forbidden", "unexpected Origin");
     }
+
     const agent = await authenticate(request);
+
     if (agent instanceof Response) return agent;
+
     if (!(await takeToken(ctx.db, `agent:${agent.id}`, REQUESTS_PER_MINUTE))) {
       return deny(429, "rate_limited", "too many requests; slow down");
     }
@@ -618,6 +662,7 @@ export function mountMcp(app: Hono, ctx: AppContext): void {
       );
 
     let handler = handlers.get(agent.id);
+
     if (handler === undefined) {
       const bound = agent.id;
       handler = createMcpHandler(
@@ -626,13 +671,16 @@ export function mountMcp(app: Hono, ctx: AppContext): void {
             .select()
             .from(agents)
             .where(eq(agents.id, bound as AgentId));
+
           if (!current) throw new HttpError("unauthenticated", "agent removed");
+
           return buildServer(ctx, current);
         },
         { responseMode: "json" },
       );
       handlers.set(agent.id, handler);
     }
+
     return handler.fetch(request);
   });
 }

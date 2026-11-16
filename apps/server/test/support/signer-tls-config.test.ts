@@ -41,25 +41,30 @@ describe("the server's configuration for a signer on its own host", () => {
     SIGNER_HMAC_SECRET_FILE: secretFile,
     CHAINS_FILE: chainsFile,
   };
+
   const tlsFiles = {
     SIGNER_TLS_CERT_FILE: cert("control.crt"),
     SIGNER_TLS_KEY_FILE: cert("control.key"),
     SIGNER_TLS_PEER_CERT_FILE: cert("signer.crt"),
   };
+
   const split: Record<string, string> = {
     ...base,
     SIGNER_URL: "https://signer.example.internal:8787",
     ...tlsFiles,
   };
+
   /** The messages of a refused configuration: a schema refusal or a file that cannot be used. */
   const refusal = (environment: Record<string, string>): string[] | null => {
     try {
       loadConfig(environment);
     } catch (error) {
       if (error instanceof ZodError) return error.issues.map((issue) => issue.message);
+
       if (error instanceof ConfigError) return [error.message];
       throw error;
     }
+
     return null;
   };
 
@@ -83,6 +88,7 @@ describe("the server's configuration for a signer on its own host", () => {
   it("refuses an https: signer without all three files", () => {
     const https = { ...base, SIGNER_URL: "https://signer.example.internal:8787" };
     expect(refusal(https)).toEqual(["an https SIGNER_URL needs all three SIGNER_TLS_* files"]);
+
     for (const name of Object.keys(tlsFiles)) {
       const { [name]: _dropped, ...two } = split;
       expect(refusal(two), name).toEqual([
@@ -98,6 +104,7 @@ describe("the server's configuration for a signer on its own host", () => {
     expect(refusal({ ...split, SIGNER_URL: "http://signer.example.internal:8787" })).toEqual([
       "SIGNER_TLS_* files are set only with an https SIGNER_URL",
     ]);
+
     for (const [name, path] of Object.entries(tlsFiles)) {
       expect(refusal({ ...base, [name]: path }), name).toEqual([
         "SIGNER_TLS_* files are set only with an https SIGNER_URL",
@@ -131,8 +138,10 @@ describe("the server's configuration for a signer on its own host", () => {
     expect(loadConfig({ ...base, SIGNER_ADMIN_COMMAND: "" }).signerAdminCommand).toBe(
       "docker compose exec signer node src/admin.ts",
     );
+
     const split =
       "docker compose -f deploy/split/signer.compose.yaml exec signer node src/admin.ts";
+
     expect(loadConfig({ ...base, SIGNER_ADMIN_COMMAND: split }).signerAdminCommand).toBe(split);
   });
 

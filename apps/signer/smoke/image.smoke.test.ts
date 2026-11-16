@@ -26,8 +26,11 @@ import {
 
 // Runs against a built image: SIGNER_IMAGE=<tag> bun run smoke:image
 const IMAGE = process.env.SIGNER_IMAGE ?? "";
+
 const PORT = 25702;
+
 const NAME = `os-signer-smoke-${process.pid}`;
+
 const now = () => Math.floor(Date.now() / 1000);
 
 describe("the signer image", () => {
@@ -47,9 +50,11 @@ describe("the signer image", () => {
     writeFileSync(join(dir, "assets.json"), JSON.stringify(ASSETS));
     // The image runs as its own unprivileged user, which must be able to read the mounted files.
     chmodSync(dir, 0o755);
+
     for (const file of ["hmac", "key", "passphrase", "confirm", "chains.json", "assets.json"]) {
       chmodSync(join(dir, file), 0o644);
     }
+
     execFileSync("docker", [
       "run",
       "-d",
@@ -80,6 +85,7 @@ describe("the signer image", () => {
       IMAGE,
     ]);
     const deadline = Date.now() + 60_000;
+
     while (
       execFileSync("docker", ["inspect", "-f", "{{.State.Health.Status}}", NAME])
         .toString()
@@ -113,6 +119,7 @@ describe("the signer image", () => {
         [alice],
       ),
     });
+
     const world: World = {
       t: { client, clock },
       workspaceId,
@@ -122,7 +129,9 @@ describe("the signer image", () => {
       address: wallet.address,
       policy,
     };
+
     const intent = intentFor(world);
+
     const signed = await client.sign({
       intent,
       authorization: approveIntent(world, intent),
@@ -133,9 +142,11 @@ describe("the signer image", () => {
         maxPriorityFeePerGas: "1000000000",
       },
     });
+
     const from = await recoverTransactionAddress({
       serializedTransaction: signed.signedTransaction as `0x02${string}`,
     });
+
     expect(from.toLowerCase()).toBe(wallet.address);
     await refused(client.getWorkspace(newId("ws")), "not_found");
     const unknown = await fetch(`http://127.0.0.1:${PORT}/v1/sign-message`, { method: "POST" });

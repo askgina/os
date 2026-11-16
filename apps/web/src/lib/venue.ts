@@ -41,6 +41,7 @@ export function formatUsd6(amount: string | bigint): string {
 export function formatDecimal(value: string): string {
   const [whole = "0", fraction] = value.split(".");
   const grouped = BigInt(whole).toLocaleString("en-US");
+
   return fraction === undefined ? grouped : `${grouped}.${fraction}`;
 }
 
@@ -103,6 +104,7 @@ export function venueRulesState(
       withdrawals: false,
     };
   }
+
   return {
     enabled: true,
     network: rules.network,
@@ -137,12 +139,15 @@ export function venueNetworkChoices(
 function usd6(text: string, what: string): bigint {
   try {
     const amount = parseUnits(text, 6);
+
     if (amount === 0n) throw new VenueRulesError(`${what} must be above zero.`);
+
     return amount;
   } catch (error) {
     if (error instanceof UnitsError) {
       throw new VenueRulesError(`${what}: enter whole dollars such as 500 or 12.5.`);
     }
+
     throw error;
   }
 }
@@ -154,51 +159,67 @@ function usd6(text: string, what: string): bigint {
  */
 export function toVenueRules(state: VenueRulesState): HyperliquidRules | undefined {
   if (!state.enabled) return undefined;
+
   if (state.markets.length === 0) throw new VenueRulesError("Add at least one Hyperliquid market.");
   const maxPerDay = usd6(state.maxPerDay, "Notional per 24 hours");
+
   const markets = state.markets.map((row, index) => {
     const label = `Market ${index + 1}`;
     const coin = row.coin.trim();
+
     if (!/^[A-Z0-9]{1,16}$/.test(coin)) {
       throw new VenueRulesError(
         `${label}: the coin is 1 to 16 capital letters or digits, as Hyperliquid names it, such as BTC.`,
       );
     }
+
     const assetText = row.asset.trim();
     const asset = Number(assetText);
+
     if (!/^\d{1,4}$/.test(assetText) || asset > HYPERLIQUID_MAX_PERP_ASSET) {
       throw new VenueRulesError(
         `${label}: the market index is a whole number from 0 to ${HYPERLIQUID_MAX_PERP_ASSET}, its place in Hyperliquid's list of perpetuals.`,
       );
     }
+
     const maxPerOrder = usd6(row.maxPerOrder, `${label}: the notional per order`);
+
     if (maxPerOrder > maxPerDay) {
       throw new VenueRulesError(
         `${label}: the notional per order cannot exceed the notional per 24 hours.`,
       );
     }
+
     return { asset, coin, maxNotionalPerOrderUsd6: maxPerOrder.toString() };
   });
+
   markets.forEach((market, index) => {
     const label = `Market ${index + 1}`;
+
     if (markets.findIndex((other) => other.asset === market.asset) !== index) {
       throw new VenueRulesError(`${label}: another market already has index ${market.asset}.`);
     }
+
     if (markets.findIndex((other) => other.coin === market.coin) !== index) {
       throw new VenueRulesError(`${label}: another market is already called ${market.coin}.`);
     }
   });
+
   const timeInForce = HyperliquidTimeInForce.options.filter((tif) =>
     state.timeInForce.includes(tif),
   );
+
   if (timeInForce.length === 0) {
     throw new VenueRulesError("Allow at least one time in force.");
   }
+
   const windowText = state.submitWindowSeconds.trim();
   const submitWindowSeconds = Number(windowText);
+
   if (!/^\d+$/.test(windowText) || submitWindowSeconds < 5 || submitWindowSeconds > 300) {
     throw new VenueRulesError("The submit window is a whole number of seconds from 5 to 300.");
   }
+
   const parsed = HyperliquidRules.safeParse({
     network: state.network,
     markets: markets.sort((a, b) => a.asset - b.asset),
@@ -207,11 +228,13 @@ export function toVenueRules(state: VenueRulesState): HyperliquidRules | undefin
     submitWindowSeconds,
     withdrawals: state.withdrawals,
   });
+
   if (!parsed.success) {
     throw new VenueRulesError(
       `Hyperliquid rules: ${parsed.error.issues[0]?.message ?? "not valid"}.`,
     );
   }
+
   return parsed.data;
 }
 
@@ -224,6 +247,7 @@ export function venueRuleRows(
   rules: HyperliquidRules | undefined,
 ): { label: string; value: string }[] {
   if (!rules) return [];
+
   return [
     { label: "Hyperliquid network", value: VENUE_NETWORK_NAMES[rules.network] },
     ...rules.markets.map((market) => ({
@@ -278,10 +302,12 @@ export interface OrderFacts {
 export function orderFacts(intent: VenueOrderIntent, policy: WalletPolicy | null): OrderFacts {
   const order = intent.operation;
   const rules = policy?.venues?.hyperliquid;
+
   const market =
     rules?.network === intent.chainId
       ? rules.markets.find((candidate) => candidate.asset === order.asset)
       : undefined;
+
   return {
     network: intent.chainId,
     coin: market?.coin ?? null,
@@ -299,6 +325,7 @@ export function orderFacts(intent: VenueOrderIntent, policy: WalletPolicy | null
 export function orderTitle(facts: OrderFacts): string {
   const side = facts.side === "buy" ? "Buy" : "Sell";
   const size = formatDecimal(facts.size);
+
   return facts.coin === null
     ? `${side} ${size} of market ${facts.asset}, not in the wallet's policy`
     : `${side} ${size} ${facts.coin} perpetual`;
@@ -307,6 +334,7 @@ export function orderTitle(facts: OrderFacts): string {
 /** What the limit price means for this side: the most a buy pays, the least a sell takes. */
 export function limitPriceText(facts: Pick<OrderFacts, "side" | "limitPrice">): string {
   const price = `${formatDecimal(facts.limitPrice)} USD`;
+
   return facts.side === "buy" ? `${price}, the most it pays` : `${price}, the least it takes`;
 }
 
@@ -335,6 +363,7 @@ export function orderCaps(
   caps: VenueCaps,
 ): OrderCaps {
   const spent = BigInt(caps.spentTodayUsd6);
+
   return {
     perOrder:
       caps.maxPerOrderUsd6 === null

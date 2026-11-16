@@ -73,6 +73,7 @@ export async function requestCancel(
   },
 ): Promise<ApprovalSummary> {
   const transaction = await transactionOf(ctx, input.targetApprovalId);
+
   if (transaction === null || transaction.status === "signed") {
     throw new HttpError(
       "conflict",
@@ -80,6 +81,7 @@ export async function requestCancel(
       "not_sent",
     );
   }
+
   if (!SENT.includes(transaction.status)) {
     throw new HttpError(
       "conflict",
@@ -87,6 +89,7 @@ export async function requestCancel(
       "transaction_final",
     );
   }
+
   if (transaction.stuckReason === "attempts_exhausted") {
     throw new HttpError(
       "conflict",
@@ -94,6 +97,7 @@ export async function requestCancel(
       "attempts_exhausted",
     );
   }
+
   const state = await ctx.signer.getWallet(transaction.walletId).catch((error: unknown) => {
     throw new HttpError(
       "internal",
@@ -101,14 +105,18 @@ export async function requestCancel(
       error instanceof SignerError ? error.code : undefined,
     );
   });
+
   if (state.policy === null) {
     throw new HttpError("policy_denied", "this wallet has no approved policy", "policy_missing");
   }
+
   const { policy } = state;
   const maxFeeWei = BigInt(policy.fees.maxPerTxWei);
   // Whatever the chain asks, a cancel must outbid the newest attempt within its ceiling.
   const latest = (await attemptsOf(ctx, input.workspaceId, transaction)).at(-1);
+
   if (!latest) throw new Error("a transaction without its first attempt");
+
   const reachable = nextFees({
     latest,
     gas: CANCEL_GAS,
@@ -116,6 +124,7 @@ export async function requestCancel(
     quote: { baseFeePerGas: 0n, maxPriorityFeePerGas: 0n },
     bumpPercent: ctx.config.reprice.bumpPercent,
   });
+
   if (reachable.kind === "ceiling_reached") {
     throw new HttpError(
       "conflict",
@@ -126,6 +135,7 @@ export async function requestCancel(
 
   const target = transaction.approvalId;
   const engine = engineOf(ctx);
+
   try {
     return await engine.open({
       workspaceId: input.workspaceId,
@@ -147,6 +157,7 @@ export async function requestCancel(
         await tx.execute(
           sql`SELECT pg_advisory_xact_lock(hashtextextended(${`cancel:${target}`}, 0))`,
         );
+
         const [waiting] = await tx
           .select({ id: approvals.id })
           .from(approvals)
@@ -160,6 +171,7 @@ export async function requestCancel(
             ),
           )
           .limit(1);
+
         if (waiting) throw new CancelWaiting(waiting.id);
         await appendAudit(
           ctx,
@@ -185,6 +197,7 @@ export async function requestCancel(
 async function sweepTitle(ctx: AppContext, approvalId: ApprovalId): Promise<string> {
   const engine = engineOf(ctx);
   const sweep = await engine.request(approvalId);
+
   return engine.handler(sweep.kind).title(ctx, sweep, await engine.openDetail(sweep));
 }
 
@@ -193,16 +206,21 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
     kind: "cancel-transaction",
     async title(ctx, _approval, detail) {
       const { targetApprovalId, intentId } = detail as CancelDetail;
+
       if (intentId === null) return `Cancel sweep: ${await sweepTitle(ctx, targetApprovalId)}`;
+
       return `Cancel payment: ${await intentTitle(ctx, await getIntentRow(ctx, intentId))}`;
     },
     async describe(ctx, approval, detail) {
       const { targetApprovalId, intentId } = detail as CancelDetail;
       const { envelope } = approval;
+
       if (envelope.type !== "cancel-transaction") throw new Error("a cancel with another envelope");
       const transaction = await transactionOf(ctx, targetApprovalId);
+
       if (!transaction) throw new Error("a cancel request without its transaction");
       const { wallet, agentId } = await loadWallet(ctx, approval.workspaceId, envelope.walletId);
+
       return {
         kind: "cancel-transaction",
         wallet: walletSummary(wallet, agentId),
@@ -235,18 +253,24 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
     async execute(ctx, approval, authorization, detail) {
       const { targetApprovalId } = detail as CancelDetail;
       const { envelope } = approval;
+
       if (envelope.type !== "cancel-transaction") throw new Error("a cancel with another envelope");
+
       const result = await ctx.db.transaction(async (tx): Promise<{ failure: string | null }> => {
         await lockAttempts(tx, targetApprovalId);
+
         const [transaction] = await tx
           .select()
           .from(transactions)
           .where(eq(transactions.approvalId, targetApprovalId));
+
         if (!transaction) return { failure: "transaction_missing" };
         let attempts: Attempt[] = await attemptsOf(ctx, approval.workspaceId, transaction, tx);
+
         if (attempts.some((attempt) => attempt.cancelApprovalId === approval.id)) {
           return { failure: null };
         }
+
         if (!SENT.includes(transaction.status)) return { failure: "transaction_final" };
         // A chain that cannot be read fails the step, which is tried again.
         const quote = await chainAccess(ctx).fees(transaction.chainId as ChainId);
@@ -257,12 +281,14 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
           under: { cancelApprovalId: ApprovalId | null; producedBy: ApprovalId | null },
         ) => {
           const { attempt } = response;
+
           const fees = {
             attempt: attempt.attempt,
             transactionHash: attempt.transactionHash,
             maxFeePerGas: attempt.maxFeePerGas,
             maxPriorityFeePerGas: attempt.maxPriorityFeePerGas,
           };
+
           await appendAudit(
             ctx,
             {
@@ -290,7 +316,9 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
 
         for (let caughtUp = false; ; caughtUp = true) {
           const latest = attempts.at(-1);
+
           if (!latest) throw new Error("a transaction without its first attempt");
+
           const fees = nextFees({
             latest,
             gas: CANCEL_GAS,
@@ -298,9 +326,11 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
             quote,
             bumpPercent: ctx.config.reprice.bumpPercent,
           });
+
           if (fees.kind === "ceiling_reached") return { failure: "fee_ceiling_reached" };
 
           let response: AttemptResponse;
+
           try {
             response = await ctx.signer.cancelTransaction(targetApprovalId, {
               authorization,
@@ -312,23 +342,30 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
             if (!(error instanceof SignerError) || RETRYABLE_SIGNER_CODES.includes(error.code)) {
               throw error;
             }
+
             if (error.code !== "conflict") return { failure: error.code };
+
             // Asked once more only: a second conflict is a race the next try of the step wins.
             if (caughtUp) throw new Error("the signer still holds attempts not stored here");
+
             const caught = await catchUpAttempts(ctx, tx, {
               workspaceId: approval.workspaceId,
               transaction,
               latest,
               stored,
             });
+
             // Not about attempt numbers: the signer refuses this cancel for good.
             if (caught === 0) return { failure: "conflict" };
             attempts = await attemptsOf(ctx, approval.workspaceId, transaction, tx);
+
             if (attempts.some((attempt) => attempt.cancelApprovalId === approval.id)) {
               return { failure: null };
             }
+
             continue;
           }
+
           if (response.attempt.attempt !== latest.attempt + 1) {
             // The signer answered with this cancel's own attempt, signed before attempts this
             // record lacks: they are stored first, then it, under this request.
@@ -338,8 +375,10 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
               latest,
               stored,
             });
+
             return { failure: null };
           }
+
           await recordAttempt(ctx, tx, {
             workspaceId: approval.workspaceId,
             transaction,
@@ -347,9 +386,11 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
             cancelApprovalId: approval.id,
           });
           await stored(response, { cancelApprovalId: approval.id, producedBy: approval.id });
+
           return { failure: null };
         }
       });
+
       if (result.failure !== null) {
         if (result.failure === "attempts_exhausted") {
           await ctx.db
@@ -357,8 +398,10 @@ export function cancelTransactionKind(): ApprovalKindHandler<"cancel-transaction
             .set({ stuckReason: "attempts_exhausted" })
             .where(eq(transactions.approvalId, targetApprovalId));
         }
+
         throw new ApprovalFailure(result.failure, "the cancel could not be signed");
       }
+
       await broadcastNewest(ctx, approval.workspaceId, targetApprovalId);
     },
   };

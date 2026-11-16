@@ -45,10 +45,12 @@ export function SetupPage() {
   const navigate = useNavigate();
   const [setupToken, setSetupToken] = useState("");
   const [displayName, setDisplayName] = useState("");
+
   const setup = useMutation({
     mutationFn: async () => {
       const start = await api.call("startSetup", { body: { setupToken, displayName } });
       const response = await createPasskey(start.options);
+
       return api.call("finishSetup", { body: { ceremonyId: start.ceremonyId, response } });
     },
     onSuccess: async (session) => {
@@ -56,6 +58,7 @@ export function SetupPage() {
       await navigate({ to: "/" });
     },
   });
+
   const submit = (event: FormEvent) => {
     event.preventDefault();
     setup.mutate();
@@ -117,10 +120,12 @@ export function LoginPage() {
   const session = useSession();
   // Already checked by the route: a path on this site, or absent.
   const { next } = useSearch({ from: "/login" });
+
   const login = useMutation({
     mutationFn: async () => {
       const start = await api.call("startLogin", { body: {} });
       const response = await signWithPasskey(start.options);
+
       return api.call("finishLogin", { body: { ceremonyId: start.ceremonyId, response } });
     },
     onSuccess: async (signedInSession) => {
@@ -128,6 +133,7 @@ export function LoginPage() {
       await navigate({ href: next ?? DEFAULT_LANDING, replace: true });
     },
   });
+
   return (
     <Centered>
       <Card>
@@ -160,7 +166,9 @@ export function JoinPage() {
         params: { token },
         body: { displayName },
       });
+
       const response = await createPasskey(start.options);
+
       return api.call("finishInviteRegistration", {
         params: { token },
         body: { ceremonyId: start.ceremonyId, response },
@@ -171,6 +179,7 @@ export function JoinPage() {
       await navigate({ to: "/" });
     },
   });
+
   const accept = useMutation({
     mutationFn: () => api.call("acceptInvite", { params: { token }, body: {} }),
     onSuccess: async ({ workspaceId }) => {
@@ -180,6 +189,7 @@ export function JoinPage() {
   });
 
   if (invite.isPending) return <Loading label="Opening the invite" />;
+
   if (invite.isError) {
     return (
       <Centered>
@@ -192,6 +202,7 @@ export function JoinPage() {
   }
 
   const user = session.data?.user ?? null;
+
   return (
     <Centered>
       <Card>

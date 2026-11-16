@@ -4,10 +4,15 @@ import { describe, expect, it } from "vitest";
 import { sweepDestinations } from "../src/lib/sweep.ts";
 
 const ULID = "01jd000000000000000000000";
+
 const AGENT_WALLET = `wal_${ULID}1` as const;
+
 const TREASURY = `wal_${ULID}2` as const;
+
 const AGENT_ADDRESS = "0x1111111111111111111111111111111111111111" as const;
+
 const TREASURY_ADDRESS = "0x2222222222222222222222222222222222222222" as const;
+
 const PAYEE = "0x3333333333333333333333333333333333333333" as const;
 
 function policy(recipients: WalletPolicy["recipients"]): WalletPolicy {
@@ -56,6 +61,7 @@ describe("where the wallet page offers to sweep", () => {
       wallet(AGENT_WALLET, { mode: "allowlist", addresses: [TREASURY_ADDRESS, PAYEE] }),
       { wallets: [summary(AGENT_WALLET), summary(TREASURY)] },
     );
+
     expect(destinations).toEqual([
       { address: TREASURY_ADDRESS, label: "Reserve", reason: "treasury" },
       { address: PAYEE, label: "Allowed recipient", reason: "allowlist" },
@@ -75,6 +81,7 @@ describe("where the wallet page offers to sweep", () => {
 
   it("never offers a treasury whose key is about to be or was destroyed", () => {
     const allowAny = wallet(AGENT_WALLET, { mode: "any" });
+
     for (const lifecycle of [
       { state: "retiring", destroyAfter: 1 },
       { state: "destroyed", destroyAfter: 1 },
@@ -85,6 +92,7 @@ describe("where the wallet page offers to sweep", () => {
         }),
       ).toEqual([]);
     }
+
     // Stopped after a cancelled retirement, it keeps its key and can still receive.
     expect(
       sweepDestinations(allowAny, {
@@ -98,6 +106,7 @@ describe("where the wallet page offers to sweep", () => {
       wallet(TREASURY, { mode: "allowlist", addresses: [TREASURY_ADDRESS] }),
       { wallets: [summary(AGENT_WALLET), summary(TREASURY)] },
     );
+
     expect(destinations).toEqual([]);
   });
 });

@@ -42,6 +42,7 @@ describe("where an approval was made", () => {
     // The control plane's own page: same RP ID, same passkey, but the control plane chose what
     // that page showed.
     const onControlPlane = authorize(envelope, [person], ORIGIN);
+
     // The confirmation page inside another page's frame: the browser stamps the confirmation
     // page's origin, and says it was framed.
     const framed: Authorization = {
@@ -61,12 +62,14 @@ describe("where an approval was made", () => {
         },
       ],
     };
+
     for (const authorization of [onControlPlane, framed]) {
       await refused(
         world.t.client.sign({ intent, authorization, transaction: txParams() }),
         "assertion_invalid",
       );
     }
+
     expect((await world.t.client.getApproval(envelope.approvalId)).state).toBe("unknown");
     expect((await world.t.client.getWallet(world.walletId)).spent).toEqual([]);
 
@@ -76,6 +79,7 @@ describe("where an approval was made", () => {
       authorization: authorize(envelope, [person]),
       transaction: txParams(),
     });
+
     expect(signed.approvalId).toBe(envelope.approvalId);
   });
 });
@@ -84,36 +88,43 @@ describe("signing an approved intent", () => {
   it("signs exactly the approved transfer, from the wallet's own key", async () => {
     const world = await setUpWorld(startSigner());
     const intent = intentFor(world);
+
     const signed = await world.t.client.sign({
       intent,
       authorization: approveIntent(world, intent),
       transaction: txParams(),
     });
+
     const tx = parseTransaction(signed.signedTransaction);
     expect(tx.to).toBe(RECIPIENT);
     expect(tx.value).toBe(ETH);
     expect(tx.chainId).toBe(31337);
     expect(tx.data).toBeUndefined();
+
     const from = await recoverTransactionAddress({
       serializedTransaction: signed.signedTransaction as `0x02${string}`,
     });
+
     expect(from.toLowerCase()).toBe(world.address);
     expect(signed.from).toBe(world.address);
   });
 
   it("encodes ERC-20 transfer calldata itself, sending to the token contract", async () => {
     const world = await setUpWorld(startSigner());
+
     const intent = intentFor(world, {
       type: "evm.erc20.transfer",
       token: TOKEN,
       to: RECIPIENT,
       amount: "250000",
     });
+
     const signed = await world.t.client.sign({
       intent,
       authorization: approveIntent(world, intent),
       transaction: txParams({ gas: "60000" }),
     });
+
     const tx = parseTransaction(signed.signedTransaction);
     expect(tx.to).toBe(TOKEN);
     expect(tx.value ?? 0n).toBe(0n);
@@ -128,11 +139,13 @@ describe("signing an approved intent", () => {
   it("returns the same signed transaction for a repeated request and never signs twice", async () => {
     const world = await setUpWorld(startSigner());
     const intent = intentFor(world);
+
     const request = {
       intent,
       authorization: approveIntent(world, intent),
       transaction: txParams(),
     };
+
     const first = await world.t.client.sign(request);
     // A workflow retry may even arrive with different gas; the stored transaction still wins.
     const second = await world.t.client.sign({ ...request, transaction: txParams() });
@@ -167,6 +180,7 @@ describe("signing an approved intent", () => {
     const authorization = approveIntent(world, intent);
     await world.t.client.sign({ intent, authorization, transaction: txParams() });
     const other = intentFor(world);
+
     const reused = authorize(
       {
         ...approveIntent(world, other).envelope,
@@ -174,6 +188,7 @@ describe("signing an approved intent", () => {
       },
       world.people,
     );
+
     await refused(
       world.t.client.sign({ intent: other, authorization: reused, transaction: txParams() }),
       "conflict",
@@ -206,6 +221,7 @@ describe("signing an approved intent", () => {
       ],
       ["agent", (i: EvmIntent): unknown => ({ ...i, agentId: newId("agt") }), "envelope_mismatch"],
     ] as const;
+
     for (const [field, alter, code] of alterations) {
       it(field, async () => {
         const world = await setUpWorld(startSigner());
@@ -225,12 +241,14 @@ describe("signing an approved intent", () => {
 
     it("token", async () => {
       const world = await setUpWorld(startSigner());
+
       const intent = intentFor(world, {
         type: "evm.erc20.transfer",
         token: TOKEN,
         to: RECIPIENT,
         amount: "1",
       });
+
       const authorization = approveIntent(world, intent);
       const altered = { ...intent, operation: { ...intent.operation, token: ROUTER } };
       await refused(
@@ -241,17 +259,21 @@ describe("signing an approved intent", () => {
 
     it("calldata", async () => {
       const world = await setUpWorld(startSigner());
+
       const intent = intentFor(world, {
         type: "evm.call",
         to: ROUTER,
         valueWei: "0",
         data: "0xa9059cbb00",
       });
+
       const authorization = approveIntent(world, intent);
+
       const altered = {
         ...intent,
         operation: { ...intent.operation, data: "0xa9059cbb01" as const },
       };
+
       await refused(
         world.t.client.sign({ intent: altered, authorization, transaction: txParams() }),
         "intent_mismatch",
@@ -262,12 +284,14 @@ describe("signing an approved intent", () => {
       const world = await setUpWorld(startSigner());
       const intent = intentFor(world);
       const authorization = approveIntent(world, intent);
+
       const next = {
         ...world.policy,
         revision: 2,
         previousHash: policyHash(world.policy),
         fees: { maxPerTxWei: String(10n ** 17n) },
       };
+
       await world.t.client.setPolicy(world.walletId, {
         policy: next,
         authorization: authorize(
@@ -294,10 +318,12 @@ describe("signing an approved intent", () => {
     const firstAuth = approveIntent(world, first);
     await world.t.client.sign({ intent: first, authorization: firstAuth, transaction: txParams() });
     const second = intentFor(world, { type: "evm.transfer", to: RECIPIENT, valueWei: "2" });
+
     const secondAuth = authorize(
       { ...approveIntent(world, second).envelope, nonce: firstAuth.envelope.nonce },
       world.people,
     );
+
     await refused(
       world.t.client.sign({ intent: second, authorization: secondAuth, transaction: txParams() }),
       "nonce_reused",
@@ -311,17 +337,21 @@ describe("signing an approved intent", () => {
     const params = txParams();
     const a = intentFor(world, { type: "evm.transfer", to: RECIPIENT, valueWei: "1" });
     const aAuth = approveIntent(world, a);
+
     const first = await world.t.client.sign({
       intent: a,
       authorization: aAuth,
       transaction: params,
     });
+
     const b = intentFor(world, { type: "evm.transfer", to: RECIPIENT, valueWei: "2" });
+
     const second = await world.t.client.sign({
       intent: b,
       authorization: approveIntent(world, b),
       transaction: params,
     });
+
     expect(parseTransaction(second.signedTransaction).nonce).toBe(params.nonce);
     expect(second.transactionHash).not.toBe(first.transactionHash);
 
@@ -331,6 +361,7 @@ describe("signing an approved intent", () => {
       authorization: aAuth,
       transaction: txParams({ gas: "30000" }),
     });
+
     expect(again).toEqual(first);
   });
 
@@ -354,10 +385,12 @@ describe("signing an approved intent", () => {
     const world = await setUpWorld(startSigner());
     const intent = intentFor(world);
     const authorization = approveIntent(world, intent);
+
     const revoked = await world.t.client.revokeApproval(
       authorization.envelope.approvalId,
       world.workspaceId,
     );
+
     expect(revoked.state).toBe("revoked");
     await refused(
       world.t.client.sign({ intent, authorization, transaction: txParams() }),
@@ -402,6 +435,7 @@ describe("signing an approved intent", () => {
       world.t.client.sign({ intent, authorization, transaction: txParams() }),
       "workspace_paused",
     );
+
     const resumed = await world.t.client.resumeWorkspace(
       world.workspaceId,
       authorize(
@@ -409,6 +443,7 @@ describe("signing an approved intent", () => {
         world.people,
       ),
     );
+
     expect(resumed.paused).toBe(false);
     await world.t.client.sign({ intent, authorization, transaction: txParams() });
   });
@@ -417,6 +452,7 @@ describe("signing an approved intent", () => {
     const world = await setUpWorld(startSigner());
     const a = intentFor(world);
     const b = intentFor(world);
+
     const results = await Promise.allSettled([
       world.t.client.sign({
         intent: a,
@@ -429,6 +465,7 @@ describe("signing an approved intent", () => {
         transaction: txParams(),
       }),
     ]);
+
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     const rejected = results.find((result) => result.status === "rejected");
     expect(rejected?.status === "rejected" && rejected.reason.code).toBe("policy_denied");
@@ -437,11 +474,13 @@ describe("signing an approved intent", () => {
 
   it("enforces the policy itself, whatever the approvers signed", async () => {
     const world = await setUpWorld(startSigner());
+
     const tooBig = intentFor(world, {
       type: "evm.transfer",
       to: RECIPIENT,
       valueWei: String(2n * ETH),
     });
+
     await refused(
       world.t.client.sign({
         intent: tooBig,
@@ -451,12 +490,14 @@ describe("signing an approved intent", () => {
       "policy_denied",
       "over_per_tx_cap",
     );
+
     const call = intentFor(world, {
       type: "evm.call",
       to: RECIPIENT,
       valueWei: "0",
       data: "0x12345678",
     });
+
     await refused(
       world.t.client.sign({
         intent: call,
@@ -479,11 +520,13 @@ describe("signing an approved intent", () => {
       }),
       "insufficient_approvals",
     );
+
     const signed = await world.t.client.sign({
       intent,
       authorization: approveIntent(world, intent, { people: world.people }),
       transaction: txParams(),
     });
+
     expect(signed.walletId).toBe(world.walletId);
   });
 
@@ -563,12 +606,14 @@ describe("request authentication and the route surface", () => {
   ) {
     const body = options.body ?? "";
     const timestamp = options.timestamp ?? t.clock.value;
+
     const signature = signRequest(options.secret ?? t.secret, {
       method,
       pathWithQuery: path,
       timestamp,
       body: new TextEncoder().encode(options.signedBody ?? body),
     });
+
     return t.signer.app.request(`http://signer.test${path}`, {
       method,
       headers: { [SIGNATURE_HEADER]: signature, [TIMESTAMP_HEADER]: String(timestamp) },
@@ -608,6 +653,7 @@ describe("request authentication and the route surface", () => {
     const t = startSigner();
     const world = await setUpWorld(t);
     const mandateId = newId("mnd");
+
     const routes = [
       ["PUT", `/v1/mandates/${mandateId}`],
       ["GET", `/v1/mandates/${mandateId}`],
@@ -615,8 +661,10 @@ describe("request authentication and the route surface", () => {
       ["POST", `/v1/mandates/${mandateId}/revoke`],
       ["POST", `/v1/mandates/${mandateId}/sign`],
     ] as const;
+
     for (const [method, path] of routes) {
       const body = method === "GET" ? "" : JSON.stringify({ workspaceId: world.workspaceId });
+
       for (const response of [
         await t.signer.app.request(`http://signer.test${path}`, {
           method,
@@ -631,6 +679,7 @@ describe("request authentication and the route surface", () => {
         expect(SignerErrorBody.parse(await response.json()).error.code).toBe("unauthenticated");
       }
     }
+
     // With the control plane's secret the same requests reach the mandate code.
     expect((await raw(t, "GET", `/v1/mandates/${mandateId}`)).status).toBe(404);
     expect((await raw(t, "GET", `/v1/wallets/${world.walletId}/mandates`)).status).toBe(200);
@@ -640,6 +689,7 @@ describe("request authentication and the route surface", () => {
   it("answers 404 to every path and method outside the contract, signed or not", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
+
     const outside = [
       ["POST", "/v1/sign-message"],
       ["POST", "/v1/sign-typed-data"],
@@ -658,6 +708,7 @@ describe("request authentication and the route surface", () => {
       ["POST", `/v1/mandates/${newId("mnd")}/uses`],
       ["PUT", `/v1/wallets/${world.walletId}/mandates`],
     ] as const;
+
     for (const [method, path] of outside) {
       for (const response of [
         await raw(t, method, path, { body: method === "GET" ? "" : "{}" }),

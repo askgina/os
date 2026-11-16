@@ -249,25 +249,32 @@ const pushSetupFailures: Record<PushSetupFailure, string> = {
  */
 export function explainNotificationError(error: unknown): string | null {
   if (error instanceof PushSetupError) return pushSetupFailures[error.failure];
+
   if (!(error instanceof ApiError)) return null;
+
   if (error.detail !== undefined && Object.hasOwn(pushRefusals, error.detail)) {
     return pushRefusals[error.detail as keyof typeof pushRefusals];
   }
+
   if (error.code === "forbidden") {
     return "Only an owner of this workspace can change what its notifications say.";
   }
+
   if (error.code === "not_found") {
     return "You are no longer a member of one of these workspaces. Reload the page.";
   }
+
   if (error.code === "conflict") {
     return "Someone else just turned on notifications in this browser. Try again.";
   }
+
   return null;
 }
 
 /** The words for a refusal's `detail` from one of the records above, or null for another. */
 function refusalDetail(error: unknown, words: Record<string, string>): string | null {
   if (!(error instanceof ApiError) || error.detail === undefined) return null;
+
   return Object.hasOwn(words, error.detail) ? (words[error.detail] as string) : null;
 }
 

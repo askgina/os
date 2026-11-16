@@ -36,7 +36,9 @@ export function delayChoices(minDelaySeconds: number): number[] {
 /** "7 days", "1 day", "36 hours", "90 minutes": a delay a person picks. */
 export function formatDelay(seconds: number): string {
   if (seconds % DAY === 0) return seconds === DAY ? "1 day" : `${seconds / DAY} days`;
+
   if (seconds % 3_600 === 0) return seconds === 3_600 ? "1 hour" : `${seconds / 3_600} hours`;
+
   return `${Math.round(seconds / 60)} minutes`;
 }
 

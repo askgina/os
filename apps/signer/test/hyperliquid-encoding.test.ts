@@ -27,6 +27,7 @@ import { mapFromJson } from "./hyperliquid-vectors.ts";
 import vectors from "./vectors/hyperliquid-python-sdk.json" with { type: "json" };
 
 const account = privateKeyToAccount(Hex32.parse(vectors.privateKey));
+
 const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString("hex");
 
 /** A `MsgpackMap` tree as plain objects, for the reference encoder (it keeps insertion order). */
@@ -34,7 +35,9 @@ function toPlain(value: MsgpackValue): unknown {
   if (value instanceof MsgpackMap) {
     return Object.fromEntries(value.entries.map(([key, entry]) => [key, toPlain(entry)]));
   }
+
   if (Array.isArray(value)) return value.map(toPlain);
+
   return value;
 }
 
@@ -80,6 +83,7 @@ describe("the Hyperliquid Python SDK's vectors", () => {
     for (const [name, network] of NETWORKS) {
       it(`reproduces ${vector.test} (lines ${vector.lines}) on ${name}`, async () => {
         let action = mapFromJson(vector.action);
+
         if (vector.operation !== null && vector.cloid !== null) {
           action = orderAction(
             HyperliquidOrderOperation.parse(vector.operation),
@@ -95,6 +99,7 @@ describe("the Hyperliquid Python SDK's vectors", () => {
             orders: [{ ...order, c: cloid }],
           });
         }
+
         const connectionId = l1ActionHash(action, vector.nonce, vector.expiresAfter);
         await expectSdkSignature(l1TypedData(connectionId, network), vector[name]);
       });
@@ -103,15 +108,18 @@ describe("the Hyperliquid Python SDK's vectors", () => {
 
   it("reproduces the generated order with expiresAfter on both networks, byte for byte", async () => {
     const { inputs, output } = vectors.generated;
+
     const action = orderAction(
       HyperliquidOrderOperation.parse(inputs.order.operation),
       Cloid.parse(inputs.order.cloid),
     );
+
     expect(hex(encodeMsgpack(action))).toBe(output.order.msgpack);
     expectSameBytes(action, output.order.action);
     const connectionId = l1ActionHash(action, output.order.nonce, output.order.expiresAfter);
     expect(connectionId).toBe(output.order.connectionId);
     expect(l1ActionHash(action, output.order.nonce, null)).not.toBe(connectionId);
+
     for (const [name, network] of NETWORKS) {
       await expectSdkSignature(l1TypedData(connectionId, network), output.order[name]);
     }
@@ -155,15 +163,19 @@ describe("the Hyperliquid Python SDK's vectors", () => {
 /** A small seeded generator, so a failure names a reproducible case. */
 function random(seed: number) {
   let state = seed >>> 0;
+
   const next = () => {
     state = (state + 0x6d2b79f5) >>> 0;
     let t = state;
     t = Math.imul(t ^ (t >>> 15), t | 1);
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+
     return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
   };
+
   const int = (max: number) => Math.floor(next() * max);
   const digits = (count: number) => Array.from({ length: count }, () => int(10)).join("");
+
   return {
     int,
     pick: <T>(values: readonly T[]) => values[int(values.length)] as T,
@@ -173,6 +185,7 @@ function random(seed: number) {
       const whole = String(int(10 ** int(7)));
       const fraction = `${digits(int(8))}${int(9) + 1}`.slice(0, 8).replace(/0+$/, "");
       const value = int(3) === 0 ? whole : `${whole}.${fraction}`;
+
       return value === "0" ? "1" : value;
     },
   };
@@ -181,8 +194,10 @@ function random(seed: number) {
 describe("encodeMsgpack against @msgpack/msgpack 3.1.3", () => {
   it("encodes 1,000 generated order and cancel actions byte for byte", () => {
     const rng = random(0x0d15ea5e);
+
     for (let index = 0; index < 1000; index++) {
       const cloid = Cloid.parse(`0x${rng.hexBytes(16)}`);
+
       const action =
         index % 2 === 0
           ? orderAction(
@@ -198,25 +213,31 @@ describe("encodeMsgpack against @msgpack/msgpack 3.1.3", () => {
               cloid,
             )
           : cancelByCloidAction(rng.int(10_000), cloid);
+
       expectSameBytes(action, toPlain(action));
     }
   });
 
   it("agrees on every width of integer, string, array and map", () => {
     const integers = [0, 1, 127, 128, 255, 256, 65_535, 65_536, 2 ** 32 - 1, 2 ** 32];
+
     for (const value of [...integers, Number.MAX_SAFE_INTEGER]) expectSameBytes(value, value);
+
     for (const length of [0, 1, 31, 32, 255, 256, 65_535, 65_536]) {
       for (const unit of ["a", "é", "€", "😀"]) {
         const value = unit.repeat(Math.ceil(length / unit.length)).slice(0, length);
+
         if (value.isWellFormed()) expectSameBytes(value, value);
       }
     }
+
     for (const length of [0, 15, 16, 65_535, 65_536]) {
       const values = Array.from({ length }, (_, index) => index % 300);
       expectSameBytes(values, values);
       const entries = values.map((value, index): [string, MsgpackValue] => [`k${index}`, value]);
       expectSameBytes(new MsgpackMap(entries), Object.fromEntries(entries));
     }
+
     expectSameBytes([true, false, null, "x"], [true, false, null, "x"]);
   });
 });
@@ -238,6 +259,7 @@ describe("encodeMsgpack refuses what it does not define", () => {
     ["a float inside an array", [1, 2.5]],
     ["a plain object inside a map", new MsgpackMap([["a", { b: 1 } as unknown as MsgpackValue]])],
   ];
+
   for (const [name, value] of refused) {
     it(`throws on ${name}`, () => {
       expect(() => encodeMsgpack(value as MsgpackValue)).toThrow();
@@ -265,6 +287,7 @@ describe("the builders refuse values outside the intent's shape", () => {
     tif: "Ioc",
     reduceOnly: false,
   };
+
   const cloid = Cloid.parse("0x0123456789abcdef0123456789abcdef");
 
   it("refuses a non-canonical size or price, an unknown key, time in force or asset", () => {
@@ -278,6 +301,7 @@ describe("the builders refuse values outside the intent's shape", () => {
     ]) {
       expect(() => orderAction(bad as HyperliquidOrderOperation, cloid)).toThrow();
     }
+
     expect(() => orderAction(order, "0x0123456789ABCDEF0123456789ABCDEF")).toThrow();
     expect(() => cancelByCloidAction(-1, cloid)).toThrow();
     expect(() => cancelByCloidAction(1.5, cloid)).toThrow();
@@ -307,6 +331,7 @@ describe("the builders refuse values outside the intent's shape", () => {
 
   it("refuses a nonce or expiry that is not a non-negative safe integer", () => {
     const action = orderAction(order, cloid);
+
     for (const bad of [-1, 1.5, 2 ** 53, Number.NaN]) {
       expect(() => l1ActionHash(action, bad, null)).toThrow(RangeError);
       expect(() => l1ActionHash(action, 1, bad)).toThrow(RangeError);
@@ -348,6 +373,7 @@ describe("typed data", () => {
     expect(parsed.primaryType).toBe("Agent");
 
     const destination = `0x${"11".repeat(20)}` as const;
+
     for (const [network, chain] of [
       ["hyperliquid:testnet", "eip155:421614"],
       ["hyperliquid:mainnet", "eip155:42161"],
@@ -359,6 +385,7 @@ describe("typed data", () => {
         amount: "1.5",
         time: 1687816341423,
       });
+
       expect(withdraw.chain).toBe(chain);
       const body = JSON.parse(withdraw.json);
       expect(body.domain.chainId).toBe(Number(chain.slice("eip155:".length)));
@@ -380,10 +407,12 @@ describe("cloidFor and nextNonce", () => {
   it("is strictly increasing across calls with the same or a smaller clock", () => {
     let last: number | null = null;
     const nonces: number[] = [];
+
     for (const now of [1000, 1000, 999, 500, 1001, 1001, 5000, 4999]) {
       last = nextNonce(last, now);
       nonces.push(last);
     }
+
     expect(nonces).toEqual([1000, 1001, 1002, 1003, 1004, 1005, 5000, 5001]);
     expect(() => nextNonce(null, -1)).toThrow(RangeError);
     expect(() => nextNonce(Number.MAX_SAFE_INTEGER, 1)).toThrow(RangeError);

@@ -13,6 +13,7 @@ export function Progress({
   className?: string;
 }) {
   const fill = { accent: "bg-accent", warning: "bg-warning", danger: "bg-danger" }[tone];
+
   return (
     <div
       role="progressbar"

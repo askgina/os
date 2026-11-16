@@ -31,7 +31,9 @@ import {
 
 /** The sweeper runs the finalize step at most this often. */
 const FINALIZE_INTERVAL_SECONDS = 60;
+
 const DELETED_NAME = "Deleted workspace";
+
 const REMOVED_AGENT_NAME = "Removed agent";
 
 /**
@@ -59,6 +61,7 @@ export async function finalizeIfDue(
     60 / FINALIZE_INTERVAL_SECONDS,
     1,
   );
+
   return due ? finalizeDue(ctx) : null;
 }
 
@@ -73,10 +76,12 @@ export async function finalizeDue(
   ctx: AppContext,
 ): Promise<{ finalized: number; skipped: number }> {
   const now = new Date(ctx.now() * 1000);
+
   const dueWorkspaces = await ctx.db
     .select({ id: workspaces.id })
     .from(workspaces)
     .where(and(eq(workspaces.lifecycle, "deleting"), lte(workspaces.destroyAfter, now)));
+
   // A wallet of a workspace being deleted is finished with the workspace.
   const dueWallets = await ctx.db
     .select({ id: wallets.id, workspaceId: wallets.workspaceId })
@@ -92,13 +97,17 @@ export async function finalizeDue(
 
   let finalized = 0;
   let skipped = 0;
+
   const run = async (subject: Subject, finish: () => Promise<SkipCode | null>) => {
     try {
       const skip = await finish();
+
       if (skip === null) {
         finalized += 1;
+
         return;
       }
+
       skipped += 1;
       ctx.log.info("lifecycle finalize skipped", {
         event: "lifecycle.finalize_skipped",
@@ -117,12 +126,15 @@ export async function finalizeDue(
       });
     }
   };
+
   for (const { id } of dueWorkspaces) {
     await run({ workspaceId: id, walletId: null }, () => finalizeWorkspace(ctx, id));
   }
+
   for (const { id, workspaceId } of dueWallets) {
     await run({ workspaceId, walletId: id }, () => finalizeWallet(ctx, workspaceId, id));
   }
+
   return { finalized, skipped };
 }
 
@@ -134,7 +146,9 @@ export async function finalizeDue(
 async function blockerOf(ctx: AppContext, subject: Subject): Promise<SkipCode | null> {
   if (await hasUnminedTransactions(ctx, subject)) return "unmined_transactions";
   await cancelRequests(ctx, await waitingRequests(ctx, subject));
+
   if (await hasUnfinishedRuns(ctx, subject, true)) return "unfinished_runs";
+
   return null;
 }
 
@@ -155,6 +169,7 @@ async function recordOnce(
       .from(workspaces)
       .where(eq(workspaces.id, workspaceId))
       .for("no key update");
+
     const [newest] = await tx
       .select({ action: auditEvents.action })
       .from(auditEvents)
@@ -167,6 +182,7 @@ async function recordOnce(
       )
       .orderBy(desc(auditEvents.seq))
       .limit(1);
+
     if (newest?.action === action) return;
     await appendAudit(ctx, { workspaceId, actor: systemActor, action, subject, detail }, tx);
   });
@@ -178,25 +194,32 @@ async function finalizeWallet(
   walletId: WalletId,
 ): Promise<SkipCode | null> {
   const before = await ctx.signer.getWallet(walletId);
+
   if (before.state !== "retiring" && before.state !== "destroyed") {
     await mirrorWallet(ctx.db, before);
+
     return "not_scheduled";
   }
+
   if (before.state === "retiring") {
     if ((before.destroyAfter ?? 0) > ctx.now()) return "destroy_not_due";
     const blocker = await blockerOf(ctx, { workspaceId, walletId });
+
     if (blocker !== null) return blocker;
     await recordOnce(ctx, workspaceId, { type: "wallet", id: walletId }, "wallet.destroyed", {
       destroyAfter: before.destroyAfter,
     });
   }
+
   let state = before;
+
   try {
     state = await ctx.signer.finalizeRetireWallet(walletId, workspaceId);
   } catch (error) {
     if (error instanceof SignerError && error.code === "destroy_not_due") return "destroy_not_due";
     throw error;
   }
+
   await mirrorWallet(ctx.db, state);
   ctx.log.info("lifecycle finalized", {
     event: "lifecycle.finalized",
@@ -204,6 +227,7 @@ async function finalizeWallet(
     walletId,
     wallets: 1,
   });
+
   return null;
 }
 
@@ -212,15 +236,19 @@ async function finalizeWorkspace(
   workspaceId: WorkspaceId,
 ): Promise<SkipCode | null> {
   const before = await ctx.signer.getWorkspace(workspaceId);
+
   if (before.state === "active") {
     await mirrorWorkspace(ctx.db, before);
+
     return "not_scheduled";
   }
+
   // Once the signer destroyed the keys nothing can sign or wait any more: what is left is
   // shredding and the tombstone, which a crash may have interrupted.
   if (before.state === "deleting") {
     if ((before.destroyAfter ?? 0) > ctx.now()) return "destroy_not_due";
     const blocker = await blockerOf(ctx, { workspaceId, walletId: null });
+
     if (blocker !== null) return blocker;
     // Recorded before the keys go: after shredding, nothing of this workspace can be sealed.
     await recordOnce(
@@ -230,12 +258,14 @@ async function finalizeWorkspace(
       "workspace.deleted",
       { destroyAfter: before.destroyAfter },
     );
+
     try {
       await ctx.signer.finalizeDeleteWorkspace(workspaceId);
     } catch (error) {
       if (error instanceof SignerError && error.code === "destroy_not_due") {
         return "destroy_not_due";
       }
+
       throw error;
     }
   }
@@ -248,8 +278,9 @@ async function finalizeWorkspace(
     workspaceId,
     runKeysShredded: runs.shredded,
     workspaceKeyShredded: workspaceKey,
-    ...(counts ?? {}),
+    ...counts,
   });
+
   if (counts !== null) {
     // D5: the shredded keys stay readable in every keyring backup taken before a rotation.
     ctx.log.warn("rotate the keyring now: see deploy/README.md, Backups and restoring", {
@@ -257,6 +288,7 @@ async function finalizeWorkspace(
       workspaceId,
     });
   }
+
   return null;
 }
 
@@ -299,7 +331,9 @@ async function tombstone(
       })
       .where(and(eq(workspaces.id, workspaceId), eq(workspaces.lifecycle, "deleting")))
       .returning({ destroyAfter: workspaces.destroyAfter });
+
     if (!row) return null;
+
     const walletRows = await tx
       .update(wallets)
       .set({
@@ -309,7 +343,9 @@ async function tombstone(
       })
       .where(eq(wallets.workspaceId, workspaceId))
       .returning({ id: wallets.id });
+
     const ofWorkspace = sql`(SELECT ${approvals.id} FROM ${approvals} WHERE ${approvals.workspaceId} = ${workspaceId})`;
+
     const removed = {
       wallets: walletRows.length,
       memberships: (
@@ -372,6 +408,7 @@ async function tombstone(
           .returning({ id: notificationDeliveries.id })
       ).length,
     };
+
     return removed;
   });
 }

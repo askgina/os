@@ -43,6 +43,7 @@ export const Sweep = z
         message: "the zero address cannot receive a sweep",
       });
     }
+
     if (sweep.asset === ZERO_ADDRESS) {
       context.addIssue({
         code: "custom",
@@ -50,6 +51,7 @@ export const Sweep = z
         message: "the zero address is not a token",
       });
     }
+
     if (sweep.asset === sweep.to) {
       context.addIssue({
         code: "custom",
@@ -58,6 +60,7 @@ export const Sweep = z
       });
     }
   });
+
 export type Sweep = z.infer<typeof Sweep>;
 
 /** The digest a `sweep-wallet` envelope binds. */

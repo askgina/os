@@ -28,6 +28,7 @@ import {
 import { startTransitStub } from "./support/transit-stub.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "os-keys-transit-"));
+
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 interface Backend {
@@ -45,12 +46,14 @@ function appRoleFiles(name: string, roleId: string, secretId: string) {
   const secretIdFile = join(dir, `${name}-secret-id`);
   writeFileSync(roleIdFile, `${roleId}\n`, { mode: 0o600 });
   writeFileSync(secretIdFile, `${secretId}\n`, { mode: 0o600 });
+
   return { kind: "approle" as const, roleIdFile, secretIdFile };
 }
 
 async function stubBackend(): Promise<Backend> {
   const stub = await startTransitStub();
   const auth = appRoleFiles("stub", stub.roleId, stub.secretId);
+
   return {
     mount: "transit",
     provider: (timeoutMs = 2000) =>
@@ -66,13 +69,16 @@ async function stubBackend(): Promise<Backend> {
 async function openBaoBackend(): Promise<Backend> {
   const release = await holdOpenBao("packages/keys/test/transit.test.ts");
   let transit: PreparedTransit;
+
   try {
     transit = await prepareTransit();
   } catch (error) {
     await release();
     throw error;
   }
+
   const auth = appRoleFiles(transit.mount, transit.roleId, transit.secretId);
+
   return {
     mount: transit.mount,
     provider: (timeoutMs = 2000) =>
@@ -97,14 +103,18 @@ function acceptance(name: string, makeBackend: () => Promise<Backend>) {
   let db: TestDatabase;
   let pool: pg.Pool;
   const providers: TransitKeyProvider[] = [];
+
   const provider = (timeoutMs?: number) => {
     const created = backend.provider(timeoutMs);
     providers.push(created);
+
     return created;
   };
+
   const store = (made = provider()) => new DataKeyStore({ pool, provider: made, cacheTtlMs: 0 });
   const newId = () => `wrun_${randomBytes(8).toString("hex")}`;
   const hex = (key: Uint8Array) => Buffer.from(key).toString("hex");
+
   const row = async (id: string) =>
     (
       await pool.query<{ kek_id: string; wrapped_key: Buffer }>(
@@ -112,6 +122,7 @@ function acceptance(name: string, makeBackend: () => Promise<Backend>) {
         [id],
       )
     ).rows[0];
+
   const keys = new Map<string, string>();
 
   // Longer than `holdOpenBao`'s 600-second wait for another file's hold on the OpenBao test
@@ -134,15 +145,18 @@ function acceptance(name: string, makeBackend: () => Promise<Backend>) {
 
   test("a data key round-trips under bao:<mount>/os-kek@1 and reads from a fresh provider", async () => {
     const writer = store();
+
     for (let n = 0; n < 3; n += 1) {
       const id = newId();
       keys.set(id, hex(await writer.getOrCreate("run", id, "ws_transit")));
     }
+
     const [first] = keys.keys();
     const stored = await row(first ?? "");
     expect(stored?.kek_id).toBe(`bao:${backend.mount}/os-kek@1`);
     expect(stored?.wrapped_key.toString("utf8")).toMatch(/^vault:v1:/);
     const reader = store();
+
     for (const [id, key] of keys) expect(hex(await reader.get("run", id))).toBe(key);
   });
 
@@ -167,13 +181,16 @@ function acceptance(name: string, makeBackend: () => Promise<Backend>) {
     const rotating = store(rotated);
     await rotating.ensureMigrated();
     expect(rotated.activeKekId()).toBe(`bao:${backend.mount}/os-kek@2`);
+
     const live = await pool.query<{ n: number }>(
       "SELECT count(*)::int AS n FROM os_keys.data_keys WHERE shredded_at IS NULL",
     );
+
     const [first] = keys.keys();
     const old = await row(first ?? "");
     expect(await rotating.rewrap()).toEqual({ rewrapped: live.rows[0]?.n, failed: [] });
     expect((live.rows[0]?.n ?? 0) > 0).toBe(true);
+
     for (const [id, key] of keys) {
       expect((await row(id))?.kek_id).toBe(`bao:${backend.mount}/os-kek@2`);
       expect(hex(await store().get("run", id))).toBe(key);
@@ -195,6 +212,7 @@ function acceptance(name: string, makeBackend: () => Promise<Backend>) {
     const id = newId();
     let resolved = false;
     await backend.pause();
+
     try {
       const started = Date.now();
       const attempt = paused.getOrCreate("run", id);
@@ -214,6 +232,7 @@ function acceptance(name: string, makeBackend: () => Promise<Backend>) {
     } finally {
       await backend.unpause();
     }
+
     expect(await paused.getOrCreate("run", id)).toHaveLength(32);
     expect(resolved).toBe(false);
   });
@@ -224,6 +243,7 @@ describe("Transit provider against the in-process stub", () => {
 });
 
 const reachable = await openBaoReachable();
+
 describe.skipIf(!reachable && process.env.CI !== "true")(
   "Transit provider against OpenBao (deploy/compose.test.yaml)",
   () => {

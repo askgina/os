@@ -83,13 +83,17 @@ export function ServerBalances({
   if (balances === undefined) {
     return <p className="text-sm text-muted-foreground">Reading balances…</p>;
   }
+
   if (balances === null) {
     return <p className="text-sm text-danger">The server could not read this wallet's balances.</p>;
   }
+
   const held = heldBalances(balances);
+
   if (held.length === 0) {
     return <p className="text-sm text-muted-foreground">Nothing the server can see.</p>;
   }
+
   return (
     <ul className="grid grid-cols-1 gap-1">
       {held.map((balance) => (
@@ -162,6 +166,7 @@ function DestroyForm({
   const offset = serverClockOffset(preflight, readAt);
   const choices = delayChoices(preflight.minDestroyDelaySeconds);
   const [delay, setDelay] = useState(choices[0] ?? DEFAULT_MIN_DESTROY_DELAY_SECONDS);
+
   return (
     <form
       className="grid grid-cols-1 gap-4"
@@ -213,10 +218,13 @@ function WithPreflight({
   children: (preflight: DeletionPreflight, readAt: number) => ReactNode;
 }) {
   const preflight = useDeletionPreflight(workspaceId);
+
   if (preflight.isPending) return <Loading label="Reading balances" />;
+
   if (preflight.isError) {
     return <ErrorState error={preflight.error} retry={() => void preflight.refetch()} />;
   }
+
   return <>{children(preflight.data, Math.floor(preflight.dataUpdatedAt / 1000))}</>;
 }
 
@@ -231,6 +239,7 @@ export function RetireWalletCard({
   const navigate = useNavigate();
   const name = useId();
   const [open, setOpen] = useState(false);
+
   const retire = useMutation({
     mutationFn: (destroyAfter: number) =>
       api.call("requestRetireWallet", {
@@ -246,7 +255,9 @@ export function RetireWalletCard({
       });
     },
   });
+
   const held = heldBalances(wallet.balances);
+
   return (
     <Card id="retire">
       <CardHeader>
@@ -310,6 +321,7 @@ export function DeleteWorkspaceCard({ workspace }: { workspace: WorkspaceDetail 
   const navigate = useNavigate();
   const name = useId();
   const [open, setOpen] = useState(false);
+
   const remove = useMutation({
     mutationFn: (destroyAfter: number) =>
       api.call("requestDeleteWorkspace", {
@@ -325,6 +337,7 @@ export function DeleteWorkspaceCard({ workspace }: { workspace: WorkspaceDetail 
       });
     },
   });
+
   return (
     <Card id="delete">
       <CardHeader>
@@ -412,6 +425,7 @@ export function DeleteWorkspaceCard({ workspace }: { workspace: WorkspaceDetail 
 export function DeletingNotice({ workspace }: { workspace: WorkspaceDetail }) {
   const now = useNow();
   const destroyAfter = workspace.lifecycle.destroyAfter ?? now;
+
   return (
     <Alert tone="danger" className="items-start">
       <Trash2 aria-hidden />
@@ -498,10 +512,13 @@ export function MissingWorkspace() {
 export function WaitingDeletionNotice({ workspace }: { workspace: WorkspaceDetail }) {
   const watch = workspace.lifecycle.state === "active" && workspace.pendingApprovals > 0;
   const pending = usePendingApprovals(workspace.id, watch);
+
   const request = watch
     ? waitingRequests(pending.data?.items ?? [], "delete-workspace")[0]
     : undefined;
+
   if (!request) return null;
+
   return (
     <WaitingNotice workspaceId={workspace.id} approvalId={request.id}>
       Deleting this workspace is waiting for approval.
@@ -521,12 +538,15 @@ export function WaitingRetirementNotice({
     workspace.lifecycle.state === "active" &&
     walletChangeable(wallet.lifecycle) &&
     workspace.pendingApprovals > 0;
+
   const pending = usePendingApprovals(workspace.id, watch);
   // A summary does not name its wallet, so each waiting retirement is read in full.
   const candidates = watch ? waitingRequests(pending.data?.items ?? [], "retire-wallet") : [];
   const details = useApprovalDetails(candidates.map((item) => item.id));
   const request = waitingRetirementOf(details, wallet.id);
+
   if (!request) return null;
+
   return (
     <WaitingNotice workspaceId={workspace.id} approvalId={request.id}>
       Retiring this wallet is waiting for approval.
@@ -586,12 +606,14 @@ export function WalletLifecycleNotice({
 }) {
   const now = useNow();
   const { lifecycle } = wallet;
+
   switch (lifecycle.state) {
     case "active":
       return null;
     case "retiring": {
       const destroyAfter = lifecycle.destroyAfter ?? now;
       const withWorkspace = workspace.lifecycle.state === "deleting";
+
       return (
         <Alert tone="danger" className="items-start">
           <OctagonAlert aria-hidden />
@@ -630,6 +652,7 @@ export function WalletLifecycleNotice({
         </Alert>
       );
     }
+
     case "held":
       return (
         <Alert tone="warning" className="items-start">
@@ -684,6 +707,7 @@ function CancelButton<T>({
   onDone: (result: T) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
+
   const mutation = useMutation({
     mutationFn: cancel,
     onSuccess: async (result) => {
@@ -691,6 +715,7 @@ function CancelButton<T>({
       await onDone(result);
     },
   });
+
   return (
     <>
       <div>

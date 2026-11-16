@@ -28,17 +28,23 @@ const rootRoute = createRootRoute({
       queryKey: keys.session,
       queryFn: () => api.call("getSession"),
     });
+
     const path = location.pathname;
+
     if (session.setupRequired) {
       if (path !== "/setup") throw redirect({ to: "/setup", replace: true });
+
       return { session };
     }
+
     if (path === "/setup") throw redirect({ to: "/", replace: true });
+
     if (!session.user && !PUBLIC_PATHS.some((pattern) => pattern.test(path))) {
       // Remember the page asked for (an approval link opened on a phone, say), so signing in
       // opens it instead of the workspace list.
       throw redirect({ href: signInHref(location.href), replace: true });
     }
+
     return { session };
   },
   component: AppShell,
@@ -51,6 +57,7 @@ const setup = createRoute({
   path: "/setup",
   component: SetupPage,
 });
+
 const login = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login",
@@ -58,6 +65,7 @@ const login = createRoute({
   // page never sees an unsafe value.
   validateSearch: (search: Record<string, unknown>): { next?: string } => {
     const next = safeReturnPath(search.next);
+
     return next === DEFAULT_LANDING ? {} : { next };
   },
   beforeLoad: ({ context, search }) => {
@@ -67,6 +75,7 @@ const login = createRoute({
   },
   component: LoginPage,
 });
+
 // Where a person lands once erased, signed out; anyone signed in has nothing to read here.
 const erased = createRoute({
   getParentRoute: () => rootRoute,
@@ -76,12 +85,15 @@ const erased = createRoute({
   },
   component: ErasedNotice,
 });
+
 const join = createRoute({
   getParentRoute: () => rootRoute,
   path: "/join/$token",
   component: JoinPage,
 });
+
 const home = createRoute({ getParentRoute: () => rootRoute, path: "/", component: WorkspacesPage });
+
 const settings = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings",
@@ -93,52 +105,62 @@ const workspace = createRoute({
   path: "/w/$workspaceId",
   component: WorkspaceLayout,
 });
+
 const overview = createRoute({
   getParentRoute: () => workspace,
   path: "/",
   component: WorkspaceOverview,
 });
+
 const approvals = createRoute({
   getParentRoute: () => workspace,
   path: "/approvals",
   component: ApprovalsPage,
 });
+
 // Outside the workspace frame on purpose: on a phone, the whole decision fits on one screen.
 const approval = createRoute({
   getParentRoute: () => rootRoute,
   path: "/w/$workspaceId/approvals/$approvalId",
   component: ApprovalPage,
 });
+
 const wallet = createRoute({
   getParentRoute: () => workspace,
   path: "/wallets/$walletId",
   component: WalletPage,
 });
+
 const agent = createRoute({
   getParentRoute: () => workspace,
   path: "/agents/$agentId",
   component: AgentPage,
 });
+
 const mandate = createRoute({
   getParentRoute: () => workspace,
   path: "/mandates/$mandateId",
   component: MandatePage,
 });
+
 const payment = createRoute({
   getParentRoute: () => workspace,
   path: "/payments/$intentId",
   component: PaymentPage,
 });
+
 const members = createRoute({
   getParentRoute: () => workspace,
   path: "/members",
   component: MembersPage,
 });
+
 const activity = createRoute({
   getParentRoute: () => workspace,
   path: "/activity",
   component: ActivityPage,
 });
+
 // The one page that shows a copied or imported workspace's new tokens and invite links.
 const created = createRoute({
   getParentRoute: () => workspace,

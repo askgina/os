@@ -11,11 +11,13 @@ function vapidKeyFile(dir: string, namedCurve = "prime256v1"): string {
   const path = join(dir, `vapid-${namedCurve}.pem`);
   const { privateKey } = generateKeyPairSync("ec", { namedCurve });
   writeFileSync(path, privateKey.export({ format: "pem", type: "pkcs8" }));
+
   return path;
 }
 
 function pushConfig(extra: NodeJS.ProcessEnv) {
   const { env, dir } = baseEnv();
+
   return loadConfig({
     ...env,
     WEB_PUSH_ENABLED: "1",
@@ -32,6 +34,7 @@ describe("VAPID (RFC 8292)", () => {
     const keyFile = vapidKeyFile(dir);
     const config = loadConfig({ ...env, WEB_PUSH_ENABLED: "1", WEB_PUSH_VAPID_KEY_FILE: keyFile });
     const webPush = config.notify.webPush;
+
     if (webPush === null) throw new Error("Web Push should be on");
     // An https PUBLIC_ORIGIN is the default subject; the default hosts are the browsers'.
     expect(webPush.subject).toBe("https://os.example.com");
@@ -48,6 +51,7 @@ describe("VAPID (RFC 8292)", () => {
     );
 
     const now = 1_800_000_000;
+
     const header = await vapidAuthorization({
       endpoint: new URL("https://fcm.googleapis.com/fcm/send/abc:def?x=1"),
       subject: webPush.subject,
@@ -55,7 +59,9 @@ describe("VAPID (RFC 8292)", () => {
       publicKeyRaw: webPush.vapidPublicKey,
       now,
     });
+
     const match = /^vapid t=([\w-]+)\.([\w-]+)\.([\w-]+), k=([\w-]+)$/.exec(header);
+
     if (!match) throw new Error(`not a VAPID header: ${header}`);
     const [, encodedHeader = "", encodedClaims = "", signature = "", key = ""] = match;
     expect(decode(encodedHeader)).toEqual({ typ: "JWT", alg: "ES256" });
@@ -75,6 +81,7 @@ describe("VAPID (RFC 8292)", () => {
       false,
       ["verify"],
     );
+
     const verify = (signed: string) =>
       crypto.subtle.verify(
         { name: "ECDSA", hash: "SHA-256" },
@@ -82,10 +89,13 @@ describe("VAPID (RFC 8292)", () => {
         new Uint8Array(Buffer.from(signature, "base64url")),
         new TextEncoder().encode(signed),
       );
+
     expect(await verify(`${encodedHeader}.${encodedClaims}`)).toBe(true);
+
     const forged = Buffer.from(JSON.stringify({ ...claims, exp: now + 86_400 * 30 })).toString(
       "base64url",
     );
+
     expect(await verify(`${encodedHeader}.${forged}`)).toBe(false);
   });
 
@@ -93,13 +103,16 @@ describe("VAPID (RFC 8292)", () => {
     for (const subject of ["http://os.example.com", "ftp://os.example.com", "ops@example.com"]) {
       expect(() => pushConfig({ WEB_PUSH_SUBJECT: subject })).toThrow(/WEB_PUSH_SUBJECT/);
     }
+
     expect(pushConfig({ WEB_PUSH_SUBJECT: "mailto:ops@example.com" }).notify.webPush?.subject).toBe(
       "mailto:ops@example.com",
     );
+
     const local = {
       PUBLIC_ORIGIN: "http://localhost:8080",
       APPROVE_ORIGIN: "http://localhost:8081",
     };
+
     expect(() => pushConfig(local)).toThrow(/WEB_PUSH_SUBJECT/);
     expect(
       pushConfig({ ...local, WEB_PUSH_SUBJECT: "https://ops.example.com" }).notify.webPush?.subject,
@@ -131,6 +144,7 @@ describe("VAPID (RFC 8292)", () => {
       pushConfig({ WEB_PUSH_ENDPOINT_HOSTS: " push.example.net , web.push.apple.com" }).notify
         .webPush?.endpointHosts,
     ).toEqual(["push.example.net", "web.push.apple.com"]);
+
     for (const hosts of ["https://push.example.net", "push.example.net/path", ",", "*.example"]) {
       expect(() => pushConfig({ WEB_PUSH_ENDPOINT_HOSTS: hosts })).toThrow(
         /WEB_PUSH_ENDPOINT_HOSTS/,

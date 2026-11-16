@@ -26,6 +26,7 @@ import {
 } from "./harness.ts";
 
 const ALLOWED = "0x00000000000000000000000000000000000000dd" as const;
+
 const STRANGER = "0x00000000000000000000000000000000000000ee" as const;
 
 /** Replace the wallet's policy with one that allows sending only to `addresses`. */
@@ -36,6 +37,7 @@ async function allowOnly(world: World, addresses: Address[]): Promise<World> {
     previousHash: policyHash(world.policy),
     recipients: { mode: "allowlist", addresses },
   };
+
   await world.t.client.setPolicy(world.walletId, {
     policy,
     authorization: authorize(
@@ -49,6 +51,7 @@ async function allowOnly(world: World, addresses: Address[]): Promise<World> {
       world.people,
     ),
   });
+
   return { ...world, policy };
 }
 
@@ -59,6 +62,7 @@ async function treasuryOf(world: World): Promise<Address> {
     kind: "treasury",
     label: "treasury",
   });
+
   return treasury.address;
 }
 
@@ -101,15 +105,18 @@ describe("sweeping a wallet", () => {
     expect(tx.to).toBe(ALLOWED);
     expect(tx.value).toBe(3n * ETH);
     expect(tx.data).toBeUndefined();
+
     const from = await recoverTransactionAddress({
       serializedTransaction: first.signedTransaction as `0x02${string}`,
     });
+
     expect(from.toLowerCase()).toBe(world.address);
 
     const again = await world.t.client.sweep(world.walletId, {
       ...request,
       transaction: txParams(),
     });
+
     expect(again).toEqual(first);
     expect(await world.t.client.getApproval(first.approvalId)).toEqual({
       approvalId: first.approvalId,
@@ -133,11 +140,13 @@ describe("sweeping a wallet", () => {
     const world = await setUpWorld(startSigner());
     const treasury = await treasuryOf(world);
     const sweep = sweepOf(world, { asset: TOKEN, amount: "7000000", to: treasury });
+
     const signed = await world.t.client.sweep(world.walletId, {
       sweep,
       authorization: approveSweep(world, sweep),
       transaction: txParams({ gas: "60000" }),
     });
+
     const tx = parseTransaction(signed.signedTransaction);
     expect(tx.to).toBe(TOKEN);
     expect(tx.value ?? 0n).toBe(0n);
@@ -153,6 +162,7 @@ describe("sweeping a wallet", () => {
     const world = await allowOnly(await setUpWorld(startSigner()), [ALLOWED]);
     const elsewhere = await setUpWorld(world.t);
     const otherTreasury = await treasuryOf(elsewhere);
+
     for (const to of [STRANGER, otherTreasury, world.address as Address]) {
       const sweep = sweepOf(world, { to });
       await refused(
@@ -164,6 +174,7 @@ describe("sweeping a wallet", () => {
         "sweep_destination_not_allowed",
       );
     }
+
     // A policy that lets agents pay anyone allows no sweep destination by itself.
     const open = await setUpWorld(world.t);
     const sweep = sweepOf(open, { to: STRANGER });
@@ -187,6 +198,7 @@ describe("sweeping a wallet", () => {
     const sweep = sweepOf(world, { to: treasury });
     const authorization = approveSweep(world, sweep);
     const otherTreasury = await treasuryOf(world);
+
     for (const altered of [
       { ...sweep, amount: String(4n * ETH) },
       { ...sweep, to: otherTreasury },
@@ -202,6 +214,7 @@ describe("sweeping a wallet", () => {
         "envelope_mismatch",
       );
     }
+
     // Changing the envelope instead breaks the passkey assertion over it.
     await refused(
       world.t.client.sweep(world.walletId, {
@@ -235,9 +248,11 @@ describe("sweeping a wallet", () => {
       adminThreshold: 2,
       policyThreshold: 1,
     });
+
     const treasury = await treasuryOf(world);
     const sweep = sweepOf(world, { to: treasury });
     const [first] = world.people;
+
     if (!first) throw new Error("no approver");
     await refused(
       world.t.client.sweep(world.walletId, {
@@ -247,11 +262,13 @@ describe("sweeping a wallet", () => {
       }),
       "insufficient_approvals",
     );
+
     const signed = await world.t.client.sweep(world.walletId, {
       sweep,
       authorization: approveSweep(world, sweep, world.people),
       transaction: txParams(),
     });
+
     expect(signed.from).toBe(world.address);
   });
 
@@ -269,11 +286,13 @@ describe("sweeping a wallet", () => {
       "workspace_paused",
     );
     const sweep = sweepOf(world, { to: treasury });
+
     const signed = await world.t.client.sweep(world.walletId, {
       sweep,
       authorization: approveSweep(world, sweep),
       transaction: txParams(),
     });
+
     expect(parseTransaction(signed.signedTransaction).to).toBe(treasury);
   });
 

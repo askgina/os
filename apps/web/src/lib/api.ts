@@ -40,12 +40,15 @@ export const queryClient = new QueryClient({
 /** The API's own message for a refusal; a fixed sentence for anything that never reached it. */
 export function errorMessage(error: unknown): string {
   if (error instanceof ApiError) return error.message;
+
   if (error instanceof Error && error.name === "NotAllowedError") {
     return "The passkey prompt was closed or timed out. Nothing was sent.";
   }
+
   if (error instanceof Error && error.name.endsWith("Error") && error.message !== "") {
     return error.message;
   }
+
   return "The server could not be reached. Check your connection and try again.";
 }
 
@@ -175,11 +178,15 @@ export const useApproval = (approvalId: string) =>
     queryFn: () => api.call("getApproval", { params: { approvalId } }),
     refetchInterval: (query) => {
       const data = query.state.data;
+
       if (!data) return false;
+
       if (ACTIVE_APPROVAL.has(data.status)) return 3_000;
       const subject = data.subject;
+
       if (subject.kind === "approve-intent") {
         const status = subject.intent.status;
+
         if (
           status === "approved" ||
           status === "signed" ||
@@ -188,12 +195,16 @@ export const useApproval = (approvalId: string) =>
         ) {
           return 3_000;
         }
+
         if (status === "stuck" || status === "placed") return 5_000;
       }
+
       if (subject.kind === "sweep-wallet" || subject.kind === "cancel-transaction") {
         const status = subject.transaction?.status;
+
         if (status && transactionOpen(status)) return status === "stuck" ? 5_000 : 3_000;
       }
+
       return false;
     },
   });
@@ -246,7 +257,9 @@ export const useIntent = (intentId: string) =>
     queryFn: () => api.call("getIntent", { params: { intentId } }),
     refetchInterval: (query) => {
       const status = query.state.data?.status;
+
       if (status === undefined || !IN_FLIGHT.has(status)) return false;
+
       return status === "stuck" || status === "placed" ? 5_000 : 3_000;
     },
   });
@@ -258,8 +271,10 @@ export const useMandate = (workspaceId: string, mandateId: string) =>
     queryFn: () => api.call("getMandate", { params: { workspaceId, mandateId } }),
     refetchInterval: (query) => {
       const data = query.state.data;
+
       if (!data) return false;
       const moving = data.intents.some((intent) => IN_FLIGHT.has(intent.status));
+
       return data.endedReason === null || moving ? 5_000 : false;
     },
   });

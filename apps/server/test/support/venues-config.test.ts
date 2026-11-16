@@ -22,6 +22,7 @@ describe("the server's venues file", () => {
       },
     ]),
   );
+
   const base: Record<string, string> = {
     PUBLIC_ORIGIN: "https://os.example.com",
     APPROVE_ORIGIN: "https://approve.os.example.com",
@@ -30,14 +31,18 @@ describe("the server's venues file", () => {
     SIGNER_HMAC_SECRET_FILE: secretFile,
     CHAINS_FILE: chainsFile,
   };
+
   let files = 0;
+
   /** The configuration with a venues file holding `content`. */
   const withVenues = (content: unknown): Record<string, string> => {
     files += 1;
     const file = join(dir, `venues-${files}.json`);
     writeFileSync(file, typeof content === "string" ? content : JSON.stringify(content));
+
     return { ...base, VENUES_FILE: file };
   };
+
   /** The message a refused venues file stops the boot with. */
   const refusal = (content: unknown): string | null => {
     try {
@@ -46,6 +51,7 @@ describe("the server's venues file", () => {
       if (error instanceof ConfigError) return error.message;
       throw error;
     }
+
     return null;
   };
 
@@ -65,6 +71,7 @@ describe("the server's venues file", () => {
       { network: "hyperliquid:testnet", apiUrl: "https://api.hyperliquid-testnet.xyz" },
       { network: "hyperliquid:mainnet", apiUrl: "https://api.hyperliquid.xyz" },
     ];
+
     expect(loadConfig(withVenues(venues)).venues).toEqual(venues);
   });
 

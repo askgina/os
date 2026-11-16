@@ -27,20 +27,25 @@ export function EraseCard() {
   const navigate = useNavigate();
   const [confirming, setConfirming] = useState(false);
   const [waiting, setWaiting] = useState<ErasureResult["approvals"]>([]);
+
   const erase = useMutation({
     mutationFn: () => api.call("eraseMe", { body: {} }),
     onSuccess: async (result) => {
       setConfirming(false);
+
       if (result.status === "waiting") {
         setWaiting(result.approvals);
+
         return;
       }
+
       // The server ended the session with the person; nothing loaded as them may stay.
       queryClient.clear();
       await navigate({ to: "/erased", replace: true });
     },
     onError: () => setConfirming(false),
   });
+
   return (
     <Card id="erase">
       <CardHeader>

@@ -50,6 +50,7 @@ describe("the delay before keys are destroyed", () => {
       minDestroyDelaySeconds: 7 * DAY,
       earliestDestroyAfter: 1_000_040 + 7 * DAY,
     };
+
     const offset = serverClockOffset(preflight, 1_000_000);
     expect(offset).toBe(40);
     // A minute later the shortest delay still lands after the server's earliest.
@@ -76,6 +77,7 @@ describe("what the server reads before keys are destroyed", () => {
       decimals: 18,
       amount: "1250000000000000000",
     };
+
     expect(heldBalances([eth, { ...eth, symbol: "WETH", amount: "0" }])).toEqual([eth]);
   });
 
@@ -118,12 +120,14 @@ describe("a waiting retirement or deletion, linked from its wallet or workspace"
       request("d", "retire-wallet", "pending", 1),
       request("e", "set-policy", "pending", 2),
     ];
+
     expect(waitingRequests(items, "delete-workspace").map((item) => item.id)).toEqual(["a", "b"]);
     expect(waitingRequests(items, "retire-wallet").map((item) => item.id)).toEqual(["d"]);
   });
 
   it("finds the waiting retirement of this wallet among requests read in full", () => {
     const wallet = (id: string) => ({ id }) as WalletSummary;
+
     const detail = (
       id: string,
       walletId: string,
@@ -133,12 +137,14 @@ describe("a waiting retirement or deletion, linked from its wallet or workspace"
       status,
       subject: { kind: "retire-wallet", wallet: wallet(walletId), destroyAfter: 1 },
     });
+
     const details = [
       undefined,
       detail("apr_other", "wal_2"),
       detail("apr_done", "wal_1", "approved"),
       detail("apr_mine", "wal_1"),
     ];
+
     expect(waitingRetirementOf(details, "wal_1")?.id).toBe("apr_mine");
     expect(waitingRetirementOf(details, "wal_3")).toBeNull();
     // Not read yet: nothing to link.

@@ -53,15 +53,19 @@ export function readSignerTls(paths: { cert: string; key: string; peerCert: stri
     key: readPem("key", paths.key),
     peerCert: readPem("peerCert", paths.peerCert),
   };
+
   const own = certificateOf("cert", tls.cert);
   certificateOf("peerCert", tls.peerCert);
   let matches: boolean;
+
   try {
     matches = own.checkPrivateKey(createPrivateKey(tls.key));
   } catch {
     throw new SignerTlsFileError("key", "not a PEM private key");
   }
+
   if (!matches) throw new SignerTlsFileError("key", "not the key of the client certificate");
+
   return tls;
 }
 
@@ -84,8 +88,10 @@ export function createSignerFetch(tls: SignerTls, servername: string): typeof fe
       minVersion: "TLSv1.3",
     },
   });
+
   const signerFetch = (input: RequestInfo, init?: RequestInit) =>
     undiciFetch(input, { ...init, dispatcher });
+
   // Each consumer's lib (Node's or the DOM's) declares its own `Request` and `Response`, which
   // undici's types do not match exactly; for a URL and an init, as the clients call it, the
   // function behaves as `fetch` and returns a standard `Response`.

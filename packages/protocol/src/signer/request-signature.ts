@@ -1,8 +1,11 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 export const SIGNATURE_HEADER = "x-signer-signature";
+
 export const TIMESTAMP_HEADER = "x-signer-timestamp";
+
 export const MAX_CLOCK_SKEW_SECONDS = 60;
+
 export const MIN_SECRET_BYTES = 32;
 
 export interface SignedRequestParts {
@@ -23,13 +26,16 @@ export function signRequest(secret: Uint8Array, parts: SignedRequestParts): stri
   if (secret.byteLength < MIN_SECRET_BYTES) {
     throw new RangeError(`request-signing secret must be at least ${MIN_SECRET_BYTES} bytes`);
   }
+
   const bodyDigest = createHash("sha256").update(parts.body).digest("hex");
+
   const message = [
     parts.method.toUpperCase(),
     parts.pathWithQuery,
     String(parts.timestamp),
     bodyDigest,
   ].join("\n");
+
   return createHmac("sha256", secret).update(message).digest("hex");
 }
 
@@ -38,8 +44,11 @@ export function verifyRequestSignature(
   parts: SignedRequestParts & { signature: string; now: number },
 ): boolean {
   if (!Number.isSafeInteger(parts.timestamp)) return false;
+
   if (Math.abs(parts.now - parts.timestamp) > MAX_CLOCK_SKEW_SECONDS) return false;
+
   if (!/^[0-9a-f]{64}$/.test(parts.signature)) return false;
   const expected = Buffer.from(signRequest(secret, parts), "hex");
+
   return timingSafeEqual(expected, Buffer.from(parts.signature, "hex"));
 }

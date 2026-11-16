@@ -27,6 +27,7 @@ import {
 } from "./harness.ts";
 
 const run = promisify(execFile);
+
 const ADMIN = new URL("../src/admin.ts", import.meta.url).pathname;
 
 describe("the admin CLI on the signer host", () => {
@@ -35,6 +36,7 @@ describe("the admin CLI on the signer host", () => {
   writeFileSync(join(dir, "hmac"), randomBytes(32).toString("base64"));
   writeFileSync(join(dir, "key"), randomBytes(32).toString("base64"));
   writeFileSync(join(dir, "passphrase"), "a long enough owner passphrase");
+
   const env = {
     PATH: process.env.PATH ?? "",
     SIGNER_DATA_DIR: dir,
@@ -50,8 +52,10 @@ describe("the admin CLI on the signer host", () => {
       ({ stdout }) => ({ code: 0, stdout }),
       (error: { code: number; stdout: string }) => ({ code: error.code, stdout: error.stdout }),
     );
+
     const lines = result.stdout.trim().split("\n");
     expect(lines).toHaveLength(1);
+
     return { code: result.code, line: JSON.parse(lines[0] ?? "") };
   }
 
@@ -97,11 +101,13 @@ describe("the admin CLI on the signer host", () => {
     expect(decisions.filter((d) => d.action === "enroll-approver-by-operator")).toHaveLength(1);
     // The enrolled key approves on its own.
     const intent = intentFor(world);
+
     const signed = await t.client.sign({
       intent,
       authorization: approveIntent(world, intent, { people: [replacement] }),
       transaction: txParams(),
     });
+
     expect(signed.from).toBe(world.address);
     t.signer.close();
 
@@ -114,6 +120,7 @@ describe("the admin CLI on the signer host", () => {
   it("takes a credential id and a key that start with a dash, as one in 64 base64url values do", async () => {
     startSigner({ sqlitePath: join(dir, "signer.sqlite") });
     const person = newPerson();
+
     const result = await admin([
       "enroll-approver",
       "--workspace",
@@ -123,6 +130,7 @@ describe("the admin CLI on the signer host", () => {
       `--credential-id=-${person.credential.credentialId.slice(1)}`,
       `--public-key=${person.credential.publicKey}`,
     ]);
+
     // Read as a value, so the answer is about the workspace, not about how to call the command.
     expect(result).toEqual({ code: 2, line: { ok: false, code: "not_found" } });
   });
@@ -139,6 +147,7 @@ describe("the admin CLI on the signer host", () => {
       "--public-key",
       "x",
     ]);
+
     expect(result).toEqual({ code: 2, line: { ok: false, code: "usage" } });
   });
 
@@ -147,12 +156,15 @@ describe("the admin CLI on the signer host", () => {
     // The CLI runs on the host's clock: grant on it too, so the mandates are live for both.
     t.clock.value = Math.floor(Date.now() / 1000);
     const world = await setUpWorld(t);
+
     const granted = [
       await grantMandate(world),
       await grantMandate(world),
       await grantMandate(world),
     ];
+
     const [one, ...rest] = granted.map(({ mandate }) => mandate);
+
     if (one === undefined) throw new Error("three mandates were granted");
 
     expect(await admin(["list-mandates", "--workspace", world.workspaceId])).toEqual({
@@ -199,6 +211,7 @@ describe("the admin CLI on the signer host", () => {
         revoked: rest.map((mandate) => mandate.id).sort(),
       },
     });
+
     for (const args of [
       ["revoke-mandate"],
       ["revoke-mandate", "--all"],
@@ -231,14 +244,17 @@ describe("the admin CLI on the signer host", () => {
       vaultPath: join(dir, "vault"),
       passphraseFile: join(dir, "passphrase"),
     });
+
     const t = startSigner({
       sqlitePath: join(dir, "signer.sqlite"),
       vault,
       minDestroyDelaySeconds: 60,
     });
+
     t.clock.value = Math.floor(Date.now() / 1000);
     const world = await setUpWorld(t);
     const out = join(dir, "export.txt");
+
     const exportWallet = () =>
       admin([
         "export-wallet",
@@ -312,11 +328,13 @@ describe("the admin CLI on the signer host", () => {
     );
     t.clock.value = fenceAt + 60;
     const fresh = intentFor(world);
+
     const signed = await t.client.sign({
       intent: fresh,
       authorization: approveIntent(world, fresh),
       transaction: txParams(),
     });
+
     expect(signed.from).toBe(world.address);
     t.signer.close();
   });

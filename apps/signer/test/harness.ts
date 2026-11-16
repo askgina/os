@@ -47,18 +47,26 @@ import { createSigner, createTestVault, type Signer, type Vault } from "../src/i
 
 /** The RP ID passkeys are registered under. */
 export const RP_ID = "localhost";
+
 /** The control plane's page: the same RP ID, where people sign in, and never an approval origin. */
 export const ORIGIN = "http://localhost:5173";
+
 export const CHAIN = "eip155:31337" as const;
+
 export const RECIPIENT = "0x00000000000000000000000000000000000000aa" as const;
+
 export const TOKEN = "0x00000000000000000000000000000000000000bb" as const;
+
 /** A contract-call target. Never a capped token: the policy schema refuses that combination. */
 export const ROUTER = "0x00000000000000000000000000000000000000cc" as const;
+
 export const ETH = 10n ** 18n;
 
 /** The confirmation page: another port on the RP ID's host. `ORIGIN` is the control plane's. */
 export const APPROVAL_ORIGIN = "http://localhost:8081";
+
 export const CHAINS: ChainLabel[] = [{ chainId: CHAIN, name: "Local chain", nativeSymbol: "ETH" }];
+
 export const ASSETS: AssetLabel[] = [{ chainId: CHAIN, asset: TOKEN, symbol: "TKN", decimals: 6 }];
 
 /** What `createSigner` needs for confirmation pages, with the test origins and labels. */
@@ -82,9 +90,11 @@ export function confirmationEnvironment(
     SIGNER_CHAINS_FILE: join(dir, "chains.json"),
     SIGNER_ASSETS_FILE: join(dir, "assets.json"),
   };
+
   writeFileSync(files.SIGNER_CONFIRM_SECRET_FILE, Buffer.from(confirmSecret).toString("base64"));
   writeFileSync(files.SIGNER_CHAINS_FILE, JSON.stringify(CHAINS));
   writeFileSync(files.SIGNER_ASSETS_FILE, JSON.stringify(ASSETS));
+
   return { ...files, SIGNER_APPROVAL_ORIGIN: APPROVAL_ORIGIN, SIGNER_RETURN_ORIGIN: ORIGIN };
 }
 
@@ -99,6 +109,7 @@ export function newPerson(): Person {
   const authenticator = new SoftAuthenticator({ incrementCounter: false });
   const { credential } = authenticator.register({ rpId: RP_ID, challenge: "registration" });
   const userId = newId("usr");
+
   return { userId, authenticator, credential: approverCredentialOf(userId, credential) };
 }
 
@@ -159,9 +170,11 @@ export async function provePossession(
     envelope,
     subject: { kind: "envelope-only" },
   });
+
   const token = path.slice(path.indexOf("#") + 1);
   const options = await t.confirm.getPossession(envelope.approvalId, token);
   await t.confirm.submitPossession(envelope.approvalId, token, answerPossession(holder, options));
+
   return token;
 }
 
@@ -202,6 +215,7 @@ export function startSigner(
   const confirmSecret = new Uint8Array(randomBytes(32));
   const vault = input.vault ?? createTestVault();
   const tokenKey = input.tokenKey ?? new Uint8Array(randomBytes(32));
+
   const signer = createSigner({
     sqlitePath: input.sqlitePath ?? ":memory:",
     vault,
@@ -224,20 +238,24 @@ export function startSigner(
       : { minDestroyDelaySeconds: input.minDestroyDelaySeconds }),
     now: clock.now,
   });
+
   const fetch: typeof globalThis.fetch = (url, init) =>
     Promise.resolve(signer.app.request(String(url), init));
+
   const client = createSignerClient({
     baseUrl: "http://signer.test",
     secret,
     now: clock.now,
     fetch,
   });
+
   const confirm = createConfirmClient({
     baseUrl: "http://signer.test",
     secret: confirmSecret,
     now: clock.now,
     fetch,
   });
+
   return {
     signer,
     client,
@@ -324,18 +342,21 @@ export async function setUpWorld(
     adminThreshold,
     approvers: people.map((person) => person.credential),
   });
+
   const wallet = await t.client.createWallet({
     workspaceId,
     walletId,
     kind: "agent",
     label: "agent wallet",
   });
+
   const policy = basePolicy({
     workspaceId,
     walletId,
     agentId,
     threshold: options.policyThreshold ?? 1,
   });
+
   await t.client.setPolicy(walletId, {
     policy,
     authorization: authorize(
@@ -349,6 +370,7 @@ export async function setUpWorld(
       people.slice(0, adminThreshold),
     ),
   });
+
   return { t, workspaceId, walletId, agentId, people, address: wallet.address, policy };
 }
 
@@ -385,6 +407,7 @@ export function approveIntent(
     chainId: intent.chainId,
     policyHash: options.policyHash ?? policyHash(world.policy),
   };
+
   return authorize(envelope, options.people ?? world.people.slice(0, 1));
 }
 
@@ -399,6 +422,7 @@ export async function replacePolicy(
     revision: world.policy.revision + 1,
     previousHash: policyHash(world.policy),
   };
+
   await world.t.client.setPolicy(world.walletId, {
     policy,
     authorization: authorize(
@@ -412,6 +436,7 @@ export async function replacePolicy(
       world.people,
     ),
   });
+
   return policy;
 }
 
@@ -476,6 +501,7 @@ export async function grantMandate(
 ): Promise<{ mandate: Mandate; state: MandateState }> {
   const mandate = mandateFor(world, changes);
   const state = await world.t.client.grantMandate(mandate.id, grantRequest(world, mandate, people));
+
   return { mandate, state };
 }
 
@@ -490,8 +516,10 @@ export function useRequest(intent: EvmIntent): SignUnderMandateRequest {
 }
 
 let txNonce = 0;
+
 export function txParams(overrides: Partial<TransactionParams> = {}): TransactionParams {
   txNonce += 1;
+
   return {
     nonce: txNonce,
     gas: "21000",
@@ -521,7 +549,9 @@ export async function refused(call: Promise<unknown>, code: string, detail?: str
     () => null,
     (failure: unknown) => failure,
   );
+
   expect(error, `expected refusal ${code}`).toBeInstanceOf(SignerError);
   expect((error as SignerError).code).toBe(code);
+
   if (detail !== undefined) expect((error as SignerError).detail).toBe(detail);
 }

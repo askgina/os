@@ -59,9 +59,11 @@ const CLOID_TAG = "askgina.os/v1/hyperliquid-cloid\n";
  */
 export function cloidFor(approvalId: ApprovalId): Cloid {
   const id = ApprovalId.parse(approvalId);
+
   const digest = createHash("sha256")
     .update(CLOID_TAG + id)
     .digest("hex");
+
   return `0x${digest.slice(0, 32)}`;
 }
 
@@ -72,6 +74,7 @@ export function cloidFor(approvalId: ApprovalId): Cloid {
  */
 export function orderAction(operation: HyperliquidOrderOperation, cloid: Cloid): MsgpackMap {
   const order = HyperliquidOrderOperation.parse(operation);
+
   return new MsgpackMap([
     ["type", "order"],
     [
@@ -98,6 +101,7 @@ export function orderAction(operation: HyperliquidOrderOperation, cloid: Cloid):
  */
 export function cancelByCloidAction(asset: number, cloid: Cloid): MsgpackMap {
   const index = HyperliquidOrderOperation.shape.asset.parse(asset);
+
   return new MsgpackMap([
     ["type", "cancelByCloid"],
     [
@@ -116,6 +120,7 @@ function uint64(value: number, what: string): Uint8Array {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new RangeError(`${what} must be a non-negative safe integer, got ${value}`);
   }
+
   return numberToBytes(value, { size: 8 });
 }
 
@@ -130,7 +135,9 @@ export function l1ActionHash(
   expiresAfter: number | null,
 ): Hex32 {
   const parts = [encodeMsgpack(action), uint64(nonce, "nonce"), Uint8Array.of(0)];
+
   if (expiresAfter !== null) parts.push(Uint8Array.of(0), uint64(expiresAfter, "expiresAfter"));
+
   return keccak256(concatBytes(parts));
 }
 
@@ -164,6 +171,7 @@ function withdrawFields(
 ) {
   const venue = VenueNetwork.parse(network);
   uint64(time, "time");
+
   return {
     hyperliquidChain: HYPERLIQUID_CHAIN[venue],
     chainId: USER_SIGNED_CHAIN_ID[venue],
@@ -185,6 +193,7 @@ export function withdrawTypedData(
   time: number,
 ) {
   const fields = withdrawFields(network, destination, amount, time);
+
   return {
     domain: {
       name: "HyperliquidSignTransaction",
@@ -218,6 +227,7 @@ export function withdrawAction(
   time: number,
 ) {
   const fields = withdrawFields(network, destination, amount, time);
+
   return {
     type: "withdraw3",
     hyperliquidChain: fields.hyperliquidChain,
@@ -235,10 +245,12 @@ export function withdrawAction(
  */
 export function nextNonce(lastNonce: number | null, nowMs: number): number {
   uint64(nowMs, "nowMs");
+
   if (lastNonce === null) return nowMs;
   uint64(lastNonce, "lastNonce");
   const next = Math.max(nowMs, lastNonce + 1);
   uint64(next, "nonce");
+
   return next;
 }
 
@@ -282,6 +294,7 @@ export function eip712Json(payload: HyperliquidPayload): {
   json: string;
 } {
   const typedData = payloadTypedData(payload);
+
   return {
     chain: `eip155:${typedData.domain.chainId}`,
     json: JSON.stringify(

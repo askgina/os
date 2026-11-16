@@ -59,13 +59,17 @@ import { createSignerCore } from "./signer.ts";
 import type { Vault } from "./vault.ts";
 
 export { SCHEMA_VERSION, SchemaTooNewError } from "./db.ts";
+
 export {
   DEFAULT_MAX_DESTROY_DELAY_SECONDS,
   DEFAULT_MIN_DESTROY_DELAY_SECONDS,
   LIFECYCLE_ACTIONS,
 } from "./lifecycle.ts";
+
 export type { Logger } from "./log.ts";
+
 export { createLogger } from "./log.ts";
+
 export {
   createTestVault,
   type EvmTransaction,
@@ -187,10 +191,13 @@ type RouteName = keyof typeof signerRoutes;
 // Compiled once from the contract, so a path or method the contract does not name has no handler.
 const compiledRoutes = Object.entries(signerRoutes).map(([name, route]) => {
   const names: string[] = [];
+
   const pattern = route.path.replace(/:([A-Za-z]+)/g, (_match, param: string) => {
     names.push(param);
+
     return "([^/]+)";
   });
+
   return {
     name: name as RouteName,
     method: route.method,
@@ -206,8 +213,10 @@ function matchRoute(method: string, path: string): MatchedRoute {
   for (const route of compiledRoutes) {
     if (route.method !== method) continue;
     const match = route.regex.exec(path);
+
     if (!match) continue;
     const params: Record<string, string> = {};
+
     for (const [index, name] of route.names.entries()) {
       try {
         params[name] = decodeURIComponent(match[index + 1] ?? "");
@@ -215,8 +224,10 @@ function matchRoute(method: string, path: string): MatchedRoute {
         throw new SignerFailure("not_found");
       }
     }
+
     return { name: route.name, params };
   }
+
   throw new SignerFailure("not_found");
 }
 
@@ -232,14 +243,18 @@ async function readBody(stream: ReadableStream<Uint8Array> | null): Promise<Uint
   if (!stream) return new Uint8Array();
   const chunks: Uint8Array[] = [];
   let total = 0;
+
   for await (const chunk of stream) {
     total += chunk.byteLength;
+
     if (total > MAX_BODY_BYTES) {
       await stream.cancel().catch(() => undefined);
       throw new SignerFailure("invalid_request");
     }
+
     chunks.push(chunk);
   }
+
   return Buffer.concat(chunks);
 }
 
@@ -252,7 +267,9 @@ function clientScopes(certificates: SignerOptions["clientCertificates"]) {
   if (certificates === undefined) return null;
   const control = derFingerprint(new X509Certificate(certificates.control).raw);
   const approve = derFingerprint(new X509Certificate(certificates.approve).raw);
+
   if (control === approve) throw new RangeError("the two client certificates must differ");
+
   return new Map<string, SignedScope>([
     [control, "control"],
     [approve, "confirm"],
@@ -266,16 +283,21 @@ function clientScopes(certificates: SignerOptions["clientCertificates"]) {
  */
 function verifiedClientFingerprint(env: unknown): string | null {
   if (typeof env !== "object" || env === null || !("incoming" in env)) return null;
+
   if (!(env.incoming instanceof IncomingMessage)) return null;
   const socket = env.incoming.socket;
+
   if (!(socket instanceof TLSSocket) || !socket.authorized) return null;
   const { raw } = socket.getPeerCertificate();
+
   return Buffer.isBuffer(raw) ? derFingerprint(raw) : null;
 }
 
 function parse<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
   const result = schema.safeParse(value);
+
   if (!result.success) throw new SignerFailure("invalid_request");
+
   return result.data;
 }
 
@@ -289,43 +311,56 @@ function parseBody(body: Uint8Array): unknown {
 
 function pageNumber(raw: string | null, fallback: number, max: number): number {
   if (raw === null) return fallback;
+
   if (!/^[0-9]{1,9}$/.test(raw)) throw new SignerFailure("invalid_request");
   const value = Number(raw);
+
   if (value > max) throw new SignerFailure("invalid_request");
+
   return value;
 }
 
 export function createSigner(options: SignerOptions): Signer {
   if (options.tokenKey.byteLength !== 32) throw new RangeError("tokenKey must be 32 bytes");
+
   if (options.confirmSecret.byteLength < MIN_SECRET_BYTES) {
     throw new RangeError(`confirmSecret must be at least ${MIN_SECRET_BYTES} bytes`);
   }
+
   // One secret for both scopes would let the `approve` service call every route.
   if (Buffer.from(options.confirmSecret).equals(Buffer.from(options.requestSecret))) {
     throw new RangeError("confirmSecret must differ from requestSecret");
   }
+
   const secrets = { control: options.requestSecret, confirm: options.confirmSecret };
   const scopeOfClient = clientScopes(options.clientCertificates);
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const log = options.log ?? silentLogger;
   const maxMandateSeconds = options.maxMandateSeconds ?? DEFAULT_MAX_MANDATE_SECONDS;
   const maxTxAttempts = options.maxTxAttempts ?? DEFAULT_MAX_TX_ATTEMPTS;
+
   const minDestroyDelaySeconds =
     options.minDestroyDelaySeconds ?? DEFAULT_MIN_DESTROY_DELAY_SECONDS;
+
   const maxDestroyDelaySeconds =
     options.maxDestroyDelaySeconds ?? DEFAULT_MAX_DESTROY_DELAY_SECONDS;
+
   if (minDestroyDelaySeconds < 0 || maxDestroyDelaySeconds < minDestroyDelaySeconds) {
     throw new RangeError("the destroy delay bounds must satisfy 0 <= min <= max");
   }
+
   const { db, created } = openDatabase(options.sqlitePath);
+
   // Before anything is served: a database file that is not the one last recorded may be a
   // restored copy that forgot what it signed after the copy was made.
   const fencedAt = transaction(db, () =>
     fenceReplacedDatabase(db, options.sqlitePath, created, now()),
   );
+
   if (fencedAt !== null) {
     log.warn("restore fence set", { reason: "new_database_file", fenceAt: fencedAt });
   }
+
   const core = createSignerCore({
     db,
     vault: options.vault,
@@ -343,6 +378,7 @@ export function createSigner(options: SignerOptions): Signer {
     now,
     log,
   });
+
   const confirmations = createConfirmations({
     db,
     records: core.records,
@@ -369,6 +405,7 @@ export function createSigner(options: SignerOptions): Signer {
     const workspaceId = () => parse(WorkspaceIdSchema, params.workspaceId);
     const approvalId = () => parse(ApprovalId, params.approvalId);
     const mandateId = () => parse(MandateId, params.mandateId);
+
     switch (name) {
       case "health":
         return { ok: true, version: VERSION };
@@ -504,15 +541,19 @@ export function createSigner(options: SignerOptions): Signer {
   app.all("*", async (c) => {
     const url = new URL(c.req.url);
     let route: MatchedRoute | null = null;
+
     try {
       route = matchRoute(c.req.method, url.pathname);
+
       if (Number(c.req.header("content-length") ?? 0) > MAX_BODY_BYTES) {
         throw new SignerFailure("invalid_request");
       }
+
       const body = await readBody(c.req.raw.body);
       // Each route is reachable only with its own scope's secret: the `approve` service's
       // cannot sign or apply anything, and the control plane's cannot submit an assertion.
       const { scope } = signerRoutes[route.name];
+
       if (scope !== "unsigned") {
         // With mutual TLS the client certificate is checked first: the right secret on the
         // wrong client's connection is refused like a wrong secret.
@@ -522,8 +563,10 @@ export function createSigner(options: SignerOptions): Signer {
         ) {
           throw new SignerFailure("unauthenticated");
         }
+
         const signature = c.req.header(SIGNATURE_HEADER) ?? "";
         const timestampText = c.req.header(TIMESTAMP_HEADER) ?? "";
+
         const authentic =
           /^[0-9]{1,12}$/.test(timestampText) &&
           verifyRequestSignature(secrets[scope], {
@@ -534,8 +577,10 @@ export function createSigner(options: SignerOptions): Signer {
             signature,
             now: now(),
           });
+
         if (!authentic) throw new SignerFailure("unauthenticated");
       }
+
       const result = await dispatch(
         route.name,
         route.params,
@@ -543,21 +588,26 @@ export function createSigner(options: SignerOptions): Signer {
         body,
         c.req.header(CONFIRM_TOKEN_HEADER) ?? "",
       );
+
       log.info("request", { route: route.name, status: 200 });
+
       return c.json(result as object, 200);
     } catch (error) {
       const failure = error instanceof SignerFailure ? error : new SignerFailure("internal");
+
       if (!(error instanceof SignerFailure)) {
         log.error("unexpected failure", {
           route: route?.name ?? null,
           kind: error instanceof Error ? error.name : "unknown",
         });
       }
+
       log.info("request", {
         route: route?.name ?? null,
         status: failure.status,
         code: failure.code,
       });
+
       return c.json(failure.body(), failure.status as 400);
     }
   });
@@ -569,6 +619,7 @@ export function createSigner(options: SignerOptions): Signer {
     fence: () => {
       const fenceAt = transaction(db, () => raiseFence(db, now(), FENCE_BY_OPERATOR));
       log.warn("restore fence set", { reason: "operator", fenceAt });
+
       return fenceAt;
     },
     listWorkspaceMandates: core.listWorkspaceMandates,

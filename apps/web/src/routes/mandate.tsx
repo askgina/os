@@ -49,10 +49,13 @@ export function MandatePage() {
   const { workspaceId, mandateId } = useParams({ from: "/w/$workspaceId/mandates/$mandateId" });
   const workspace = useWorkspace(workspaceId);
   const mandate = useMandate(workspaceId, mandateId);
+
   if (mandate.isPending || !workspace.data) return <Loading label="Loading the approval" />;
+
   if (mandate.isError) {
     return <ErrorState error={mandate.error} retry={() => void mandate.refetch()} />;
   }
+
   return <MandateView detail={mandate.data} workspace={workspace.data} />;
 }
 
@@ -62,6 +65,7 @@ function MandateView({ detail, workspace }: { detail: MandateDetail; workspace: 
   const wallet = workspace.wallets.find((item) => item.id === detail.walletId);
   const infos = mandateAssetInfos(mandate, workspace.chains, detail.assets);
   const live = detail.endedReason === null;
+
   return (
     <div className="grid grid-cols-1 gap-6">
       <PageHeader
@@ -205,12 +209,16 @@ function Payments({
     getNextPageParam: (last) => last.nextCursor ?? undefined,
     enabled: false,
   });
+
   // The first page refreshes while payments come in, so an older page may repeat one of its rows.
   const shown = new Set(detail.intents.map((intent) => intent.id));
+
   const more = (older.data?.pages.flatMap((page) => page.items) ?? []).filter(
     (intent) => !shown.has(intent.id),
   );
+
   const canLoad = older.data ? older.hasNextPage : detail.intentsCursor !== null;
+
   return (
     <Card>
       <CardHeader>

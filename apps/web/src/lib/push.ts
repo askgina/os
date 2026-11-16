@@ -51,6 +51,7 @@ function isAppleMobile(userAgent: string, maxTouchPoints: number): boolean {
 export function readPushEnvironment(): PushEnvironment {
   const hasNotification = "Notification" in window;
   const iosStandalone = (navigator as Navigator & { standalone?: boolean }).standalone === true;
+
   return {
     secureContext: window.isSecureContext,
     serviceWorker: "serviceWorker" in navigator,
@@ -69,20 +70,27 @@ export function pushSupport(environment: PushEnvironment = readPushEnvironment()
     // "CPU iPhone OS 16_3 like Mac OS X". iPadOS in desktop mode names no version.
     const version = /\bOS (\d+)_(\d+)/.exec(environment.userAgent);
     const [major, minor] = FIRST_APPLE_PUSH;
+
     if (version) {
       const [found, foundMinor] = [Number(version[1]), Number(version[2])];
+
       if (found < major || (found === major && foundMinor < minor)) return "unsupported";
     }
+
     return "needs-install";
   }
+
   const { secureContext, serviceWorker, pushManager, notification } = environment;
+
   if (!secureContext || !serviceWorker || !pushManager || !notification) return "unsupported";
+
   return environment.permission === "denied" ? "blocked" : "available";
 }
 
 /** A name for this device to start the label field with, such as "Chrome on Android phone". */
 export function suggestDeviceLabel(userAgent: string, maxTouchPoints: number): string {
   let device: string | null = null;
+
   if (/\biPhone\b/.test(userAgent)) device = "iPhone";
   else if (/\biPad\b/.test(userAgent) || isAppleMobile(userAgent, maxTouchPoints)) device = "iPad";
   else if (/\bAndroid\b/.test(userAgent)) {
@@ -92,11 +100,14 @@ export function suggestDeviceLabel(userAgent: string, maxTouchPoints: number): s
   else if (/\bCrOS\b/.test(userAgent)) device = "Chromebook";
   else if (/\bLinux\b/.test(userAgent)) device = "Linux computer";
   let browser: string | null = null;
+
   if (/\bEdg(e|A|iOS)?\//.test(userAgent)) browser = "Edge";
   else if (/\b(Firefox|FxiOS)\//.test(userAgent)) browser = "Firefox";
   else if (/\b(Chrome|CriOS)\//.test(userAgent)) browser = "Chrome";
   else if (/\bSafari\//.test(userAgent)) browser = "Safari";
+
   if (device && browser) return `${browser} on ${device}`;
+
   return device ?? browser ?? "This browser";
 }
 
@@ -105,13 +116,17 @@ export function base64UrlToBytes(text: string): Uint8Array<ArrayBuffer> {
   const standard = text.replace(/-/g, "+").replace(/_/g, "/");
   const binary = atob(standard.padEnd(Math.ceil(standard.length / 4) * 4, "="));
   const bytes = new Uint8Array(binary.length);
+
   for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+
   return bytes;
 }
 
 export function bytesToBase64Url(bytes: Uint8Array): string {
   let binary = "";
+
   for (const byte of bytes) binary += String.fromCharCode(byte);
+
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
@@ -126,14 +141,18 @@ const RECORD_KEY = "os.push.device";
 
 export function readDeviceRecord(): DeviceRecord | null {
   let value: unknown;
+
   try {
     value = JSON.parse(localStorage.getItem(RECORD_KEY) ?? "null");
   } catch {
     return null;
   }
+
   if (typeof value !== "object" || value === null) return null;
   const { userId, subscriptionId, endpoint } = value as Record<string, unknown>;
+
   if (typeof userId !== "string" || typeof subscriptionId !== "string") return null;
+
   return typeof endpoint === "string" ? { userId, subscriptionId, endpoint } : null;
 }
 
@@ -151,6 +170,7 @@ export interface BrowserSubscription {
 
 function describeSubscription(subscription: PushSubscription): BrowserSubscription {
   const key = subscription.options?.applicationServerKey;
+
   return {
     endpoint: subscription.endpoint,
     applicationServerKey: key ? bytesToBase64Url(new Uint8Array(key)) : null,
@@ -160,6 +180,7 @@ function describeSubscription(subscription: PushSubscription): BrowserSubscripti
 async function currentRegistration(): Promise<ServiceWorkerRegistration | null> {
   if (!("serviceWorker" in navigator)) return null;
   const registration = await navigator.serviceWorker.getRegistration("/");
+
   return registration && "pushManager" in registration ? registration : null;
 }
 
@@ -167,6 +188,7 @@ async function currentRegistration(): Promise<ServiceWorkerRegistration | null> 
 export async function browserSubscription(): Promise<BrowserSubscription | null> {
   const registration = await currentRegistration();
   const subscription = await registration?.pushManager.getSubscription();
+
   return subscription ? describeSubscription(subscription) : null;
 }
 
@@ -207,20 +229,27 @@ export interface DeviceStateInput {
 
 export function deviceState(input: DeviceStateInput): DeviceState {
   const { record, browser } = input;
+
   if (record === null || record.userId !== input.userId) return { kind: "off" };
+
   const stopped = (reason: StoppedReason): DeviceState => ({
     kind: "stopped",
     reason,
     subscriptionId: record.subscriptionId,
   });
+
   if (browser === null) return stopped("ended");
+
   if (browser.endpoint !== record.endpoint) return stopped("replaced");
+
   if (browser.applicationServerKey !== null && browser.applicationServerKey !== input.serverKey) {
     return stopped("key-changed");
   }
+
   if (!input.devices.some((device) => device.id === record.subscriptionId)) {
     return stopped("removed");
   }
+
   return { kind: "on", subscriptionId: record.subscriptionId };
 }
 
@@ -253,27 +282,34 @@ export async function subscribeThisBrowser(input: {
   label: string | undefined;
 }): Promise<PushSubscriptionInput> {
   const permission = await input.permission;
+
   if (permission !== "granted") {
     throw new PushSetupError(
       permission === "denied" ? "permission_denied" : "permission_dismissed",
     );
   }
+
   let registration: ServiceWorkerRegistration;
+
   try {
     await navigator.serviceWorker.register("/sw.js", { scope: "/" });
     registration = await navigator.serviceWorker.ready;
   } catch {
     throw new PushSetupError("worker_failed");
   }
+
   let subscription = await registration.pushManager.getSubscription();
+
   if (subscription) {
     const made = describeSubscription(subscription).applicationServerKey;
+
     if (made !== null && made !== input.applicationServerKey) {
       // Made with a key the server no longer has: nothing it sends could arrive.
       await subscription.unsubscribe();
       subscription = null;
     }
   }
+
   if (!subscription) {
     try {
       subscription = await registration.pushManager.subscribe({
@@ -285,7 +321,9 @@ export async function subscribeThisBrowser(input: {
       throw new PushSetupError(denied ? "permission_denied" : "subscribe_failed");
     }
   }
+
   const keys = subscription.toJSON().keys ?? {};
+
   return {
     endpoint: subscription.endpoint,
     keys: { p256dh: keys.p256dh ?? "", auth: keys.auth ?? "" },

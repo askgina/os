@@ -29,6 +29,7 @@ export async function claim(): Promise<Person> {
   const ada = new Person(stack.origin, "Ada");
   const session = await ada.setUp(await setupToken());
   expect(session.setupRequired).toBe(false);
+
   return ada;
 }
 
@@ -38,10 +39,12 @@ export async function claim(): Promise<Person> {
  */
 export async function payingAgent(ada: Person, name: string): Promise<PayingAgent> {
   const workspace = await ada.api.call("createWorkspace", { body: { name } });
+
   const created = await ada.api.call("createAgent", {
     params: { workspaceId: workspace.id },
     body: { name: "Payer" },
   });
+
   const draft: PolicyDraft = {
     chains: [CHAIN],
     requesters: [created.agent.id as PolicyDraft["requesters"][number]],
@@ -58,13 +61,16 @@ export async function payingAgent(ada: Person, name: string): Promise<PayingAgen
     fees: { maxPerTxWei: parseEther("0.01").toString() },
     approvals: { threshold: 1, ttlSeconds: 3600 },
   };
+
   const request = await ada.api.call("requestPolicy", {
     params: { workspaceId: workspace.id, walletId: created.wallet.id },
     body: { draft },
   });
+
   await ada.confirm(request.id);
   expect((await ada.settled(request.id)).status).toBe("executed");
   await chainAdmin.setBalance({ address: created.wallet.address, value: parseEther("1") });
+
   return {
     workspace,
     wallet: created.wallet,
@@ -82,6 +88,7 @@ export async function propose(
   memo: string,
 ): Promise<{ intentId: string; approvalId: string }> {
   const result = await agent.call("propose_transfer", { chainId: CHAIN, to, amount, memo });
+
   return {
     intentId: String(result.intentId),
     approvalId: String(result.approvalUrl).split("/").at(-1) ?? "",
@@ -100,14 +107,17 @@ export async function intentSettles(
   const pending = ["proposed", "pending_approval", "approved", "signed", "broadcast"];
   const deadline = Date.now() + timeoutMs;
   let last = "no answer yet";
+
   for (;;) {
     try {
       const { status } = await ada.api.call("getIntent", { params: { intentId } });
+
       if (!pending.includes(status)) return status;
       last = status;
     } catch (error) {
       last = `no answer: ${(error as Error).message}`;
     }
+
     if (Date.now() > deadline) throw new Error(`intent ${intentId} is still ${last}`);
     await delay(250);
   }

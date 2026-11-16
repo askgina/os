@@ -54,40 +54,66 @@ import {
 test.describe.configure({ mode: "serial" });
 
 const CHAIN = "eip155:31337";
+
 const RECIPIENT = "0x00000000000000000000000000000000000a11ce";
+
 /** The one address the mandates below may pay. */
 const PAYEE = "0x000000000000000000000000000000000000b0b0";
+
 const run = Date.now().toString(36);
+
 /** Text the workspace that is deleted for good holds. None of it may be readable afterwards. */
 const MEMO_MARKER = `LIFEMEMO${run} pay the archive invoice`;
+
 const PURPOSE_MARKER = `LIFEPURPOSE${run} pay the archive invoices`;
+
 const ARCHIVE_NAME = `Archive ${run}`;
+
 const ARCHIVIST_NAME = `Archivist ${run}`;
+
 /** A workspace that stays: its name and its payment's memo stay readable to it. */
 const LEDGER_NAME = `Ledger ${run}`;
+
 const LEDGER_MEMO = `LEDGERMEMO${run} pay the ledger invoice`;
+
 const STUDIO_NAME = `Studio ${run}`;
+
 const COURIER_NAME = `Courier ${run}`;
+
 /** A workspace that is exported, cloned and imported, and that Cyd is erased from. */
 const ATELIER_NAME = `Atelier ${run}`;
+
 const CLERK_NAME = `Clerk ${run}`;
+
 const STRONGBOX = "Strongbox";
+
 /** What people and agents typed in the atelier. A record opens it; nothing else may carry it. */
 const EXPORT_MEMO = `EXPORTMEMO${run} pay the atelier invoice`;
+
 const EXPORT_PURPOSE = `EXPORTPURPOSE${run} pay the framer`;
+
 const COPY_NAME = `Atelier copy ${run}`;
+
 const COPY_MEMO = `COPYMEMO${run} the copy's first payment`;
+
 const IMPORT_NAME = `Atelier import ${run}`;
+
 const FOREIGN_NAME = `Atelier from elsewhere ${run}`;
+
 const AFTER_ERASURE_NAME = `Atelier after erasure ${run}`;
+
 /** The person who is erased. Her name is a marker: afterwards no table may hold it. */
 const CYD_NAME = `Cyd Erasable ${run}`;
+
 /** Her device's push endpoint, under the only push service the lifecycle overlay allows. */
 const CYD_PUSH_ENDPOINT = `https://push.example.test/send/${run}-cyd`;
+
 /** An address the atelier's policy does not let anyone pay. */
 const STRANGER = "0x000000000000000000000000000000000000dead";
+
 /** A user id this installation never issued, as a template from another one names people. */
 const STRANGER_USER = "usr_00000000000000000000000000";
+
 /** The sections of a workspace record, in their order (`apps/server/src/lifecycle/verify-record.ts`). */
 const RECORD_SECTIONS = [
   "audit",
@@ -98,17 +124,23 @@ const RECORD_SECTIONS = [
   "mandate-use",
   "signer-decision",
 ];
+
 /** Where the operator keeps a record file to check it, inside the server's container. */
 const RECORD_FILE = "/tmp/workspace-record.jsonl";
 
 /** Where the signer keeps its state, inside its container (`SIGNER_DATA_DIR`). */
 const SIGNER_DATABASE = "/data/signer.sqlite";
+
 const SIGNER_VAULT = "/data/vault";
+
 /** The server's keyring, and where the keyring gate keeps a copy of it from before rotating. */
 const KEYRING = "/run/secrets/server/keyring.json";
+
 const KEYRING_COPY = "keyring-before-rotation.json";
+
 /** The copy of the database the keyring gate takes before the deletion, inside `postgres`. */
 const DUMP = "/tmp/lifecycle-before-deletion.dump";
+
 const COPY_DATABASE = "lifecycle_before_deletion";
 
 /** The keys of a lifecycle notice's body, sorted as canonical JSON sorts them. */
@@ -125,11 +157,14 @@ const LIFECYCLE_EVENT_KEYS = [
 ];
 
 const wei = (amount: string) => parseEther(amount).toString();
+
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 
 const ada = new Person(stack.origin, "Ada");
+
 /** A viewer of the studio: no passkey approves anything of hers, and she may cancel. */
 const bea = new Person(stack.origin, "Bea");
+
 /** An approver of the atelier, who grants its mandate and then asks to be erased. */
 const cyd = new Person(stack.origin, CYD_NAME);
 
@@ -144,27 +179,45 @@ interface Space {
 
 /** Stays; its wallet is retired, cancelled, made active again, then retired for good. */
 let ledger: Space;
+
 /** Its deletion is approved and cancelled. */
 let studio: Space;
+
 let reserve: WalletSummary;
+
 let spare: WalletSummary;
+
 let studioMandateId = "";
+
 let deletionId = "";
+
 let studioDestroyAfter = 0;
+
 /** Deleted for good. */
 let archive: Space;
+
 let archiveIntentId = "";
+
 let ledgerIntentId = "";
+
 /** Exported, cloned and imported; Cyd approves in it until she is erased. */
 let atelier: Space;
+
 let strongbox: WalletSummary;
+
 let atelierTemplate: WorkspaceTemplate;
+
 let atelierMandateId = "";
+
 let atelierPaidIntentId = "";
+
 /** The two atelier payments of the first gate below: one a mandate covered, one Ada approved. */
 let atelierIntentIds: string[] = [];
+
 let adaId = "";
+
 let cydId = "";
+
 /** The atelier wallet's key as the signer's operator exports it, and its private key in hex. */
 let atelierSecrets: string[] = [];
 
@@ -212,6 +265,7 @@ async function setPolicy(workspaceId: string, walletId: string, draft: PolicyDra
     params: { workspaceId, walletId },
     body: { draft },
   });
+
   await ada.confirm(request.id);
   expect((await ada.settled(request.id)).status).toBe("executed");
 }
@@ -223,12 +277,15 @@ async function newSpace(
   policy: (requester: AgentSummary["id"]) => PolicyDraft = payerPolicy,
 ): Promise<Space> {
   const workspace = await ada.api.call("createWorkspace", { body: { name } });
+
   const created = await ada.api.call("createAgent", {
     params: { workspaceId: workspace.id },
     body: { name: agentName },
   });
+
   await setPolicy(workspace.id, created.wallet.id, policy(created.agent.id));
   await chainAdmin.setBalance({ address: created.wallet.address, value: parseEther("1") });
+
   return {
     workspace,
     agentId: created.agent.id,
@@ -252,7 +309,9 @@ async function grantMandate(
   await approver.confirm(grant.id);
   const granted = await ada.settled(grant.id);
   expect(granted.status).toBe("executed");
+
   if (granted.subject.kind !== "grant-mandate") throw new Error(`${grant.id} grants no mandate`);
+
   return { mandateId: granted.subject.mandate.id, grantId: grant.id };
 }
 
@@ -273,23 +332,31 @@ async function joinAsApprover(person: Person, workspaceId: string): Promise<stri
     params: { workspaceId },
     body: { role: "approver" },
   });
+
   const { user } = await person.join(invite.url);
+
   if (!user) throw new Error(`${person.name} did not join`);
+
   const pending = await ada.api.call("listApprovals", {
     params: { workspaceId },
     query: { status: "pending" },
   });
+
   let change: string | undefined;
+
   for (const item of pending.items.filter((candidate) => candidate.kind === "add-approver")) {
     const detail = await ada.api.call("getApproval", { params: { approvalId: item.id } });
+
     if (detail.subject.kind === "add-approver" && detail.subject.user.id === user.id) {
       change = item.id;
     }
   }
+
   if (!change) throw new Error("joining as an approver opened no approver change");
   await person.provePossession(change);
   await ada.confirm(change);
   expect((await ada.settled(change)).status).toBe("executed");
+
   return user.id;
 }
 
@@ -300,6 +367,7 @@ function getMandate(workspaceId: string, mandateId: string) {
 /** The ids of the live mandates `whoami` shows an agent. */
 async function agentMandates(agent: AgentConnection): Promise<string[]> {
   const { mandates } = await agent.call("whoami");
+
   return (mandates as { mandateId: string }[]).map((mandate) => mandate.mandateId);
 }
 
@@ -327,6 +395,7 @@ async function retire(workspaceId: string, walletId: string, destroyAfter: numbe
   const request = await requestRetire(workspaceId, walletId, destroyAfter);
   await ada.confirm(request.id);
   expect((await ada.settled(request.id)).status).toBe("executed");
+
   return request;
 }
 
@@ -347,9 +416,12 @@ async function expectNoConfirmation(proposal: Proposal): Promise<void> {
 async function intentSettles(intentId: string, timeoutMs = 120_000): Promise<string> {
   const pending = ["proposed", "pending_approval", "approved", "signed", "broadcast"];
   const deadline = Date.now() + timeoutMs;
+
   for (;;) {
     const { status } = await ada.api.call("getIntent", { params: { intentId } });
+
     if (!pending.includes(status)) return status;
+
     if (Date.now() > deadline) throw new Error(`intent ${intentId} is still ${status}`);
     await delay(250);
   }
@@ -362,13 +434,17 @@ async function transactionOnceSent(
   timeoutMs = 60_000,
 ): Promise<{ intent: IntentDetail; transaction: TransactionInfo }> {
   const deadline = Date.now() + timeoutMs;
+
   for (;;) {
     const intent = await ada.api.call("getIntent", { params: { intentId } });
     const { transaction } = intent;
+
     if (transaction !== null && ready(transaction)) return { intent, transaction };
+
     if (Date.now() > deadline) {
       throw new Error(`intent ${intentId} is ${intent.status}, its transaction not ready`);
     }
+
     await delay(250);
   }
 }
@@ -381,9 +457,11 @@ async function apiRefusal(
     () => null,
     (error: unknown) => error,
   );
+
   if (!(outcome instanceof ApiError)) {
     throw new Error(`expected the API to refuse, got ${String(outcome)}`);
   }
+
   return { code: outcome.code, detail: outcome.detail };
 }
 
@@ -395,9 +473,11 @@ async function toolRefusal(
     () => null,
     (error: unknown) => error,
   );
+
   if (!(outcome instanceof ToolRefused)) {
     throw new Error(`expected the tool to refuse, got ${String(outcome)}`);
   }
+
   return { code: outcome.code, detail: outcome.detail };
 }
 
@@ -407,9 +487,11 @@ async function refusalCode(attempt: Promise<unknown>): Promise<string> {
     () => null,
     (error: unknown) => error,
   );
+
   if (!(outcome instanceof ConfirmationRefused)) {
     throw new Error(`expected the confirmation page to refuse, got ${String(outcome)}`);
   }
+
   return outcome.code;
 }
 
@@ -424,13 +506,16 @@ function shownText(view: ConfirmationView): string {
 /** A workspace's whole signer decision log, read through the API to its end. */
 async function signerDecisions(workspaceId: string): Promise<SignerDecision[]> {
   const decisions: SignerDecision[] = [];
+
   for (let after = 0; ; ) {
     const page = await ada.api.call("listSignerDecisions", {
       params: { workspaceId },
       query: { after: String(after) },
     });
+
     decisions.push(...page.items);
     const last = page.items.at(-1);
+
     if (!last || page.items.length < 100) return decisions;
     after = last.seq;
   }
@@ -439,12 +524,15 @@ async function signerDecisions(workspaceId: string): Promise<SignerDecision[]> {
 /** Every entry of a workspace's audit log, opened, read across pages. */
 async function auditEvents(workspaceId: string): Promise<AuditEvent[]> {
   const events: AuditEvent[] = [];
+
   for (let cursor: string | undefined; ; ) {
     const page = await ada.api.call("listAudit", {
       params: { workspaceId },
       query: cursor === undefined ? {} : { cursor },
     });
+
     events.push(...page.items);
+
     if (page.nextCursor === null) return events;
     cursor = page.nextCursor;
   }
@@ -467,6 +555,7 @@ async function query(
   url.pathname = `/${database}`;
   const db = new pg.Client({ connectionString: url.toString() });
   await db.connect();
+
   try {
     return (await db.query(sql, params)).rows;
   } finally {
@@ -481,6 +570,7 @@ function inContainer(
   ...command: string[]
 ): Promise<string> {
   const variables = Object.entries(env).flatMap(([name, value]) => ["-e", `${name}=${value}`]);
+
   return compose("exec", "-T", ...variables, service, ...command);
 }
 
@@ -505,6 +595,7 @@ async function signerQuery(sql: string, ...params: unknown[]): Promise<Record<st
     "-e",
     SIGNER_QUERY_SCRIPT,
   );
+
   return JSON.parse(output) as Record<string, unknown>[];
 }
 
@@ -540,6 +631,7 @@ async function signerFileHits(
     "-e",
     SIGNER_FILE_SCAN_SCRIPT,
   );
+
   return JSON.parse(output) as { file: string; marker: string; encoding: string }[];
 }
 
@@ -575,6 +667,7 @@ async function vaultFilesNaming(walletIds: string[]): Promise<Record<string, num
     "-e",
     VAULT_SCAN_SCRIPT,
   );
+
   return JSON.parse(output) as Record<string, number>;
 }
 
@@ -645,17 +738,22 @@ async function openSealedIntent(input: {
     "-e",
     OPEN_SEALED_SCRIPT,
   );
+
   return JSON.parse(output) as OpenAttempt;
 }
 
 /** The server's structured log lines whose `event` is `event`. */
 async function serverEvents(event: string): Promise<Record<string, unknown>[]> {
   const logs = await compose("logs", "--no-color", "server");
+
   return logs.split("\n").flatMap((line) => {
     const start = line.indexOf("{");
+
     if (start < 0) return [];
+
     try {
       const parsed = JSON.parse(line.slice(start)) as Record<string, unknown>;
+
       return parsed.event === event ? [parsed] : [];
     } catch {
       return [];
@@ -685,6 +783,7 @@ async function waitForDeleted(workspaceId: string, timeoutMs = 200_000): Promise
 /** Run one of the signer's operator commands on its host, as the deploy guide does. */
 async function signerAdmin(...args: string[]): Promise<Record<string, unknown>> {
   const output = await exec("signer", "node", "src/admin.ts", ...args);
+
   return JSON.parse(output.trim().split("\n").at(-1) ?? "") as Record<string, unknown>;
 }
 
@@ -694,8 +793,10 @@ async function signerAdminRefusal(...args: string[]): Promise<string> {
     () => null,
     (error: { stdout?: string }) => error.stdout ?? "",
   );
+
   if (output === null) throw new Error(`expected admin.ts ${args[0]} to refuse`);
   const line = JSON.parse(output.trim().split("\n").at(-1) ?? "{}") as { code?: string };
+
   return line.code ?? "unreadable";
 }
 
@@ -739,7 +840,9 @@ async function verifyRecordFile(
     WRITE_STDIN_SCRIPT,
     RECORD_FILE,
   );
+
   if (written.exitCode !== 0) throw new Error(`writing the record failed: ${written.diagnostics}`);
+
   return operatorAnswer(
     await execWithInput(
       "server",
@@ -770,7 +873,9 @@ async function eraseByOperator(
 /** A record's lines as the file holds them, one JSON document each, without the final newline. */
 function recordLines(record: string): string[] {
   const lines = record.split("\n");
+
   if (lines.at(-1) === "") lines.pop();
+
   return lines;
 }
 
@@ -810,7 +915,9 @@ async function personRows(userId: string): Promise<Record<string, unknown>> {
        (SELECT count(*) FROM os.notification_deliveries WHERE user_id = $1 AND state = 'pending')::int AS pending`,
     [userId],
   );
+
   if (!row) throw new Error(`no counts for ${userId}`);
+
   return row;
 }
 
@@ -897,6 +1004,7 @@ test("retiring a wallet stops its signing and ends its mandate at once; cancelli
     detail: "already_requested",
   });
   const detail = await ada.api.call("getApproval", { params: { approvalId: request.id } });
+
   if (detail.envelope.type !== "retire-wallet") throw new Error("not a retirement");
   expect(detail.envelope.wallet.walletId).toBe(wallet.id);
   expect(detail.envelope.wallet.address.toLowerCase()).toBe(wallet.address.toLowerCase());
@@ -956,6 +1064,7 @@ test("retiring a wallet stops its signing and ends its mandate at once; cancelli
     params: { workspaceId, walletId: wallet.id },
     body: {},
   });
+
   expect(held.lifecycle).toEqual({ state: "held", destroyAfter: null });
   expect(await signerDecisions(workspaceId)).toContainEqual(
     expect.objectContaining({ action: "cancel-retire-wallet", outcome: "allowed" }),
@@ -984,6 +1093,7 @@ test("an operator exports a wallet's key on the signer host, to a new file only 
   const { workspace, wallet } = ledger;
   const out = `/tmp/export-${wallet.id}.txt`;
   const args = ["export-wallet", "--workspace", workspace.id, "--wallet", wallet.id, "--out", out];
+
   try {
     const exported = await signerAdmin(...args);
     expect(exported).toMatchObject({
@@ -1037,10 +1147,12 @@ test("a retired wallet's key is destroyed at its time: the vault holds nothing o
       wallet.id,
     ),
   ).toEqual([{ state: "destroyed", sealed: 0, destroyed: 1 }]);
+
   const [signed] = await signerQuery(
     "SELECT count(*) AS signatures, coalesce(sum(length(signed_transaction)), 0) AS bytes FROM signatures WHERE wallet_id = ?",
     wallet.id,
   );
+
   expect(Number(signed?.signatures)).toBeGreaterThanOrEqual(2);
   expect(signed?.bytes).toBe(0);
   expect(await signerDecisions(workspaceId)).toContainEqual(
@@ -1095,11 +1207,13 @@ test("approving a deletion pauses the workspace, retires every wallet and ends e
   spare = (await ada.api.call("createAgent", { params: { workspaceId }, body: { name: "Spare" } }))
     .wallet;
   await retire(workspaceId, spare.id, nowSeconds() + 7200);
+
   // A viewer, who approves nothing.
   const invite = await ada.api.call("createInvite", {
     params: { workspaceId },
     body: { role: "viewer" },
   });
+
   await bea.join(invite.url);
 
   await ada.api.call("pauseWorkspace", { params: { workspaceId }, body: {} });
@@ -1109,14 +1223,17 @@ test("approving a deletion pauses the workspace, retires every wallet and ends e
   expect(preflight.blockers).toContain("nonzero_balance");
 
   studioDestroyAfter = nowSeconds() + 3600;
+
   const request = await ada.api.call("requestDeleteWorkspace", {
     params: { workspaceId },
     body: { destroyAfter: studioDestroyAfter },
   });
+
   deletionId = request.id;
   expect(request).toMatchObject({ kind: "delete-workspace", status: "pending", threshold: 1 });
   expect(request.title).toContain("Delete this workspace");
   const detail = await ada.api.call("getApproval", { params: { approvalId: request.id } });
+
   if (detail.envelope.type !== "delete-workspace") throw new Error("not a deletion");
   // Every wallet whose key the signer holds, the retiring one included, in id order.
   expect(detail.envelope.wallets.map((listed) => listed.walletId)).toEqual(ids);
@@ -1128,10 +1245,12 @@ test("approving a deletion pauses the workspace, retires every wallet and ends e
   expect(view.title).toContain("Delete this workspace");
   expect(view.envelope).toEqual(detail.envelope);
   expect(view.warnings).toEqual(expect.arrayContaining(["keys_destroyed", "balances_unchecked"]));
+
   for (const wallet of [studio.wallet, reserve, spare]) {
     expect(shownText(view)).toContain(wallet.id.toLowerCase());
     expect(shownText(view)).toContain(wallet.address.toLowerCase());
   }
+
   await ada.approveOnConfirmationPage(link, view);
   await ada.api.call("collectApproval", { params: { approvalId: request.id }, body: {} });
   expect((await ada.settled(request.id)).status).toBe("executed");
@@ -1140,12 +1259,14 @@ test("approving a deletion pauses the workspace, retires every wallet and ends e
     paused: true,
     lifecycle: { state: "deleting", destroyAfter: studioDestroyAfter, deletedAt: null },
   });
+
   for (const id of ids) {
     expect((await walletDetail(workspaceId, id)).lifecycle).toEqual({
       state: "retiring",
       destroyAfter: studioDestroyAfter,
     });
   }
+
   expect(await getMandate(workspaceId, studioMandateId)).toMatchObject({
     status: "revoked",
     endedReason: "revoked",
@@ -1188,17 +1309,22 @@ test("approving a deletion pauses the workspace, retires every wallet and ends e
 test("a scheduled deletion is announced to the webhook, signed, with no sealed content, and no reminder is due for a delay under a day", async () => {
   const secret = await webhookSecret();
   const workspaceId = studio.workspace.id;
+
   const requests = await acknowledged(
     (body) => body.event === "lifecycle.scheduled" && body.approvalId === deletionId,
   );
+
   expect(requests).toHaveLength(1);
   const [request] = requests;
+
   if (!request) throw new Error("expected one delivery");
   const deliveryId = request.headers["x-os-delivery"];
   const hidden = [STUDIO_NAME, COURIER_NAME, "Reserve"];
+
   for (const wallet of [studio.wallet, reserve, spare]) {
     hidden.push(wallet.address, wallet.address.slice(2));
   }
+
   expect(expectSignedDelivery(secret, request, LIFECYCLE_EVENT_KEYS, hidden)).toEqual({
     v: 1,
     deliveryId,
@@ -1220,10 +1346,12 @@ test("a scheduled deletion is announced to the webhook, signed, with no sealed c
 
 test("any member cancels a deletion during its delay: the keys are kept, each wallet goes back to where it stood and a retiring one is held, the mandates stay ended, and the workspace stays paused until people resume it", async () => {
   const workspaceId = studio.workspace.id;
+
   const cancelled = await bea.api.call("cancelDeleteWorkspace", {
     params: { workspaceId },
     body: {},
   });
+
   expect(cancelled).toMatchObject({
     paused: true,
     lifecycle: { state: "active", destroyAfter: null, deletedAt: null },
@@ -1234,13 +1362,16 @@ test("any member cancels a deletion during its delay: the keys are kept, each wa
     state: "active",
     destroyAfter: null,
   });
+
   for (const id of [reserve.id, spare.id]) {
     expect((await walletDetail(workspaceId, id)).lifecycle).toEqual({
       state: "held",
       destroyAfter: null,
     });
   }
+
   const kept = await vaultFilesNaming([studio.wallet.id, reserve.id, spare.id]);
+
   for (const count of Object.values(kept)) expect(count).toBeGreaterThan(0);
   expect(await getMandate(workspaceId, studioMandateId)).toMatchObject({ status: "revoked" });
   expect(await signerDecisions(workspaceId)).toContainEqual(
@@ -1271,11 +1402,13 @@ test("a deletion waits while a transaction of the workspace could still be mined
   archive = await newSpace(ARCHIVE_NAME, ARCHIVIST_NAME);
   const workspaceId = archive.workspace.id;
   const { wallet } = archive;
+
   const mandate = await grantMandate(
     workspaceId,
     wallet.id,
     mandateDraft(archive.agentId, { purpose: PURPOSE_MARKER }),
   );
+
   const covered = await propose(archive, PAYEE, "0.001", "covered, in the archive");
   expect(covered).toMatchObject({ authorizedBy: "mandate", mandateId: mandate.mandateId });
   expect(await intentSettles(covered.intentId)).toBe("confirmed");
@@ -1299,10 +1432,12 @@ test("a deletion waits while a transaction of the workspace could still be mined
     expect(named.hits.map((hit) => hit.marker)).toEqual(
       expect.arrayContaining([ARCHIVE_NAME, ARCHIVIST_NAME]),
     );
+
     const [runKeys] = await query(
       "SELECT count(*) FILTER (WHERE wrapped_key IS NOT NULL)::int AS live FROM os_keys.data_keys WHERE scope = 'run' AND tenant_id = $1",
       [workspaceId],
     );
+
     expect(Number(runKeys?.live)).toBeGreaterThan(0);
 
     await ada.api.call("pauseWorkspace", { params: { workspaceId }, body: {} });
@@ -1317,10 +1452,12 @@ test("a deletion waits while a transaction of the workspace could still be mined
     );
 
     const destroyAfter = nowSeconds() + 5;
+
     const deletion = await ada.api.call("requestDeleteWorkspace", {
       params: { workspaceId },
       body: { destroyAfter },
     });
+
     await ada.confirm(deletion.id);
     expect((await ada.settled(deletion.id)).status).toBe("executed");
     const preflight = await ada.api.call("getDeletionPreflight", { params: { workspaceId } });
@@ -1341,6 +1478,7 @@ test("a deletion waits while a transaction of the workspace could still be mined
       params: { intentId: proposal.intentId },
       body: {},
     });
+
     expect(cancel).toMatchObject({ kind: "cancel-transaction", status: "pending" });
     const link = await ada.confirmationLink(cancel.id);
     const view = await ada.readConfirmation(link);
@@ -1352,11 +1490,14 @@ test("a deletion waits while a transaction of the workspace could still be mined
     await ada.approveOnConfirmationPage(link, view);
     await ada.api.call("collectApproval", { params: { approvalId: cancel.id }, body: {} });
     expect((await ada.settled(cancel.id)).status).toBe("executed");
+
     const { transaction } = await transactionOnceSent(
       proposal.intentId,
       (tx) => tx.attempts.length === 2,
     );
+
     const cancelling = transaction.attempts[1];
+
     if (!cancelling) throw new Error("no cancel attempt");
     expect(cancelling).toMatchObject({ kind: "cancel", cancelApprovalId: cancel.id });
     cancelHash = cancelling.hash;
@@ -1422,10 +1563,12 @@ test("a deleted workspace signs nothing and nothing it stored can be opened: its
       [workspaceId],
     ),
   ).toEqual([{ unwrappable: true, shredded: true }]);
+
   const [runKeys] = await query(
     "SELECT count(*)::int AS total, count(*) FILTER (WHERE wrapped_key IS NULL AND shredded_at IS NOT NULL)::int AS shredded FROM os_keys.data_keys WHERE scope = 'run' AND tenant_id = $1",
     [workspaceId],
   );
+
   expect(Number(runKeys?.total)).toBeGreaterThan(0);
   expect(runKeys?.shredded).toBe(runKeys?.total);
   // Its sealed payment no longer opens with the live keyring; another workspace's still does.
@@ -1454,12 +1597,14 @@ test("a deleted workspace signs nothing and nothing it stored can be opened: its
 
   // Nothing anyone typed in it is readable in the database; names a person typed elsewhere are.
   const url = await databaseUrl();
+
   const scan = await scanForMarkers(url, [
     MEMO_MARKER,
     PURPOSE_MARKER,
     ARCHIVE_NAME,
     ARCHIVIST_NAME,
   ]);
+
   expect(scan.hits).toEqual([]);
   expect((await scanForMarkers(url, [LEDGER_NAME])).hits.length).toBeGreaterThan(0);
 
@@ -1482,10 +1627,12 @@ test("a deleted workspace signs nothing and nothing it stored can be opened: its
       wallet.id,
     ),
   ).toEqual([{ bytes: 0 }]);
+
   const [attempts] = await signerQuery(
     "SELECT count(*) AS attempts, coalesce(sum(length(signed_transaction)), 0) AS bytes FROM signature_attempts WHERE approval_id IN (SELECT approval_id FROM signatures WHERE wallet_id = ?)",
     wallet.id,
   );
+
   expect(Number(attempts?.attempts)).toBeGreaterThan(0);
   expect(attempts?.bytes).toBe(0);
   expect(
@@ -1501,12 +1648,14 @@ test("a deleted workspace signs nothing and nothing it stored can be opened: its
       workspaceId,
     ),
   ).toEqual([{ confirmations: 0, approvers: 0 }]);
+
   const actions = (
     await signerQuery(
       "SELECT action FROM decisions WHERE workspace_id = ? ORDER BY seq",
       workspaceId,
     )
   ).map((row) => row.action);
+
   expect(actions).toEqual(
     expect.arrayContaining(["revoke-mandate-on-delete", "cancel-transaction", "destroy-wallet"]),
   );
@@ -1530,9 +1679,11 @@ test("after a deletion and a keyring rotation, a database copy from before the d
   test.setTimeout(300_000);
   const workspaceId = archive.workspace.id;
   const copy = { database: COPY_DATABASE, intentId: archiveIntentId, marker: MEMO_MARKER };
+
   try {
     // The operator's backup, restored into a scratch database beside the live one.
     await exec("postgres", "createdb", "--username=postgres", COPY_DATABASE);
+
     const restoring = await exec(
       "postgres",
       "pg_restore",
@@ -1544,6 +1695,7 @@ test("after a deletion and a keyring rotation, a database copy from before the d
       () => "",
       (error: { stderr?: string }) => error.stderr ?? "pg_restore failed",
     );
+
     expect(
       await query(
         "SELECT wrapped_key IS NOT NULL AS wrapped FROM os_keys.data_keys WHERE scope = 'workspace' AND key_id = $1",
@@ -1575,6 +1727,7 @@ test("after a deletion and a keyring rotation, a database copy from before the d
     const added = lastLine(
       await compose("run", "--rm", "init", "node", "/init/rotate-keyring.mjs", "add"),
     );
+
     expect(added).toMatchObject({ event: "keyring.added" });
     await compose("restart", "server");
     await waitUntilHealthy();
@@ -1584,6 +1737,7 @@ test("after a deletion and a keyring rotation, a database copy from before the d
       activeKek: added.active,
       failedCount: 0,
     });
+
     const pruned = lastLine(
       await compose(
         "run",
@@ -1595,6 +1749,7 @@ test("after a deletion and a keyring rotation, a database copy from before the d
         "--confirm-rewrapped",
       ),
     );
+
     expect(pruned).toMatchObject({ event: "keyring.pruned", active: added.active });
     expect((pruned.removed as string[]).length).toBeGreaterThan(0);
     await compose("restart", "server");
@@ -1648,6 +1803,7 @@ test("an owner's template of a workspace carries its settings, wallets, policies
       label: "Cyd's phone",
     },
   });
+
   expect((await cyd.api.call("listPushSubscriptions")).items.map((item) => item.id)).toEqual([
     device.id,
   ]);
@@ -1689,16 +1845,19 @@ test("an owner's template of a workspace carries its settings, wallets, policies
     params: { workspaceId },
     body: { detail: "summary" },
   });
+
   const raise = await ada.api.call("requestAdminThreshold", {
     params: { workspaceId },
     body: { adminThreshold: 2 },
   });
+
   await ada.confirm(raise.id);
   expect((await ada.settled(raise.id)).status).toBe("executed");
   expect((await ada.api.call("getWorkspace", { params: { workspaceId } })).adminThreshold).toBe(2);
 
   // The signer's operator exports the wallet's key on its host: it derives the wallet's address.
   const out = `/tmp/export-${wallet.id}.txt`;
+
   try {
     expect(
       await signerAdmin(
@@ -1715,6 +1874,7 @@ test("an owner's template of a workspace carries its settings, wallets, policies
     const account = mnemonicToAccount(mnemonic);
     expect(account.address.toLowerCase()).toBe(wallet.address.toLowerCase());
     const privateKey = account.getHdKey().privateKey;
+
     if (!privateKey) throw new Error("the exported key derives no private key");
     atelierSecrets = [mnemonic, Buffer.from(privateKey).toString("hex")];
   } finally {
@@ -1724,6 +1884,7 @@ test("an owner's template of a workspace carries its settings, wallets, policies
   // The template: settings, wallets by ref, the policy with its requester as a ref, members.
   atelierTemplate = await ada.api.call("exportTemplate", { params: { workspaceId } });
   const { policy } = await walletDetail(workspaceId, wallet.id);
+
   if (!policy) throw new Error("the atelier's wallet has no policy");
   expect(atelierTemplate).toEqual({
     format: "askgina.os/workspace-template/v1",
@@ -1755,6 +1916,7 @@ test("an owner's template of a workspace carries its settings, wallets, policies
   });
   // Nothing in it is a key, an address, a token, an id of this workspace or what anyone typed.
   const text = JSON.stringify(atelierTemplate).toLowerCase();
+
   for (const value of [
     atelier.token,
     ...atelierSecrets,
@@ -1830,16 +1992,21 @@ test("an owner signed in with a passkey in the last five minutes exports the rec
 
   // No secret: no token, key, session, confirmation link, device, signature or sealed value.
   const intent = await ada.api.call("getIntent", { params: { intentId: atelierPaidIntentId } });
+
   if (!intent.transaction) throw new Error("the atelier's payment has no transaction");
   const signed = await chain.getTransaction({ hash: intent.transaction.hash as Hash });
+
   const sessions = await query("SELECT id_hash FROM os.sessions WHERE user_id = ANY($1)", [
     [adaId, cydId],
   ]);
+
   const [sealed] = await query(
     "SELECT encode(payload, 'hex') AS hex, encode(payload, 'base64') AS base64 FROM os.intents WHERE id = $1",
     [atelierPaidIntentId],
   );
+
   const lower = record.toLowerCase();
+
   for (const secret of [
     atelier.token,
     ...atelierSecrets,
@@ -1889,12 +2056,14 @@ test("cloning a workspace makes a new one from its configuration: new wallets at
   const source = await ada.api.call("getWorkspace", { params: { workspaceId: sourceId } });
   const sourceAudit = await auditActions(sourceId);
   const { policy } = await walletDetail(sourceId, atelier.wallet.id);
+
   if (!policy) throw new Error("the atelier's wallet has no policy");
 
   const clone = await ada.api.call("cloneWorkspace", {
     params: { workspaceId: sourceId },
     body: { name: COPY_NAME, includeAgents: true, includeMembers: true },
   });
+
   const copy = clone.workspace;
   const copyId = copy.id;
   expect(copyId).not.toBe(sourceId);
@@ -1916,15 +2085,18 @@ test("cloning a workspace makes a new one from its configuration: new wallets at
   expect(copy.wallets.map((wallet) => [wallet.kind, wallet.label]).sort()).toEqual(
     source.wallets.map((wallet) => [wallet.kind, wallet.label]).sort(),
   );
+
   for (const wallet of copy.wallets) {
     expect(source.wallets.map((known) => known.id)).not.toContain(wallet.id);
     expect(source.wallets.map((known) => known.address)).not.toContain(wallet.address);
     expect(wallet.policy).toBeNull();
     expect(await chain.getTransactionCount({ address: wallet.address })).toBe(0);
   }
+
   // The agent again, with a new token shown once.
   expect(clone.agents).toHaveLength(1);
   const [made] = clone.agents;
+
   if (!made) throw new Error("the clone made no agent");
   expect(made.agentId).not.toBe(atelier.agentId);
   expect(made.token).not.toBe(atelier.token);
@@ -1937,6 +2109,7 @@ test("cloning a workspace makes a new one from its configuration: new wallets at
     }),
   ]);
   const copyWallet = copy.wallets.find((wallet) => wallet.id === made.walletId);
+
   if (!copyWallet) throw new Error("the clone's agent has no wallet in it");
   // An invite for the member this installation knows, with her role, for Ada to pass on.
   expect(clone.invites).toEqual([
@@ -1954,14 +2127,18 @@ test("cloning a workspace makes a new one from its configuration: new wallets at
   expect(clone.approvals).toEqual([
     expect.objectContaining({ kind: "set-policy", status: "pending", threshold: 1 }),
   ]);
+
   if (!proposal) throw new Error("the clone opened no policy request");
   const detail = await ada.api.call("getApproval", { params: { approvalId: proposal.id } });
+
   if (detail.envelope.type !== "set-policy") throw new Error("not a policy request");
   expect(detail.envelope).toMatchObject({ walletId: made.walletId, previousPolicyHash: null });
+
   const listed = await ada.api.call("listApprovals", {
     params: { workspaceId: copyId },
     query: { status: "all" },
   });
+
   expect(listed.items.map((item) => item.id)).toEqual([proposal.id]);
   expect((await ada.api.call("listIntents", { params: { workspaceId: copyId } })).items).toEqual(
     [],
@@ -2025,12 +2202,14 @@ test("cloning a workspace makes a new one from its configuration: new wallets at
       }),
     ),
   ).toEqual({ code: "policy_denied", detail: "recipient_not_allowed" });
+
   const paid = await copyAgent.proposeTransfer({
     chainId: CHAIN,
     to: PAYEE,
     amount: "0.002",
     memo: COPY_MEMO,
   });
+
   expect(paid).toMatchObject({ authorizedBy: "person", mandateId: null });
   await ada.confirm(approvalIdOf(paid));
   expect(await intentSettles(paid.intentId)).toBe("confirmed");
@@ -2060,6 +2239,7 @@ test("cloning a workspace makes a new one from its configuration: new wallets at
   expect(sectionOf(lines, "mandate")).toEqual([]);
   expect(sectionOf(lines, "mandate-use")).toEqual([]);
   expect(record).toContain(COPY_MEMO);
+
   for (const value of [
     EXPORT_MEMO,
     EXPORT_PURPOSE,
@@ -2075,9 +2255,12 @@ test("cloning a workspace makes a new one from its configuration: new wallets at
 
 test("a template imported on this installation reproduces the workspace's configuration once people approve its policy, invites only people known here, and a template this installation cannot honour is refused with nothing created", async () => {
   test.setTimeout(300_000);
+
   const workspaces = async () =>
     (await ada.api.call("listWorkspaces")).items.map((item) => item.id).sort();
+
   const before = await workspaces();
+
   const importing = (template: WorkspaceTemplate, name: string) =>
     ada.api.call("importTemplate", {
       body: { template, name, includeAgents: true, includeMembers: true },
@@ -2100,10 +2283,12 @@ test("a template imported on this installation reproduces the workspace's config
           },
     ),
   };
+
   const withKeys = {
     ...atelierTemplate,
     keys: { [atelier.wallet.id]: "a key a template never carries" },
   } as unknown as WorkspaceTemplate;
+
   const treasuryRequester: WorkspaceTemplate = {
     ...atelierTemplate,
     wallets: atelierTemplate.wallets.map((wallet) =>
@@ -2112,9 +2297,11 @@ test("a template imported on this installation reproduces the workspace's config
         : { ...wallet, policy: { ...wallet.policy, requesters: ["w2"] } },
     ),
   };
+
   for (const template of [otherChain, withKeys, treasuryRequester]) {
     expect((await apiRefusal(importing(template, FOREIGN_NAME))).code).toBe("invalid_request");
   }
+
   expect(await workspaces()).toEqual(before);
 
   // From another installation: the people it names are unknown here, so nobody is invited.
@@ -2126,6 +2313,7 @@ test("a template imported on this installation reproduces the workspace's config
       includeMembers: true,
     },
   });
+
   expect(foreign).toMatchObject({ invites: [], agents: [], approvals: [] });
   expect(foreign.workspace.wallets.map((wallet) => [wallet.kind, wallet.label])).toEqual([
     ["treasury", STRONGBOX],
@@ -2143,14 +2331,19 @@ test("a template imported on this installation reproduces the workspace's config
   expect(imported.approvals).toEqual([
     expect.objectContaining({ kind: "set-policy", status: "pending" }),
   ]);
+
   if (!proposal) throw new Error("the import opened no policy request");
+
   const source = await ada.api.call("getWorkspace", {
     params: { workspaceId: atelier.workspace.id },
   });
+
   expect(imported.workspace.wallets).toHaveLength(source.wallets.length);
+
   for (const wallet of imported.workspace.wallets) {
     expect(source.wallets.map((known) => known.address)).not.toContain(wallet.address);
   }
+
   await ada.confirm(proposal.id);
   expect((await ada.settled(proposal.id)).status).toBe("executed");
   // Exported again, it is the template it came from, but for its name, its people and its admin
@@ -2161,10 +2354,12 @@ test("a template imported on this installation reproduces the workspace's config
     adminThreshold: 1,
     members: [{ userId: adaId, role: "owner" }],
   });
+
   // Its log names the template by its digest.
   const cloned = (await auditEvents(importedId)).find(
     (event) => event.action === "workspace.cloned",
   );
+
   expect(cloned?.detail).toMatchObject({
     source: {
       templateDigest: createHash("sha256").update(canonicalJson(atelierTemplate)).digest("hex"),
@@ -2234,6 +2429,7 @@ test("erasing a person: refused while a threshold needs their passkey, then a re
     params: { workspaceId },
     body: { adminThreshold: 1 },
   });
+
   expect(lower).toMatchObject({ kind: "set-admin-threshold", threshold: 2 });
   await ada.confirm(lower.id);
   await cyd.confirm(lower.id);
@@ -2257,6 +2453,7 @@ test("erasing a person: refused while a threshold needs their passkey, then a re
 
   // Approved on the confirmation page, the signer drops her passkey and ends the mandate it gave.
   const [removal] = first.approvals;
+
   if (!removal) throw new Error("erasing opened no removal");
   await ada.confirm(removal.id);
   expect((await ada.settled(removal.id)).status).toBe("executed");
@@ -2365,6 +2562,7 @@ test("erasing a person: refused while a threshold needs their passkey, then a re
       includeMembers: true,
     },
   });
+
   expect(afterwards.invites).toEqual([]);
 
   // Erasing her again changes nothing.
@@ -2379,9 +2577,11 @@ test("erasing a person: refused while a threshold needs their passkey, then a re
 
 test("the operator erases a person whose passkeys approve nowhere, as the system and once, and changes nothing for the only owner of a workspace", async () => {
   const workspaceId = studio.workspace.id;
+
   const member = (await ada.api.call("getWorkspace", { params: { workspaceId } })).members.find(
     (candidate) => candidate.user.displayName === bea.name,
   );
+
   if (!member) throw new Error("Bea is not a member of the studio");
   const beaId = member.user.id;
   expect(member.role).toBe("viewer");

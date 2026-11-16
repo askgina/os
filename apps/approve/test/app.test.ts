@@ -42,9 +42,13 @@ import { createApproveApp, MAX_BODY_BYTES, readPageFiles } from "../src/app.ts";
 import type { Logger } from "../src/log.ts";
 
 const ORIGIN = "http://localhost:8081";
+
 const SECRET = new Uint8Array(randomBytes(32));
+
 const NOW = 1_800_000_000;
+
 const TOKEN = randomBytes(16).toString("base64url");
+
 const files = readPageFiles();
 
 /** What every response must carry, whatever its route or status (`specs/trusted-display.md`). */
@@ -85,6 +89,7 @@ function viewOf(
     issuedAt: NOW,
     expiresAt: NOW + 3_600,
   });
+
   return confirmationView(
     envelope,
     { kind: "envelope-only" },
@@ -100,6 +105,7 @@ function confirmationView(
 ): ConfirmationView {
   const { approvalId } = envelope;
   const approvals = { collected: 0, required: 1 };
+
   const rendered = renderConfirmation({
     envelope,
     subject,
@@ -116,6 +122,7 @@ function confirmationView(
     wallets: [],
     ...input,
   });
+
   return ConfirmationView.parse({
     v: 1,
     approvalId,
@@ -147,6 +154,7 @@ function orderViewOf(policy: { venues: boolean; btc: boolean }): ConfirmationVie
   const workspaceId = newId("ws");
   const walletId = newId("wal");
   const agentId = newId("agt");
+
   const intent: VenueIntent = {
     v: 1,
     id: newId("int"),
@@ -166,6 +174,7 @@ function orderViewOf(policy: { venues: boolean; btc: boolean }): ConfirmationVie
     memo: "funding turned",
     createdAt: NOW,
   };
+
   const current: WalletPolicy = {
     v: 1,
     workspaceId,
@@ -206,6 +215,7 @@ function orderViewOf(policy: { venues: boolean; btc: boolean }): ConfirmationVie
         }
       : {}),
   };
+
   const envelope = Envelope.parse({
     v: 1,
     type: "approve-intent",
@@ -220,6 +230,7 @@ function orderViewOf(policy: { venues: boolean; btc: boolean }): ConfirmationVie
     chainId: intent.chainId,
     policyHash: policyHash(current),
   });
+
   return confirmationView(
     envelope,
     { kind: "approve-intent", intent },
@@ -239,10 +250,12 @@ type Answer = { status: number; body: unknown } | "unreachable";
 function fakeSigner() {
   const calls: { method: string; path: string; token: string | null; body: string }[] = [];
   let answer: Answer = { status: 200, body: {} };
+
   const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
     const url = new URL(request.url);
     const body = new Uint8Array(await request.arrayBuffer());
+
     const authentic = verifyRequestSignature(SECRET, {
       method: request.method,
       pathWithQuery: `${url.pathname}${url.search}`,
@@ -251,6 +264,7 @@ function fakeSigner() {
       signature: request.headers.get(SIGNATURE_HEADER) ?? "",
       now: NOW,
     });
+
     if (!authentic) throw new Error("not signed with the confirm secret");
     calls.push({
       method: request.method,
@@ -258,12 +272,15 @@ function fakeSigner() {
       token: request.headers.get(CONFIRM_TOKEN_HEADER),
       body: Buffer.from(body).toString("utf8"),
     });
+
     if (answer === "unreachable") throw new TypeError("fetch failed");
+
     return new Response(JSON.stringify(answer.body), {
       status: answer.status,
       headers: { "content-type": "application/json" },
     });
   };
+
   return {
     calls,
     fetch,
@@ -278,6 +295,7 @@ function setUp(approveOrigin = ORIGIN) {
   const logged: string[] = [];
   const record = (message: string, fields = {}) => logged.push(JSON.stringify({ message, fields }));
   const log: Logger = { info: record, warn: record, error: record };
+
   const app = createApproveApp({
     confirm: createConfirmClient({
       baseUrl: "http://signer:8787",
@@ -289,6 +307,7 @@ function setUp(approveOrigin = ORIGIN) {
     approveOrigin,
     log,
   });
+
   return { app, signer, logged };
 }
 
@@ -300,10 +319,12 @@ const withToken = (init: RequestInit = {}, token = TOKEN): RequestInit => ({
 /** A passkey assertion as the page posts it. */
 function assertionFor(view: ConfirmationView) {
   const authenticator = new SoftAuthenticator();
+
   const { credential } = authenticator.register({
     rpId: "localhost",
     challenge: b64url(randomBytes(32)),
   });
+
   return authenticator.authenticate({
     credentialId: b64url(credential.id),
     challenge: view.webauthn.challenge,
@@ -322,6 +343,7 @@ describe("the approve service", () => {
     const api = `/api/approvals/${view.approvalId}`;
     const submit = { method: "POST", body: JSON.stringify({ response: assertionFor(view) }) };
     const { app, signer } = setUp();
+
     const requests: [string, () => Promise<Response>][] = [
       ["page", async () => app.request(page)],
       ["script", async () => app.request("/approve.js")],
@@ -333,6 +355,7 @@ describe("the approve service", () => {
         "view",
         async () => {
           signer.answer({ status: 200, body: view });
+
           return app.request(api, withToken());
         },
       ],
@@ -343,6 +366,7 @@ describe("the approve service", () => {
             status: 200,
             body: { collected: 1, required: 1, returnUrl: view.returnUrl },
           });
+
           return app.request(`${api}/assertions`, withToken(submit));
         },
       ],
@@ -350,6 +374,7 @@ describe("the approve service", () => {
         "challenge",
         async () => {
           signer.answer({ status: 200, body: { ...view.webauthn, allowCredentials: ["AA"] } });
+
           return app.request(`${api}/possession`, withToken());
         },
       ],
@@ -357,6 +382,7 @@ describe("the approve service", () => {
         "prove",
         async () => {
           signer.answer({ status: 200, body: { fingerprint: "0123-4567-89AB-CDEF" } });
+
           return app.request(`${api}/possession`, withToken(submit));
         },
       ],
@@ -367,6 +393,7 @@ describe("the approve service", () => {
             status: 409,
             body: { error: { code: "confirmation_closed", message: "closed" } },
           });
+
           return app.request(api, withToken());
         },
       ],
@@ -374,6 +401,7 @@ describe("the approve service", () => {
         "an unreachable signer",
         async () => {
           signer.answer("unreachable");
+
           return app.request(api, withToken());
         },
       ],
@@ -391,21 +419,27 @@ describe("the approve service", () => {
         async () => app.request(`${api}/assertions`, withToken({ method: "POST", body: "{}" })),
       ],
     ];
+
     const statuses = new Set<number>();
+
     for (const [name, send] of requests) {
       // A cookie a browser might send is ignored, and none is ever set.
       const response = await send();
       statuses.add(response.status);
+
       for (const [header, value] of Object.entries(HEADERS)) {
         expect(response.headers.get(header), `${name}: ${header}`).toBe(value);
       }
+
       expect(response.headers.get("set-cookie"), name).toBeNull();
       // Over plain HTTP there is no HSTS: it would pin a scheme the page is not served with.
       expect(response.headers.get("strict-transport-security"), name).toBeNull();
     }
+
     expect([...statuses].sort()).toEqual([200, 400, 404, 409, 413, 502]);
 
     const secure = setUp("https://approve.os.example.com");
+
     for (const path of [page, "/approve.js", "/nothing"]) {
       const response = await secure.app.request(path);
       expect(response.headers.get("content-security-policy")).toBe(
@@ -463,6 +497,7 @@ describe("the approve service", () => {
       ["POST", "/v1/sign"],
       ["GET", "/.well-known/workflow/v1/flow"],
     ];
+
     for (const [method, path] of unknown) {
       const response = await app.request(path, withToken({ method }));
       expect(response.status, `${method} ${path}`).toBe(404);
@@ -481,9 +516,11 @@ describe("the approve service", () => {
           path,
           withToken({ method, body: method === "POST" ? "{}" : null }, token),
         );
+
         expect(response.status, `${method} ${path} with token "${token}"`).toBe(404);
       }
     }
+
     expect(signer.calls).toEqual([]);
   });
 
@@ -502,25 +539,32 @@ describe("the approve service", () => {
       new ReadableStream<Uint8Array>({
         start(controller) {
           const bytes = new TextEncoder().encode(text);
+
           for (let at = 0; at < bytes.length; at += 4_096) {
             controller.enqueue(bytes.subarray(at, at + 4_096));
           }
+
           controller.close();
         },
       });
+
     const oversized = `${assertion}${" ".repeat(MAX_BODY_BYTES + 1 - assertion.length)}`;
+
     for (const body of [oversized, chunked(oversized)]) {
       const response = await app.request(
         path,
         withToken({ method: "POST", body, duplex: "half" } as RequestInit),
       );
+
       expect(response.status).toBe(413);
       expect((await errorOf(response)).code).toBe("invalid_request");
     }
+
     const announced = await app.request(
       path,
       withToken({ method: "POST", headers: { "content-length": String(MAX_BODY_BYTES + 1) } }),
     );
+
     expect(announced.status).toBe(413);
 
     // Whatever is not exactly one assertion is refused here too.
@@ -533,11 +577,13 @@ describe("the approve service", () => {
       const response = await app.request(path, withToken({ method: "POST", body }));
       expect(response.status, body.slice(0, 40)).toBe(400);
     }
+
     expect(signer.calls).toEqual([]);
 
     // A body of exactly the limit is read and relayed.
     const atLimit = `${assertion}${" ".repeat(MAX_BODY_BYTES - assertion.length)}`;
     expect(new TextEncoder().encode(atLimit).length).toBe(MAX_BODY_BYTES);
+
     if (route === "possession")
       signer.answer({ status: 200, body: { fingerprint: "0123-4567-89AB-CDEF" } });
     const accepted = await app.request(path, withToken({ method: "POST", body: atLimit }));
@@ -566,10 +612,12 @@ describe("the approve service", () => {
     const response = assertionFor(view);
     const recorded = { collected: 1, required: 2, returnUrl: view.returnUrl };
     signer.answer({ status: 200, body: recorded });
+
     const submitted = await app.request(
       `${api}/assertions`,
       withToken({ method: "POST", body: JSON.stringify({ response }) }),
     );
+
     expect(submitted.status).toBe(200);
     expect(await submitted.json()).toEqual(recorded);
     const call = signer.calls.at(-1);
@@ -591,10 +639,12 @@ describe("the approve service", () => {
     });
     const fingerprint = { fingerprint: keyFingerprint(NEW_PASSKEY.publicKey) };
     signer.answer({ status: 200, body: fingerprint });
+
     const proven = await app.request(
       `${api}/possession`,
       withToken({ method: "POST", body: JSON.stringify({ response }) }),
     );
+
     expect(proven.status).toBe(200);
     expect(await proven.json()).toEqual(fingerprint);
     const proof = signer.calls.at(-1);
@@ -612,9 +662,11 @@ describe("the approve service", () => {
       { code: "approver_unknown" },
       { code: "policy_denied", detail: "over_daily_cap" },
     ];
+
     for (const refusal of refusals) {
       const body = { error: { message: `refused: ${refusal.code}`, ...refusal } };
       signer.answer({ status: signerErrorStatus[refusal.code], body });
+
       for (const [path, init] of [
         [api, withToken()],
         [`${api}/assertions`, withToken({ method: "POST", body: JSON.stringify({ response }) })],
@@ -640,6 +692,7 @@ describe("the approve service", () => {
     const api = `/api/approvals/${view.approvalId}`;
     const { app, signer } = setUp();
     const other = viewOf();
+
     for (const forged of [
       { ...view, approvalId: other.approvalId },
       { ...view, envelope: other.envelope },
@@ -651,6 +704,7 @@ describe("the approve service", () => {
       expect(response.status).toBe(502);
       expect((await errorOf(response)).code).toBe("internal");
     }
+
     signer.answer("unreachable");
     const unreachable = await app.request(api, withToken());
     expect(unreachable.status).toBe(502);
@@ -663,10 +717,12 @@ describe("the page's passkey code", () => {
     const view = viewOf();
     const userId = newId("usr") as UserId;
     const authenticator = new SoftAuthenticator();
+
     const { credential } = authenticator.register({
       rpId: "localhost",
       challenge: b64url(randomBytes(32)),
     });
+
     const credentialId = b64url(credential.id);
     const options = requestOptions({ ...view.webauthn, allowCredentials: [credentialId] });
     // The browser is asked to sign the envelope's digest, with this person's passkey only.
@@ -690,7 +746,9 @@ describe("the page's passkey code", () => {
       challenge: Buffer.from(options.challenge as ArrayBuffer).toString("base64url"),
       origin: ORIGIN,
     });
+
     const bytes = (text: string) => new Uint8Array(Buffer.from(text, "base64url")).buffer;
+
     for (const userHandle of [json.response.userHandle, undefined]) {
       const encoded = encodeAssertion({
         id: json.id,
@@ -704,7 +762,9 @@ describe("the page's passkey code", () => {
         },
         getClientExtensionResults: () => ({}),
       });
+
       expect(encoded.response.userHandle).toBe(userHandle);
+
       const verdict = await verifyAuthorization({
         authorization: {
           envelope: view.envelope,
@@ -716,6 +776,7 @@ describe("the page's passkey code", () => {
         maxTtlSeconds: 3_600,
         now: NOW,
       });
+
       expect(verdict.ok).toBe(true);
     }
   });
@@ -736,6 +797,7 @@ describe("the page's passkey code", () => {
   it("a retirement or a deletion warns first that keys are destroyed and balances unchecked", () => {
     const workspaceId = newId("ws");
     const wallet = { walletId: newId("wal"), address: `0x${"ab".repeat(20)}` as const };
+
     const render = (envelope: Record<string, unknown>, wallets: (typeof wallet)[]) =>
       renderConfirmation({
         envelope: Envelope.parse({
@@ -761,10 +823,12 @@ describe("the page's passkey code", () => {
         cancelTarget: null,
         wallets: wallets.map((item) => ({ ...item, label: "Invoice payer's wallet" })),
       });
+
     const retire = render({ type: "retire-wallet", wallet }, [wallet]);
     const remove = render({ type: "delete-workspace", wallets: [wallet] }, [wallet]);
     expect(retire.title).toBe("Retire a wallet");
     expect(remove.title).toBe("Delete this workspace");
+
     for (const view of [retire, remove]) {
       expect(view.warnings).toEqual(["keys_destroyed", "balances_unchecked"]);
       expect(view.warnings.map((warning) => WARNING_TEXT[warning])).toEqual([
@@ -772,8 +836,10 @@ describe("the page's passkey code", () => {
         expect.stringMatching(/^The signer cannot see balances/),
       ]);
     }
+
     // A workspace without wallets loses no key, so neither warning is shown.
     expect(render({ type: "delete-workspace", wallets: [] }, []).warnings).toEqual([]);
+
     // Each refusal of the lifecycle says what to do in words, not the code.
     for (const code of [
       "workspace_deleting",
@@ -792,13 +858,17 @@ describe("the page's passkey code", () => {
     for (const warning of ConfirmationWarning.options) {
       expect(WARNING_TEXT[warning]).toMatch(/^[A-Z].*\.$/);
     }
+
     const { app, signer } = setUp();
+
     const shown = async (view: ConfirmationView) => {
       signer.answer({ status: 200, body: view });
       const response = await app.request(`/api/approvals/${view.approvalId}`, withToken());
       expect(response.status).toBe(200);
+
       return ConfirmationView.parse(await response.json());
     };
+
     const line = (view: ConfirmationView, label: string) =>
       view.lines.find((entry) => entry.label === label)?.value;
 

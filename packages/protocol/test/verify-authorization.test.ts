@@ -36,14 +36,17 @@ import {
 
 /** The confirmation page, where approvals are made: a name under the RP ID. */
 const ORIGIN = "https://approve.os.example.com";
+
 /** The control plane's page: the same RP ID, so its passkey prompts work, but not an approval origin. */
 const CONTROL_PLANE = "https://os.example.com";
+
 const RP: RelyingParty = { id: "os.example.com", origins: [ORIGIN] };
 
 type Person = { userId: UserId; device: SoftAuthenticator; credential: ApproverCredential };
 
 function enroll(userId: UserId, device = new SoftAuthenticator()): Person {
   const { credential } = device.register({ rpId: RP.id, challenge: "c2V0dXA" });
+
   return { userId, device, credential: approverCredentialOf(userId, credential) };
 }
 
@@ -57,8 +60,11 @@ function sign(person: Person, envelope: Envelope, origin = ORIGIN): Assertion {
 }
 
 let alice: Person;
+
 let bob: Person;
+
 let carol: Person;
+
 beforeEach(() => {
   alice = enroll(USER_A);
   bob = enroll(USER_B);
@@ -99,9 +105,11 @@ describe("valid authorizations", () => {
 
   it("several people meeting a threshold", async () => {
     const envelope = approveIntent();
+
     const verdict = await verify(envelope, [sign(alice, envelope), sign(bob, envelope)], {
       threshold: 2,
     });
+
     expect(verdict).toEqual({ ok: true, approvedBy: [USER_A, USER_B] });
   });
 
@@ -118,6 +126,7 @@ describe("valid authorizations", () => {
       USER_A,
       new SoftAuthenticator({ incrementCounter: false, flags: { be: true, bs: true } }),
     );
+
     const envelope = approveIntent();
     const first = sign(synced, envelope);
     const second = sign(synced, envelope);
@@ -133,6 +142,7 @@ describe("an assertion is bound to its exact envelope", () => {
   for (const variant of envelopeVariants) {
     it(`${variant.name}: changing any one field invalidates it`, async () => {
       const assertion = sign(alice, variant.base);
+
       for (const { field, envelope } of changedEnvelopes(variant)) {
         // Shift the clock with the timestamps so only the binding is under test.
         const verdict = await verify(envelope, [assertion], { now: T0 + 10 });
@@ -143,6 +153,7 @@ describe("an assertion is bound to its exact envelope", () => {
 
   it("an approval for one type cannot be used as another", async () => {
     const [first, second] = envelopeVariants;
+
     if (!first || !second) throw new Error("fixture");
     expect(codeOf(await verify(second.base, [sign(alice, first.base)]))).toBe("assertion_invalid");
   });
@@ -178,6 +189,7 @@ describe("relying party and authenticator checks", () => {
         const verdict = await verify(base, [sign(alice, base, origin)]);
         expect([name, origin, codeOf(verdict)]).toEqual([name, origin, "assertion_invalid"]);
       }
+
       // The same passkey on the confirmation page: accepted.
       expect([name, codeOf(await verify(base, [sign(alice, base)]))]).toEqual([name, "ok"]);
     }
@@ -185,6 +197,7 @@ describe("relying party and authenticator checks", () => {
 
   it("an assertion with crossOrigin true is refused", async () => {
     const envelope = approveIntent();
+
     // A page that frames the confirmation page gets the confirmation page's origin stamped in,
     // and the browser says so only with these two members.
     for (const clientData of [
@@ -195,6 +208,7 @@ describe("relying party and authenticator checks", () => {
       const verdict = await verify(envelope, [signWith(alice, envelope, clientData)]);
       expect([clientData, codeOf(verdict)]).toEqual([clientData, "assertion_invalid"]);
     }
+
     // One framed assertion fails the whole authorization, even beside a good one.
     const framed = signWith(bob, envelope, { crossOrigin: true });
     expect(codeOf(await verify(envelope, [sign(alice, envelope), framed], { threshold: 2 }))).toBe(
@@ -207,6 +221,7 @@ describe("relying party and authenticator checks", () => {
 
   it("a signed assertion of another type than webauthn.get is refused", async () => {
     const envelope = approveIntent();
+
     for (const type of ["webauthn.create", "payment.get"]) {
       const verdict = await verify(envelope, [signWith(alice, envelope, { type })]);
       expect([type, codeOf(verdict)]).toEqual([type, "assertion_invalid"]);
@@ -222,6 +237,7 @@ describe("relying party and authenticator checks", () => {
 
   it("wrong RP id hash in authenticator data", async () => {
     const envelope = approveIntent();
+
     const assertion: Assertion = {
       userId: USER_A,
       credentialId: alice.credential.credentialId,
@@ -234,15 +250,18 @@ describe("relying party and authenticator checks", () => {
         }),
       ),
     };
+
     expect(codeOf(await verify(envelope, [assertion]))).toBe("assertion_invalid");
     // Even a correctly signed assertion for another RP id fails.
     const otherRp = enroll(USER_A);
+
     const signed = assertEnvelope(otherRp.device, {
       userId: USER_A,
       credentialId: otherRp.credential.credentialId,
       envelope,
       origin: ORIGIN,
     });
+
     expect(
       codeOf(
         await verify(envelope, [signed], {
@@ -267,10 +286,12 @@ describe("relying party and authenticator checks", () => {
     const other = approveIntent({ nonce: "BAAAAAAAAAAAAAAAAAAAAA" });
     const assertion = sign(alice, other);
     const challenge = b64url(envelopeChallenge(envelope));
+
     const tampered: Assertion = {
       ...assertion,
       response: tamperClientData(assertion.response as never, { challenge }) as never,
     };
+
     expect(codeOf(await verify(envelope, [tampered]))).toBe("assertion_invalid");
   });
 });
@@ -279,10 +300,12 @@ describe("approvers", () => {
   it("a second assertion from the same person does not count twice", async () => {
     const envelope = approveIntent();
     const secondKey = enroll(USER_A);
+
     const verdict = await verify(envelope, [sign(alice, envelope), sign(secondKey, envelope)], {
       threshold: 2,
       approvers: [alice.credential, secondKey.credential, bob.credential],
     });
+
     expect(codeOf(verdict)).toBe("assertion_invalid");
     // The same assertion submitted twice is refused too.
     const once = sign(alice, envelope);
@@ -294,12 +317,14 @@ describe("approvers", () => {
   it("an assertion labelled with another approver's ids", async () => {
     const envelope = approveIntent();
     const real = sign(alice, envelope);
+
     // Claims to be Bob, using Bob's registered ids, but the signature is Alice's.
     const relabelled: Assertion = {
       ...real,
       userId: USER_B,
       credentialId: bob.credential.credentialId,
     };
+
     expect(codeOf(await verify(envelope, [relabelled]))).toBe("assertion_invalid");
     // Bob's user id with Alice's credential id is not a registered pair.
     expect(codeOf(await verify(envelope, [{ ...real, userId: USER_B }]))).toBe("approver_unknown");
@@ -319,9 +344,11 @@ describe("approvers", () => {
 
   it("threshold above the number of assertions", async () => {
     const envelope = approveIntent();
+
     const verdict = await verify(envelope, [sign(alice, envelope), sign(bob, envelope)], {
       threshold: 3,
     });
+
     expect(codeOf(verdict)).toBe("insufficient_approvals");
   });
 });
@@ -361,11 +388,13 @@ describe("time", () => {
 
 describe("possession of a new approver's passkey", () => {
   const NONCE = "AAAAAAAAAAAAAAAAAAAAAA";
+
   const possessionOf = (person: Person) => ({
     approvalId: APPROVAL,
     credentialId: person.credential.credentialId,
     nonce: NONCE,
   });
+
   const answer = (
     person: Person,
     overrides: { origin?: string; crossOrigin?: boolean; challenge?: string } = {},
@@ -378,6 +407,7 @@ describe("possession of a new approver's passkey", () => {
         ...overrides,
       }),
     );
+
   const check = (
     person: Person,
     response: AssertionResponse,
@@ -414,6 +444,7 @@ describe("possession of a new approver's passkey", () => {
         }),
       ),
     ];
+
     expect(results.map((result) => (result.ok ? "ok" : result.code))).toEqual(
       Array(results.length).fill("assertion_invalid"),
     );

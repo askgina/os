@@ -33,6 +33,7 @@ import { type Vault, VaultError } from "./vault.ts";
 
 /** `SIGNER_MIN_DESTROY_DELAY_SECONDS` unless set: seven days (owner decision D2). */
 export const DEFAULT_MIN_DESTROY_DELAY_SECONDS = 604_800;
+
 /** `SIGNER_MAX_DESTROY_DELAY_SECONDS` unless set: 90 days. */
 export const DEFAULT_MAX_DESTROY_DELAY_SECONDS = 7_776_000;
 
@@ -95,6 +96,7 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
   /** `destroyAfter − issuedAt` within the signer's bounds. */
   function delayInRange(envelope: { issuedAt: number; destroyAfter: number }): boolean {
     const delay = envelope.destroyAfter - envelope.issuedAt;
+
     return delay >= internals.minDestroyDelaySeconds && delay <= internals.maxDestroyDelaySeconds;
   }
 
@@ -102,7 +104,9 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
   function walletOf(walletId: string, workspaceId: string): WalletRow {
     internals.requireWorkspace(workspaceId);
     const wallet = internals.findWallet(walletId);
+
     if (!wallet || wallet.workspace_id !== workspaceId) throw new SignerFailure("not_found");
+
     return wallet;
   }
 
@@ -117,6 +121,7 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
 
   function retireRefusal(envelope: RetireWalletEnvelope): LifecycleRefusal | null {
     const wallet = internals.findWallet(envelope.wallet.walletId);
+
     if (
       !wallet ||
       wallet.workspace_id !== envelope.workspaceId ||
@@ -124,19 +129,25 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
     ) {
       return "envelope_mismatch";
     }
+
     if (wallet.state !== "active" && wallet.state !== "held") return "wallet_retired";
+
     return delayInRange(envelope) ? null : "destroy_delay_out_of_range";
   }
 
   function deleteRefusal(envelope: DeleteWorkspaceEnvelope): LifecycleRefusal | null {
     const held = walletsToDelete(envelope.workspaceId);
+
     const same =
       held.length === envelope.wallets.length &&
       held.every((wallet, index) => {
         const listed = envelope.wallets[index];
+
         return listed?.walletId === wallet.wallet_id && listed.address === wallet.address;
       });
+
     if (!same) return "wallet_set_mismatch";
+
     return delayInRange(envelope) ? null : "destroy_delay_out_of_range";
   }
 
@@ -148,24 +159,33 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
    */
   function refusal(envelope: Envelope): LifecycleRefusal | null {
     const workspace = internals.findWorkspace(envelope.workspaceId);
+
     if (!workspace) return null;
+
     if (workspace.state === "deleted") return "workspace_deleted";
+
     if (workspace.state === "deleting" && envelope.type !== "cancel-transaction") {
       return "workspace_deleting";
     }
+
     const walletState = (walletId: string) => internals.findWallet(walletId)?.state ?? null;
+
     switch (envelope.type) {
       case "approve-intent":
       case "sweep-wallet":
       case "grant-mandate": {
         const state = walletState(envelope.walletId);
+
         return state === null || state === "active" ? null : "wallet_retired";
       }
+
       case "set-policy": {
         // A new policy is how a held wallet signs again.
         const state = walletState(envelope.walletId);
+
         return state === "retiring" || state === "destroyed" ? "wallet_retired" : null;
       }
+
       case "cancel-transaction":
         return walletState(envelope.walletId) === "destroyed" ? "wallet_retired" : null;
       case "retire-wallet":
@@ -192,6 +212,7 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
       });
       throw new SignerFailure("vault_error");
     }
+
     db.prepare(
       "UPDATE signature_attempts SET signed_transaction = '' WHERE approval_id IN (SELECT approval_id FROM signatures WHERE wallet_id = ?)",
     ).run(wallet.wallet_id);
@@ -217,6 +238,7 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
     const result = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as
       | { busy: number }
       | undefined;
+
     if (result !== undefined && result.busy !== 0) {
       log.warn("wal checkpoint incomplete", { code: "checkpoint_busy" });
     }
@@ -230,14 +252,19 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
    */
   function retireWallet(walletId: string, authorization: Authorization): Promise<WalletState> {
     const wallet = internals.findWallet(walletId);
+
     if (!wallet) throw new SignerFailure("not_found");
+
     const check = (envelope: Envelope) => {
       if (envelope.type !== "retire-wallet" || envelope.wallet.walletId !== walletId) {
         throw new SignerFailure("envelope_mismatch");
       }
+
       const refused = retireRefusal(envelope);
+
       if (refused !== null) throw new SignerFailure(refused);
     };
+
     return internals.authorizedChange({
       workspaceId: wallet.workspace_id,
       authorization,
@@ -262,16 +289,20 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
    */
   function cancelRetireWallet(walletId: string, workspaceId: string): Promise<WalletState> {
     walletOf(walletId, workspaceId);
+
     return internals.decide(workspaceId, null, LIFECYCLE_ACTIONS.cancelRetire, (allow) =>
       transaction(db, () => {
         internals.assertWorkspaceActive(workspaceId);
+
         if (internals.findWallet(walletId)?.state !== "retiring") {
           throw new SignerFailure("conflict");
         }
+
         db.prepare(
           "UPDATE wallets SET state = 'held', destroy_after = NULL WHERE wallet_id = ?",
         ).run(walletId);
         allow();
+
         return internals.walletState(walletId);
       }),
     );
@@ -280,21 +311,29 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
   /** Destroy a retiring wallet's key once `destroyAfter` has passed. A repeat returns the state. */
   function finalizeRetireWallet(walletId: string, workspaceId: string): Promise<WalletState> {
     walletOf(walletId, workspaceId);
+
     return internals.decide(workspaceId, null, LIFECYCLE_ACTIONS.destroy, (allow) => {
       const destroyed = transaction(db, () => {
         internals.assertNotDeleted(workspaceId);
         const current = internals.findWallet(walletId);
+
         if (!current) throw new SignerFailure("internal");
+
         if (current.state === "destroyed") return false;
+
         if (current.state !== "retiring" || current.destroy_after === null) {
           throw new SignerFailure("conflict");
         }
+
         if (now() < current.destroy_after) throw new SignerFailure("destroy_not_due");
         destroyKey(current, current.destroy_after);
         allow();
+
         return true;
       });
+
       if (destroyed) checkpoint();
+
       return internals.walletState(walletId);
     });
   }
@@ -318,6 +357,7 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
       check: (envelope) => {
         if (envelope.type !== "delete-workspace") throw new SignerFailure("envelope_mismatch");
         const refused = deleteRefusal(envelope);
+
         if (refused !== null) throw new SignerFailure(refused);
       },
       apply: (envelope) => {
@@ -343,9 +383,11 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
    */
   function cancelDeleteWorkspace(workspaceId: string): Promise<WorkspaceState> {
     internals.requireWorkspace(workspaceId);
+
     return internals.decide(workspaceId, null, LIFECYCLE_ACTIONS.cancelDelete, (allow) =>
       transaction(db, () => {
         const workspace = internals.assertNotDeleted(workspaceId);
+
         if (workspace.state !== "deleting") throw new SignerFailure("conflict");
         db.prepare(
           "UPDATE workspaces SET state = 'active', destroy_after = NULL WHERE workspace_id = ?",
@@ -357,6 +399,7 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
           "UPDATE wallets SET state_before_delete = NULL WHERE workspace_id = ? AND state_before_delete IS NOT NULL",
         ).run(workspaceId);
         allow();
+
         return internals.workspaceState(workspaceId);
       }),
     );
@@ -371,14 +414,19 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
    */
   function finalizeDeleteWorkspace(workspaceId: string): Promise<WorkspaceState> {
     internals.requireWorkspace(workspaceId);
+
     return internals.decide(workspaceId, null, LIFECYCLE_ACTIONS.delete, (allow) => {
       const finalized = transaction(db, () => {
         const workspace = internals.requireWorkspace(workspaceId);
+
         if (workspace.state === "deleted") return false;
+
         if (workspace.state !== "deleting" || workspace.destroy_after === null) {
           throw new SignerFailure("conflict");
         }
+
         if (now() < workspace.destroy_after) throw new SignerFailure("destroy_not_due");
+
         for (const wallet of walletsToDelete(workspaceId)) {
           destroyKey(wallet, workspace.destroy_after);
           appendDecision(db, {
@@ -390,6 +438,7 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
             at: now(),
           });
         }
+
         const confirmations = "SELECT approval_id FROM confirmations WHERE workspace_id = ?";
         db.prepare(`DELETE FROM possession_challenges WHERE approval_id IN (${confirmations})`).run(
           workspaceId,
@@ -404,9 +453,12 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
           "UPDATE workspaces SET state = 'deleted', paused = 1 WHERE workspace_id = ?",
         ).run(workspaceId);
         allow();
+
         return true;
       });
+
       if (finalized) checkpoint();
+
       return internals.workspaceState(workspaceId);
     });
   }
@@ -425,13 +477,17 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
     exportSecret: (walletId: WalletId) => string,
   ): Promise<{ address: Address; secret: string }> {
     walletOf(walletId, workspaceId);
+
     return internals.decide(workspaceId, null, LIFECYCLE_ACTIONS.export, (allow) =>
       transaction(db, () => {
         internals.assertNotDeleted(workspaceId);
         const wallet = internals.findWallet(walletId);
+
         if (!wallet) throw new SignerFailure("internal");
+
         if (wallet.state === "destroyed") throw new SignerFailure("wallet_retired");
         let secret: string;
+
         try {
           secret = exportSecret(walletId);
         } catch (error) {
@@ -441,7 +497,9 @@ export function createLifecycleOperations(internals: LifecycleInternals) {
           });
           throw new SignerFailure("vault_error");
         }
+
         allow();
+
         return { address: wallet.address as Address, secret };
       }),
     );

@@ -3,16 +3,21 @@ import type { Pool, PoolClient } from "pg";
 import { type KeyProvider, KeyProviderRefusedError } from "./keyring.ts";
 
 export const KEYS_SCHEMA = "os_keys";
+
 const TABLE = `${KEYS_SCHEMA}.data_keys`;
+
 /** Arbitrary constant; serializes concurrent migrations. */
 const MIGRATION_LOCK = 0x05_0a_77_01;
+
 /**
  * Every shred announces each key it destroyed here, in the transaction that destroys it, with
  * the payload `<scope>:<keyId>`; stores started with `listen` evict that key at once.
  */
 export const SHRED_CHANNEL = "os_keys_shred";
+
 /** Delays before the listening connection is opened again after it was lost, doubling. */
 const LISTEN_RETRY_FIRST_MS = 100;
+
 const LISTEN_RETRY_MAX_MS = 30_000;
 
 /**
@@ -27,6 +32,7 @@ export type KeyScope = "run" | "workspace";
  */
 export async function migrateKeys(pool: Pool): Promise<void> {
   const client = await pool.connect();
+
   try {
     await client.query("SELECT pg_advisory_lock($1)", [MIGRATION_LOCK]);
     await client.query(`CREATE SCHEMA IF NOT EXISTS ${KEYS_SCHEMA}`);
@@ -171,11 +177,13 @@ export class DataKeyStore {
       client.on("notification", (message) => {
         if (message.channel !== SHRED_CHANNEL || !message.payload) return;
         const separator = message.payload.indexOf(":");
+
         if (separator < 0) return;
         const scope = message.payload.slice(0, separator);
         this.#cache.delete(`${scope}\n${message.payload.slice(separator + 1)}`);
         this.#evictions += 1;
       });
+
       try {
         await client.query(`LISTEN ${SHRED_CHANNEL}`);
       } catch (error) {
@@ -183,10 +191,13 @@ export class DataKeyStore {
         client.release(true);
         throw error;
       }
+
       if (this.#closed) {
         client.release(true);
+
         return;
       }
+
       // Whatever was cached before listening may have missed a shred.
       this.evict();
       this.#listener = client;
@@ -194,6 +205,7 @@ export class DataKeyStore {
     })().finally(() => {
       this.#connecting = null;
     });
+
     return this.#connecting;
   }
 
@@ -227,6 +239,7 @@ export class DataKeyStore {
         throw error;
       },
     );
+
     return this.#migrated;
   }
 
@@ -236,6 +249,7 @@ export class DataKeyStore {
       this.#table = undefined;
       throw error;
     });
+
     return this.#table;
   }
 
@@ -252,24 +266,31 @@ export class DataKeyStore {
   ): Promise<Uint8Array> {
     const cacheKey = `${scope}\n${keyId}`;
     const cached = this.#cache.get(cacheKey);
+
     if (cached && cached.expires > Date.now()) {
       this.#onEvent?.("cache-hit");
+
       if (tenantId !== null && cached.tenantId !== tenantId) {
         throw new DataKeyTenantMismatchError(scope, keyId);
       }
+
       return cached.key;
     }
+
     await this.ensureMigrated();
     const evictions = this.#evictions;
     let row = await this.#read(scope, keyId);
+
     if (!row) {
       const kekId = this.#provider.activeKekId();
       const fresh = randomBytes(32);
+
       const wrapped = await this.#provider.wrap(
         kekId,
         fresh,
         wrapAad(scope, keyId, tenantId, kekId),
       );
+
       fresh.fill(0);
       await this.#pool.query(
         `INSERT INTO ${TABLE} (scope, key_id, tenant_id, kek_id, wrapped_key)
@@ -278,15 +299,20 @@ export class DataKeyStore {
       );
       this.#onEvent?.("created");
       row = await this.#read(scope, keyId);
+
       if (!row) throw new DataKeyUnavailableError(scope, keyId);
     }
+
     const key = await this.#unwrap(scope, keyId, row);
+
     // Checked after unwrapping, so a tombstone still reports "unavailable" rather than this.
     if (tenantId !== null && row.tenant_id !== tenantId) {
       throw new DataKeyTenantMismatchError(scope, keyId);
     }
+
     // Never kept while a listening store is not listening, or after an eviction during the read.
     const listening = !this.#listen || this.#listener !== null;
+
     if (this.#ttl > 0 && listening && this.#evictions === evictions) {
       this.#cache.set(cacheKey, {
         key,
@@ -294,6 +320,7 @@ export class DataKeyStore {
         expires: Date.now() + this.#ttl,
       });
     }
+
     return key;
   }
 
@@ -301,16 +328,20 @@ export class DataKeyStore {
   async get(scope: KeyScope, keyId: string): Promise<Uint8Array> {
     await this.ensureMigrated();
     const row = await this.#read(scope, keyId);
+
     if (!row) throw new DataKeyUnavailableError(scope, keyId);
+
     return this.#unwrap(scope, keyId, row);
   }
 
   async #read(scope: KeyScope, keyId: string): Promise<KeyRow | undefined> {
     this.#onEvent?.("db-read");
+
     const { rows } = await this.#pool.query<KeyRow>(
       `SELECT kek_id, tenant_id, wrapped_key FROM ${TABLE} WHERE scope = $1 AND key_id = $2`,
       [scope, keyId],
     );
+
     return rows[0];
   }
 
@@ -318,12 +349,15 @@ export class DataKeyStore {
     // A row without a wrapped key is a tombstone: the key was shredded. Never mint a replacement.
     if (!row.wrapped_key || !row.kek_id) throw new DataKeyUnavailableError(scope, keyId);
     this.#onEvent?.("unwrap");
+
     const key = await this.#provider.unwrap(
       row.kek_id,
       row.wrapped_key,
       wrapAad(scope, keyId, row.tenant_id, row.kek_id),
     );
+
     if (key.length !== 32) throw new Error(`data key for ${scope} ${keyId} is not 32 bytes`);
+
     return key;
   }
 
@@ -340,6 +374,7 @@ export class DataKeyStore {
     let rewrapped = 0;
     const failed: string[] = [];
     let after: [string, string] = ["", ""];
+
     for (;;) {
       const { rows } = await this.#pool.query<{
         scope: KeyScope;
@@ -353,11 +388,15 @@ export class DataKeyStore {
          ORDER BY scope, key_id LIMIT $4`,
         [active, after[0], after[1], batchSize],
       );
+
       const last = rows.at(-1);
+
       if (!last) return { rewrapped, failed };
       after = [last.scope, last.key_id];
+
       for (const row of rows) {
         let key: Uint8Array;
+
         try {
           key = await this.#provider.unwrap(
             row.kek_id,
@@ -369,17 +408,21 @@ export class DataKeyStore {
           failed.push(`${row.scope}:${row.key_id}`);
           continue;
         }
+
         const wrapped = await this.#provider.wrap(
           active,
           key,
           wrapAad(row.scope, row.key_id, row.tenant_id, active),
         );
+
         key.fill(0);
+
         const result = await this.#pool.query(
           `UPDATE ${TABLE} SET kek_id = $3, wrapped_key = $4, rewrapped_at = now()
            WHERE scope = $1 AND key_id = $2 AND kek_id = $5 AND wrapped_key = $6`,
           [row.scope, row.key_id, active, Buffer.from(wrapped), row.kek_id, row.wrapped_key],
         );
+
         rewrapped += result.rowCount ?? 0;
       }
     }
@@ -396,6 +439,7 @@ export class DataKeyStore {
     await this.#ensureTable();
     this.#cache.delete(`${scope}\n${keyId}`);
     this.#evictions += 1;
+
     // Announced even when the key was gone already: announcing again costs nothing.
     const result = await this.#pool.query<{ existed: boolean | null }>(
       `WITH shredded AS (
@@ -408,6 +452,7 @@ export class DataKeyStore {
               pg_notify('${SHRED_CHANNEL}', $1 || ':' || $2) AS notified`,
       [scope, keyId],
     );
+
     return result.rows[0]?.existed === true;
   }
 
@@ -422,6 +467,7 @@ export class DataKeyStore {
   async shredTenant(scope: KeyScope, tenantId: string): Promise<{ shredded: number }> {
     await this.#ensureTable();
     this.#evictions += 1;
+
     const { rows } = await this.#pool.query<{ key_id: string }>(
       `WITH shredded AS (
          UPDATE ${TABLE} SET kek_id = NULL, wrapped_key = NULL, shredded_at = now()
@@ -432,13 +478,16 @@ export class DataKeyStore {
        FROM shredded`,
       [scope, tenantId],
     );
+
     for (const row of rows) this.#cache.delete(`${scope}\n${row.key_id}`);
+
     // A key this process cached under the tenant is gone from the database either way.
     for (const [cacheKey, entry] of this.#cache) {
       if (entry.tenantId === tenantId && cacheKey.startsWith(`${scope}\n`)) {
         this.#cache.delete(cacheKey);
       }
     }
+
     return { shredded: rows.length };
   }
 

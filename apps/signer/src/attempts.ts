@@ -55,6 +55,7 @@ import type { EvmTransaction } from "./vault.ts";
 
 /** `SIGNER_MAX_TX_ATTEMPTS` unless set: attempts per approval, the first included. */
 export const DEFAULT_MAX_TX_ATTEMPTS = 16;
+
 /** `SIGNER_REPRICE_WINDOW_SECONDS` unless set: a day after the first signature. */
 export const DEFAULT_REPRICE_WINDOW_SECONDS = 86_400;
 
@@ -158,9 +159,11 @@ function parseSigned(signed: string) {
 /** The transaction a stored signed one is, without its signature. */
 function unsignedOf(signed: string): SignedFields {
   const parsed = parseSigned(signed);
+
   if (parsed?.type !== "eip1559") throw new SignerFailure("internal");
   const { r: _r, s: _s, v: _v, yParity: _yParity, ...unsigned } = parsed;
   const { chainId, gas, maxFeePerGas, maxPriorityFeePerGas } = unsigned;
+
   if (
     chainId === undefined ||
     gas === undefined ||
@@ -169,6 +172,7 @@ function unsignedOf(signed: string): SignedFields {
   ) {
     throw new SignerFailure("internal");
   }
+
   return { ...unsigned, type: "eip1559", chainId, gas, maxFeePerGas, maxPriorityFeePerGas };
 }
 
@@ -181,17 +185,22 @@ export function operationOf(signed: string): Operation {
   const to = (transaction.to ?? "0x").toLowerCase() as Address;
   const value = transaction.value ?? 0n;
   const data = (transaction.data ?? "0x").toLowerCase() as Hex;
+
   if (data === "0x") return { type: "evm.transfer", to, valueWei: value.toString() };
+
   if (value === 0n) {
     try {
       const decoded = decodeFunctionData({ abi: erc20Abi, data });
+
       if (decoded.functionName === "transfer") {
         const [recipient, amount] = decoded.args;
+
         const encoded = encodeFunctionData({
           abi: erc20Abi,
           functionName: "transfer",
           args: [recipient, amount],
         });
+
         if (encoded === data) {
           return {
             type: "evm.erc20.transfer",
@@ -205,6 +214,7 @@ export function operationOf(signed: string): Operation {
       // Not a token transfer: shown as the call it is.
     }
   }
+
   return { type: "evm.call", to, valueWei: value.toString(), data };
 }
 
@@ -220,6 +230,7 @@ export function createAttemptOperations(internals: AttemptInternals) {
   /** Attempt 0 from the first signature's bytes, then every later attempt by number. */
   function recordsOf(signature: SignatureRow): AttemptRecord[] {
     const first = unsignedOf(signature.signed_transaction);
+
     const records: AttemptRecord[] = [
       {
         attempt: {
@@ -236,10 +247,13 @@ export function createAttemptOperations(internals: AttemptInternals) {
         cancelApprovalId: null,
       },
     ];
+
     const rows = db
       .prepare("SELECT * FROM signature_attempts WHERE approval_id = ? ORDER BY attempt")
       .all(signature.approval_id) as AttemptRow[];
+
     for (const row of rows) records.push(recordOf(row));
+
     return records;
   }
 
@@ -262,13 +276,16 @@ export function createAttemptOperations(internals: AttemptInternals) {
 
   function latestOf(records: readonly AttemptRecord[]): AttemptRecord {
     const latest = records.at(-1);
+
     if (!latest) throw new SignerFailure("internal");
+
     return latest;
   }
 
   /** Every attempt of a signed approval, the first included; empty when it has no signature. */
   function attemptsOf(approvalId: string): TransactionAttempt[] {
     const signature = signatureOf(approvalId);
+
     return signature ? recordsOf(signature).map((record) => record.attempt) : [];
   }
 
@@ -282,15 +299,20 @@ export function createAttemptOperations(internals: AttemptInternals) {
         "SELECT * FROM signature_attempts WHERE cancel_approval_id = ? ORDER BY attempt LIMIT 1",
       )
       .get(cancelApprovalId) as AttemptRow | undefined;
+
     if (!row) return null;
     const signature = signatureOf(row.approval_id);
+
     if (!signature) throw new SignerFailure("internal");
+
     return { signature, record: recordOf(row) };
   }
 
   function walletOf(signature: SignatureRow): WalletRow {
     const wallet = internals.findWallet(signature.wallet_id);
+
     if (!wallet) throw new SignerFailure("internal");
+
     return wallet;
   }
 
@@ -315,19 +337,25 @@ export function createAttemptOperations(internals: AttemptInternals) {
     request: { attempt: number; maxFeePerGas: string; maxPriorityFeePerGas: string },
   ): AttemptRecord {
     const latest = latestOf(records);
+
     if (request.attempt !== latest.attempt.attempt + 1) throw new SignerFailure("conflict");
+
     if (request.attempt >= internals.maxTxAttempts) {
       throw new SignerFailure("attempts_exhausted");
     }
+
     const maxFee = BigInt(request.maxFeePerGas);
     const tip = BigInt(request.maxPriorityFeePerGas);
+
     if (
       maxFee <= BigInt(latest.attempt.maxFeePerGas) ||
       tip <= BigInt(latest.attempt.maxPriorityFeePerGas)
     ) {
       throw new SignerFailure("fee_not_raised");
     }
+
     if (tip > maxFee) throw new SignerFailure("fee_cap_exceeded");
+
     return latest;
   }
 
@@ -383,6 +411,7 @@ export function createAttemptOperations(internals: AttemptInternals) {
       transactionHash,
       at,
     );
+
     return {
       attempt: {
         attempt: input.attempt,
@@ -408,21 +437,29 @@ export function createAttemptOperations(internals: AttemptInternals) {
    */
   function boundSignature(approvalId: ApprovalId, request: RepriceRequest): SignatureRow {
     const approval = internals.findApproval(approvalId);
+
     if (!approval) throw new SignerFailure("not_found");
+
     if (approval.state === "revoked") throw new SignerFailure("approval_revoked");
+
     if (approval.state !== "signed") throw new SignerFailure("conflict");
     const signature = signatureOf(approvalId);
+
     if (!signature) {
       // A venue request was signed for it: there is no transaction to reprice.
       const venue = db
         .prepare("SELECT 1 FROM venue_signatures WHERE approval_id = ?")
         .get(approvalId);
+
       throw new SignerFailure(venue ? "conflict" : "internal");
     }
+
     const hash = intentHash(request.intent);
+
     if ("envelope" in request) {
       // An envelope that is not one (it expires before it is issued) is not the stored one.
       const envelope = Envelope.safeParse(request.envelope);
+
       if (
         !envelope.success ||
         envelope.data.approvalId !== approvalId ||
@@ -430,19 +467,24 @@ export function createAttemptOperations(internals: AttemptInternals) {
       ) {
         throw new SignerFailure("conflict");
       }
+
       if (hash !== request.envelope.intentHash) throw new SignerFailure("intent_mismatch");
     } else {
       const use = db
         .prepare("SELECT mandate_id FROM mandate_uses WHERE approval_id = ?")
         .get(approvalId) as { mandate_id: string } | undefined;
+
       if (!use || use.mandate_id !== request.mandateId) throw new SignerFailure("conflict");
+
       const digest = mandateUseDigest({
         approvalId,
         mandateId: request.mandateId,
         intentHash: hash,
       });
+
       if (digest !== approval.envelope_digest) throw new SignerFailure("intent_mismatch");
     }
+
     return signature;
   }
 
@@ -457,16 +499,20 @@ export function createAttemptOperations(internals: AttemptInternals) {
     request: RepriceRequest,
   ): Promise<AttemptResponse> {
     const approval = internals.findApproval(approvalId);
+
     if (!approval) throw new SignerFailure("not_found");
     internals.requireWorkspace(approval.workspace_id);
+
     return internals.decide(approval.workspace_id, approvalId, ATTEMPT_ACTIONS.reprice, (allow) =>
       transaction(db, () => {
         internals.assertNotDeleted(approval.workspace_id);
         const signature = boundSignature(approvalId, request);
+
         // Refused for a destroyed wallet only: a retiring one still clears a stuck transaction.
         if (walletOf(signature).state === "destroyed") throw new SignerFailure("wallet_retired");
         const records = recordsOf(signature);
         const existing = records.find((record) => record.attempt.attempt === request.attempt);
+
         if (existing) {
           if (
             existing.attempt.maxFeePerGas === request.maxFeePerGas &&
@@ -474,25 +520,32 @@ export function createAttemptOperations(internals: AttemptInternals) {
           ) {
             return responseOf(signature, existing);
           }
+
           throw new SignerFailure("conflict");
         }
 
         // A database restored from a backup may have forgotten attempts signed after it, a
         // cancel among them; a reprice built from what it remembers could be the payment again.
         const fence = readFence(db);
+
         if (fence !== null && signature.signed_at < fence) {
           throw new SignerFailure("envelope_fenced");
         }
+
         if (internals.requireWorkspace(approval.workspace_id).paused === 1) {
           throw new SignerFailure("workspace_paused");
         }
+
         if ("mandateId" in request) {
           const mandate = db
             .prepare("SELECT revoked_at FROM mandates WHERE mandate_id = ?")
             .get(request.mandateId) as { revoked_at: number | null } | undefined;
+
           if (!mandate) throw new SignerFailure("internal");
+
           if (mandate.revoked_at !== null) throw new SignerFailure("mandate_revoked");
         }
+
         if (now() >= signature.signed_at + internals.repriceWindowSeconds) {
           throw new SignerFailure("reprice_window_closed");
         }
@@ -500,14 +553,17 @@ export function createAttemptOperations(internals: AttemptInternals) {
         const latest = assertNextAttempt(records, request);
         const wallet = walletOf(signature);
         const policy = internals.currentPolicy(signature.wallet_id);
+
         if (!policy) throw new SignerFailure("policy_missing");
         // A policy that lowered the fee cap after signing caps every later fee too.
         const policyCeiling = BigInt(policy.policy.fees.maxPerTxWei);
         let next: AttemptRecord;
+
         if (latest.cancelCeilingWei !== null) {
           // Once cancelled, always cancelled: the reprice is of the self-transfer, under the
           // ceiling of the cancel people approved.
           let ceiling = BigInt(latest.cancelCeilingWei);
+
           if (policyCeiling < ceiling) ceiling = policyCeiling;
           assertCancelFeeWithin(request.maxFeePerGas, ceiling.toString());
           next = signAttempt({
@@ -521,28 +577,35 @@ export function createAttemptOperations(internals: AttemptInternals) {
           });
         } else {
           const first = unsignedOf(signature.signed_transaction);
+
           const unsigned = internals.buildTransaction(request.intent, {
             nonce: signature.tx_nonce,
             gas: String(first.gas),
             maxFeePerGas: request.maxFeePerGas,
             maxPriorityFeePerGas: request.maxPriorityFeePerGas,
           });
+
           const expected = serializeTransaction({
             ...first,
             maxFeePerGas: unsigned.maxFeePerGas,
             maxPriorityFeePerGas: unsigned.maxPriorityFeePerGas,
           });
+
           if (serializeTransaction({ ...unsigned, type: "eip1559" }) !== expected) {
             // The binding above makes this impossible unless the store was altered.
             log.error("a reprice rebuilt a different transaction", { approvalId });
             throw new SignerFailure("internal");
           }
+
           // The lower of what people approved and what the policy allows now.
           let ceiling = BigInt(request.intent.maxFeeWei);
+
           if (policyCeiling < ceiling) ceiling = policyCeiling;
+
           if (first.gas * BigInt(request.maxFeePerGas) > ceiling) {
             throw new SignerFailure("fee_cap_exceeded");
           }
+
           next = signAttempt({
             signature,
             wallet,
@@ -553,7 +616,9 @@ export function createAttemptOperations(internals: AttemptInternals) {
             cancelApprovalId: null,
           });
         }
+
         allow();
+
         return responseOf(signature, next);
       }),
     );
@@ -569,9 +634,12 @@ export function createAttemptOperations(internals: AttemptInternals) {
     envelope: CancelTransactionEnvelope,
   ): { signature: SignatureRow; wallet: WalletRow } | null {
     const approval = internals.findApproval(envelope.targetApprovalId);
+
     if (approval?.state !== "signed") return null;
+
     if (approval.workspace_id !== envelope.workspaceId) return null;
     const signature = signatureOf(envelope.targetApprovalId);
+
     if (
       !signature ||
       signature.wallet_id !== envelope.walletId ||
@@ -580,28 +648,37 @@ export function createAttemptOperations(internals: AttemptInternals) {
     ) {
       return null;
     }
+
     const wallet = internals.findWallet(signature.wallet_id);
+
     if (!wallet || wallet.workspace_id !== envelope.workspaceId) return null;
+
     // A destroyed key signs nothing, and its signed transactions were emptied.
     if (wallet.state === "destroyed") return null;
+
     return { signature, wallet };
   }
 
   /** The wallet's current policy, when the cancel's fee ceiling fits its fee cap. */
   function cancelPolicy(envelope: CancelTransactionEnvelope): WalletPolicy {
     const policy = internals.currentPolicy(envelope.walletId);
+
     if (!policy) throw new SignerFailure("policy_missing");
+
     if (BigInt(envelope.maxFeeWei) > BigInt(policy.policy.fees.maxPerTxWei)) {
       throw new SignerFailure("fee_cap_exceeded");
     }
+
     return policy.policy;
   }
 
   /** What a confirmation page shows of the transaction a cancel would stop. */
   function cancelTarget(envelope: CancelTransactionEnvelope): CancelTarget | null {
     const target = cancelTargetOf(envelope);
+
     if (!target) return null;
     const records = recordsOf(target.signature);
+
     return {
       operation: operationOf(target.signature.signed_transaction),
       attempts: records.length,
@@ -611,7 +688,9 @@ export function createAttemptOperations(internals: AttemptInternals) {
 
   function replayedCancel(cancelApprovalId: string): AttemptResponse {
     const produced = producedBy(cancelApprovalId);
+
     if (!produced) throw new SignerFailure("internal");
+
     return responseOf(produced.signature, produced.record);
   }
 
@@ -627,6 +706,7 @@ export function createAttemptOperations(internals: AttemptInternals) {
     const { authorization } = request;
     const { envelope } = authorization;
     internals.requireWorkspace(envelope.workspaceId);
+
     return internals.decide(
       envelope.workspaceId,
       envelope.approvalId,
@@ -635,19 +715,25 @@ export function createAttemptOperations(internals: AttemptInternals) {
         if (envelope.type !== "cancel-transaction" || envelope.targetApprovalId !== approvalId) {
           throw new SignerFailure("envelope_mismatch");
         }
+
         // Allowed while the workspace is being deleted and the wallet retiring (owner decision
         // D7); refused once the key is destroyed.
         const assertKeyKept = () => {
           internals.assertNotDeleted(envelope.workspaceId);
+
           if (internals.findWallet(envelope.walletId)?.state === "destroyed") {
             throw new SignerFailure("wallet_retired");
           }
         };
+
         assertKeyKept();
+
         if (internals.priorOutcome(envelope, "applied") === "replay") {
           return replayedCancel(envelope.approvalId);
         }
+
         internals.assertNotFenced(envelope);
+
         if (!cancelTargetOf(envelope)) throw new SignerFailure("envelope_mismatch");
         const policy = cancelPolicy(envelope);
         await internals.verify(
@@ -659,17 +745,22 @@ export function createAttemptOperations(internals: AttemptInternals) {
 
         return transaction(db, () => {
           assertKeyKept();
+
           if (internals.priorOutcome(envelope, "applied") === "replay") {
             return replayedCancel(envelope.approvalId);
           }
+
           internals.assertNotFenced(envelope);
           const target = cancelTargetOf(envelope);
+
           if (!target) throw new SignerFailure("envelope_mismatch");
           // The policy may have changed while this request was being verified.
           const current = cancelPolicy(envelope);
+
           if (authorization.assertions.length < current.approvals.threshold) {
             throw new SignerFailure("insufficient_approvals");
           }
+
           internals.assertApproversStillPresent(authorization, envelope.workspaceId);
           internals.consumeNonce(envelope);
 
@@ -683,6 +774,7 @@ export function createAttemptOperations(internals: AttemptInternals) {
             "applied",
             internals.envelopeDigest(envelope),
           );
+
           const next = signAttempt({
             signature: target.signature,
             wallet: target.wallet,
@@ -692,7 +784,9 @@ export function createAttemptOperations(internals: AttemptInternals) {
             feeCeilingWei: envelope.maxFeeWei,
             cancelApprovalId: envelope.approvalId,
           });
+
           allow();
+
           return responseOf(target.signature, next);
         });
       },
@@ -709,6 +803,7 @@ export function createAttemptOperations(internals: AttemptInternals) {
   } {
     if (approval.state === "signed") {
       const signature = signatureOf(approval.approval_id);
+
       return {
         transactionHash: (signature?.transaction_hash as Hex | undefined) ?? null,
         // The signed bytes of a destroyed wallet were emptied; the first attempt's fees were
@@ -716,8 +811,10 @@ export function createAttemptOperations(internals: AttemptInternals) {
         attempts: signature?.signed_transaction === "" ? [] : attemptsOf(approval.approval_id),
       };
     }
+
     if (approval.state === "applied") {
       const produced = producedBy(approval.approval_id);
+
       if (produced) {
         return {
           transactionHash: produced.record.attempt.transactionHash,
@@ -725,6 +822,7 @@ export function createAttemptOperations(internals: AttemptInternals) {
         };
       }
     }
+
     return { transactionHash: null, attempts: [] };
   }
 

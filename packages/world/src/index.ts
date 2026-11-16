@@ -57,15 +57,19 @@ export function createEncryptedWorld(config: EncryptedWorldConfig): EncryptedWor
     context?: Record<string, unknown>,
   ): Promise<Uint8Array> {
     const runId = typeof run === "string" ? run : run.runId;
+
     if (typeof runId !== "string" || !runId.startsWith("wrun_")) {
       throw new Error(`refusing a key request for an invalid run id: ${String(runId)}`);
     }
+
     config.onKeyRequest?.(runId, context);
     const tenant = context?.[TENANT_START_OPTION];
+
     return config.dataKeys.getOrCreate("run", runId, typeof tenant === "string" ? tenant : null);
   }
 
   const startBase = base.start.bind(base);
+
   return Object.assign(base, {
     getEncryptionKeyForRun: getEncryptionKeyForRun as NonNullable<World["getEncryptionKeyForRun"]>,
     async start() {

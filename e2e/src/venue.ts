@@ -23,6 +23,7 @@ import { z } from "zod";
 import { compose, composeArgs, containersOf, databaseUrl, docker, execIn, stack } from "./stack.ts";
 
 const run = promisify(execFile);
+
 const ROOT = join(import.meta.dirname, "..", "..");
 
 /**
@@ -33,6 +34,7 @@ const FAKES: Record<FakeNetwork, { service: string; url: string }> = {
   testnet: { service: "fake-hyperliquid", url: stack.venueUrl },
   mainnet: { service: "fake-hyperliquid-mainnet", url: stack.venueMainnetUrl },
 };
+
 const NETWORKS: readonly FakeNetwork[] = ["testnet", "mainnet"];
 
 /** Call one of a fake venue's control routes; fails on anything but a 2xx answer. */
@@ -48,12 +50,15 @@ async function control(
       ? {}
       : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
   });
+
   const text = await response.text();
+
   if (!response.ok) {
     throw new Error(
       `the fake ${network} venue refused ${method} /control/${path}: ${response.status} ${text}`,
     );
   }
+
   return text;
 }
 
@@ -119,7 +124,9 @@ export async function postToVenue(
     headers: { "content-type": "application/json" },
     body,
   });
+
   const text = await response.text();
+
   try {
     return { status: response.status, answer: JSON.parse(text) as unknown };
   } catch {
@@ -131,8 +138,10 @@ export async function postToVenue(
 export async function venueAddress(network: FakeNetwork = "testnet"): Promise<string> {
   const { service } = FAKES[network];
   const [fake] = await containersOf(service);
+
   if (fake === undefined) throw new Error(`the stack has no ${service} container`);
   const chain = `${stack.project}_chain`;
+
   const address = (
     await docker(
       "inspect",
@@ -141,9 +150,11 @@ export async function venueAddress(network: FakeNetwork = "testnet"): Promise<st
       fake,
     )
   ).trim();
+
   if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(address)) {
     throw new Error(`the fake ${service} has no IPv4 address on ${chain}: "${address}"`);
   }
+
   return address;
 }
 
@@ -179,7 +190,9 @@ export async function reachFrom(
       }
       process.stdout.write(JSON.stringify({ resolvesVenue, statuses }) + "\\n");
     })();`;
+
   const output = await execIn(container, "node", "-e", script);
+
   return JSON.parse(output.trim().split("\n").at(-1) ?? "{}") as {
     resolvesVenue: boolean;
     statuses: (number | "unreachable")[];
@@ -190,10 +203,12 @@ export async function reachFrom(
 export async function sealedVenueRequests(): Promise<{ approvalId: string; request: Buffer }[]> {
   const db = new pg.Client({ connectionString: await databaseUrl() });
   await db.connect();
+
   try {
     const { rows } = await db.query<{ approval_id: string; request: Buffer }>(
       "SELECT approval_id, request FROM os.venue_orders ORDER BY approval_id",
     );
+
     return rows.map((row) => ({ approvalId: row.approval_id, request: row.request }));
   } finally {
     await db.end();
@@ -245,15 +260,18 @@ export async function bootServerWith(
     "-e",
     BOOT_SCRIPT,
   );
+
   try {
     const { stdout, stderr } = await run("docker", args, {
       cwd: ROOT,
       maxBuffer: 16 * 1024 * 1024,
       timeout: 150_000,
     });
+
     return { exitCode: 0, output: `${stdout}\n${stderr}` };
   } catch (error) {
     const failure = error as { code?: unknown; stdout?: string; stderr?: string };
+
     return {
       exitCode: typeof failure.code === "number" ? failure.code : null,
       output: `${failure.stdout ?? ""}\n${failure.stderr ?? ""}`,
@@ -272,14 +290,18 @@ const NamedCloids = z.object({
 /** The client order ids a request body names, lower-case: an order's `c`, a cancel's `cloid`. */
 function cloidsOf(body: string): string[] {
   let parsed: unknown;
+
   try {
     parsed = JSON.parse(body);
   } catch {
     return [];
   }
+
   const named = NamedCloids.safeParse(parsed);
+
   if (!named.success) return [];
   const { orders = [], cancels = [] } = named.data.action;
+
   return [
     ...orders.flatMap((order) => (order.c === undefined ? [] : [order.c])),
     ...cancels.map((cancel) => cancel.cloid),
@@ -292,6 +314,7 @@ export async function requestsFor(
   network: FakeNetwork = "testnet",
 ): Promise<ExchangeRecord[]> {
   const wanted = cloid.toLowerCase();
+
   return (await venueExchangeLog(network)).filter((record) =>
     cloidsOf(record.body).includes(wanted),
   );
@@ -300,6 +323,7 @@ export async function requestsFor(
 /** What each fake venue holds, for a failed gate's output. Never throws. */
 export async function venueReport(): Promise<string> {
   const report: Record<string, unknown> = {};
+
   for (const network of NETWORKS) {
     try {
       const [exchange, orders, cancels] = await Promise.all([
@@ -307,11 +331,13 @@ export async function venueReport(): Promise<string> {
         venueOrders(network),
         venueCancels(network),
       ]);
+
       report[network] = { exchange, orders, cancels };
     } catch (error) {
       report[network] = `the fake ${network} venue could not be read: ${(error as Error).message}`;
     }
   }
+
   return JSON.stringify(report, null, 2);
 }
 
@@ -349,6 +375,7 @@ export async function signerQuery(
     "-e",
     SIGNER_QUERY_SCRIPT,
   );
+
   return JSON.parse(output) as Record<string, unknown>[];
 }
 
@@ -366,7 +393,9 @@ export async function signedRequest(approvalId: string): Promise<SignedRequest |
     "SELECT request, cloid FROM venue_signatures WHERE approval_id = ?",
     approvalId,
   );
+
   if (row === undefined) return null;
+
   return { request: String(row.request), cloid: row.cloid === null ? null : String(row.cloid) };
 }
 
@@ -376,5 +405,6 @@ export async function signedCancels(approvalId: string): Promise<string[]> {
     "SELECT request FROM venue_cancels WHERE approval_id = ? ORDER BY seq",
     approvalId,
   );
+
   return rows.map((row) => String(row.request));
 }

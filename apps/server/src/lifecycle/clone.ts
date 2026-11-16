@@ -43,15 +43,19 @@ export async function cloneWorkspace(
   input: CloneInput,
 ): Promise<Omit<CloneResult, "workspace"> & { workspaceId: WorkspaceId }> {
   const template = "sourceId" in input ? await toTemplate(ctx, input.sourceId) : input.template;
+
   const created = template.wallets.filter(
     (wallet) => wallet.kind === "treasury" || input.includeAgents,
   );
+
   const configured = new Set<string>(ctx.chains.list().map((chain) => chain.chainId));
+
   for (const wallet of created) {
     const chains = [
       ...(wallet.policy?.chains ?? []),
       ...(wallet.policy?.assets.map((limit) => limit.chainId) ?? []),
     ];
+
     if (chains.some((chainId) => !configured.has(chainId))) {
       throw new HttpError(
         "invalid_request",
@@ -91,6 +95,7 @@ export async function cloneWorkspace(
   const walletOf = new Map<TemplateWalletRef, WalletId>();
   const agentOf = new Map<TemplateWalletRef, AgentId>();
   const agents: CloneResult["agents"] = [];
+
   for (const wallet of created) {
     if (wallet.agent === null) {
       walletOf.set(
@@ -99,6 +104,7 @@ export async function cloneWorkspace(
       );
       continue;
     }
+
     const made = await createAgentIn(ctx, session, workspaceId, wallet.agent.name);
     walletOf.set(wallet.ref, made.wallet.id);
     agentOf.set(wallet.ref, made.agent.id);
@@ -114,10 +120,13 @@ export async function cloneWorkspace(
     .select({ adminThreshold: workspaces.adminThreshold })
     .from(workspaces)
     .where(eq(workspaces.id, workspaceId));
+
   const adminThreshold = workspace?.adminThreshold ?? 1;
   const approvals: ApprovalSummary[] = [];
+
   for (const wallet of created) {
     const walletId = walletOf.get(wallet.ref);
+
     if (wallet.policy === null || walletId === undefined) continue;
     const draft = instantiatePolicy(wallet.policy, { agents: agentOf, adminThreshold });
     approvals.push(await openPolicyRequest(ctx, session, workspaceId, walletId, draft));
@@ -125,6 +134,7 @@ export async function cloneWorkspace(
 
   const invites: CloneResult["invites"] = [];
   const others = template.members.filter((member) => member.userId !== session.user.id);
+
   if (input.includeMembers && others.length > 0) {
     // A template from another installation names people unknown here, and one made before a
     // person was erased names someone who no longer exists: both are dropped.
@@ -140,9 +150,12 @@ export async function cloneWorkspace(
           isNull(users.erasedAt),
         ),
       );
+
     const nameOf = new Map(known.map((user) => [user.id, user.displayName]));
+
     for (const member of others) {
       const displayName = nameOf.get(member.userId);
+
       if (displayName === undefined) continue;
       const invite = await createInviteIn(ctx, session, workspaceId, member.role);
       invites.push({
@@ -162,6 +175,7 @@ export async function cloneWorkspace(
     approvals: approvals.length,
     invites: invites.length,
   });
+
   return {
     workspaceId,
     approvals,

@@ -51,18 +51,22 @@ export class ConfigError extends Error {
 
 export function loadConfig(environment: NodeJS.ProcessEnv): ApproveConfig {
   const parsed = Environment.safeParse(environment);
+
   if (!parsed.success) {
     const names = [...new Set(parsed.error.issues.map((issue) => String(issue.path[0])))];
     throw new ConfigError(`missing or invalid: ${names.join(", ")}`);
   }
+
   const env = parsed.data;
 
   let origin: URL;
+
   try {
     origin = new URL(env.APPROVE_ORIGIN);
   } catch {
     throw new ConfigError("APPROVE_ORIGIN: not an origin");
   }
+
   // The signer compares the origin in each assertion as an exact string.
   if (origin.origin !== env.APPROVE_ORIGIN || !["http:", "https:"].includes(origin.protocol)) {
     throw new ConfigError("APPROVE_ORIGIN: not a canonical http or https origin");
@@ -70,15 +74,19 @@ export function loadConfig(environment: NodeJS.ProcessEnv): ApproveConfig {
 
   // Secrets are files holding base64 text, so they never appear in the process environment.
   let text: string;
+
   try {
     text = readFileSync(env.APPROVE_SIGNER_SECRET_FILE, "utf8").trim();
   } catch {
     throw new ConfigError("APPROVE_SIGNER_SECRET_FILE: file cannot be read");
   }
+
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(text)) {
     throw new ConfigError("APPROVE_SIGNER_SECRET_FILE: not base64");
   }
+
   const signerSecret = new Uint8Array(Buffer.from(text, "base64"));
+
   if (signerSecret.byteLength < MIN_SECRET_BYTES) {
     throw new ConfigError(`APPROVE_SIGNER_SECRET_FILE: fewer than ${MIN_SECRET_BYTES} bytes`);
   }
@@ -90,11 +98,14 @@ export function loadConfig(environment: NodeJS.ProcessEnv): ApproveConfig {
     APPROVE_TLS_KEY_FILE: key,
     APPROVE_TLS_PEER_CERT_FILE: peerCert,
   } = env;
+
   let signerTls: SignerTls | null = null;
+
   if (new URL(env.SIGNER_URL).protocol === "https:") {
     if (cert === undefined || key === undefined || peerCert === undefined) {
       throw new ConfigError("APPROVE_TLS_*: an https SIGNER_URL needs all three");
     }
+
     try {
       signerTls = readSignerTls({ cert, key, peerCert });
     } catch (error) {

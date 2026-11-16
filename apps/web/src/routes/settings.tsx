@@ -35,6 +35,7 @@ export function SettingsPage() {
   const passkeys = usePasskeys();
   const navigate = useNavigate();
   const [opened, setOpened] = useState<ApprovalSummary[]>([]);
+
   const logout = useMutation({
     mutationFn: () => api.call("logout", { body: {} }),
     onSuccess: async () => {
@@ -42,6 +43,7 @@ export function SettingsPage() {
       await navigate({ to: "/login" });
     },
   });
+
   return (
     <div className="grid grid-cols-1 gap-6">
       <PageHeader
@@ -132,6 +134,7 @@ function PasskeyRow({
   onApprovals: (approvals: ApprovalSummary[]) => void;
 }) {
   const [confirm, setConfirm] = useState(false);
+
   const remove = useMutation({
     mutationFn: () => api.call("removePasskey", { params: { credentialId: passkey.credentialId } }),
     onSuccess: async ({ approvals }) => {
@@ -140,6 +143,7 @@ function PasskeyRow({
       await queryClient.invalidateQueries({ queryKey: keys.passkeys });
     },
   });
+
   return (
     <li className="flex flex-wrap items-center gap-3 px-4 py-3">
       <KeyRound className="size-4 text-muted-foreground" aria-hidden />
@@ -180,10 +184,12 @@ function PasskeyRow({
 
 function AddPasskey({ onApprovals }: { onApprovals: (approvals: ApprovalSummary[]) => void }) {
   const [label, setLabel] = useState("");
+
   const add = useMutation({
     mutationFn: async () => {
       const start = await api.call("startAddPasskey", { body: {} });
       const response = await createPasskey(start.options);
+
       return api.call("finishAddPasskey", {
         body: { ceremonyId: start.ceremonyId, response, label },
       });
@@ -194,6 +200,7 @@ function AddPasskey({ onApprovals }: { onApprovals: (approvals: ApprovalSummary[
       await queryClient.invalidateQueries({ queryKey: keys.passkeys });
     },
   });
+
   return (
     <form
       className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end"

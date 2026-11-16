@@ -7,6 +7,7 @@ const values = {
   credentialId: "AbC-_123",
   publicKey: "pQECAyYgASFYIK-_x",
 };
+
 const COMPOSE = "docker compose exec signer node src/admin.ts";
 
 describe("enrollApproverCommand", () => {
@@ -19,6 +20,7 @@ describe("enrollApproverCommand", () => {
   it("starts with the installation's own way to the signer's admin commands", () => {
     const split =
       "docker compose -f deploy/split/signer.compose.yaml exec signer node src/admin.ts";
+
     expect(enrollApproverCommand(split, values)).toBe(
       `${split} enroll-approver --workspace ws_01HZY --user usr_01HZY --credential-id=AbC-_123 --public-key=pQECAyYgASFYIK-_x`,
     );

@@ -101,9 +101,11 @@ export function mandateAssetInfos(
 ): AssetInfo[] {
   return terms.assets.map((limit) => {
     const view = views.find((item) => item.chainId === limit.chainId && item.asset === limit.asset);
+
     if (view?.symbol && view.decimals !== null) {
       return { symbol: view.symbol, decimals: view.decimals };
     }
+
     return assetInfo(limit.chainId, limit.asset, chains, balances);
   });
 }
@@ -114,10 +116,12 @@ const UNKNOWN: AssetInfo = { symbol: "unknown asset", decimals: null };
 function feeUnit(assets: readonly { chainId: string }[], chains: readonly ChainInfo[]): AssetInfo {
   const chainIds = new Set(assets.map((limit) => limit.chainId));
   const [only] = chainIds;
+
   const symbol =
     chainIds.size === 1 && only !== undefined
       ? (chains.find((chain) => chain.chainId === only)?.nativeSymbol ?? "native coin")
       : "native coin";
+
   return { symbol, decimals: NATIVE_DECIMALS };
 }
 
@@ -137,6 +141,7 @@ export function MandateSentence({
     agent,
     assets: terms.assets.map((limit, index) => {
       const info = infos[index] ?? UNKNOWN;
+
       return {
         perAction: formatAsset(limit.maxPerAction, info),
         perWindow: formatAsset(limit.maxPerWindow, info),
@@ -148,6 +153,7 @@ export function MandateSentence({
     maxUses: terms.maxUses,
     ends: formatEndTime(terms.notAfter),
   });
+
   return <p className={cn("text-base font-medium wrap-anywhere", className)}>{sentence}</p>;
 }
 
@@ -163,6 +169,7 @@ export function MandateWorstCase({
 }) {
   const fee = BigInt(terms.maxFeePerActionWei);
   const unit = feeUnit(terms.assets, chains);
+
   const sentence = worstCaseSentence({
     amounts: terms.assets.map((limit, index) =>
       formatAsset(
@@ -176,6 +183,7 @@ export function MandateWorstCase({
     feePerPayment: formatAsset(fee.toString(), unit),
     feeTotal: formatAsset((fee * BigInt(terms.maxUses)).toString(), unit),
   });
+
   return (
     <section
       aria-label="Worst case"
@@ -233,13 +241,16 @@ export function MandateLimits({
   views?: readonly MandateAssetView[];
 }) {
   const window = formatWindow(terms.windowSeconds);
+
   return (
     <div className="grid grid-cols-1 gap-2">
       {terms.assets.map((limit, index) => {
         const info = infos[index] ?? UNKNOWN;
+
         const policy = views?.find(
           (view) => view.chainId === limit.chainId && view.asset === limit.asset,
         )?.policy;
+
         return (
           <div
             key={`${limit.chainId}|${limit.asset}`}
@@ -294,8 +305,10 @@ export function MandateStatusBadge({ status }: { status: MandateStatus }) {
 /** When it ends and how long that is from now, or when and why it ended. */
 export function MandateTime({ summary, now }: { summary: MandateSummary; now: number }) {
   const { mandate } = summary;
+
   if (summary.endedReason !== null) {
     const at = summary.revokedAt ?? Math.min(mandate.notAfter, now);
+
     return (
       <span>
         Ended {summary.endedReason === "expired" ? formatEndTime(mandate.notAfter) : formatTime(at)}
@@ -303,6 +316,7 @@ export function MandateTime({ summary, now }: { summary: MandateSummary; now: nu
       </span>
     );
   }
+
   if (summary.status === "not_yet_valid") {
     return (
       <span>
@@ -310,6 +324,7 @@ export function MandateTime({ summary, now }: { summary: MandateSummary; now: nu
       </span>
     );
   }
+
   return (
     <span>
       Ends {formatEndTime(mandate.notAfter)}, in {formatTimeLeft(mandate.notAfter - now)}
@@ -331,6 +346,7 @@ export function MandateUsage({
   compact?: boolean;
 }) {
   const { usage, mandate } = summary;
+
   if (!usage) {
     return (
       <p className="text-sm text-warning">
@@ -338,7 +354,9 @@ export function MandateUsage({
       </p>
     );
   }
+
   const window = formatWindow(mandate.windowSeconds);
+
   return (
     <div className="grid grid-cols-1 gap-3">
       <p className="text-sm">
@@ -349,9 +367,11 @@ export function MandateUsage({
       </p>
       {mandate.assets.map((limit, index) => {
         const info = infos[index] ?? UNKNOWN;
+
         const used = usage.assets.find(
           (entry) => entry.chainId === limit.chainId && entry.asset === limit.asset,
         );
+
         const bars = [
           {
             label: `${info.symbol} in total`,
@@ -368,8 +388,10 @@ export function MandateUsage({
                 },
               ]),
         ];
+
         return bars.map((bar) => {
           const share = percentOf(bar.used, bar.cap);
+
           return (
             <div key={`${limit.chainId}|${limit.asset}|${bar.label}`} className="grid gap-1">
               <div className="flex flex-wrap justify-between gap-x-2 text-xs">
@@ -406,6 +428,7 @@ export function RevokeMandateButton({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
+
   const revoke = useMutation({
     mutationFn: () =>
       api.call("revokeMandate", {
@@ -417,6 +440,7 @@ export function RevokeMandateButton({
       await queryClient.invalidateQueries({ queryKey: keys.mandates(summary.workspaceId) });
     },
   });
+
   return (
     <>
       <Button
@@ -460,17 +484,20 @@ export function MandateList({
   now: number;
 }) {
   const canRevoke = workspace.role !== "viewer";
+
   return (
     <ul className="divide-y rounded-md border">
       {items.map((item) => {
         const infos = mandateAssetInfos(item.mandate, workspace.chains, item.assets);
         const wallet = workspace.wallets.find((candidate) => candidate.id === item.walletId);
+
         const caps = item.mandate.assets
           .map(
             (limit, index) =>
               `up to ${formatAsset(limit.maxPerAction, infos[index] ?? UNKNOWN)} per payment`,
           )
           .join(", ");
+
         return (
           <li key={item.id} className="grid grid-cols-1 gap-2 px-4 py-3">
             <div className="flex flex-wrap items-start justify-between gap-2">
@@ -522,6 +549,7 @@ export function MandatesCard({
   const live = active.data?.pages.flatMap((page) => page.items) ?? [];
   const past = ended.data?.pages.flatMap((page) => page.items) ?? [];
   const canGrant = workspace.role === "owner" && editor !== null;
+
   return (
     <Card id="mandates">
       <CardHeader>
@@ -633,9 +661,12 @@ function refusalText(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.code === "invalid_request" && error.detail)
       return explainMandateRefusal(error.detail);
+
     if (error.code === "policy_denied") return explainCode(error.detail ?? "policy_denied");
+
     if (error.code === "conflict") return explainMandateRefusal("agent_disabled");
   }
+
   return errorMessage(error);
 }
 
@@ -659,6 +690,7 @@ export function MandateEditor({
   const id = useId();
   const navigate = useNavigate();
   const policy = wallet.policy;
+
   // The server takes a mandate only for an active agent proposing from its own wallet or from a
   // treasury, and the signer only for one the wallet's limits name.
   const agents = workspace.agents.filter(
@@ -668,11 +700,13 @@ export function MandateEditor({
       (agent.walletId === wallet.id || wallet.kind === "treasury") &&
       (policy?.requesters.includes(agent.id) ?? false),
   );
+
   const [state, setState] = useState<EditorState>(() => ({
     agentId: agents.length === 1 ? (agents[0]?.id ?? "") : "",
     recipients: "",
     rows: (policy?.assets ?? []).map((limit) => {
       const info = assetInfo(limit.chainId, limit.asset, workspace.chains, wallet.balances);
+
       return {
         chainId: limit.chainId,
         asset: limit.asset,
@@ -692,8 +726,10 @@ export function MandateEditor({
     custom: "",
     purpose: "",
   }));
+
   const [formError, setFormError] = useState<string | null>(null);
   const update = (patch: Partial<EditorState>) => setState((current) => ({ ...current, ...patch }));
+
   const updateRow = (index: number, patch: Partial<AssetRow>) =>
     update({ rows: state.rows.map((row, at) => (at === index ? { ...row, ...patch } : row)) });
 
@@ -720,6 +756,7 @@ export function MandateEditor({
       </Alert>
     );
   }
+
   if (agents.length === 0) {
     return (
       <Alert tone="warning">
@@ -735,10 +772,12 @@ export function MandateEditor({
   const nowDate = new Date();
   const nowSeconds = Math.floor(nowDate.getTime() / 1000);
   const choices = endChoices(nowDate);
+
   const notAfter =
     state.end === "custom"
       ? parseLocalDateTime(state.custom)
       : (choices.find((choice) => choice.id === state.end)?.notAfter ?? null);
+
   const form: MandateForm = {
     agentId: state.agentId,
     recipients: state.recipients,
@@ -757,17 +796,22 @@ export function MandateEditor({
     notAfter,
     purpose: state.purpose,
   };
+
   let preview: MandateDraft | null = null;
+
   try {
     preview = mandateDraft(form, nowSeconds);
   } catch (error) {
     if (!(error instanceof MandateFormError)) throw error;
   }
+
   const previewInfos = preview
     ? mandateAssetInfos(preview, workspace.chains, [], wallet.balances)
     : [];
+
   const agentName = agents.find((agent) => agent.id === state.agentId)?.name ?? "the agent";
   const window = formatWindow(state.windowSeconds);
+
   const approvals =
     workspace.adminThreshold === 1
       ? "an approver approves"
@@ -779,6 +823,7 @@ export function MandateEditor({
       className="grid grid-cols-1 gap-6 rounded-lg border p-4"
       onSubmit={(event) => {
         event.preventDefault();
+
         try {
           const draft = mandateDraft(form, Math.floor(Date.now() / 1000));
           setFormError(null);

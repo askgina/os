@@ -27,12 +27,15 @@ export function enrollApproverCommand(
   },
 ): string {
   const prefix = SignerAdminCommand.safeParse(signerAdminCommand);
+
   if (!prefix.success) {
     throw new UnsafeCommandValue("The signer's admin command is not safe to put in a command.");
   }
+
   for (const value of Object.values(input)) {
     if (!SAFE.test(value)) throw new UnsafeCommandValue("A value is not safe to put in a command.");
   }
+
   return [
     `${prefix.data} enroll-approver`,
     `--workspace ${input.workspaceId}`,

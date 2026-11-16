@@ -66,8 +66,11 @@ interface GrantDetail {
 }
 
 const PAGE_SIZE = 50;
+
 const mandateLocation = (id: string) => `mandates.mandate:${id}`;
+
 const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
+
 const systemActor = { type: "system", id: null } as const;
 
 /** Ask the signer something while serving a request; an unreachable signer is `internal`. */
@@ -98,6 +101,7 @@ async function atSigner<T>(call: () => Promise<T>): Promise<T> {
         "the signer refused this mandate",
       );
     }
+
     throw error;
   }
 }
@@ -139,6 +143,7 @@ async function endMirror(
       .set({ status: "ended", endedReason: reason, updatedAt: new Date(ctx.now() * 1000) })
       .where(and(eq(mandates.id, row.id), eq(mandates.status, "active")))
       .returning({ id: mandates.id });
+
     if (ended.length === 0) return false;
     await appendAudit(
       ctx,
@@ -152,6 +157,7 @@ async function endMirror(
       },
       tx,
     );
+
     return true;
   });
 }
@@ -166,6 +172,7 @@ async function refresh(
   row: MandateRow,
 ): Promise<{ row: MandateRow; state: MandateState | null }> {
   let state: MandateState | null;
+
   try {
     state = await ctx.signer.getMandate(row.id);
   } catch (error) {
@@ -176,17 +183,22 @@ async function refresh(
         error instanceof SignerError ? error.code : undefined,
       );
     }
+
     state = null;
   }
+
   const mirror =
     state === null
       ? { status: "ended" as const, endedReason: "operator" as const }
       : mirrorOf(state);
+
   if (row.status === "active" && mirror.endedReason !== null) {
     await endMirror(ctx, row, mirror.endedReason);
     const [current] = await ctx.db.select().from(mandates).where(eq(mandates.id, row.id));
+
     return { row: current ?? row, state };
   }
+
   return { row, state };
 }
 
@@ -194,6 +206,7 @@ async function refresh(
 function usageOf(state: MandateState): MandateUsage {
   const find = (chainId: ChainId, asset: AssetRef) =>
     state.usage.assets.find((entry) => entry.chainId === chainId && entry.asset === asset);
+
   return {
     uses: state.usage.uses,
     total: (chainId, asset) => BigInt(find(chainId, asset)?.total ?? "0"),
@@ -213,11 +226,15 @@ function refusalOf(
 ): MandateDenyCode | "mandate_revoked" | "mandate_not_yet_valid" | "mandate_expired" | null {
   if (state === null || state.status === "revoked") return "mandate_revoked";
   const time = mandateTimeState(state.mandate, now);
+
   if (time === "not_yet_valid") return "mandate_not_yet_valid";
+
   if (time === "expired") return "mandate_expired";
+
   // Raising the admin threshold above the people who granted it stops it at the signer.
   if (state.grantedBy.length < adminThreshold) return "mandate_grant_below_threshold";
   const decision = evaluateMandate(state.mandate, intent, usageOf(state));
+
   return decision.allowed ? null : decision.code;
 }
 
@@ -242,34 +259,44 @@ export async function findCoveringMandate(
   // No contract call is ever signed under a mandate.
   if (pinned === undefined && intent.operation.type === "evm.call") return null;
   const conditions = [eq(mandates.workspaceId, agent.workspaceId), eq(mandates.agentId, agent.id)];
+
   if (pinned === undefined) {
     conditions.push(eq(mandates.walletId, walletId), eq(mandates.status, "active"));
   } else {
     conditions.push(eq(mandates.id, pinned));
   }
+
   const rows = await ctx.db
     .select()
     .from(mandates)
     .where(and(...conditions))
     .orderBy(asc(mandates.notAfter), asc(mandates.id));
+
   // Another agent's mandate looks exactly like one that does not exist.
   if (pinned !== undefined && rows.length === 0) {
     throw new HttpError("not_found", "no such mandate");
   }
+
   if (rows.length === 0) return null;
+
   const [workspace] = await ctx.db
     .select({ adminThreshold: workspaces.adminThreshold })
     .from(workspaces)
     .where(eq(workspaces.id, agent.workspaceId));
+
   if (!workspace) throw new HttpError("not_found", "no such workspace");
   const refreshed = await Promise.all(rows.map((row) => refresh(ctx, row)));
+
   for (const { row, state } of refreshed) {
     const refusal = refusalOf(state, intent, workspace.adminThreshold, ctx.now());
+
     if (refusal === null) return row.id;
+
     if (pinned !== undefined) {
       throw new HttpError("policy_denied", "the mandate you named does not cover this", refusal);
     }
   }
+
   return null;
 }
 
@@ -287,26 +314,36 @@ export async function openMandateGrant(
 ): Promise<ApprovalSummary> {
   const { workspaceId, draft } = input;
   const { wallet } = await loadWallet(ctx, workspaceId, input.walletId);
+
   const [workspace] = await ctx.db
     .select({ adminThreshold: workspaces.adminThreshold })
     .from(workspaces)
     .where(eq(workspaces.id, workspaceId));
+
   if (!workspace) throw new HttpError("not_found", "no such workspace");
+
   const [agent] = await ctx.db
     .select()
     .from(agents)
     .where(and(eq(agents.id, draft.agentId), eq(agents.workspaceId, workspaceId)));
+
   if (!agent) throw new HttpError("invalid_request", "agentId: not an agent of this workspace");
+
   if (agent.status !== "active") throw new HttpError("conflict", "this agent is disabled");
+
   // An agent proposes from its own wallet or from a treasury; a mandate anywhere else is unusable.
   if (wallet.id !== agent.walletId && wallet.kind !== "treasury") {
     throw new HttpError("invalid_request", "agentId: this agent cannot propose from this wallet");
   }
+
   const chains = chainAccess(ctx);
+
   if (draft.assets.some((limit) => !chains.has(limit.chainId))) {
     throw new HttpError("invalid_request", "assets: a chain is not configured here");
   }
+
   const state = await fromSigner(() => ctx.signer.getWallet(wallet.id));
+
   if (state.policy === null) {
     throw new HttpError(
       "policy_denied",
@@ -314,7 +351,9 @@ export async function openMandateGrant(
       "policy_missing",
     );
   }
+
   const now = ctx.now();
+
   // Refuses a draft the protocol does not accept (for example caps out of order) with the field.
   const mandate = normalizeMandate({
     v: PROTOCOL_VERSION,
@@ -331,10 +370,12 @@ export async function openMandateGrant(
     notAfter: draft.notAfter,
     purpose: draft.purpose,
   });
+
   const refusal = checkMandateAgainstPolicy(mandate, state.policy, {
     now,
     maxSeconds: ctx.config.mandateMaxSeconds,
   });
+
   if (refusal !== null) {
     throw new HttpError(
       "invalid_request",
@@ -342,7 +383,9 @@ export async function openMandateGrant(
       refusal,
     );
   }
+
   const hash = mandateHash(mandate);
+
   return ctx.approvals.open({
     workspaceId,
     kind: "grant-mandate",
@@ -374,9 +417,12 @@ async function assetDisplay(
   asset: AssetRef,
 ): Promise<{ symbol: string | null; decimals: number | null }> {
   const chains = chainAccess(ctx);
+
   if (!chains.has(chainId)) return { symbol: null, decimals: null };
+
   if (asset === "native") return { symbol: chains.config(chainId).nativeSymbol, decimals: 18 };
   const token = await chains.token(chainId, asset).catch(() => null);
+
   return token
     ? { symbol: token.symbol, decimals: token.decimals }
     : { symbol: null, decimals: null };
@@ -393,6 +439,7 @@ async function assetViews(
       const limit = policy?.assets.find(
         (candidate) => candidate.chainId === chainId && candidate.asset === asset,
       );
+
       return {
         chainId,
         asset,
@@ -422,6 +469,7 @@ async function agentName(ctx: AppContext, agentId: AgentId): Promise<string> {
     .select({ name: agents.name })
     .from(agents)
     .where(eq(agents.id, agentId));
+
   return agent?.name ?? "";
 }
 
@@ -431,6 +479,7 @@ const grantMandate: ApprovalKindHandler<"grant-mandate"> = {
     const { mandate } = detail as GrantDetail;
     const { wallet } = await loadWallet(ctx, approval.workspaceId, mandate.walletId);
     const payments = mandate.maxUses === 1 ? "1 payment" : `${mandate.maxUses} payments`;
+
     return `Let ${await agentName(ctx, mandate.agentId)} make up to ${payments} from ${wallet.label} without asking`;
   },
   async describe(ctx, approval, detail) {
@@ -438,6 +487,7 @@ const grantMandate: ApprovalKindHandler<"grant-mandate"> = {
     const { wallet, agentId } = await loadWallet(ctx, approval.workspaceId, mandate.walletId);
     const [granted] = await ctx.db.select().from(mandates).where(eq(mandates.id, mandate.id));
     const state = granted ? (await refresh(ctx, granted)).state : null;
+
     return {
       kind: "grant-mandate",
       wallet: walletSummary(wallet, agentId),
@@ -453,21 +503,26 @@ const grantMandate: ApprovalKindHandler<"grant-mandate"> = {
   },
   async execute(ctx, approval, authorization, detail) {
     const { mandate } = detail as GrantDetail;
+
     const agentActive = async () => {
       const [agent] = await ctx.db
         .select({ status: agents.status })
         .from(agents)
         .where(eq(agents.id, mandate.agentId));
+
       return agent?.status === "active";
     };
+
     // The gateway refuses a disabled agent anyway; no authority is added for one.
     if (!(await agentActive())) {
       throw new ApprovalFailure("agent_disabled", "the agent was disabled");
     }
+
     // A repeat of an applied grant returns the stored state, so a re-run of this step is safe.
     const state = await atSigner(() =>
       ctx.signer.grantMandate(mandate.id, { mandate, authorization }),
     );
+
     const mirror = mirrorOf(state);
     const at = new Date(ctx.now() * 1000);
     await ctx.db.transaction(async (tx) => {
@@ -490,6 +545,7 @@ const grantMandate: ApprovalKindHandler<"grant-mandate"> = {
         })
         .onConflictDoNothing()
         .returning({ id: mandates.id });
+
       if (inserted.length === 0) return;
       await appendAudit(
         ctx,
@@ -509,6 +565,7 @@ const grantMandate: ApprovalKindHandler<"grant-mandate"> = {
         tx,
       );
     });
+
     // Disabling the agent while the signer granted: its revocation may have listed the signer's
     // mandates just before this one existed, so it is revoked here.
     if (!(await agentActive())) {
@@ -543,24 +600,28 @@ export async function revokeMandate(
   },
 ): Promise<MandateState> {
   let state: MandateState;
+
   try {
     state = await ctx.signer.revokeMandate(input.mandateId, input.workspaceId);
   } catch (error) {
     if (error instanceof SignerError && error.code === "not_found") {
       throw new HttpError("not_found", "no such mandate");
     }
+
     throw new HttpError(
       "internal",
       "the signer could not be reached",
       error instanceof SignerError ? error.code : undefined,
     );
   }
+
   await endMirror(
     ctx,
     { id: input.mandateId, workspaceId: input.workspaceId },
     input.reason,
     input.actor,
   );
+
   return state;
 }
 
@@ -587,26 +648,33 @@ export async function revokeAgentMandates(
         sql`${approvals.envelope}->>'agentId' = ${agent.id}`,
       ),
     );
+
   for (const grant of waiting) await ctx.approvals.cancel(grant.id);
 
   const treasuries = await ctx.db
     .select({ id: wallets.id })
     .from(wallets)
     .where(and(eq(wallets.workspaceId, agent.workspaceId), eq(wallets.kind, "treasury")));
+
   let revoked = 0;
+
   for (const walletId of [agent.walletId, ...treasuries.map((wallet) => wallet.id)]) {
     const { mandates: held } = await ctx.signer.listMandates(walletId);
+
     for (const state of held) {
       if (state.mandate.agentId !== agent.id || state.status === "revoked") continue;
       await ctx.signer.revokeMandate(state.mandate.id, agent.workspaceId);
       revoked += 1;
     }
   }
+
   const rows = await ctx.db
     .select({ id: mandates.id, workspaceId: mandates.workspaceId })
     .from(mandates)
     .where(and(eq(mandates.agentId, agent.id), eq(mandates.status, "active")));
+
   for (const row of rows) await endMirror(ctx, row, "agent_disabled", actor);
+
   return revoked;
 }
 
@@ -630,8 +698,11 @@ export async function endMandateMirrors(
         walletId === null ? undefined : eq(mandates.walletId, walletId),
       ),
     );
+
   let ended = 0;
+
   for (const row of rows) if (await endMirror(ctx, row, "revoked")) ended += 1;
+
   return ended;
 }
 
@@ -647,7 +718,9 @@ export async function loadMandate(
     .select()
     .from(mandates)
     .where(and(eq(mandates.id, mandateId as MandateId), eq(mandates.workspaceId, workspaceId)));
+
   if (!row) throw new HttpError("not_found", "no such mandate");
+
   return refresh(ctx, row);
 }
 
@@ -677,7 +750,9 @@ export async function mandateSummary(
       .where(eq(approvalAssertions.approvalId, row.grantApprovalId))
       .orderBy(asc(approvalAssertions.createdAt)),
   ]);
+
   const mandate = Mandate.parse(sealed);
+
   return {
     id: row.id,
     workspaceId: row.workspaceId,
@@ -713,46 +788,61 @@ export async function listMandates(
   },
 ): Promise<{ items: MandateSummary[]; nextCursor: string | null }> {
   const scope = [eq(mandates.workspaceId, workspaceId)];
+
   if (filter.walletId !== undefined) scope.push(eq(mandates.walletId, filter.walletId));
+
   if (filter.agentId !== undefined) scope.push(eq(mandates.agentId, filter.agentId));
+
   const live = await ctx.db
     .select()
     .from(mandates)
     .where(and(...scope, eq(mandates.status, "active")));
+
   const states = new Map<MandateId, MandateState | null>();
+
   for (const { row, state } of await Promise.all(live.map((row) => refresh(ctx, row)))) {
     states.set(row.id, state);
   }
 
   const conditions = [...scope];
+
   if (filter.status !== undefined) conditions.push(eq(mandates.status, filter.status));
+
   if (filter.cursor !== undefined) {
     const [at, id] = Buffer.from(filter.cursor, "base64url").toString("utf8").split("|");
     const time = Number(at);
+
     if (!id || !Number.isSafeInteger(time)) {
       throw new HttpError("invalid_request", "cursor: not a cursor from this list");
     }
+
     const before = or(
       lt(mandates.createdAt, new Date(time)),
       and(eq(mandates.createdAt, new Date(time)), lt(mandates.id, id as MandateId)),
     );
+
     if (before) conditions.push(before);
   }
+
   const rows = await ctx.db
     .select()
     .from(mandates)
     .where(and(...conditions))
     .orderBy(desc(mandates.createdAt), desc(mandates.id))
     .limit(PAGE_SIZE + 1);
+
   const page = rows.slice(0, PAGE_SIZE);
   const last = page.at(-1);
+
   const items = await Promise.all(
     page.map(async (row) => {
       if (states.has(row.id)) return mandateSummary(ctx, row, states.get(row.id) ?? null);
       const loaded = await refresh(ctx, row);
+
       return mandateSummary(ctx, loaded.row, loaded.state);
     }),
   );
+
   return {
     items,
     nextCursor:
@@ -772,6 +862,7 @@ export async function activeMandatesOf(
   walletIds: readonly WalletId[],
 ): Promise<MandateState[]> {
   if (walletIds.length === 0) return [];
+
   const rows = await ctx.db
     .select()
     .from(mandates)
@@ -784,7 +875,9 @@ export async function activeMandatesOf(
       ),
     )
     .orderBy(asc(mandates.notAfter), asc(mandates.id));
+
   const refreshed = await Promise.all(rows.map((row) => refresh(ctx, row)));
+
   return refreshed.flatMap(({ state }) =>
     state !== null && state.status === "active" ? [state] : [],
   );

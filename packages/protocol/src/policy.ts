@@ -25,6 +25,7 @@ export const AssetLimit = z.strictObject({
   /** Most the wallet may move in any rolling 24 hours, in base units. */
   maxPerDay: PositiveAmount,
 });
+
 export type AssetLimit = z.infer<typeof AssetLimit>;
 
 export const assetLimitKey = (limit: Pick<AssetLimit, "chainId" | "asset">): string =>
@@ -34,12 +35,14 @@ export const RecipientRule = z.discriminatedUnion("mode", [
   z.strictObject({ mode: z.literal("any") }),
   z.strictObject({ mode: z.literal("allowlist"), addresses: sortedSet(Address, 256) }),
 ]);
+
 export type RecipientRule = z.infer<typeof RecipientRule>;
 
 export const ContractCallRule = z.discriminatedUnion("mode", [
   z.strictObject({ mode: z.literal("deny") }),
   z.strictObject({ mode: z.literal("allowlist"), targets: sortedSet(Address, 256) }),
 ]);
+
 export type ContractCallRule = z.infer<typeof ContractCallRule>;
 
 /**
@@ -52,9 +55,11 @@ export const HyperliquidMarket = z.strictObject({
   /** Largest notional of one order, in micro-USD. A reduce-only order is capped by it too. */
   maxNotionalPerOrderUsd6: PositiveAmount,
 });
+
 export type HyperliquidMarket = z.infer<typeof HyperliquidMarket>;
 
 export const HyperliquidTimeInForce = z.enum(["Alo", "Gtc", "Ioc"]);
+
 export type HyperliquidTimeInForce = z.infer<typeof HyperliquidTimeInForce>;
 
 /**
@@ -77,6 +82,7 @@ export const HyperliquidRules = z
   .superRefine((rules, context) => {
     rules.markets.forEach((market, index) => {
       const previous = rules.markets[index - 1];
+
       if (previous !== undefined && previous.asset >= market.asset) {
         context.addIssue({
           code: "custom",
@@ -84,6 +90,7 @@ export const HyperliquidRules = z
           message: "markets must be sorted by asset without duplicates",
         });
       }
+
       if (rules.markets.findIndex((other) => other.coin === market.coin) !== index) {
         context.addIssue({
           code: "custom",
@@ -91,9 +98,11 @@ export const HyperliquidRules = z
           message: "a coin is named by two markets",
         });
       }
+
       const capsParsed =
         PositiveAmount.safeParse(market.maxNotionalPerOrderUsd6).success &&
         PositiveAmount.safeParse(rules.maxNotionalPerDayUsd6).success;
+
       if (
         capsParsed &&
         BigInt(market.maxNotionalPerOrderUsd6) > BigInt(rules.maxNotionalPerDayUsd6)
@@ -106,6 +115,7 @@ export const HyperliquidRules = z
       }
     });
   });
+
 export type HyperliquidRules = z.infer<typeof HyperliquidRules>;
 
 /**
@@ -115,6 +125,7 @@ export type HyperliquidRules = z.infer<typeof HyperliquidRules>;
 export const VenueRules = z
   .strictObject({ hyperliquid: HyperliquidRules.optional() })
   .refine((venues) => venues.hyperliquid !== undefined, "venues must name at least one venue");
+
 export type VenueRules = z.infer<typeof VenueRules>;
 
 /**
@@ -159,6 +170,7 @@ export const WalletPolicy = z
         message: "revision 1 has no previous hash; every later revision must name one",
       });
     }
+
     if (!isSortedUnique(policy.assets.map(assetLimitKey))) {
       context.addIssue({
         code: "custom",
@@ -166,6 +178,7 @@ export const WalletPolicy = z
         message: "must be sorted by chainId|asset without duplicates",
       });
     }
+
     policy.assets.forEach((limit, index) => {
       if (!policy.chains.includes(limit.chainId)) {
         context.addIssue({
@@ -174,11 +187,13 @@ export const WalletPolicy = z
           message: "asset limit names a chain that is not in `chains`",
         });
       }
+
       // This refinement also runs when an amount already failed its own pattern; BigInt would
       // throw on such text, so compare only amounts that parsed.
       const amountsParsed =
         PositiveAmount.safeParse(limit.maxPerTx).success &&
         PositiveAmount.safeParse(limit.maxPerDay).success;
+
       if (amountsParsed && BigInt(limit.maxPerTx) > BigInt(limit.maxPerDay)) {
         context.addIssue({
           code: "custom",
@@ -187,6 +202,7 @@ export const WalletPolicy = z
         });
       }
     });
+
     // A contract call is capped only by its native value, so if a capped token is also a call
     // target, `transfer(...)` sent as raw calldata to that token would move it with no cap at
     // all. A token is either capped or callable, never both.
@@ -203,6 +219,7 @@ export const WalletPolicy = z
       });
     }
   });
+
 export type WalletPolicy = z.infer<typeof WalletPolicy>;
 
 /** The digest that identifies one exact policy revision. Approvals are bound to it. */

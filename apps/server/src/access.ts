@@ -21,9 +21,12 @@ export async function requireMember(
     .select({ role: memberships.role })
     .from(memberships)
     .where(and(eq(memberships.workspaceId, workspaceId), eq(memberships.userId, session.user.id)));
+
   if (!membership) throw new HttpError("not_found", "no such workspace");
+
   if (RANK[membership.role] < RANK[atLeast]) {
     throw new HttpError("forbidden", `this needs the ${atLeast} role`);
   }
+
   return membership.role;
 }

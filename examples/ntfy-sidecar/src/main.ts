@@ -24,6 +24,7 @@ function load(): SidecarConfig {
 const config = load();
 
 const server = createBridge(config, { log: say });
+
 server.listen(config.port, () => {
   say({
     message: "listening",
@@ -38,5 +39,7 @@ function stop(): void {
   // Requests in flight end within the ntfy timeout; do not wait on idle keep-alive sockets.
   server.closeIdleConnections();
 }
+
 process.on("SIGTERM", stop);
+
 process.on("SIGINT", stop);

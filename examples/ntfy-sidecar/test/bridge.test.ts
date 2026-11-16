@@ -9,9 +9,13 @@ import { type BridgeConfig, createBridge } from "../src/bridge.ts";
 import { readConfig } from "../src/config.ts";
 
 const SECRET = "webhook-secret-with-more-than-thirty-two-characters";
+
 const TOPIC = "approvals-test";
+
 const WORKSPACE = "wsp_01k9z5n3r2q4m6p8t0v2x4y6za";
+
 const APPROVAL = "apr_01k9z5n3r2q4m6p8t0v2x4y6zb";
+
 const LINK = `https://os.example.com/w/${WORKSPACE}/approvals/${APPROVAL}`;
 
 interface Published {
@@ -22,18 +26,26 @@ interface Published {
 }
 
 let clock = 1_800_000_000;
+
 let ntfy: Server;
+
 let ntfyUrl: string;
+
 let ntfyStatus = 200;
+
 let published: Published[] = [];
+
 let bridge: Server | undefined;
+
 let bridgeUrl: string;
+
 let logged: Record<string, unknown>[] = [];
 
 async function listen(server: Server): Promise<string> {
   const { promise, resolve } = Promise.withResolvers<void>();
   server.listen(0, "127.0.0.1", resolve);
   await promise;
+
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 
@@ -66,7 +78,9 @@ function delivery(deliveryId: string, fields: Record<string, unknown> = {}): str
     workspaceId: WORKSPACE,
     ...fields,
   };
+
   const sorted = Object.fromEntries(Object.entries(body).sort(([a], [b]) => (a < b ? -1 : 1)));
+
   return JSON.stringify(sorted);
 }
 
@@ -84,12 +98,15 @@ type DeliveryHeaders = Partial<
  */
 async function deliver(body: string, headers: DeliveryHeaders = {}): Promise<number> {
   let deliveryId = "";
+
   try {
     const parsed: unknown = JSON.parse(body);
+
     if (typeof parsed === "object" && parsed !== null && "deliveryId" in parsed) {
       deliveryId = String(parsed.deliveryId);
     }
   } catch {}
+
   const response = await fetch(bridgeUrl, {
     method: "POST",
     headers: {
@@ -101,7 +118,9 @@ async function deliver(body: string, headers: DeliveryHeaders = {}): Promise<num
     },
     body,
   });
+
   await response.body?.cancel();
+
   return response.status;
 }
 
@@ -111,6 +130,7 @@ beforeEach(async () => {
   ntfyStatus = 200;
   ntfy = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
+
     for await (const chunk of request) chunks.push(chunk as Buffer);
     published.push({
       path: request.url ?? "",
@@ -140,9 +160,11 @@ describe("the ntfy sidecar", () => {
     expect(message?.headers.click).toBeUndefined();
     expect(message?.headers.authorization).toBeUndefined();
     const sent = JSON.stringify(message);
+
     for (const identifier of [WORKSPACE, APPROVAL, "ndl_01"]) {
       expect(sent).not.toContain(identifier);
     }
+
     // Its log line names the delivery and what happened, and nothing the body says.
     expect(logged).toEqual([
       {
@@ -180,12 +202,15 @@ describe("the ntfy sidecar", () => {
     for (const offset of [-301, 301]) {
       const body = delivery(`ndl_03${offset}`);
       const timestamp = clock + offset;
+
       const status = await deliver(body, {
         "x-os-timestamp": String(timestamp),
         "x-os-signature": sign(body, timestamp),
       });
+
       expect(status).toBe(401);
     }
+
     expect(published).toHaveLength(0);
     const body = delivery("ndl_03");
     const timestamp = clock - 300;
@@ -279,6 +304,7 @@ describe("the ntfy sidecar", () => {
     expect(await deliver(delivery("ndl_17"))).toBe(204);
     expect(published[0]?.headers.click).toBe(LINK);
     expect(published[0]?.headers.authorization).toBe("Bearer tk_example");
+
     // A link to another site, or to no web page, is not passed on; the text still is.
     for (const [id, link] of [
       ["ndl_18", "https://os.example.com.evil.example/w/x"],
@@ -287,6 +313,7 @@ describe("the ntfy sidecar", () => {
     ] as const) {
       expect(await deliver(delivery(id, { link }))).toBe(204);
     }
+
     expect(published.map((request) => request.headers.click)).toEqual([
       LINK,
       undefined,

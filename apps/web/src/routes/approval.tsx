@@ -94,12 +94,15 @@ export function ApprovalPage() {
   const workspace = useWorkspace(workspaceId);
 
   if (approval.isPending || workspace.isPending) return <Loading label="Loading the request" />;
+
   if (approval.isError) {
     return <ErrorState error={approval.error} retry={() => void approval.refetch()} />;
   }
+
   if (workspace.isError) {
     return <ErrorState error={workspace.error} retry={() => void workspace.refetch()} />;
   }
+
   return <ApprovalView approval={approval.data} workspace={workspace.data} />;
 }
 
@@ -113,6 +116,7 @@ function ApprovalView({
   const now = useNow();
   const secondsLeft = approval.expiresAt - now;
   const open = approval.status === "pending";
+
   return (
     <article
       className="mx-auto grid max-w-2xl grid-cols-1 gap-4 sm:gap-6"
@@ -187,18 +191,23 @@ function Subject({
   workspace: WorkspaceDetail;
 }) {
   const subject = approval.subject;
+
   switch (subject.kind) {
     case "approve-intent": {
       const display = subject.intent.display;
+
       if (display.kind === "transfer") {
         return <IntentSubject subject={subject} display={display} workspace={workspace} />;
       }
+
       return <OrderSubject subject={subject} display={display} />;
     }
+
     case "set-policy":
       return <PolicySubject subject={subject} workspace={workspace} />;
     case "add-approver": {
       const fingerprint = newKeyFingerprint(approval);
+
       return (
         <Summary title={`Let ${subject.user.displayName} approve with a new passkey`}>
           <Facts>
@@ -220,6 +229,7 @@ function Subject({
         </Summary>
       );
     }
+
     case "remove-approver":
       return (
         <Summary title={`Stop ${subject.user.displayName}'s passkey from approving`}>
@@ -285,6 +295,7 @@ function DestroySubject({
 }) {
   const wallets = subject.kind === "retire-wallet" ? [subject.wallet] : subject.wallets;
   const retire = subject.kind === "retire-wallet";
+
   return (
     <Summary title={approval.title}>
       <Alert tone="danger" className="py-2.5">
@@ -329,8 +340,10 @@ function WalletsToDestroy({
   workspace: WorkspaceDetail;
 }) {
   const subject = approval.subject;
+
   if (subject.kind !== "retire-wallet" && subject.kind !== "delete-workspace") return null;
   const wallets = subject.kind === "retire-wallet" ? [subject.wallet] : subject.wallets;
+
   return (
     <section className="grid grid-cols-1 gap-2" aria-labelledby="wallets-to-destroy">
       <h2 id="wallets-to-destroy" className="text-sm font-medium">
@@ -360,6 +373,7 @@ function WalletBalances({
   wallet: WalletSummary;
 }) {
   const detail = useWallet(workspace.id, wallet.id);
+
   return (
     <WalletAtRisk
       wallet={wallet}
@@ -374,6 +388,7 @@ type CancelTransactionSubject = Extract<ApprovalSubject, { kind: "cancel-transac
 /** The network a cancel request is for: its envelope names it; a payment's intent does too. */
 function cancelChainId(approval: ApprovalDetail, subject: CancelTransactionSubject): string | null {
   if (approval.envelope.type === "cancel-transaction") return approval.envelope.chainId;
+
   return subject.intent?.chainId ?? null;
 }
 
@@ -393,13 +408,16 @@ function CancelSubject({
 }) {
   const { intent, sweep, wallet } = subject;
   const what = intent ? "payment" : "sweep";
+
   const stops = intent
     ? intent.display.kind === "transfer"
       ? paymentTitle(intent.display)
       : intent.display.title
     : (sweep?.title ?? "");
+
   const chainId = cancelChainId(approval, subject);
   const chain = workspace.chains.find((item) => item.chainId === chainId);
+
   return (
     <Summary title={`Cancel ${what}: ${stops}`}>
       <Alert tone="warning" className="items-start py-2.5">
@@ -456,11 +474,13 @@ function SentTransaction({
   workspace: WorkspaceDetail;
 }) {
   const subject = approval.subject;
+
   let shown: {
     transaction: TransactionInfo;
     chainId: string | null;
     target?: TransactionTarget;
   } | null = null;
+
   if (subject.kind === "approve-intent" && subject.intent.transaction) {
     shown = {
       transaction: subject.intent.transaction,
@@ -476,9 +496,11 @@ function SentTransaction({
   } else if (subject.kind === "cancel-transaction") {
     shown = { transaction: subject.transaction, chainId: cancelChainId(approval, subject) };
   }
+
   if (!shown) return null;
   const chainId = shown.chainId;
   const chain = workspace.chains.find((item) => item.chainId === chainId);
+
   return (
     <TransactionPanel
       transaction={shown.transaction}
@@ -509,6 +531,7 @@ function MandateSubject({
   const { mandate, wallet, agent } = subject;
   const infos = mandateAssetInfos(mandate, workspace.chains, subject.assets);
   const left = mandate.notAfter - now;
+
   return (
     <Summary title={`Let ${agent.name} pay from ${wallet.label} without asking`}>
       <MandateSentence terms={mandate} agent={agent.name} infos={infos} />
@@ -578,6 +601,7 @@ function SweepSubject({
   const { sweep, wallet } = subject;
   const chain = workspace.chains.find((item) => item.chainId === sweep.chainId);
   const amount = formatUnits(sweep.amount, subject.assetDecimals);
+
   return (
     <Summary title={`Empty ${amount} ${subject.assetSymbol} to ${shortAddress(sweep.to)}`}>
       <Alert tone="warning" className="py-2.5">
@@ -688,6 +712,7 @@ function IntentSubject({
   const venue = isVenueNetwork(intent.chainId) ? intent.chainId : null;
   const chain = workspace.chains.find((item) => item.chainId === intent.chainId);
   const fee = "maxFeeWei" in intent.intent ? formatUnits(intent.intent.maxFeeWei, 18) : null;
+
   return (
     <Summary title={paymentTitle(display)}>
       {display.rawCall ? (
@@ -763,6 +788,7 @@ function IntentSubject({
 function OrderSubject({ subject, display }: { subject: IntentSubjectData; display: OrderDisplay }) {
   const { intent, wallet, venue } = subject;
   const hashed = intent.intent;
+
   if (!isOrderIntent(hashed) || !isVenueNetwork(hashed.chainId) || venue === null) {
     // The server sends an order display only with a venue order intent and its venue facts.
     return (
@@ -773,9 +799,11 @@ function OrderSubject({ subject, display }: { subject: IntentSubjectData; displa
       </Summary>
     );
   }
+
   const facts = orderFacts(hashed, wallet.policy);
   const caps = orderCaps(facts, venue);
   const coin = facts.coin ?? display.coin;
+
   return (
     <Summary title={orderTitle(facts)}>
       {facts.coin === null ? (
@@ -878,6 +906,7 @@ function Simulation({
   simulation: Extract<ApprovalSubject, { kind: "approve-intent" }>["intent"]["simulation"];
 }) {
   if (!simulation) return <span className="text-muted-foreground">Not run</span>;
+
   if (simulation.ok) {
     return (
       <span className="flex items-center gap-1 text-success">
@@ -886,6 +915,7 @@ function Simulation({
       </span>
     );
   }
+
   return (
     <span className="flex items-start gap-1 text-danger">
       <XCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
@@ -910,6 +940,7 @@ function CapBar({
   format: (value: string | bigint) => string;
 }) {
   const share = percentOf(used, cap);
+
   return (
     <div className="grid grid-cols-1 gap-1">
       <div className="flex flex-wrap justify-between gap-x-2 text-xs">
@@ -935,6 +966,7 @@ function Limits({
   limits: { maxPerTx: string; maxPerDay: string; spentToday: string };
 }) {
   const units = (value: string | bigint) => `${formatUnits(value, decimals)} ${symbol}`;
+
   return (
     <div className="grid grid-cols-1 gap-2.5">
       <CapBar
@@ -963,6 +995,7 @@ function PolicySubject({
   workspace: WorkspaceDetail;
 }) {
   const wallet = useWallet(workspace.id, subject.wallet.id);
+
   return (
     <Summary title={`Change the limits of ${subject.wallet.label}`}>
       <p className="text-sm">
@@ -998,6 +1031,7 @@ function Decide({ approval, expired }: { approval: ApprovalDetail; expired: bool
 
   if (approval.approvedBy.some((user) => user.id === userId)) {
     const missing = approval.threshold - approval.approvals;
+
     return (
       <Alert tone="accent">
         <CheckCircle2 aria-hidden />
@@ -1009,10 +1043,12 @@ function Decide({ approval, expired }: { approval: ApprovalDetail; expired: bool
       </Alert>
     );
   }
+
   if (!approval.canDecide) {
     if (beingAdded) {
       return <ProvePasskey approval={approval} subject={beingAdded} expired={expired} />;
     }
+
     return (
       <Alert>
         <KeyRound aria-hidden />
@@ -1023,6 +1059,7 @@ function Decide({ approval, expired }: { approval: ApprovalDetail; expired: bool
       </Alert>
     );
   }
+
   if (!approval.confirmUrl) {
     return (
       <section className="grid grid-cols-1 gap-2" aria-label="Decision">
@@ -1043,7 +1080,9 @@ function Decide({ approval, expired }: { approval: ApprovalDetail; expired: bool
       </section>
     );
   }
+
   const host = new URL(approval.confirmUrl).host;
+
   return (
     <>
       {beingAdded ? (
@@ -1115,7 +1154,9 @@ function ProvePasskey({
       </Alert>
     );
   }
+
   const host = new URL(approval.confirmUrl).host;
+
   return (
     <section className="grid grid-cols-1 gap-2" aria-label="Your new passkey">
       <Alert tone="accent" className="items-start">
@@ -1174,6 +1215,7 @@ function CompareFingerprint({
 }) {
   const fingerprint = newKeyFingerprint(approval);
   const name = subject.user.displayName;
+
   return (
     <Alert className="items-start">
       <KeyRound aria-hidden />
@@ -1213,6 +1255,7 @@ function RejectButton({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
+
   const reject = useMutation({
     mutationFn: () => api.call("reject", { params: { approvalId: approval.id }, body: {} }),
     onSuccess: async (next) => {
@@ -1222,6 +1265,7 @@ function RejectButton({
       await queryClient.invalidateQueries({ queryKey: keys.workspace(approval.workspaceId) });
     },
   });
+
   return (
     <>
       <Button
@@ -1265,6 +1309,7 @@ function CancelOutcome({
 }) {
   const { intent, sweep, transaction } = subject;
   const what = intent ? "payment" : "sweep";
+
   return (
     <>
       {transactionOpen(transaction.status) ? (
@@ -1317,15 +1362,20 @@ function Outcome({
   const subject = approval.subject;
   const intent = subject.kind === "approve-intent" ? subject.intent : null;
   const orderDisplay = intent?.display.kind === "order" ? intent.display : null;
+
   const transaction =
     intent?.transaction ?? (subject.kind === "sweep-wallet" ? subject.transaction : null);
+
   const signs =
     subject.kind === "approve-intent" ||
     subject.kind === "sweep-wallet" ||
     subject.kind === "cancel-transaction";
+
   const mandate = subject.kind === "grant-mandate" ? subject.mandate : null;
+
   const destroy =
     subject.kind === "retire-wallet" || subject.kind === "delete-workspace" ? subject : null;
+
   switch (approval.status) {
     case "approved":
       return (
@@ -1462,6 +1512,7 @@ function TechnicalDetails({ approval }: { approval: ApprovalDetail }) {
   const intent = approval.subject.kind === "approve-intent" ? approval.subject.intent : null;
   const sweep = approval.subject.kind === "sweep-wallet" ? approval.subject : null;
   const grant = approval.subject.kind === "grant-mandate" ? approval.subject : null;
+
   return (
     <details className="group rounded-lg border bg-card">
       <summary className="cursor-pointer px-4 py-3 text-sm font-medium select-none">

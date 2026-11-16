@@ -310,6 +310,7 @@ const MIGRATIONS: readonly string[] = [
   VERSION_7,
   VERSION_8,
 ];
+
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
 /** A database written by a newer signer. Opening it with older code could lose what it records. */
@@ -332,6 +333,7 @@ export function openDatabase(path: string): OpenedDatabase {
   // Deleted rows and blanked values are overwritten in the file, not only unlinked from it: a
   // finalized deletion removes what people typed and the signed transactions of destroyed keys.
   db.exec("PRAGMA secure_delete = ON");
+
   try {
     // One write transaction, so the signer and the admin CLI opening the file together migrate
     // it once.
@@ -346,17 +348,22 @@ function migrate(db: DatabaseSync): boolean {
   const { user_version: version } = db.prepare("PRAGMA user_version").get() as {
     user_version: number;
   };
+
   if (version > SCHEMA_VERSION) {
     throw new SchemaTooNewError(
       `the database is at schema version ${version}; this signer knows ${SCHEMA_VERSION}`,
     );
   }
+
   const created =
     version === 0 &&
     db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'workspaces'").get() ===
       undefined;
+
   for (const sql of MIGRATIONS.slice(version)) db.exec(sql);
+
   if (version < SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+
   return created;
 }
 
@@ -367,9 +374,11 @@ function migrate(db: DatabaseSync): boolean {
  */
 export function transaction<T>(db: DatabaseSync, work: () => T): T {
   db.exec("BEGIN IMMEDIATE");
+
   try {
     const result = work();
     db.exec("COMMIT");
+
     return result;
   } catch (error) {
     db.exec("ROLLBACK");

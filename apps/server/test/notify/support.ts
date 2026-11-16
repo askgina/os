@@ -35,6 +35,7 @@ export interface Receiver {
 export async function startReceiver(): Promise<Receiver> {
   const requests: Received[] = [];
   const queue: Answer[] = [];
+
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -47,10 +48,12 @@ export async function startReceiver(): Promise<Receiver> {
       }, answer.delayMs ?? 0);
     });
   });
+
   const listening = Promise.withResolvers<void>();
   server.listen(0, "127.0.0.1", listening.resolve);
   await listening.promise;
   const { port } = server.address() as AddressInfo;
+
   return {
     url: `http://127.0.0.1:${port}/hook`,
     requests,
@@ -61,6 +64,7 @@ export async function startReceiver(): Promise<Receiver> {
       const closed = Promise.withResolvers<void>();
       server.closeAllConnections();
       server.close((error) => (error ? closed.reject(error) : closed.resolve()));
+
       return closed.promise;
     },
   };
@@ -79,14 +83,17 @@ export function expectedSignature(secret: Uint8Array, timestamp: string, body: s
 /** Each way a marker could be carried in a text: as itself, as hex, and as base64(url). */
 export function markerForms(marker: string): string[] {
   const bytes = Buffer.from(marker, "utf8");
+
   return [marker, bytes.toString("hex"), bytes.toString("base64"), bytes.toString("base64url")];
 }
 
 type Bytes = Uint8Array<ArrayBuffer>;
+
 const utf8 = (text: string): Bytes => new TextEncoder().encode(text);
 
 async function hkdf(salt: Bytes, ikm: Bytes, info: Bytes, length: number): Promise<Bytes> {
   const key = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+
   return new Uint8Array(
     await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info }, key, length * 8),
   );
@@ -110,7 +117,9 @@ export async function decryptPush(body: Bytes, ua: BrowserKeys): Promise<string>
   const idLength = body[20] ?? 0;
   const asPublic = body.subarray(21, 21 + idLength);
   const record = body.subarray(21 + idLength);
+
   if (recordSize !== 4096 || record.length > recordSize) throw new Error("not one 4096 record");
+
   const asKey = await crypto.subtle.importKey(
     "raw",
     asPublic,
@@ -118,20 +127,27 @@ export async function decryptPush(body: Bytes, ua: BrowserKeys): Promise<string>
     true,
     [],
   );
+
   const ecdh = new Uint8Array(
     await crypto.subtle.deriveBits({ name: "ECDH", public: asKey }, ua.privateKey, 256),
   );
+
   const keyInfo = new Uint8Array([...utf8("WebPush: info\0"), ...ua.publicKey, ...asPublic]);
   const ikm = await hkdf(ua.authSecret, ecdh, keyInfo, 32);
   const cek = await hkdf(salt, ikm, utf8("Content-Encoding: aes128gcm\0"), 16);
   const nonce = await hkdf(salt, ikm, utf8("Content-Encoding: nonce\0"), 12);
   const aes = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["decrypt"]);
+
   const padded = new Uint8Array(
     await crypto.subtle.decrypt({ name: "AES-GCM", iv: nonce }, aes, record),
   );
+
   let end = padded.length - 1;
+
   while (end >= 0 && padded[end] === 0) end -= 1;
+
   if (padded[end] !== 0x02) throw new Error("no padding delimiter");
+
   return new TextDecoder().decode(padded.subarray(0, end));
 }
 
@@ -182,6 +198,7 @@ export async function startPushService(): Promise<PushService> {
   tls.setDefaultCACertificates([...tls.getCACertificates("default"), cert]);
   const pushed: Pushed[] = [];
   const queue: Answer[] = [];
+
   const server = createHttpsServer(
     { key: readFileSync(join(dir, "tls-key.pem")), cert },
     (request, response) => {
@@ -200,10 +217,12 @@ export async function startPushService(): Promise<PushService> {
       });
     },
   );
+
   const listening = Promise.withResolvers<void>();
   server.listen(0, listening.resolve);
   await listening.promise;
   const { port } = server.address() as AddressInfo;
+
   return {
     origin: `https://localhost:${port}`,
     pushed,
@@ -214,6 +233,7 @@ export async function startPushService(): Promise<PushService> {
       const closed = Promise.withResolvers<void>();
       server.closeAllConnections();
       server.close(() => closed.resolve());
+
       return closed.promise;
     },
   };
@@ -227,8 +247,10 @@ export async function browserSubscription(endpoint: string): Promise<{
   const keys = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, [
     "deriveBits",
   ]);
+
   const publicKey = new Uint8Array(await crypto.subtle.exportKey("raw", keys.publicKey));
   const authSecret = new Uint8Array(randomBytes(16));
+
   return {
     ua: { privateKey: keys.privateKey, publicKey, authSecret },
     keys: {
@@ -248,6 +270,7 @@ export function pushConfig(extra: NodeJS.ProcessEnv = {}): Config {
   const vapidFile = join(dir, "vapid.pem");
   const { privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   writeFileSync(vapidFile, privateKey.export({ format: "pem", type: "pkcs8" }));
+
   return loadConfig({
     ...env,
     WEB_PUSH_ENABLED: "1",
@@ -270,6 +293,7 @@ export function baseEnv(): { env: NodeJS.ProcessEnv; dir: string } {
       { chainId: "eip155:31337", name: "Local", rpcUrl: "http://127.0.0.1:1", nativeSymbol: "ETH" },
     ]),
   );
+
   return {
     dir,
     env: {

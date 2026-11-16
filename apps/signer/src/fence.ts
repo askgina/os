@@ -23,15 +23,18 @@ import { revokeMandatesOnFence } from "./mandates.ts";
 
 /** Decision-log actions, one entry per workspace each time the fence moves. */
 export const FENCE_BY_OPERATOR = "fence-set-by-operator";
+
 export const FENCE_ON_NEW_FILE = "fence-set-on-new-database-file";
 
 const FENCE_KEY = "fence_at";
+
 const FILE_KEY = "database_file";
 
 function readMeta(db: DatabaseSync, key: string): string | null {
   const row = db.prepare("SELECT value FROM signer_meta WHERE key = ?").get(key) as
     | { value: string }
     | undefined;
+
   return row?.value ?? null;
 }
 
@@ -44,6 +47,7 @@ function writeMeta(db: DatabaseSync, key: string, value: string): void {
 /** The fence in seconds since the Unix epoch, or null when this database was never fenced. */
 export function readFence(db: DatabaseSync): number | null {
   const value = readMeta(db, FENCE_KEY);
+
   return value === null ? null : Number(value);
 }
 
@@ -54,11 +58,14 @@ export function readFence(db: DatabaseSync): number | null {
  */
 export function raiseFence(db: DatabaseSync, at: number, action: string): number {
   const current = readFence(db);
+
   if (current !== null && current >= at) return current;
   writeMeta(db, FENCE_KEY, String(at));
+
   const workspaces = db
     .prepare("SELECT workspace_id FROM workspaces ORDER BY workspace_id")
     .all() as { workspace_id: string }[];
+
   for (const { workspace_id } of workspaces) {
     appendDecision(db, {
       workspaceId: workspace_id as WorkspaceId,
@@ -69,7 +76,9 @@ export function raiseFence(db: DatabaseSync, at: number, action: string): number
       at,
     });
   }
+
   revokeMandatesOnFence(db, at);
+
   return at;
 }
 
@@ -82,6 +91,7 @@ export function raiseFence(db: DatabaseSync, at: number, action: string): number
 export function databaseFileIdentity(path: string): string | null {
   if (path === ":memory:" || path === "") return null;
   const stat = statSync(path, { bigint: true });
+
   return `${stat.ino}:${stat.birthtimeNs}`;
 }
 
@@ -98,12 +108,16 @@ export function fenceReplacedDatabase(
   now: number,
 ): number | null {
   const identity = databaseFileIdentity(path);
+
   if (identity === null) return null;
   const recorded = readMeta(db, FILE_KEY);
+
   if (recorded === identity) return null;
   writeMeta(db, FILE_KEY, identity);
+
   if (created) return null;
   const before = readFence(db);
   const after = raiseFence(db, now, FENCE_ON_NEW_FILE);
+
   return after === before ? null : after;
 }

@@ -87,6 +87,7 @@ const REFUSALS: Partial<Record<SignerErrorCode, StuckReason>> = {
 };
 
 const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
+
 const larger = (a: bigint, b: bigint) => (a > b ? a : b);
 
 export type NextFees =
@@ -111,14 +112,19 @@ export function nextFees(input: {
 }): NextFees {
   const raised = (value: bigint) =>
     larger((value * BigInt(100 + input.bumpPercent) + 99n) / 100n, value + 1n);
+
   const minFee = raised(input.latest.maxFeePerGas);
   const minTip = raised(input.latest.maxPriorityFeePerGas);
   let tip = larger(minTip, input.quote.maxPriorityFeePerGas);
   let fee = larger(minFee, 2n * input.quote.baseFeePerGas + tip);
   const affordable = input.ceilingWei / input.gas;
+
   if (fee > affordable) fee = affordable;
+
   if (tip > fee) tip = fee;
+
   if (fee < minFee) return { kind: "ceiling_reached" };
+
   return { kind: "fees", maxFeePerGas: fee, maxPriorityFeePerGas: tip };
 }
 
@@ -129,9 +135,11 @@ function bindingOf(approval: ApprovalRow): Binding | null {
   if (approval.kind === "approve-intent" && approval.envelope?.type === "approve-intent") {
     return { envelope: approval.envelope };
   }
+
   if (approval.kind === "mandate-use" && approval.mandateId !== null) {
     return { mandateId: approval.mandateId };
   }
+
   return null;
 }
 
@@ -171,6 +179,7 @@ export async function catchUpAttempts(
 ): Promise<number> {
   const { transaction, latest } = input;
   const target = transaction.approvalId;
+
   const asking = async <T>(call: () => Promise<T>): Promise<T> => {
     try {
       return await call();
@@ -178,14 +187,17 @@ export async function catchUpAttempts(
       throw new AttemptsUnreadable(error);
     }
   };
+
   const missing = (await asking(() => ctx.signer.getApproval(target))).attempts
     .filter((attempt) => attempt.attempt > latest.attempt)
     .sort((a, b) => a.attempt - b.attempt);
+
   if (missing.length === 0) return 0;
 
   // Which `cancel-transaction` request produced each cancel the signer signed on passkeys: a
   // request that reached the signer is approved, executed, or failed after it.
   const producers = new Map<string, ApprovalId>();
+
   if (missing.some((attempt) => attempt.kind === "cancel")) {
     const cancels = await tx
       .select({ id: approvals.id })
@@ -197,31 +209,39 @@ export async function catchUpAttempts(
           inArray(approvals.status, ["approved", "executed", "failed"]),
         ),
       );
+
     for (const { id } of cancels) {
       const produced = await asking(() => ctx.signer.getApproval(id));
+
       for (const attempt of produced.attempts) producers.set(attempt.transactionHash, id);
     }
   }
+
   // A payment's attempts, cancels included, are all asked for again through its reprice route.
   const [approval] = await tx.select().from(approvals).where(eq(approvals.id, target));
   const binding = approval ? bindingOf(approval) : null;
   let bound: (Binding & { intent: EvmIntent }) | null = null;
+
   if (binding !== null && transaction.intentId !== null) {
     const [row] = await tx.select().from(intents).where(eq(intents.id, transaction.intentId));
+
     if (!row) throw new Error("a transaction's intent no longer exists");
     bound = { ...binding, intent: await readEvmIntent(ctx, row) };
   }
 
   // A reprice of a cancel is under that cancel's request, as the signer records it.
   let cancelApprovalId = latest.cancelApprovalId;
+
   for (const attempt of missing) {
     const fees = {
       attempt: attempt.attempt,
       maxFeePerGas: attempt.maxFeePerGas,
       maxPriorityFeePerGas: attempt.maxPriorityFeePerGas,
     };
+
     const producer = producers.get(attempt.transactionHash);
     let response: AttemptResponse;
+
     if (bound !== null) {
       const request: RepriceRequest = { ...bound, ...fees };
       response = await asking(() => ctx.signer.reprice(target, request));
@@ -230,14 +250,17 @@ export async function catchUpAttempts(
         .select({ envelope: approvals.envelope })
         .from(approvals)
         .where(eq(approvals.id, producer));
+
       const assertions = await tx
         .select()
         .from(approvalAssertions)
         .where(eq(approvalAssertions.approvalId, producer))
         .orderBy(asc(approvalAssertions.createdAt));
+
       if (!cancel?.envelope || assertions.length === 0) {
         throw new Error("a cancel the signer signed has no approval stored here");
       }
+
       const authorization: Authorization = {
         envelope: cancel.envelope,
         assertions: assertions.map((assertion) => ({
@@ -246,15 +269,18 @@ export async function catchUpAttempts(
           response: assertion.response,
         })),
       };
+
       response = await asking(() =>
         ctx.signer.cancelTransaction(target, { authorization, ...fees }),
       );
     } else {
       throw new Error("an attempt the signer holds cannot be asked for again");
     }
+
     if (response.attempt.transactionHash !== attempt.transactionHash) {
       throw new Error("the signer answered with another attempt than the one it holds");
     }
+
     if (producer !== undefined) cancelApprovalId = producer;
     const under = response.attempt.kind === "cancel" ? cancelApprovalId : null;
     await recordAttempt(ctx, tx, {
@@ -265,6 +291,7 @@ export async function catchUpAttempts(
     });
     await input.stored(response, { cancelApprovalId: under, producedBy: producer ?? null });
   }
+
   return missing.length;
 }
 
@@ -286,6 +313,7 @@ async function ceilingOf(
 ): Promise<bigint> {
   const policyCeiling = input.policy === null ? null : BigInt(input.policy.fees.maxPerTxWei);
   let ceiling: bigint | null = BigInt(input.intent.maxFeeWei);
+
   if (input.latest.kind === "cancel") {
     const [cancel] = await tx
       .select({ envelope: approvals.envelope })
@@ -300,10 +328,13 @@ async function ceilingOf(
       )
       .orderBy(desc(approvals.createdAt))
       .limit(1);
+
     ceiling =
       cancel?.envelope?.type === "cancel-transaction" ? BigInt(cancel.envelope.maxFeeWei) : null;
   }
+
   if (ceiling === null) return policyCeiling ?? 0n;
+
   return policyCeiling !== null && policyCeiling < ceiling ? policyCeiling : ceiling;
 }
 
@@ -329,15 +360,19 @@ async function reprice(
   trigger: "automatic" | "speed_up",
 ): Promise<RepriceOutcome> {
   const chains = chainAccess(ctx);
+
   const result = await ctx.db.transaction(
     async (tx): Promise<{ outcome: RepriceOutcome; workspaceId: WorkspaceId | null }> => {
       await lockAttempts(tx, approvalId);
+
       const [transaction] = await tx
         .select()
         .from(transactions)
         .where(eq(transactions.approvalId, approvalId));
+
       const [approval] = await tx.select().from(approvals).where(eq(approvals.id, approvalId));
       const binding = approval ? bindingOf(approval) : null;
+
       if (
         !transaction ||
         !approval ||
@@ -347,20 +382,25 @@ async function reprice(
       ) {
         return { outcome: "not_repriceable", workspaceId: null };
       }
+
       const { workspaceId } = approval;
       const answer = (outcome: RepriceOutcome) => ({ outcome, workspaceId });
       const stopped = transaction.stuckReason;
+
       if (stopped !== null && REPRICE_STOPPED.includes(stopped)) return answer(stopped);
 
       const attempts = await attemptsOf(ctx, workspaceId, transaction, tx);
       const latest = attempts.at(-1);
+
       if (!latest) throw new Error("a transaction without its first attempt");
       const now = ctx.now();
       const triedAt = transaction.repriceTriedAt === null ? 0 : seconds(transaction.repriceTriedAt);
+
       const due =
         trigger === "automatic"
           ? Math.max(latest.signedAt, triedAt) + ctx.config.reprice.afterSeconds
           : latest.signedAt + SPEED_UP_SPACING_SECONDS;
+
       if (now < due) return answer("not_due");
 
       /** Record that it asked (or found it could not), and why nothing changed if so. */
@@ -373,22 +413,29 @@ async function reprice(
           })
           .where(eq(transactions.approvalId, approvalId));
       };
+
       const [workspace] = await tx
         .select({ paused: workspaces.paused })
         .from(workspaces)
         .where(eq(workspaces.id, workspaceId));
+
       if (workspace?.paused) {
         await note("workspace_paused");
+
         return answer("workspace_paused");
       }
+
       const chainId = transaction.chainId as ChainId;
+
       const [wallet] = await tx
         .select({ address: wallets.address, policy: wallets.policy })
         .from(wallets)
         .where(eq(wallets.id, transaction.walletId));
+
       if (!wallet) throw new Error("a transaction's wallet no longer exists");
 
       let quote: FeeQuote;
+
       try {
         if (trigger === "speed_up") {
           // The follow-up looks at the nonce before it asks; a person may ask any time. Only
@@ -398,15 +445,19 @@ async function reprice(
             wallet.address,
             await chains.head(chainId),
           );
+
           if (accountNonce > transaction.nonce) return answer("not_repriceable");
+
           if (accountNonce < transaction.nonce) {
             await tx
               .update(transactions)
               .set({ stuckReason: "waiting_behind_nonce" })
               .where(eq(transactions.approvalId, approvalId));
+
             return answer("waiting_behind_nonce");
           }
         }
+
         quote = await chains.fees(chainId);
       } catch (error) {
         ctx.log.warn("reprice could not read the chain", {
@@ -414,6 +465,7 @@ async function reprice(
           code: error instanceof ChainError ? error.code : "rpc_unavailable",
         });
         await note();
+
         return answer("retry_later");
       }
 
@@ -421,8 +473,10 @@ async function reprice(
         .select()
         .from(intents)
         .where(eq(intents.id, transaction.intentId));
+
       if (!intentRow) throw new Error("a transaction's intent no longer exists");
       const intent = await readEvmIntent(ctx, intentRow);
+
       const fees = nextFees({
         latest,
         gas: latest.gas,
@@ -430,8 +484,10 @@ async function reprice(
         quote,
         bumpPercent: ctx.config.reprice.bumpPercent,
       });
+
       if (fees.kind === "ceiling_reached") {
         await note("fee_ceiling_reached");
+
         return answer("fee_ceiling_reached");
       }
 
@@ -442,6 +498,7 @@ async function reprice(
         maxFeePerGas: maxFee.toString(),
         maxPriorityFeePerGas: maxTip.toString(),
       });
+
       /** The audit event and log line of one attempt this reprice stored. */
       const stored = async (response: AttemptResponse) => {
         const { attempt } = response;
@@ -465,16 +522,19 @@ async function reprice(
         );
         ctx.log.info("transaction repriced", { approvalId, attempt: attempt.attempt, trigger });
       };
+
       const unavailable = async (error: unknown) => {
         ctx.log.warn("reprice failed at the signer", {
           approvalId,
           code: error instanceof SignerError ? error.code : "unreachable",
         });
         await note();
+
         return answer("retry_later");
       };
 
       let response: AttemptResponse;
+
       try {
         response = await ctx.signer.reprice(
           approvalId,
@@ -484,29 +544,38 @@ async function reprice(
         if (!(error instanceof SignerError) || RETRYABLE_SIGNER_CODES.includes(error.code)) {
           return unavailable(error);
         }
+
         if (error.code !== "conflict") {
           const reason = REFUSALS[error.code] ?? "reprice_refused";
           ctx.log.warn("reprice refused", { approvalId, code: error.code });
           await note(reason);
+
           return answer(reason);
         }
+
         // Another number than the next: the signer has attempts this record lacks.
         let caught: number;
+
         try {
           caught = await catchUpAttempts(ctx, tx, { workspaceId, transaction, latest, stored });
         } catch (lookup) {
           if (lookup instanceof AttemptsUnreadable) return unavailable(lookup.cause);
           throw lookup;
         }
+
         if (caught === 0) {
           // Not a number conflict: the signer no longer accepts what binds this request.
           ctx.log.warn("reprice refused", { approvalId, code: "conflict" });
           await note("reprice_refused");
+
           return answer("reprice_refused");
         }
+
         await note();
+
         return answer("caught_up");
       }
+
       // The signer gives a reprice of a cancel the cancel's request; so does this record.
       await recordAttempt(ctx, tx, {
         workspaceId,
@@ -516,15 +585,18 @@ async function reprice(
       });
       await stored(response);
       await note();
+
       return answer("repriced");
     },
   );
+
   if (
     result.workspaceId !== null &&
     (result.outcome === "repriced" || result.outcome === "caught_up")
   ) {
     await broadcastNewest(ctx, result.workspaceId, approvalId);
   }
+
   return result.outcome;
 }
 
@@ -565,6 +637,7 @@ export async function speedUpIntent(
   // A use of a mandate signs under its own approval id, as a request does.
   const outcome: RepriceOutcome =
     row.approvalId === null ? "not_repriceable" : await speedUp(ctx, row.approvalId, userId);
+
   switch (outcome) {
     case "repriced":
     case "caught_up":

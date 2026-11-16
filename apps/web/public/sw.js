@@ -88,7 +88,9 @@ const TEXT_MAX_CHARACTERS = 60;
 const APPROVAL_PAGE = /^\/w\/[A-Za-z0-9_]+\/approvals\/[A-Za-z0-9_]+$/;
 
 const GENERIC_TITLE = "Approval waiting";
+
 const GENERIC_BODY = "Open the app to see what waits for you.";
+
 const GENERIC_TAG = "approval";
 
 /**
@@ -101,12 +103,15 @@ const GENERIC_TAG = "approval";
 function pagePath(link, origin) {
   if (typeof link !== "string" || link.length > 2048) return null;
   let url;
+
   try {
     url = new URL(link, origin);
   } catch {
     return null;
   }
+
   if (url.origin !== origin) return null;
+
   return url.pathname === "/" || APPROVAL_PAGE.test(url.pathname) ? url.pathname : null;
 }
 
@@ -118,13 +123,17 @@ function pagePath(link, origin) {
  */
 function plainLine(value) {
   if (typeof value !== "string") return null;
+
   const flat = value
     .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+
   if (flat === "") return null;
   const characters = Array.from(flat);
+
   if (characters.length <= TEXT_MAX_CHARACTERS) return flat;
+
   return `${characters.slice(0, TEXT_MAX_CHARACTERS - 1).join("")}…`;
 }
 
@@ -145,21 +154,27 @@ function notificationFor(message, origin) {
     path: "/",
     badge: null,
   };
+
   if (typeof message !== "object" || message === null) return generic;
   const { web_push: version, notification } = /** @type {Record<string, unknown>} */ (message);
+
   if (version !== 8030 || typeof notification !== "object" || notification === null) return generic;
   const fields = /** @type {Record<string, unknown>} */ (notification);
   const title = plainLine(fields.title);
   const path = pagePath(fields.navigate, origin);
+
   if (title === null || path === null) return generic;
+
   const tag =
     typeof fields.tag === "string" && /^approval-[A-Za-z0-9_]+$/.test(fields.tag)
       ? fields.tag
       : GENERIC_TAG;
+
   const badge =
     typeof fields.app_badge === "string" && /^[0-9]{1,3}$/.test(fields.app_badge)
       ? Number(fields.app_badge)
       : null;
+
   return { title, body: plainLine(fields.body) ?? "", tag, path, badge };
 }
 
@@ -170,6 +185,7 @@ function notificationFor(message, origin) {
  */
 function readMessage(data) {
   if (data === null) return null;
+
   try {
     return data.json();
   } catch {
@@ -189,6 +205,7 @@ function clickPath(data, origin) {
     typeof data === "object" && data !== null
       ? /** @type {Record<string, unknown>} */ (data).path
       : null;
+
   return typeof path === "string" && path.startsWith("/") && !path.startsWith("//")
     ? (pagePath(path, origin) ?? "/")
     : "/";
@@ -210,6 +227,7 @@ async function show(shown) {
     icon: "/icons/icon-192.png",
     data: { path: shown.path },
   });
+
   if (shown.badge !== null && worker.navigator.setAppBadge) {
     // The badge is a hint; a browser that refuses it still shows the notification.
     await worker.navigator.setAppBadge(shown.badge).catch(() => undefined);
@@ -224,6 +242,7 @@ async function show(shown) {
 async function openPage(path) {
   const url = new URL(path, worker.location.origin).href;
   let opened = false;
+
   // Without `includeUncontrolled`, only windows this worker controls, which are the only ones
   // it may navigate.
   for (const client of await worker.clients.matchAll({ type: "window" })) {
@@ -236,7 +255,9 @@ async function openPage(path) {
       // That window could not be used; try the next one, then a new window.
     }
   }
+
   if (!opened) await worker.clients.openWindow(url);
+
   if (
     worker.navigator.clearAppBadge &&
     (await worker.registration.getNotifications()).length === 0

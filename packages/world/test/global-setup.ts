@@ -3,7 +3,9 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
 const harness = fileURLToPath(new URL("./harness/", import.meta.url));
+
 const cli = fileURLToPath(new URL("../node_modules/.bin/workflow", import.meta.url));
 
 /**

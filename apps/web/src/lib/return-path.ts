@@ -11,8 +11,10 @@ const BASE = "https://return-path.invalid";
 function hasControlCharacter(text: string): boolean {
   for (let index = 0; index < text.length; index++) {
     const code = text.charCodeAt(index);
+
     if (code < 0x20 || code === 0x7f) return true;
   }
+
   return false;
 }
 
@@ -27,21 +29,28 @@ function hasControlCharacter(text: string): boolean {
  */
 export function safeReturnPath(value: unknown): string {
   if (typeof value !== "string" || value.length > MAX_LENGTH) return DEFAULT_LANDING;
+
   if (!value.startsWith("/") || value.startsWith("//")) return DEFAULT_LANDING;
+
   if (value.includes("\\") || hasControlCharacter(value)) return DEFAULT_LANDING;
   let url: URL;
+
   try {
     url = new URL(value, BASE);
   } catch {
     return DEFAULT_LANDING;
   }
+
   if (url.origin !== BASE || url.pathname.startsWith("//")) return DEFAULT_LANDING;
+
   if (/%(?:2f|5c|[01][0-9a-f]|7f)/i.test(url.pathname)) return DEFAULT_LANDING;
+
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
 /** The sign-in page, asked to return to `requested` afterwards when that is a safe path. */
 export function signInHref(requested: string): string {
   const next = safeReturnPath(requested);
+
   return next === DEFAULT_LANDING ? "/login" : `/login?next=${encodeURIComponent(next)}`;
 }

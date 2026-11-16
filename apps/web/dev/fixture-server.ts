@@ -117,11 +117,16 @@ import {
 import { z } from "zod";
 
 const PORT = Number(process.env.OS_WEB_FIXTURE_PORT ?? 55731);
+
 const SETUP_TOKEN = process.env.OS_WEB_FIXTURE_SETUP_TOKEN ?? "fixture-setup-token-0123456789";
+
 const RP_NAME = "Agent Workspaces";
+
 /** The stand-in confirmation page's port. `localhost`, so the passkeys made for the UI work there. */
 const CONFIRM_PORT = Number(process.env.OS_WEB_FIXTURE_CONFIRM_PORT ?? 55732);
+
 const CONFIRM_ORIGIN = `http://localhost:${CONFIRM_PORT}`;
+
 /** Where the confirmation page sends the person back to: the UI on the Vite dev server. */
 const RETURN_ORIGIN = process.env.OS_WEB_FIXTURE_RETURN_ORIGIN ?? "http://localhost:55730";
 
@@ -134,7 +139,9 @@ const CHAINS: ChainInfo[] = [
     explorerUrl: "https://basescan.org",
   },
 ];
+
 const TEST_USDC = "0x036cbd53842c5426634e7929541ec2318f3dcf7e";
+
 /** The push services a subscription's endpoint must be under, as the server's default. */
 const PUSH_ENDPOINT_HOSTS = [
   "fcm.googleapis.com",
@@ -142,17 +149,20 @@ const PUSH_ENDPOINT_HOSTS = [
   "push.apple.com",
   "notify.windows.com",
 ];
+
 /** The application server key browsers subscribe with, while Web Push is on. */
 const PUSH_KEY = (() => {
   const jwk = generateKeyPairSync("ec", { namedCurve: "prime256v1" }).publicKey.export({
     format: "jwk",
   });
+
   return Buffer.concat([
     Buffer.from([0x04]),
     Buffer.from(jwk.x ?? "", "base64url"),
     Buffer.from(jwk.y ?? "", "base64url"),
   ]).toString("base64url");
 })();
+
 const WEB_PUSH_AT_START = process.env.OS_WEB_FIXTURE_WEB_PUSH !== "0";
 
 type RefusalCode =
@@ -192,6 +202,7 @@ interface Credential {
   publicKey: string;
   summary: PasskeySummary;
 }
+
 interface Workspace {
   id: string;
   name: string;
@@ -207,6 +218,7 @@ interface Workspace {
   /** While it is being deleted: each wallet's state before, which a cancel restores. */
   beforeDelete: Map<string, "active" | "held">;
 }
+
 interface Approval {
   summary: ApprovalSummary;
   envelope: Envelope;
@@ -229,6 +241,7 @@ interface Approval {
   /** The effect applied when enough people approve. */
   apply: () => void;
 }
+
 interface State {
   setupDone: boolean;
   users: Map<string, string>;
@@ -299,20 +312,28 @@ function freshState(): State {
 }
 
 let state = freshState();
+
 const now = () => Math.floor(Date.now() / 1000);
+
 const b64url = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url");
+
 const randomToken = (bytes = 24) => b64url(randomBytes(bytes));
+
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
 function workspaceOf(id: string): Workspace {
   const workspace = state.workspaces.get(id);
+
   if (!workspace) throw new Refusal("not_found", "This workspace does not exist.");
+
   return workspace;
 }
 
 function memberOf(workspace: Workspace, userId: string): Member {
   const member = workspace.members.find((item) => item.user.id === userId);
+
   if (!member) throw new Refusal("not_found", "This workspace does not exist.");
+
   return member;
 }
 
@@ -329,6 +350,7 @@ function audit(
   subject: AuditEvent["subject"],
 ) {
   const previousHash = workspace.audit.at(-1)?.hash ?? null;
+
   const entry = {
     seq: workspace.audit.length + 1,
     at: now(),
@@ -338,6 +360,7 @@ function audit(
     detail: {},
     previousHash,
   };
+
   workspace.audit.push({ ...entry, hash: sha256(JSON.stringify(entry)) });
 }
 
@@ -348,6 +371,7 @@ function decide(
   code: string | null,
 ) {
   const previousHash = workspace.decisions.at(-1)?.hash ?? null;
+
   const entry = {
     seq: workspace.decisions.length + 1,
     at: now(),
@@ -358,6 +382,7 @@ function decide(
     code,
     previousHash,
   };
+
   workspace.decisions.push({ ...entry, hash: sha256(JSON.stringify(entry)) });
 }
 
@@ -365,6 +390,7 @@ const userSummary = (id: string) => ({
   id: id as Member["user"]["id"],
   displayName: state.users.get(id) ?? "",
 });
+
 const userActor = (id: string): AuditEvent["actor"] => ({
   type: "user",
   id,
@@ -374,6 +400,7 @@ const userActor = (id: string): AuditEvent["actor"] => ({
 function refreshApprover(workspace: Workspace, userId: string): void {
   // The fixture treats a member as an approver when any of their passkeys was approved.
   const member = memberOf(workspace, userId);
+
   if (member.role === "viewer") member.approver = "none";
 }
 
@@ -381,8 +408,10 @@ function expireApprovals(): void {
   for (const approval of state.approvals.values()) {
     if (approval.summary.status === "pending" && approval.summary.expiresAt <= now()) {
       approval.summary.status = "expired";
+
       if (approval.subject.kind === "approve-intent") {
         const intent = state.intents.get(approval.subject.intent.id);
+
         if (intent) intent.status = "expired";
       }
     }
@@ -390,18 +419,22 @@ function expireApprovals(): void {
 }
 
 const GWEI = 1_000_000_000n;
+
 const randomHash = () => `0x${randomBytes(32).toString("hex")}` as `0x${string}`;
+
 const isSent = (transaction: TransactionInfo) =>
   transaction.status === "broadcast" || transaction.status === "stuck";
 
 function explorerOf(chainId: string, hash: string): string | null {
   const chain = CHAINS.find((item) => item.chainId === chainId);
+
   return chain?.explorerUrl ? `${chain.explorerUrl}/tx/${hash}` : null;
 }
 
 /** A transaction just signed and offered to the chain: its first attempt, nothing final yet. */
 function sentTransaction(chainId: string): TransactionInfo {
   const hash = randomHash();
+
   return {
     hash,
     status: "broadcast",
@@ -440,10 +473,12 @@ function withAttempt(
   cancelApprovalId: string | null,
 ): TransactionInfo {
   const latest = transaction.attempts[transaction.attempts.length - 1];
+
   if (!latest) throw new Error("a transaction without its first attempt");
   const raised = (value: string) => ((BigInt(value) * 112n + 99n) / 100n).toString();
   const cancel = kind === "cancel" || latest.kind === "cancel";
   const hash = randomHash();
+
   return {
     ...transaction,
     hash,
@@ -472,7 +507,9 @@ function withAttempt(
 /** The newest attempt mined: `cancelled` when it is a cancel, otherwise `confirmed`. */
 function minedTransaction(transaction: TransactionInfo): TransactionInfo {
   const newest = transaction.attempts[transaction.attempts.length - 1];
+
   if (!newest) throw new Error("a transaction without its first attempt");
+
   return {
     ...transaction,
     status: newest.kind === "cancel" ? "cancelled" : "confirmed",
@@ -514,6 +551,7 @@ function liveTransaction(
   const waiting = waitingCancel(targetApprovalId);
   const curable = transaction.stuckReason === null || transaction.stuckReason === "fee_too_low";
   const reason = paused && curable ? "workspace_paused" : transaction.stuckReason;
+
   return {
     ...transaction,
     stuckReason: sent ? reason : null,
@@ -529,20 +567,26 @@ function advanceTransactions(): void {
   // UI's follow-through shows. Whichever attempt is mined decides: a cancel voids the payment.
   for (const intent of state.intents.values()) {
     const sentAt = state.sentAt.get(intent.id);
+
     if (!intent.transaction || !isSent(intent.transaction) || sentAt === undefined) continue;
+
     if (now() - sentAt < 2) continue;
     const cancelSigned = intent.transaction.attempts.some((attempt) => attempt.kind === "cancel");
     intent.transaction = minedTransaction(intent.transaction);
     intent.transactionHash = intent.transaction.hash;
+
     if (intent.transaction.status === "cancelled") {
       intent.status = "voided";
       intent.failureCode = "transaction_cancelled";
     } else {
       intent.status = "confirmed";
+
       if (cancelSigned) intent.failureCode = "cancel_too_late";
     }
+
     // Nothing is left to cancel: a cancel request still waiting ends.
     const waiting = waitingCancel(targetOf(intent));
+
     if (waiting) waiting.summary.status = "cancelled";
   }
 }
@@ -566,12 +610,16 @@ function openCancel(
   },
 ): ApprovalSummary {
   const waiting = waitingCancel(input.target);
+
   if (waiting) return waiting.summary;
   const wallet = workspace.wallets.find((item) => item.id === input.walletId);
+
   if (!wallet?.policy)
     throw new Refusal("policy_denied", "This wallet has no approved policy.", "policy_missing");
   const current = input.transaction();
+
   if (!current) throw new Refusal("conflict", "Nothing was sent yet.", "not_sent");
+
   if (current.stuckReason === "attempts_exhausted") {
     throw new Refusal(
       "conflict",
@@ -579,7 +627,9 @@ function openCancel(
       "attempts_exhausted",
     );
   }
+
   const maxFeeWei = wallet.policy.fees.maxPerTxWei;
+
   const approval: Approval = openApproval({
     workspace,
     kind: "cancel-transaction",
@@ -611,19 +661,24 @@ function openCancel(
     },
     apply: () => {
       const live = input.transaction();
+
       if (!live || !isSent(live)) {
         approval.summary.status = "failed";
         approval.summary.failureCode = "transaction_final";
+
         return;
       }
+
       input.update(withAttempt(live, input.chainId, "cancel", approval.summary.id));
       decide(workspace, approval.summary.id, "cancel-transaction", null);
     },
   });
+
   audit(workspace, userActor(userId), "transaction.cancel_requested", {
     type: "approval",
     id: input.target,
   });
+
   return approval.summary;
 }
 
@@ -634,9 +689,12 @@ function liveCancelSubject(
 ): ApprovalSubject {
   if (subject.intent) {
     const intent = stripIntent(state.intents.get(subject.intent.id) ?? subject.intent);
+
     return { ...subject, intent, transaction: intent.transaction ?? subject.transaction };
   }
+
   const sweep = state.approvals.get(subject.sweep?.approvalId ?? "")?.subject;
+
   return sweep?.kind === "sweep-wallet" && sweep.transaction && subject.sweep
     ? {
         ...subject,
@@ -658,6 +716,7 @@ function openApproval(input: {
 }): Approval {
   const id = newId("apr");
   const issuedAt = now();
+
   const envelope = {
     v: 1,
     approvalId: id,
@@ -668,6 +727,7 @@ function openApproval(input: {
     type: input.kind,
     ...input.envelope,
   } as Envelope;
+
   const approval: Approval = {
     summary: {
       id,
@@ -693,6 +753,7 @@ function openApproval(input: {
     possessionProven: false,
     apply: input.apply,
   };
+
   state.approvals.set(id, approval);
   audit(
     input.workspace,
@@ -702,6 +763,7 @@ function openApproval(input: {
     "approval.requested",
     { type: "approval", id },
   );
+
   return approval;
 }
 
@@ -712,6 +774,7 @@ function approverApprovals(
   requester: string,
 ): ApprovalSummary[] {
   const opened: ApprovalSummary[] = [];
+
   for (const [credentialId, credential] of state.credentials) {
     if (credential.userId !== userId) continue;
     opened.push(
@@ -738,11 +801,13 @@ function approverApprovals(
         },
         apply: () => {
           const member = workspace.members.find((item) => item.user.id === userId);
+
           if (member) member.approver = kind === "add-approver" ? "active" : "none";
         },
       }).summary,
     );
   }
+
   return opened;
 }
 
@@ -752,9 +817,11 @@ function approverApprovals(
  */
 function signerRefuses(approval: Approval): boolean {
   const envelope = approval.envelope;
+
   const wallet = workspaceOf(approval.summary.workspaceId).wallets.find(
     (item) => "walletId" in envelope && item.id === envelope.walletId,
   );
+
   // A grant the wallet's current limits would refuse shows as superseded at the signer.
   if (approval.subject.kind === "grant-mandate") {
     return (
@@ -765,8 +832,10 @@ function signerRefuses(approval: Approval): boolean {
       }) !== null
     );
   }
+
   if (envelope.type !== "approve-intent" && envelope.type !== "set-policy") return false;
   const current = wallet?.policyHash ?? null;
+
   return envelope.type === "approve-intent"
     ? envelope.policyHash !== current
     : envelope.previousPolicyHash !== current;
@@ -778,10 +847,12 @@ function signerRefuses(approval: Approval): boolean {
  */
 function confirmUrl(approval: Approval): string | null {
   if (approval.summary.status !== "pending") return null;
+
   if (approval.confirmToken === null) {
     if (signerRefuses(approval)) return null;
     approval.confirmToken = randomToken(16);
   }
+
   return `${CONFIRM_ORIGIN}/a/${approval.summary.id}#${approval.confirmToken}`;
 }
 
@@ -792,6 +863,7 @@ function confirmUrl(approval: Approval): string | null {
 function collect(approval: Approval): void {
   if (approval.summary.status !== "pending") return;
   const workspace = workspaceOf(approval.summary.workspaceId);
+
   for (const userId of approval.atSigner) {
     if (approval.approvedBy.some((user) => user.id === userId)) continue;
     approval.approvedBy.push(userSummary(userId));
@@ -800,6 +872,7 @@ function collect(approval: Approval): void {
       type: "approval",
       id: approval.summary.id,
     });
+
     if (approval.summary.approvals >= approval.summary.threshold) {
       audit(workspace, userActor(userId), "approval.approved", {
         type: "approval",
@@ -807,6 +880,7 @@ function collect(approval: Approval): void {
       });
       approval.summary.status = "executed";
       approval.apply();
+
       return;
     }
   }
@@ -816,8 +890,10 @@ function approvalDetail(approval: Approval, userId: string): ApprovalDetail {
   const workspace = workspaceOf(approval.summary.workspaceId);
   const member = workspace.members.find((item) => item.user.id === userId);
   const subject = approval.subject;
+
   const granted =
     subject.kind === "grant-mandate" ? state.mandates.get(subject.mandate.id) : undefined;
+
   const liveSubject: ApprovalSubject =
     subject.kind === "approve-intent"
       ? { ...subject, intent: stripIntent(state.intents.get(subject.intent.id) ?? subject.intent) }
@@ -840,6 +916,7 @@ function approvalDetail(approval: Approval, userId: string): ApprovalDetail {
                 usage: granted ? mandateSummary(granted).usage : null,
               }
             : subject;
+
   return {
     ...approval.summary,
     envelope: approval.envelope,
@@ -859,6 +936,7 @@ function approvalDetail(approval: Approval, userId: string): ApprovalDetail {
 function stripIntent(intent: IntentDetail & { workspaceId?: string }): IntentDetail {
   const { workspaceId, ...rest } = intent;
   const paused = state.workspaces.get(workspaceId ?? "")?.paused ?? false;
+
   return {
     ...rest,
     transaction: rest.transaction
@@ -871,7 +949,9 @@ function workspaceDetail(workspace: Workspace, userId: string): WorkspaceDetail 
   const pending = [...state.approvals.values()].filter(
     (item) => item.summary.workspaceId === workspace.id && item.summary.status === "pending",
   ).length;
+
   const viewerIsOwner = memberOf(workspace, userId).role === "owner";
+
   return {
     id: workspace.id as WorkspaceDetail["id"],
     name: workspace.name,
@@ -931,6 +1011,7 @@ function finishCeremony(
 ) {
   const ceremony = state.ceremonies.get(ceremonyId);
   state.ceremonies.delete(ceremonyId);
+
   if (
     !ceremony ||
     ceremony.kind !== kind ||
@@ -938,11 +1019,13 @@ function finishCeremony(
   ) {
     throw new Refusal("invalid_request", "This sign-in attempt is no longer valid. Start again.");
   }
+
   return ceremony;
 }
 
 function registrationOptions(userId: string, name: string) {
   const challenge = randomToken(32);
+
   return {
     challenge,
     options: {
@@ -974,7 +1057,9 @@ function registerCredential(
     deviceType: "singleDevice",
     backedUp: false,
   };
+
   state.credentials.set(response.id, { userId, publicKey: randomToken(32), summary });
+
   return summary;
 }
 
@@ -1008,26 +1093,34 @@ function sessionInfo(userId: string | null): SessionInfo {
 
 function propose(agentToken: string, body: Record<string, string>): IntentDetail {
   const agentId = state.tokens.get(agentToken);
+
   if (!agentId) throw new Refusal("unauthenticated", "Unknown agent token.");
+
   const workspace = [...state.workspaces.values()].find((item) =>
     item.agents.some((agent) => agent.id === agentId),
   );
+
   if (!workspace) throw new Refusal("unauthenticated", "Unknown agent token.");
   const agent = workspace.agents.find((item) => item.id === agentId);
   const wallet = workspace.wallets.find((item) => item.agentId === agentId);
+
   if (!agent || !wallet || agent.status !== "active")
     throw new Refusal("forbidden", "This agent was removed.");
+
   // Mirrors the gateway and the signer: nothing is proposed from a workspace being deleted or a
   // wallet that is retiring, stopped or destroyed.
   if (workspace.lifecycle.state !== "active" || wallet.lifecycle.state !== "active")
     throw new Refusal("forbidden", "This wallet is retired or its workspace is being deleted.");
+
   if (!wallet.policy || !wallet.policyHash)
     throw new Refusal("policy_denied", "This wallet has no policy yet.", "policy_missing");
+
   if (body.kind === "order") return proposeOrder(workspace, agent, wallet, body);
   const chainId = wallet.policy.chains[0] ?? "eip155:31337";
   const to = (body.to ?? fakeAddress()) as `0x${string}`;
   const amount = body.amount ?? "15000000000000000";
   const kind = body.kind ?? "transfer";
+
   const operation =
     kind === "erc20"
       ? { type: "evm.erc20.transfer" as const, token: TEST_USDC as `0x${string}`, to, amount }
@@ -1039,6 +1132,7 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
             data: "0xa9059cbb0000000000000000000000001111111111111111111111111111111111111111" as `0x${string}`,
           }
         : { type: "evm.transfer" as const, to, valueWei: amount };
+
   const intent: EvmIntent = {
     v: 1,
     id: newId("int"),
@@ -1051,15 +1145,19 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
     memo: body.memo ?? "",
     createdAt: now(),
   };
+
   const decimals = kind === "erc20" ? 6 : 18;
   const symbol = kind === "erc20" ? "USDC" : "ETH";
   const asset = kind === "erc20" ? TEST_USDC : "native";
   const moved = kind === "call" ? "0" : amount;
   const formatted = formatAmount(moved, decimals);
+
   const limit = wallet.policy.assets.find(
     (item) => item.asset === asset && item.chainId === chainId,
   );
+
   const spentKey = `${wallet.id}|${chainId}|${asset}`;
+
   const detail: IntentDetail & { workspaceId: string } = {
     id: intent.id,
     workspaceId: workspace.id,
@@ -1095,6 +1193,7 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
     },
     transaction: null,
   };
+
   // A covering mandate signs it with no person asked, as the server routes it to the signer.
   const covering = coveringMandate(workspace, agent.id, wallet.id, intent, body.mandateId);
   state.intents.set(intent.id, detail);
@@ -1102,19 +1201,24 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
     type: "intent",
     id: intent.id,
   });
+
   if (covering) {
     detail.mandateId = covering.mandate.id;
     const useId = newId("apr");
+
     // The signer checks the wallet's policy too, and its pause; a refusal counts nothing.
     const refused = workspace.paused
       ? "workspace_paused"
       : policyRefusal(wallet.policy, intent, asset, BigInt(moved), state.spent.get(spentKey) ?? 0n);
+
     if (refused !== null) {
       detail.status = "denied";
       detail.failureCode = refused;
       decide(workspace, useId, "sign-under-mandate", refused);
+
       return stripIntent(detail);
     }
+
     covering.uses.push({ at: now(), chainId, asset, amount: BigInt(moved) });
     state.spent.set(spentKey, (state.spent.get(spentKey) ?? 0n) + BigInt(moved));
     detail.status = "broadcast";
@@ -1123,9 +1227,12 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
     state.useIds.set(intent.id, useId);
     state.sentAt.set(intent.id, now());
     decide(workspace, useId, "sign-under-mandate", null);
+
     return stripIntent(detail);
   }
+
   const policyAtProposal = wallet.policyHash;
+
   const approval = openApproval({
     workspace,
     kind: "approve-intent",
@@ -1158,18 +1265,24 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
     },
     apply: () => {
       const live = state.intents.get(intent.id);
+
       if (!live) return;
       const approval = state.approvals.get(live.approvalId ?? "");
+
       const fail = (code: string) => {
         live.status = "failed";
         live.failureCode = code;
+
         if (approval) {
           approval.summary.status = "failed";
           approval.summary.failureCode = code;
         }
+
         decide(workspace, approval?.summary.id ?? null, "sign_transaction", code);
       };
+
       if (workspace.paused) return fail("workspace_paused");
+
       if (wallet.policyHash !== policyAtProposal) return fail("policy_changed");
       state.spent.set(spentKey, (state.spent.get(spentKey) ?? 0n) + BigInt(moved));
       live.status = "broadcast";
@@ -1179,9 +1292,12 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
       decide(workspace, approval?.summary.id ?? null, "sign_transaction", null);
     },
   });
+
   detail.approvalId = approval.summary.id;
+
   if (approval.subject.kind === "approve-intent")
     approval.subject.intent.approvalId = approval.summary.id;
+
   return stripIntent(detail);
 }
 
@@ -1210,6 +1326,7 @@ function proposeOrder(
 ): IntentDetail {
   const policy = wallet.policy;
   const rules = policy?.venues?.hyperliquid;
+
   if (!policy || !wallet.policyHash || !rules) {
     throw new Refusal(
       "policy_denied",
@@ -1217,8 +1334,10 @@ function proposeOrder(
       "venue_not_allowed",
     );
   }
+
   const coin = body.coin ?? "BTC";
   const market = rules.markets.find((item) => item.coin === coin);
+
   if (!market) {
     throw new Refusal(
       "policy_denied",
@@ -1226,7 +1345,9 @@ function proposeOrder(
       "market_not_allowed",
     );
   }
+
   const tif = HyperliquidTimeInForce.parse(body.timeInForce ?? "Ioc");
+
   if (!rules.timeInForce.includes(tif)) {
     throw new Refusal(
       "policy_denied",
@@ -1234,6 +1355,7 @@ function proposeOrder(
       "order_type_not_allowed",
     );
   }
+
   const operation: HyperliquidOrderOperation = {
     type: "hyperliquid.order",
     asset: market.asset,
@@ -1243,15 +1365,19 @@ function proposeOrder(
     tif,
     reduceOnly: body.reduceOnly === "true",
   };
+
   const notional = orderNotionalUsd6(operation.size, operation.limitPx);
   const spentKey = `${wallet.id}|${rules.network}|usd6`;
   const spent = state.spent.get(spentKey) ?? 0n;
+
   if (notional > BigInt(market.maxNotionalPerOrderUsd6)) {
     throw new Refusal("policy_denied", "The order is over its market's cap.", "over_per_tx_cap");
   }
+
   if (!operation.reduceOnly && spent + notional > BigInt(rules.maxNotionalPerDayUsd6)) {
     throw new Refusal("policy_denied", "The order is over the daily cap.", "over_daily_cap");
   }
+
   const intent: VenueIntent = {
     v: 1,
     id: newId("int"),
@@ -1263,8 +1389,10 @@ function proposeOrder(
     memo: body.memo ?? "",
     createdAt: now(),
   };
+
   const side = operation.isBuy ? "buy" : "sell";
   const title = `${operation.isBuy ? "Buy" : "Sell"} ${operation.size} ${coin} at ${operation.limitPx}`;
+
   const detail: IntentDetail & { workspaceId: string } = {
     id: intent.id,
     workspaceId: workspace.id,
@@ -1298,12 +1426,14 @@ function proposeOrder(
     simulation: null,
     transaction: null,
   };
+
   state.intents.set(intent.id, detail);
   audit(workspace, { type: "agent", id: agent.id, name: agent.name }, "intent.proposed", {
     type: "intent",
     id: intent.id,
   });
   const policyAtProposal = wallet.policyHash;
+
   const approval = openApproval({
     workspace,
     kind: "approve-intent",
@@ -1335,22 +1465,30 @@ function proposeOrder(
     },
     apply: () => {
       const live = state.intents.get(intent.id);
+
       if (!live) return;
       const current = state.approvals.get(live.approvalId ?? "");
+
       const fail = (code: string) => {
         live.status = "failed";
         live.failureCode = code;
+
         if (current) {
           current.summary.status = "failed";
           current.summary.failureCode = code;
         }
+
         decide(workspace, current?.summary.id ?? null, "sign-venue", code);
       };
+
       if (workspace.paused) return fail("workspace_paused");
+
       if (wallet.policyHash !== policyAtProposal) return fail("policy_changed");
+
       if (!operation.reduceOnly) {
         state.spent.set(spentKey, (state.spent.get(spentKey) ?? 0n) + notional);
       }
+
       const signedAt = now();
       const rests = tif !== "Ioc";
       live.order = {
@@ -1366,15 +1504,19 @@ function proposeOrder(
       decide(workspace, current?.summary.id ?? null, "sign-venue", null);
     },
   });
+
   detail.approvalId = approval.summary.id;
+
   if (approval.subject.kind === "approve-intent")
     approval.subject.intent.approvalId = approval.summary.id;
+
   return stripIntent(detail);
 }
 
 /** A venue decimal ("0.01") in units of 10^-8, as the venue keeps sizes. */
 function toE8(text: string): bigint {
   const [whole = "0", fraction = ""] = text.split(".");
+
   return BigInt(whole + fraction.padEnd(8, "0").slice(0, 8));
 }
 
@@ -1387,23 +1529,29 @@ function toE8(text: string): bigint {
  */
 function venueAccountOf(wallet: WalletSummary): VenueAccount | null {
   const rules = wallet.policy?.venues?.hyperliquid;
+
   const orders = [...state.intents.values()].filter(
     (intent) => intent.walletId === wallet.id && intent.display.kind === "order",
   );
+
   if (rules === undefined && orders.length === 0) return null;
   const network = rules?.network ?? "hyperliquid:testnet";
   const held = new Map<string, { size: bigint; entryPrice: string }>();
   const openOrders: NonNullable<VenueAccount["reported"]>["openOrders"] = [];
+
   for (const intent of orders) {
     const { display, order } = intent;
+
     if (display.kind !== "order" || order === null) continue;
     const filled = toE8(order.filledSize ?? "0");
+
     if (filled > 0n) {
       const position = held.get(display.coin) ?? { size: 0n, entryPrice: display.limitPrice };
       position.size += display.side === "buy" ? filled : -filled;
       position.entryPrice = order.averagePrice ?? display.limitPrice;
       held.set(display.coin, position);
     }
+
     if (intent.status === "placed" && order.canCancel) {
       openOrders.push({
         coin: display.coin,
@@ -1415,6 +1563,7 @@ function venueAccountOf(wallet: WalletSummary): VenueAccount | null {
       });
     }
   }
+
   return {
     network,
     spentTodayUsd6: (state.spent.get(`${wallet.id}|${network}|usd6`) ?? 0n).toString(),
@@ -1440,6 +1589,7 @@ function formatAmount(amount: string, decimals: number): string {
   const value = BigInt(amount);
   const base = 10n ** BigInt(decimals);
   const fraction = (value % base).toString().padStart(decimals, "0").replace(/0+$/, "");
+
   return fraction === "" ? (value / base).toString() : `${value / base}.${fraction}`;
 }
 
@@ -1473,6 +1623,7 @@ function policyFromDraft(
 
 /** The signer's defaults: `SIGNER_MAX_MANDATE_SECONDS`, `SIGNER_MAX_LIVE_MANDATES_PER_WALLET`. */
 const MANDATE_LONGEST_SECONDS = 604_800;
+
 const LIVE_MANDATES_PER_WALLET = 16;
 
 interface FixtureMandate {
@@ -1491,7 +1642,9 @@ interface FixtureMandate {
 
 function knownAsset(asset: string): { symbol: string | null; decimals: number | null } {
   if (asset === "native") return { symbol: "ETH", decimals: 18 };
+
   if (asset === TEST_USDC) return { symbol: "USDC", decimals: 6 };
+
   return { symbol: null, decimals: null };
 }
 
@@ -1501,6 +1654,7 @@ function mandateAssets(mandate: Mandate, policy: WalletPolicy | null): MandateAs
     const limit = policy?.assets.find(
       (item) => item.chainId === entry.chainId && item.asset === entry.asset,
     );
+
     return {
       chainId: entry.chainId,
       asset: entry.asset,
@@ -1517,6 +1671,7 @@ function mandateUsage(record: FixtureMandate): MandateUsage {
     record.uses
       .filter((use) => use.chainId === chainId && use.asset === asset && use.at > since)
       .reduce((total, use) => total + use.amount, 0n);
+
   return {
     uses: record.uses.length,
     total: (chainId, asset) => sum(chainId, asset, Number.NEGATIVE_INFINITY),
@@ -1527,27 +1682,35 @@ function mandateUsage(record: FixtureMandate): MandateUsage {
 function mandateStatus(record: FixtureMandate): MandateStatus {
   if (record.revokedAt !== null) return "revoked";
   const time = mandateTimeState(record.mandate, now());
+
   if (time !== "live") return time;
   const usage = mandateUsage(record);
+
   const spent =
     usage.uses >= record.mandate.maxUses ||
     record.mandate.assets.every(
       (limit) => usage.total(limit.chainId, limit.asset) >= BigInt(limit.maxTotal),
     );
+
   return spent ? "exhausted" : "active";
 }
 
 /** The mandate as the server reports it; reading it records why it ended, the first time. */
 function mandateSummary(record: FixtureMandate): MandateSummary {
   const status = mandateStatus(record);
+
   if (record.endedReason === null && (status === "expired" || status === "exhausted")) {
     record.endedReason = status;
   }
+
   const { mandate } = record;
+
   const wallet = workspaceOf(record.workspaceId).wallets.find(
     (item) => item.id === mandate.walletId,
   );
+
   const usage = mandateUsage(record);
+
   return {
     id: mandate.id,
     workspaceId: mandate.workspaceId,
@@ -1587,13 +1750,19 @@ function endMandate(record: FixtureMandate, reason: "revoked" | "agent_disabled"
 /** Why this mandate does not cover the intent now, with the signer's code, or null. */
 function mandateRefusal(record: FixtureMandate, intent: EvmIntent): string | null {
   const status = mandateStatus(record);
+
   if (status === "revoked") return "mandate_revoked";
+
   if (status === "not_yet_valid") return "mandate_not_yet_valid";
+
   if (status === "expired") return "mandate_expired";
+
   if (record.grantedBy.length < workspaceOf(record.workspaceId).adminThreshold) {
     return "mandate_grant_below_threshold";
   }
+
   const decision = evaluateMandate(record.mandate, intent, mandateUsage(record));
+
   return decision.allowed ? null : decision.code;
 }
 
@@ -1610,6 +1779,7 @@ function coveringMandate(
   pinned: string | undefined,
 ): FixtureMandate | null {
   if (pinned === undefined && intent.operation.type === "evm.call") return null;
+
   const candidates = [...state.mandates.values()]
     .filter(
       (record) =>
@@ -1622,16 +1792,21 @@ function coveringMandate(
     .sort(
       (a, b) => a.mandate.notAfter - b.mandate.notAfter || (a.mandate.id < b.mandate.id ? -1 : 1),
     );
+
   if (pinned !== undefined && candidates.length === 0) {
     throw new Refusal("not_found", "No such mandate.");
   }
+
   for (const record of candidates) {
     const refusal = mandateRefusal(record, intent);
+
     if (refusal === null) return record;
+
     if (pinned !== undefined) {
       throw new Refusal("policy_denied", "The mandate you named does not cover this.", refusal);
     }
   }
+
   return null;
 }
 
@@ -1646,14 +1821,20 @@ function policyRefusal(
   const limit = policy.assets.find(
     (item) => item.chainId === intent.chainId && item.asset === asset,
   );
+
   if (!limit) return "asset_not_allowed";
   const to = intent.operation.to;
+
   if (policy.recipients.mode === "allowlist" && !policy.recipients.addresses.includes(to)) {
     return "recipient_not_allowed";
   }
+
   if (amount > BigInt(limit.maxPerTx)) return "over_per_tx_cap";
+
   if (spentToday + amount > BigInt(limit.maxPerDay)) return "over_daily_cap";
+
   if (BigInt(intent.maxFeeWei) > BigInt(policy.fees.maxPerTxWei)) return "fee_cap_exceeded";
+
   return null;
 }
 
@@ -1661,6 +1842,7 @@ function policyRefusal(
 
 /** The signer's default range for the delay before keys are destroyed: 7 to 90 days. */
 const MIN_DESTROY_DELAY_SECONDS = 604_800;
+
 const MAX_DESTROY_DELAY_SECONDS = 7_776_000;
 
 /** What `getWallet` and the deletion preflight read in every wallet. */
@@ -1680,6 +1862,7 @@ const systemActor: AuditEvent["actor"] = { type: "system", id: null, name: null 
 /** Mirrors the signer: the delay from now, the request's `issuedAt`, must be in its range. */
 function checkDestroyAfter(destroyAfter: number): void {
   const delay = destroyAfter - now();
+
   if (delay < MIN_DESTROY_DELAY_SECONDS || delay > MAX_DESTROY_DELAY_SECONDS) {
     throw new Refusal(
       "invalid_request",
@@ -1703,8 +1886,10 @@ function unmined(workspace: Workspace, walletId?: string): boolean {
 /** Withdraws a waiting request, and the payment it asked for. */
 function cancelApproval(approval: Approval): void {
   approval.summary.status = "cancelled";
+
   if (approval.subject.kind === "approve-intent") {
     const intent = state.intents.get(approval.subject.intent.id);
+
     if (intent) intent.status = "cancelled";
   }
 }
@@ -1717,13 +1902,18 @@ function cancelApproval(approval: Approval): void {
 function endAuthority(workspace: Workspace, walletId: string | null, keep: string): void {
   for (const approval of state.approvals.values()) {
     const { summary, envelope } = approval;
+
     if (summary.workspaceId !== workspace.id || summary.status !== "pending") continue;
+
     if (summary.id === keep || envelope.type === "cancel-transaction") continue;
+
     const ofWallet =
       (envelope.type === "grant-mandate" || envelope.type === "sweep-wallet") &&
       envelope.walletId === walletId;
+
     if (walletId === null || ofWallet) cancelApproval(approval);
   }
+
   for (const record of state.mandates.values()) {
     if (
       record.workspaceId === workspace.id &&
@@ -1755,23 +1945,30 @@ function waitingLifecycle(workspace: Workspace, walletId: string | null): Approv
 function finalizeDue(): void {
   for (const workspace of state.workspaces.values()) {
     const { lifecycle } = workspace;
+
     if (lifecycle.state === "deleting" && lifecycle.destroyAfter !== null) {
       if (lifecycle.destroyAfter > now() || unmined(workspace)) continue;
+
       for (const approval of state.approvals.values()) {
         if (approval.summary.workspaceId === workspace.id && approval.summary.status === "pending")
           cancelApproval(approval);
       }
+
       for (const wallet of workspace.wallets) {
         if (wallet.lifecycle.state === "destroyed") continue;
         wallet.lifecycle = { state: "destroyed", destroyAfter: lifecycle.destroyAfter };
         decide(workspace, null, "destroy-wallet", null);
       }
+
       const agentIds = new Set<string>(workspace.agents.map((agent) => agent.id));
+
       for (const [token, agentId] of state.tokens)
         if (agentIds.has(agentId)) state.tokens.delete(token);
+
       for (const [token, invite] of state.invites) {
         if (invite.workspaceId === workspace.id) state.invites.delete(token);
       }
+
       workspace.agents = workspace.agents.map((agent) => ({
         ...agent,
         status: "disabled",
@@ -1789,9 +1986,12 @@ function finalizeDue(): void {
       };
       continue;
     }
+
     for (const wallet of workspace.wallets) {
       const due = wallet.lifecycle.destroyAfter;
+
       if (wallet.lifecycle.state !== "retiring" || due === null || due > now()) continue;
+
       if (unmined(workspace, wallet.id)) continue;
       wallet.lifecycle = { state: "destroyed", destroyAfter: due };
       audit(workspace, systemActor, "wallet.destroyed", { type: "wallet", id: wallet.id });
@@ -1830,6 +2030,7 @@ type Handler = (input: {
 
 function signedIn(userId: string | null): string {
   if (!userId) throw new Refusal("unauthenticated", "Sign in first.");
+
   return userId;
 }
 
@@ -1851,6 +2052,7 @@ function notificationPreferences(userId: string): NotificationPreferences {
 function pushEndpointAllowed(endpoint: string): boolean {
   const url = new URL(endpoint);
   const host = url.hostname.toLowerCase();
+
   return (
     url.username === "" &&
     url.password === "" &&
@@ -1862,6 +2064,7 @@ const handlers: Record<RouteName, Handler> = {
   getSession: ({ userId }) => sessionInfo(userId),
   startSetup: ({ body }) => {
     if (state.setupDone) throw new Refusal("conflict", "This server is already set up.");
+
     if (body.setupToken !== SETUP_TOKEN)
       throw new Refusal("forbidden", "The setup token is not correct.");
     const userId = newId("usr");
@@ -1872,6 +2075,7 @@ const handlers: Record<RouteName, Handler> = {
       kind: "setup",
       data: { userId, displayName: String(body.displayName) },
     });
+
     return { ceremonyId, options };
   },
   finishSetup: ({ body, res }) => {
@@ -1882,12 +2086,14 @@ const handlers: Record<RouteName, Handler> = {
     registerCredential(userId, response, "First passkey");
     state.setupDone = true;
     startSession(res, userId);
+
     return sessionInfo(userId);
   },
   startLogin: () => {
     const challenge = randomToken(32);
     const ceremonyId = randomToken();
     state.ceremonies.set(ceremonyId, { challenge, kind: "login", data: {} });
+
     return {
       ceremonyId,
       options: {
@@ -1903,25 +2109,31 @@ const handlers: Record<RouteName, Handler> = {
     const response = body.response as { id: string; response: { clientDataJSON: string } };
     finishCeremony(String(body.ceremonyId), "login", response);
     const credential = state.credentials.get(response.id);
+
     if (!credential) throw new Refusal("unauthenticated", "This passkey is not registered here.");
     credential.summary.lastUsedAt = now();
     startSession(res, credential.userId);
+
     return sessionInfo(credential.userId);
   },
   logout: ({ res }) => {
     res.setHeader("set-cookie", "fixture_session=; Path=/; Max-Age=0");
+
     return {};
   },
   eraseMe: ({ userId, signedInAt, res }) => {
     const id = signedIn(userId);
     requireRecentSignIn(signedInAt);
+
     const theirs = [...state.workspaces.values()].filter(
       (workspace) =>
         workspace.lifecycle.state !== "deleted" &&
         workspace.members.some((member) => member.user.id === id),
     );
+
     for (const workspace of theirs) {
       const owners = workspace.members.filter((member) => member.role === "owner");
+
       if (owners.length === 1 && owners[0]?.user.id === id) {
         throw new Refusal(
           "conflict",
@@ -1930,8 +2142,10 @@ const handlers: Record<RouteName, Handler> = {
         );
       }
     }
+
     // While their passkeys still approve somewhere, the signer must stop accepting them first.
     const approving = theirs.filter((workspace) => memberOf(workspace, id).approver === "active");
+
     if (approving.length > 0) {
       for (const workspace of approving) {
         if (workspace.lifecycle.state === "deleting") {
@@ -1941,9 +2155,11 @@ const handlers: Record<RouteName, Handler> = {
             "workspace_deleting",
           );
         }
+
         const others = workspace.members.filter(
           (member) => member.user.id !== id && member.approver === "active",
         ).length;
+
         if (others < workspace.adminThreshold) {
           throw new Refusal(
             "conflict",
@@ -1952,6 +2168,7 @@ const handlers: Record<RouteName, Handler> = {
           );
         }
       }
+
       const approvals = approving.flatMap((workspace) => {
         const waiting = [...state.approvals.values()]
           .filter(
@@ -1962,37 +2179,47 @@ const handlers: Record<RouteName, Handler> = {
               subject.user.id === id,
           )
           .map((approval) => approval.summary);
+
         return waiting.length > 0
           ? waiting
           : approverApprovals(workspace, id, "remove-approver", id);
       });
+
       return { status: "waiting", approvals };
     }
+
     for (const workspace of theirs) {
       workspace.members = workspace.members.filter((member) => member.user.id !== id);
       audit(workspace, userActor(id), "member.erased", { type: "user", id });
     }
+
     for (const [credentialId, credential] of state.credentials) {
       if (credential.userId === id) state.credentials.delete(credentialId);
     }
+
     for (const [token, owner] of state.sessions) {
       if (owner !== id) continue;
       state.sessions.delete(token);
       state.signedInAt.delete(token);
     }
+
     for (const [subscriptionId, subscription] of state.pushSubscriptions) {
       if (subscription.userId === id) state.pushSubscriptions.delete(subscriptionId);
     }
+
     for (const key of state.notificationSwitches.keys()) {
       if (key.startsWith(`${id} `)) state.notificationSwitches.delete(key);
     }
+
     state.quietHours.delete(id);
     state.users.set(id, "Erased person");
     res.setHeader("set-cookie", "fixture_session=; Path=/; Max-Age=0");
+
     return { status: "erased", approvals: [] };
   },
   listPasskeys: ({ userId }) => {
     const id = signedIn(userId);
+
     return {
       items: [...state.credentials.values()]
         .filter((item) => item.userId === id)
@@ -2004,6 +2231,7 @@ const handlers: Record<RouteName, Handler> = {
     const { challenge, options } = registrationOptions(id, state.users.get(id) ?? "");
     const ceremonyId = randomToken();
     state.ceremonies.set(ceremonyId, { challenge, kind: "add", data: {} });
+
     return { ceremonyId, options };
   },
   finishAddPasskey: ({ body, userId }) => {
@@ -2012,8 +2240,10 @@ const handlers: Record<RouteName, Handler> = {
     finishCeremony(String(body.ceremonyId), "add", response);
     const passkey = registerCredential(id, response, String(body.label));
     const approvals: ApprovalSummary[] = [];
+
     for (const workspace of state.workspaces.values()) {
       const member = workspace.members.find((item) => item.user.id === id);
+
       if (member?.approver !== "active") continue;
       approvals.push(
         openApproval({
@@ -2042,18 +2272,22 @@ const handlers: Record<RouteName, Handler> = {
         }).summary,
       );
     }
+
     return { passkey, approvals };
   },
   removePasskey: ({ params, userId }) => {
     const id = signedIn(userId);
     const credential = state.credentials.get(params.credentialId ?? "");
+
     if (!credential || credential.userId !== id)
       throw new Refusal("not_found", "This passkey does not exist.");
     state.credentials.delete(params.credentialId ?? "");
+
     return { approvals: [] };
   },
   listWorkspaces: ({ userId }) => {
     const id = signedIn(userId);
+
     return {
       items: [...state.workspaces.values()]
         .filter((workspace) => workspace.members.some((member) => member.user.id === id))
@@ -2066,12 +2300,14 @@ const handlers: Record<RouteName, Handler> = {
             pendingApprovals,
             lifecycle,
           } = workspaceDetail(workspace, id);
+
           return { id: wsId, name, role, paused, pendingApprovals, lifecycle };
         }),
     };
   },
   createWorkspace: ({ body, userId }) => {
     const id = signedIn(userId);
+
     const workspace: Workspace = {
       id: newId("ws"),
       name: String(body.name).trim(),
@@ -2094,9 +2330,11 @@ const handlers: Record<RouteName, Handler> = {
       audit: [],
       decisions: [],
     };
+
     state.workspaces.set(workspace.id, workspace);
     audit(workspace, userActor(id), "workspace.created", { type: "workspace", id: workspace.id });
     decide(workspace, null, "bootstrap_workspace", null);
+
     return workspaceDetail(workspace, id);
   },
   getWorkspace: ({ params, userId }) =>
@@ -2104,17 +2342,21 @@ const handlers: Record<RouteName, Handler> = {
   pauseWorkspace: ({ params, userId }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
+
     if (memberOf(workspace, id).role === "viewer")
       throw new Refusal("forbidden", "Viewers cannot pause.");
     workspace.paused = true;
     audit(workspace, userActor(id), "workspace.paused", { type: "workspace", id: workspace.id });
     decide(workspace, null, "pause_workspace", null);
+
     return workspaceDetail(workspace, id);
   },
   requestResume: ({ params, userId }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
+
     if (!workspace.paused) throw new Refusal("conflict", "This workspace is not paused.");
+
     return openApproval({
       workspace,
       kind: "resume-workspace",
@@ -2138,6 +2380,7 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
     const proposed = Number(body.adminThreshold);
+
     // Mirrors the signer: the admin threshold may not drop below a wallet's own threshold.
     if (workspace.wallets.some((wallet) => (wallet.policy?.approvals.threshold ?? 1) > proposed)) {
       throw new Refusal(
@@ -2145,6 +2388,7 @@ const handlers: Record<RouteName, Handler> = {
         "A wallet needs more approvals per payment than this. Lower that wallet's number first.",
       );
     }
+
     return openApproval({
       workspace,
       kind: "set-admin-threshold",
@@ -2168,9 +2412,11 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
     const wallets = workspace.wallets.filter((wallet) => wallet.lifecycle.state !== "destroyed");
+
     const pending = [...state.approvals.values()].some(
       ({ summary }) => summary.workspaceId === workspace.id && summary.status === "pending",
     );
+
     return {
       workspaceId: workspace.id,
       source: "control-plane",
@@ -2188,18 +2434,23 @@ const handlers: Record<RouteName, Handler> = {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
+
     if (!workspace.paused) {
       throw new Refusal("conflict", "Pause the workspace first: it is deleted only while paused.");
     }
+
     if (waitingLifecycle(workspace, null)) {
       throw new Refusal("conflict", "A request to delete this workspace already waits.");
     }
+
     const destroyAfter = Number(body.destroyAfter);
     checkDestroyAfter(destroyAfter);
+
     // The envelope names every wallet whose key the signer holds, sorted by id.
     const wallets = workspace.wallets
       .filter((wallet) => wallet.lifecycle.state !== "destroyed")
       .sort((a, b) => (a.id < b.id ? -1 : 1));
+
     const approval = openApproval({
       workspace,
       kind: "delete-workspace",
@@ -2233,6 +2484,7 @@ const handlers: Record<RouteName, Handler> = {
           );
           wallet.lifecycle = { state: "retiring", destroyAfter };
         }
+
         workspace.lifecycle = { state: "deleting", destroyAfter, deletedAt: null };
         endAuthority(workspace, null, approval.summary.id);
         audit(workspace, userActor(id), "workspace.deleting", {
@@ -2242,6 +2494,7 @@ const handlers: Record<RouteName, Handler> = {
         decide(workspace, approval.summary.id, "delete-workspace", null);
       },
     });
+
     return approval.summary;
   },
   cancelDeleteWorkspace: ({ params, userId }) => {
@@ -2249,15 +2502,18 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     memberOf(workspace, id);
     const waiting = waitingLifecycle(workspace, null);
+
     if (waiting) {
       cancelApproval(waiting);
     } else if (workspace.lifecycle.state === "deleting") {
       // The keys stay; the workspace stays paused; ended mandates stay ended.
       for (const wallet of workspace.wallets) {
         const before = workspace.beforeDelete.get(wallet.id);
+
         if (before === undefined || wallet.lifecycle.state !== "retiring") continue;
         wallet.lifecycle = { state: before, destroyAfter: null };
       }
+
       workspace.beforeDelete.clear();
       workspace.lifecycle = { state: "active", destroyAfter: null, deletedAt: null };
       audit(workspace, userActor(id), "workspace.delete_cancelled", {
@@ -2268,6 +2524,7 @@ const handlers: Record<RouteName, Handler> = {
     } else {
       throw new Refusal("conflict", "Nothing is waiting to delete this workspace.");
     }
+
     return workspaceDetail(workspace, id);
   },
   createInvite: ({ params, body, userId, origin }) => {
@@ -2285,12 +2542,14 @@ const handlers: Record<RouteName, Handler> = {
       createdAt: now(),
       expiresAt,
     });
+
     return { id: inviteId, url: `${origin}/join/${token}`, expiresAt };
   },
   listInvites: ({ params, userId }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
+
     const items: InviteSummary[] = [...state.invites.values()]
       .filter((invite) => invite.workspaceId === workspace.id && invite.expiresAt > now())
       .sort((a, b) => b.createdAt - a.createdAt)
@@ -2301,23 +2560,29 @@ const handlers: Record<RouteName, Handler> = {
         createdAt: invite.createdAt,
         expiresAt: invite.expiresAt,
       }));
+
     return { items };
   },
   revokeInvite: ({ params, userId }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
+
     const entry = [...state.invites].find(
       ([, invite]) => invite.id === params.inviteId && invite.workspaceId === workspace.id,
     );
+
     if (!entry) throw new Refusal("not_found", "This invite does not exist.");
     state.invites.delete(entry[0]);
     audit(workspace, userActor(id), "invite.revoked", { type: "workspace", id: workspace.id });
+
     return {};
   },
   getInvite: ({ params }) => {
     const invite = state.invites.get(params.token ?? "");
+
     if (!invite) throw new Refusal("not_found", "This invite link is not valid.");
+
     return {
       workspaceName: workspaceOf(invite.workspaceId).name,
       role: invite.role,
@@ -2335,10 +2600,12 @@ const handlers: Record<RouteName, Handler> = {
       kind: "invite",
       data: { userId, displayName: String(body.displayName) },
     });
+
     return { ceremonyId, options };
   },
   finishInviteRegistration: ({ params, body, res }) => {
     const invite = state.invites.get(params.token ?? "");
+
     if (!invite) throw new Refusal("not_found", "This invite link is not valid.");
     const response = body.response as { id: string; response: { clientDataJSON: string } };
     const ceremony = finishCeremony(String(body.ceremonyId), "invite", response);
@@ -2347,6 +2614,7 @@ const handlers: Record<RouteName, Handler> = {
     registerCredential(userId, response, "First passkey");
     joinWorkspace(params.token ?? "", userId);
     startSession(res, userId);
+
     return sessionInfo(userId);
   },
   acceptInvite: ({ params, userId }) => ({
@@ -2361,13 +2629,17 @@ const handlers: Record<RouteName, Handler> = {
     const wasApprover = member.approver !== "none";
     member.role = role;
     let approvals: ApprovalSummary[] = [];
+
     if (role === "viewer" && wasApprover)
       approvals = approverApprovals(workspace, member.user.id, "remove-approver", id);
+
     if (role !== "viewer" && !wasApprover) {
       member.approver = "pending";
       approvals = approverApprovals(workspace, member.user.id, "add-approver", id);
     }
+
     refreshApprover(workspace, member.user.id);
+
     return { member, approvals };
   },
   removeMember: ({ params, userId }) => {
@@ -2375,11 +2647,14 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
     const member = memberOf(workspace, params.userId ?? "");
+
     const approvals =
       member.approver === "active"
         ? approverApprovals(workspace, member.user.id, "remove-approver", id)
         : [];
+
     workspace.members = workspace.members.filter((item) => item !== member);
+
     return { approvals };
   },
   createAgent: ({ params, body, userId, origin }) => {
@@ -2387,6 +2662,7 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
     const agentId = newId("agt");
+
     const wallet: WalletSummary = {
       id: newId("wal"),
       kind: "agent",
@@ -2397,7 +2673,9 @@ const handlers: Record<RouteName, Handler> = {
       policyHash: null,
       lifecycle: { state: "active", destroyAfter: null },
     };
+
     const token = `osa_${randomToken(32)}`;
+
     const agent = {
       id: agentId,
       name: String(body.name).trim(),
@@ -2407,11 +2685,13 @@ const handlers: Record<RouteName, Handler> = {
       createdAt: now(),
       lastSeenAt: null,
     };
+
     workspace.agents.push(agent);
     workspace.wallets.push(wallet);
     state.tokens.set(token, agentId);
     audit(workspace, userActor(id), "agent.created", { type: "agent", id: agentId });
     decide(workspace, null, "create_wallet", null);
+
     return { agent, wallet, token, mcpUrl: `${origin}/mcp` };
   },
   rotateAgentToken: ({ params, userId }) => {
@@ -2419,11 +2699,14 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
     const agent = workspace.agents.find((item) => item.id === params.agentId);
+
     if (!agent) throw new Refusal("not_found", "This agent does not exist.");
+
     for (const [token, owner] of state.tokens) if (owner === agent.id) state.tokens.delete(token);
     const token = `osa_${randomToken(32)}`;
     state.tokens.set(token, agent.id);
     agent.tokenPrefix = token.slice(0, 10);
+
     return { token };
   },
   disableAgent: ({ params, userId }) => {
@@ -2431,13 +2714,17 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
     const agent = workspace.agents.find((item) => item.id === params.agentId);
+
     if (!agent) throw new Refusal("not_found", "This agent does not exist.");
     agent.status = "disabled";
+
     // Mirrors the server: removing an agent cancels its waiting grants and payment requests, and
     // revokes its mandates.
     for (const approval of state.approvals.values()) {
       const { summary, envelope, subject } = approval;
+
       if (summary.status !== "pending") continue;
+
       if (
         (envelope.type === "grant-mandate" && envelope.agentId === agent.id) ||
         (subject.kind === "approve-intent" && subject.intent.agent.id === agent.id)
@@ -2445,17 +2732,21 @@ const handlers: Record<RouteName, Handler> = {
         cancelApproval(approval);
       }
     }
+
     for (const record of state.mandates.values()) {
       if (record.agent.id === agent.id) endMandate(record, "agent_disabled");
     }
+
     return agent;
   },
   createTreasury: ({ params, body, userId }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
+
     if (workspace.wallets.some((item) => item.kind === "treasury"))
       throw new Refusal("conflict", "This workspace already has a treasury.");
+
     const wallet: WalletSummary = {
       id: newId("wal"),
       kind: "treasury",
@@ -2466,7 +2757,9 @@ const handlers: Record<RouteName, Handler> = {
       policyHash: null,
       lifecycle: { state: "active", destroyAfter: null },
     };
+
     workspace.wallets.push(wallet);
+
     return wallet;
   },
   getWallet: ({ params, userId }) => {
@@ -2474,14 +2767,18 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     memberOf(workspace, id);
     const wallet = workspace.wallets.find((item) => item.id === params.walletId);
+
     if (!wallet) throw new Refusal("not_found", "This wallet does not exist.");
+
     const pending = [...state.approvals.values()].find(
       (item) =>
         item.summary.status === "pending" &&
         item.subject.kind === "set-policy" &&
         item.subject.wallet.id === wallet.id,
     );
+
     const venue = venueAccountOf(wallet);
+
     return {
       ...wallet,
       balances: BALANCES,
@@ -2490,6 +2787,7 @@ const handlers: Record<RouteName, Handler> = {
         .filter(([key]) => key.startsWith(`${wallet.id}|eip155:`))
         .map(([key, amount]) => {
           const [, chainId, asset] = key.split("|");
+
           return { chainId, asset, amount: amount.toString() };
         }),
       pendingPolicyApprovalId: pending?.summary.id ?? null,
@@ -2501,11 +2799,15 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
     const wallet = workspace.wallets.find((item) => item.id === params.walletId);
+
     if (!wallet) throw new Refusal("not_found", "This wallet does not exist.");
+
     if (wallet.lifecycle.state === "retiring" || wallet.lifecycle.state === "destroyed") {
       throw new Refusal("conflict", "This wallet is retired: its limits cannot change.");
     }
+
     const draft = body.draft as PolicyDraft;
+
     // Mirrors the server: more approvals per payment than for admin changes would be undone by
     // anyone who can change the limits.
     if (draft.approvals.threshold > workspace.adminThreshold) {
@@ -2514,8 +2816,10 @@ const handlers: Record<RouteName, Handler> = {
         `Approvals needed per payment can be at most ${workspace.adminThreshold}, the number needed for admin changes.`,
       );
     }
+
     // Mirrors the server: venue rules may only name a network this server has set up.
     const venueNetwork = draft.venues?.hyperliquid?.network;
+
     if (venueNetwork !== undefined && !VENUE_NETWORKS.includes(venueNetwork)) {
       throw new Refusal(
         "invalid_request",
@@ -2523,13 +2827,17 @@ const handlers: Record<RouteName, Handler> = {
         "venue_not_configured",
       );
     }
+
     let proposed: WalletPolicy;
+
     try {
       proposed = policyFromDraft(workspace, wallet, draft);
     } catch {
       throw new Refusal("invalid_request", "These limits are not valid.");
     }
+
     const hash = policyHash(proposed);
+
     return openApproval({
       workspace,
       kind: "set-policy",
@@ -2546,10 +2854,12 @@ const handlers: Record<RouteName, Handler> = {
       apply: () => {
         wallet.policy = proposed;
         wallet.policyHash = hash;
+
         // Mirrors the signer: new limits let a wallet stopped after a cancelled retirement sign.
         if (wallet.lifecycle.state === "held") {
           wallet.lifecycle = { state: "active", destroyAfter: null };
         }
+
         decide(workspace, null, "set_policy", null);
       },
     }).summary;
@@ -2559,6 +2869,7 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
     const wallet = workspace.wallets.find((item) => item.id === params.walletId);
+
     if (!wallet) throw new Refusal("not_found", "This wallet does not exist.");
     const asset = body.asset as Sweep["asset"];
     const to = body.to as Sweep["to"];
@@ -2567,6 +2878,7 @@ const handlers: Record<RouteName, Handler> = {
     const maxFeeWei = 1_000_000_000_000_000n;
     const native = asset === "native";
     const amount = native ? 1_250_000_000_000_000_000n - maxFeeWei : 420_000_000n;
+
     const sweep: Sweep = {
       v: 1,
       workspaceId: workspace.id as Sweep["workspaceId"],
@@ -2577,8 +2889,10 @@ const handlers: Record<RouteName, Handler> = {
       to,
       maxFeeWei: maxFeeWei.toString(),
     };
+
     const hash = sweepHash(sweep);
     const recipients = wallet.policy?.recipients;
+
     const destination =
       recipients?.mode === "allowlist" && recipients.addresses.includes(to)
         ? ("allowlist" as const)
@@ -2587,6 +2901,7 @@ const handlers: Record<RouteName, Handler> = {
             )
           ? ("treasury" as const)
           : null;
+
     const subject: Extract<ApprovalSubject, { kind: "sweep-wallet" }> = {
       kind: "sweep-wallet",
       wallet: { ...wallet },
@@ -2597,6 +2912,7 @@ const handlers: Record<RouteName, Handler> = {
       destination,
       transaction: null,
     };
+
     const approval = openApproval({
       workspace,
       kind: "sweep-wallet",
@@ -2616,13 +2932,16 @@ const handlers: Record<RouteName, Handler> = {
           approval.summary.status = "failed";
           approval.summary.failureCode = "sweep_destination_not_allowed";
           decide(workspace, approval.summary.id, "sweep", "sweep_destination_not_allowed");
+
           return;
         }
+
         // A sweep is mined at once here; it can be cancelled, never sped up.
         subject.transaction = minedTransaction(sentTransaction(sweep.chainId));
         decide(workspace, approval.summary.id, "sweep", null);
       },
     });
+
     return approval.summary;
   },
   requestRetireWallet: ({ params, body, userId }) => {
@@ -2630,15 +2949,20 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
     const wallet = workspace.wallets.find((item) => item.id === params.walletId);
+
     if (!wallet) throw new Refusal("not_found", "This wallet does not exist.");
+
     if (wallet.lifecycle.state === "retiring" || wallet.lifecycle.state === "destroyed") {
       throw new Refusal("conflict", "This wallet is already being retired or retired.");
     }
+
     if (waitingLifecycle(workspace, wallet.id)) {
       throw new Refusal("conflict", "A request to retire this wallet already waits.");
     }
+
     const destroyAfter = Number(body.destroyAfter);
     checkDestroyAfter(destroyAfter);
+
     const approval = openApproval({
       workspace,
       kind: "retire-wallet",
@@ -2659,20 +2983,27 @@ const handlers: Record<RouteName, Handler> = {
         decide(workspace, approval.summary.id, "retire-wallet", null);
       },
     });
+
     return approval.summary;
   },
   cancelRetireWallet: ({ params, userId }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
+
     if (memberOf(workspace, id).role === "viewer") {
       throw new Refusal("forbidden", "Viewers cannot cancel a retirement.");
     }
+
     const wallet = workspace.wallets.find((item) => item.id === params.walletId);
+
     if (!wallet) throw new Refusal("not_found", "This wallet does not exist.");
+
     if (workspace.lifecycle.state !== "active") {
       throw new Refusal("conflict", "The workspace is being deleted: cancel that instead.");
     }
+
     const waiting = waitingLifecycle(workspace, wallet.id);
+
     if (waiting) {
       cancelApproval(waiting);
     } else if (wallet.lifecycle.state === "retiring") {
@@ -2683,6 +3014,7 @@ const handlers: Record<RouteName, Handler> = {
     } else {
       throw new Refusal("conflict", "Nothing is waiting to retire this wallet.");
     }
+
     return wallet;
   },
   proposeMandate: ({ params, body, userId }) => {
@@ -2690,14 +3022,19 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
     const wallet = workspace.wallets.find((item) => item.id === params.walletId);
+
     if (!wallet) throw new Refusal("not_found", "This wallet does not exist.");
     const draft = body as MandateDraft;
     const agent = workspace.agents.find((item) => item.id === draft.agentId);
+
     if (!agent) throw new Refusal("invalid_request", "agentId: not an agent of this workspace");
+
     if (agent.status !== "active") throw new Refusal("conflict", "This agent is disabled.");
+
     if (wallet.id !== agent.walletId && wallet.kind !== "treasury") {
       throw new Refusal("invalid_request", "agentId: this agent cannot propose from this wallet");
     }
+
     if (!wallet.policy) {
       throw new Refusal(
         "policy_denied",
@@ -2705,7 +3042,9 @@ const handlers: Record<RouteName, Handler> = {
         "policy_missing",
       );
     }
+
     let mandate: Mandate;
+
     try {
       mandate = normalizeMandate({
         ...draft,
@@ -2718,11 +3057,13 @@ const handlers: Record<RouteName, Handler> = {
     } catch {
       throw new Refusal("invalid_request", "This mandate is not valid.");
     }
+
     // Mirrors the server: checked against the policy and the longest life (7 days) first.
     const refusal = checkMandateAgainstPolicy(mandate, wallet.policy, {
       now: now(),
       maxSeconds: MANDATE_LONGEST_SECONDS,
     });
+
     if (refusal !== null) {
       throw new Refusal(
         "invalid_request",
@@ -2730,8 +3071,10 @@ const handlers: Record<RouteName, Handler> = {
         refusal,
       );
     }
+
     const hash = mandateHash(mandate);
     const payments = mandate.maxUses === 1 ? "1 payment" : `${mandate.maxUses} payments`;
+
     const approval = openApproval({
       workspace,
       kind: "grant-mandate",
@@ -2765,20 +3108,28 @@ const handlers: Record<RouteName, Handler> = {
           approval.summary.failureCode = code;
           decide(workspace, approval.summary.id, "grant-mandate", code);
         };
+
         if (agent.status !== "active") return fail("agent_disabled");
+
         if (workspace.paused) return fail("workspace_paused");
         const policy = wallet.policy;
+
         if (!policy) return fail("policy_missing");
+
         const refused = checkMandateAgainstPolicy(mandate, policy, {
           now: now(),
           maxSeconds: MANDATE_LONGEST_SECONDS,
         });
+
         if (refused !== null) return fail(refused);
+
         const live = [...state.mandates.values()].filter((record) => {
           if (record.mandate.walletId !== wallet.id) return false;
           const status = mandateStatus(record);
+
           return status === "active" || status === "not_yet_valid";
         });
+
         if (live.length >= LIVE_MANDATES_PER_WALLET) return fail("too_many_live_mandates");
         state.mandates.set(mandate.id, {
           workspaceId: workspace.id,
@@ -2798,12 +3149,14 @@ const handlers: Record<RouteName, Handler> = {
         });
       },
     });
+
     return approval.summary;
   },
   listMandates: ({ params, query, userId }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
     memberOf(workspace, id);
+
     const items = [...state.mandates.values()]
       .filter((record) => record.workspaceId === workspace.id)
       .map(mandateSummary)
@@ -2815,6 +3168,7 @@ const handlers: Record<RouteName, Handler> = {
             (query.status === "active") === (item.endedReason === null)),
       )
       .sort((a, b) => b.grantedAt - a.grantedAt || (a.id < b.id ? 1 : -1));
+
     return { items, nextCursor: null };
   },
   getMandate: ({ params, userId }) => {
@@ -2822,9 +3176,11 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     memberOf(workspace, id);
     const record = state.mandates.get(params.mandateId ?? "");
+
     if (!record || record.workspaceId !== workspace.id) {
       throw new Refusal("not_found", "This mandate does not exist.");
     }
+
     const intents = [...state.intents.values()]
       .filter((item) => item.mandateId === record.mandate.id)
       .sort((a, b) => b.createdAt - a.createdAt)
@@ -2836,20 +3192,26 @@ const handlers: Record<RouteName, Handler> = {
           transaction: _tx,
           ...summary
         } = stripIntent(item);
+
         return summary;
       });
+
     return { ...mandateSummary(record), intents, intentsCursor: null };
   },
   revokeMandate: ({ params, userId }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
+
     if (memberOf(workspace, id).role === "viewer") {
       throw new Refusal("forbidden", "Only an owner or an approver can do this.");
     }
+
     const record = state.mandates.get(params.mandateId ?? "");
+
     if (!record || record.workspaceId !== workspace.id) {
       throw new Refusal("not_found", "This mandate does not exist.");
     }
+
     if (record.revokedAt === null) {
       endMandate(record, "revoked");
       audit(workspace, userActor(id), "mandate.revoked", {
@@ -2857,60 +3219,76 @@ const handlers: Record<RouteName, Handler> = {
         id: record.mandate.id,
       });
     }
+
     return mandateSummary(record);
   },
   listApprovals: ({ params, query, userId }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
     memberOf(workspace, id);
+
     const listed = [...state.approvals.values()].filter(
       (item) => item.summary.workspaceId === workspace.id,
     );
+
     for (const item of listed) collect(item);
+
     const items = listed
       .filter((item) => query.status !== "pending" || item.summary.status === "pending")
       .map((item) => item.summary)
       .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
+
     return { items, nextCursor: null };
   },
   getApproval: ({ params, userId }) => {
     const id = signedIn(userId);
     const approval = state.approvals.get(params.approvalId ?? "");
+
     if (!approval) throw new Refusal("not_found", "This request does not exist.");
     memberOf(workspaceOf(approval.summary.workspaceId), id);
     collect(approval);
+
     return approvalDetail(approval, id);
   },
   collectApproval: ({ params, userId }) => {
     const id = signedIn(userId);
     const approval = state.approvals.get(params.approvalId ?? "");
+
     if (!approval) throw new Refusal("not_found", "This request does not exist.");
     memberOf(workspaceOf(approval.summary.workspaceId), id);
     collect(approval);
+
     return approvalDetail(approval, id);
   },
   reject: ({ params, userId }) => {
     const id = signedIn(userId);
     const approval = state.approvals.get(params.approvalId ?? "");
+
     if (!approval) throw new Refusal("not_found", "This request does not exist.");
+
     if (!approvalDetail(approval, id).canDecide)
       throw new Refusal("forbidden", "You cannot reject this request.");
     approval.summary.status = "rejected";
     approval.rejectedBy = userSummary(id);
+
     if (approval.subject.kind === "approve-intent") {
       const intent = state.intents.get(approval.subject.intent.id);
+
       if (intent) intent.status = "rejected";
     }
+
     audit(workspaceOf(approval.summary.workspaceId), userActor(id), "approval.rejected", {
       type: "approval",
       id: approval.summary.id,
     });
+
     return approvalDetail(approval, id);
   },
   listIntents: ({ params, query, userId }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
     memberOf(workspace, id);
+
     const items = [...state.intents.values()]
       .filter(
         (item) =>
@@ -2926,25 +3304,33 @@ const handlers: Record<RouteName, Handler> = {
           transaction: _tx,
           ...summary
         } = stripIntent(item);
+
         return summary;
       });
+
     return { items, nextCursor: null };
   },
   getIntent: ({ params, userId }) => {
     signedIn(userId);
     const intent = state.intents.get(params.intentId ?? "");
+
     if (!intent) throw new Refusal("not_found", "This request does not exist.");
+
     return stripIntent(intent);
   },
   speedUp: ({ params, userId }) => {
     const id = signedIn(userId);
     const intent = state.intents.get(params.intentId ?? "");
+
     if (!intent) throw new Refusal("not_found", "This request does not exist.");
     const workspace = workspaceOf(intent.workspaceId);
+
     if (memberOf(workspace, id).role === "viewer") {
       throw new Refusal("forbidden", "Only an owner or an approver can do this.");
     }
+
     const transaction = intent.transaction;
+
     if (!transaction || !isSent(transaction)) {
       throw new Refusal(
         "conflict",
@@ -2952,6 +3338,7 @@ const handlers: Record<RouteName, Handler> = {
         "not_repriceable",
       );
     }
+
     if (workspace.paused) {
       throw new Refusal(
         "conflict",
@@ -2959,12 +3346,16 @@ const handlers: Record<RouteName, Handler> = {
         "workspace_paused",
       );
     }
+
     const reason = transaction.stuckReason;
+
     if (reason !== null && reason !== "fee_too_low") {
       throw new Refusal("conflict", "A higher fee cannot help this transaction now.", reason);
     }
+
     // Within 15 seconds of the newest attempt nothing is added: two clicks make one attempt.
     const latest = transaction.attempts[transaction.attempts.length - 1];
+
     if (latest && now() - latest.signedAt >= 15) {
       intent.transaction = withAttempt(transaction, intent.chainId, "reprice", null);
       intent.transactionHash = intent.transaction.hash;
@@ -2974,17 +3365,22 @@ const handlers: Record<RouteName, Handler> = {
         id: targetOf(intent) ?? intent.id,
       });
     }
+
     return stripIntent(intent);
   },
   requestCancel: ({ params, userId }) => {
     const id = signedIn(userId);
     const intent = state.intents.get(params.intentId ?? "");
+
     if (!intent) throw new Refusal("not_found", "This request does not exist.");
     const workspace = workspaceOf(intent.workspaceId);
+
     if (memberOf(workspace, id).role === "viewer") {
       throw new Refusal("forbidden", "Only an owner or an approver can do this.");
     }
+
     const target = targetOf(intent);
+
     if (!intent.transaction || target === null || intent.transaction.status === "signed") {
       throw new Refusal(
         "conflict",
@@ -2992,6 +3388,7 @@ const handlers: Record<RouteName, Handler> = {
         "not_sent",
       );
     }
+
     if (!isSent(intent.transaction)) {
       throw new Refusal(
         "conflict",
@@ -2999,6 +3396,7 @@ const handlers: Record<RouteName, Handler> = {
         "transaction_final",
       );
     }
+
     return openCancel(workspace, id, {
       target,
       walletId: intent.walletId,
@@ -3019,12 +3417,16 @@ const handlers: Record<RouteName, Handler> = {
   cancelOrder: ({ params, userId }) => {
     const id = signedIn(userId);
     const intent = state.intents.get(params.intentId ?? "");
+
     if (!intent) throw new Refusal("not_found", "This request does not exist.");
     const workspace = workspaceOf(intent.workspaceId);
+
     if (memberOf(workspace, id).role === "viewer") {
       throw new Refusal("forbidden", "Only an owner or an approver can do this.");
     }
+
     const order = intent.order;
+
     if (!order?.canCancel) {
       throw new Refusal(
         "conflict",
@@ -3032,24 +3434,31 @@ const handlers: Record<RouteName, Handler> = {
         "not_cancellable",
       );
     }
+
     // Approving the order included the right to cancel it: no passkey, also while paused (D4).
     const filled = order.filledSize !== null && order.filledSize !== "0";
     intent.order = { ...order, canCancel: false };
     intent.status = filled ? "partially_filled" : "cancelled";
     decide(workspace, intent.approvalId, "cancel-venue-order", null);
     audit(workspace, userActor(id), "order.cancelled", { type: "intent", id: intent.id });
+
     return stripIntent(intent);
   },
   requestSweepCancel: ({ params, userId }) => {
     const id = signedIn(userId);
     const approval = state.approvals.get(params.approvalId ?? "");
+
     if (!approval) throw new Refusal("not_found", "This request does not exist.");
     const workspace = workspaceOf(approval.summary.workspaceId);
+
     if (memberOf(workspace, id).role === "viewer") {
       throw new Refusal("forbidden", "Only an owner or an approver can do this.");
     }
+
     const subject = approval.subject;
+
     if (subject.kind !== "sweep-wallet") throw new Refusal("not_found", "No such sweep.");
+
     if (!subject.transaction || subject.transaction.status === "signed") {
       throw new Refusal(
         "conflict",
@@ -3057,6 +3466,7 @@ const handlers: Record<RouteName, Handler> = {
         "not_sent",
       );
     }
+
     if (!isSent(subject.transaction)) {
       throw new Refusal(
         "conflict",
@@ -3064,6 +3474,7 @@ const handlers: Record<RouteName, Handler> = {
         "transaction_final",
       );
     }
+
     return openCancel(workspace, id, {
       target: approval.summary.id,
       walletId: subject.sweep.walletId,
@@ -3084,6 +3495,7 @@ const handlers: Record<RouteName, Handler> = {
     const start = query.cursor ? Number(query.cursor) : workspace.audit.length;
     const items = workspace.audit.slice(Math.max(0, start - 20), start).reverse();
     const next = start - 20;
+
     return { items, nextCursor: next > 0 ? String(next) : null };
   },
   verifyAudit: ({ params, userId }) => {
@@ -3091,19 +3503,24 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     memberOf(workspace, id);
     let previous: string | null = null;
+
     for (const event of workspace.audit) {
       const { hash, ...entry } = event;
+
       if (entry.previousHash !== previous || sha256(JSON.stringify(entry)) !== hash) {
         return { ok: false, checked: event.seq, brokenAt: event.seq };
       }
+
       previous = hash;
     }
+
     return { ok: true, checked: workspace.audit.length, brokenAt: null };
   },
   listSignerDecisions: ({ params, userId }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
     memberOf(workspace, id);
+
     return { items: workspace.decisions };
   },
   getPushConfig: () => ({
@@ -3112,6 +3529,7 @@ const handlers: Record<RouteName, Handler> = {
   }),
   listPushSubscriptions: ({ userId }) => {
     const id = signedIn(userId);
+
     return {
       items: [...state.pushSubscriptions.values()]
         .filter((item) => item.userId === id)
@@ -3120,9 +3538,11 @@ const handlers: Record<RouteName, Handler> = {
   },
   addPushSubscription: async ({ body, userId }) => {
     const id = signedIn(userId);
+
     if (!state.webPush)
       throw new Refusal("conflict", "Notifications on devices are off on this server.", "push_off");
     const endpoint = String(body.endpoint);
+
     if (!pushEndpointAllowed(endpoint))
       throw new Refusal(
         "invalid_request",
@@ -3132,6 +3552,7 @@ const handlers: Record<RouteName, Handler> = {
     // As the server does: the browser's key must be a point on P-256.
     const keys = body.keys as { p256dh: string };
     const p256dh = new Uint8Array(Buffer.from(keys.p256dh.replace(/=+$/, ""), "base64url"));
+
     try {
       await crypto.subtle.importKey(
         "raw",
@@ -3147,45 +3568,59 @@ const handlers: Record<RouteName, Handler> = {
         "bad_subscription",
       );
     }
+
     const label = typeof body.label === "string" ? body.label : null;
+
     for (const [subscriptionId, item] of state.pushSubscriptions) {
       if (item.endpoint !== endpoint) continue;
+
       // The same browser again keeps its id; someone else's browser moves to this person.
       if (item.userId === id) {
         item.summary.label = label ?? item.summary.label;
+
         return item.summary;
       }
+
       state.pushSubscriptions.delete(subscriptionId);
     }
+
     const summary: PushSubscriptionSummary = {
       id: newId("psb"),
       label,
       createdAt: now(),
       lastSuccessAt: null,
     };
+
     state.pushSubscriptions.set(summary.id, { userId: id, endpoint, summary });
+
     return summary;
   },
   removePushSubscription: ({ params, userId }) => {
     const id = signedIn(userId);
     const item = state.pushSubscriptions.get(params.subscriptionId ?? "");
+
     if (!item || item.userId !== id) throw new Refusal("not_found", "No such device.");
     state.pushSubscriptions.delete(params.subscriptionId ?? "");
+
     return {};
   },
   getNotificationPreferences: ({ userId }) => notificationPreferences(signedIn(userId)),
   setNotificationPreferences: ({ body, userId }) => {
     const id = signedIn(userId);
     const input = body as NotificationPreferences;
+
     for (const item of input.workspaces) memberOf(workspaceOf(item.workspaceId), id);
+
     for (const item of input.workspaces) {
       state.notificationSwitches.set(`${id} ${item.workspaceId}`, {
         webPush: item.webPush,
         reminders: item.reminders,
       });
     }
+
     if (input.quietHours === null) state.quietHours.delete(id);
     else state.quietHours.set(id, input.quietHours);
+
     return notificationPreferences(id);
   },
   setNotificationDetail: ({ params, body, userId }) => {
@@ -3193,6 +3628,7 @@ const handlers: Record<RouteName, Handler> = {
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
     const detail = body.detail as NotificationDetail;
+
     if (workspace.notificationDetail !== detail) {
       workspace.notificationDetail = detail;
       audit(workspace, userActor(id), "workspace.notification_detail_set", {
@@ -3200,12 +3636,14 @@ const handlers: Record<RouteName, Handler> = {
         id: workspace.id,
       });
     }
+
     return workspaceDetail(workspace, id);
   },
   exportTemplate: ({ params, userId }) => {
     const id = signedIn(userId);
     const workspace = workspaceOf(params.workspaceId ?? "");
     requireOwner(workspace, id);
+
     return toTemplate(workspace);
   },
   exportRecord: ({ params, userId, signedInAt }) => {
@@ -3214,10 +3652,13 @@ const handlers: Record<RouteName, Handler> = {
     requireOwner(workspace, id);
     requireRecentSignIn(signedInAt);
     audit(workspace, userActor(id), "workspace.exported", { type: "workspace", id: workspace.id });
+
     const head = (log: { seq: number; hash: string }[]) => {
       const last = log.at(-1);
+
       return { seq: last?.seq ?? 0, hash: last?.hash ?? null };
     };
+
     const lines = [
       {
         format: "askgina.os/workspace-record/v1",
@@ -3241,23 +3682,28 @@ const handlers: Record<RouteName, Handler> = {
         },
       },
     ];
+
     return { record: `${lines.map((line) => JSON.stringify(line)).join("\n")}\n` };
   },
   cloneWorkspace: (input) => {
     const id = signedIn(input.userId);
     const source = workspaceOf(input.params.workspaceId ?? "");
     requireOwner(source, id);
+
     return instantiate(toTemplate(source), input.body as CloneOptions, input);
   },
   importTemplate: (input) => {
     signedIn(input.userId);
     const { template, ...options } = input.body as CloneOptions & { template: WorkspaceTemplate };
+
     const unknown = template.wallets
       .flatMap((wallet) => wallet.policy?.chains ?? [])
       .find((chainId) => !CHAINS.some((chain) => chain.chainId === chainId));
+
     if (unknown) {
       throw new Refusal("invalid_request", `The network ${unknown} is not configured here.`);
     }
+
     return instantiate(template, options, input);
   },
 };
@@ -3277,7 +3723,9 @@ function toTemplate(workspace: Workspace): WorkspaceTemplate {
       (wallet.kind === "treasury" ||
         workspace.agents.some((agent) => agent.id === wallet.agentId && agent.status === "active")),
   );
+
   const refs = new Map<string, string>(kept.map((wallet, index) => [wallet.id, `w${index + 1}`]));
+
   return {
     format: "askgina.os/workspace-template/v1",
     name: workspace.name,
@@ -3286,6 +3734,7 @@ function toTemplate(workspace: Workspace): WorkspaceTemplate {
     wallets: kept.map((wallet) => {
       const agent = workspace.agents.find((item) => item.id === wallet.agentId);
       const { policy } = wallet;
+
       return {
         ref: refs.get(wallet.id) ?? "",
         kind: wallet.kind,
@@ -3296,6 +3745,7 @@ function toTemplate(workspace: Workspace): WorkspaceTemplate {
               chains: policy.chains,
               requesters: policy.requesters.flatMap((agentId) => {
                 const walletId = workspace.agents.find((item) => item.id === agentId)?.walletId;
+
                 return refs.get(walletId ?? "") ?? [];
               }),
               assets: policy.assets,
@@ -3321,17 +3771,21 @@ function instantiate(
   input: Parameters<Handler>[0],
 ): CloneResult {
   const id = signedIn(input.userId);
+
   const call = (name: RouteName, params: Record<string, string>, body: Record<string, unknown>) =>
     handlers[name]({ ...input, params, query: {}, body });
+
   const workspace = call("createWorkspace", {}, { name: options.name }) as WorkspaceDetail;
   const created = workspaceOf(workspace.id);
   created.notificationDetail = template.notificationDetail;
   const agents: CloneResult["agents"] = [];
   const walletOfRef = new Map<string, WalletSummary>();
   const agentOfRef = new Map<string, string>();
+
   for (const item of template.wallets) {
     if (item.agent !== null) {
       if (!options.includeAgents) continue;
+
       const made = call(
         "createAgent",
         { workspaceId: workspace.id },
@@ -3342,6 +3796,7 @@ function instantiate(
         token: string;
         mcpUrl: string;
       };
+
       agents.push({
         agentId: made.agent.id as CloneResult["agents"][number]["agentId"],
         walletId: made.wallet.id,
@@ -3360,18 +3815,24 @@ function instantiate(
         ) as WalletSummary,
       );
     }
+
     const wallet = walletOfRef.get(item.ref);
+
     if (wallet) wallet.label = item.label;
   }
+
   const approvals = template.wallets.flatMap((item) => {
     const wallet = walletOfRef.get(item.ref);
+
     if (!wallet || !item.policy) return [];
+
     const draft = {
       ...item.policy,
       requesters: item.policy.requesters.flatMap((ref) => agentOfRef.get(ref) ?? []),
       // A new workspace has one approver, so nothing may need more approvals than that yet.
       approvals: { ...item.policy.approvals, threshold: 1 },
     };
+
     return [
       call(
         "requestPolicy",
@@ -3380,14 +3841,17 @@ function instantiate(
       ) as ApprovalSummary,
     ];
   });
+
   const invites = options.includeMembers
     ? template.members.flatMap((member) => {
         if (member.userId === id || !state.users.has(member.userId)) return [];
+
         const invite = call(
           "createInvite",
           { workspaceId: workspace.id },
           { role: member.role },
         ) as { url: string; expiresAt: number };
+
         return [
           {
             userId: member.userId,
@@ -3399,7 +3863,9 @@ function instantiate(
         ];
       })
     : [];
+
   audit(created, userActor(id), "workspace.cloned", { type: "workspace", id: created.id });
+
   return {
     workspace: workspaceDetail(created, id),
     approvals,
@@ -3411,10 +3877,12 @@ function instantiate(
 
 function joinWorkspace(token: string, userId: string): string {
   const invite = state.invites.get(token);
+
   if (!invite || invite.expiresAt < now())
     throw new Refusal("not_found", "This invite link is not valid.");
   state.invites.delete(token);
   const workspace = workspaceOf(invite.workspaceId);
+
   if (!workspace.members.some((member) => member.user.id === userId)) {
     workspace.members.push({
       user: userSummary(userId),
@@ -3423,9 +3891,11 @@ function joinWorkspace(token: string, userId: string): string {
       joinedAt: now(),
       pendingPasskeys: [],
     });
+
     if (invite.role !== "viewer")
       approverApprovals(workspace, userId, "add-approver", invite.invitedBy);
   }
+
   return workspace.id;
 }
 
@@ -3433,19 +3903,24 @@ function joinWorkspace(token: string, userId: string): string {
 
 const compiled = Object.entries(routes).map(([name, route]) => {
   const keys: string[] = [];
+
   const pattern = new RegExp(
     `^${route.path.replace(/:([a-zA-Z]+)/g, (_match, key: string) => {
       keys.push(key);
+
       return "([^/]+)";
     })}$`,
   );
+
   return { name: name as RouteName, route, pattern, keys };
 });
 
 async function readBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
+
   for await (const chunk of req) chunks.push(chunk as Buffer);
   const text = Buffer.concat(chunks).toString("utf8");
+
   return text === "" ? {} : JSON.parse(text);
 }
 
@@ -3462,25 +3937,33 @@ function send(res: ServerResponse, code: number, payload: unknown): void {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   const origin = `http://${req.headers.host ?? `localhost:${PORT}`}`;
+
   try {
     if (url.pathname === "/__fixture/reset" && req.method === "POST") {
       state = freshState();
+
       return send(res, 200, { ok: true, setupToken: SETUP_TOKEN });
     }
+
     // Lets a test turn Web Push off or on, as the operator does with `WEB_PUSH_ENABLED`.
     if (url.pathname === "/__fixture/web-push" && req.method === "POST") {
       const input = (await readBody(req)) as { enabled?: unknown };
+
       if (typeof input.enabled !== "boolean")
         throw new Refusal("invalid_request", "enabled must be true or false.");
       state.webPush = input.enabled;
+
       return send(res, 200, { ok: true });
     }
+
     // Lets a test put a sent payment into a chain outcome the fixture never reaches by itself.
     if (url.pathname === "/__fixture/settle" && req.method === "POST") {
       const input = (await readBody(req)) as { intentId?: string; status?: string };
       const intent = state.intents.get(input.intentId ?? "");
+
       if (!intent?.transaction)
         throw new Refusal("not_found", "No sent transaction for this intent.");
+
       if (input.status === "stuck") {
         // Stuck means it waited a while: its attempts are dated back by the server's default
         // `REPRICE_AFTER_SECONDS` (180), so a speed-up adds an attempt at once, and nothing of
@@ -3490,7 +3973,9 @@ const server = createServer(async (req, res) => {
           status: "pending" as const,
           signedAt: attempt.signedAt - 180,
         }));
+
         const newest = attempts[attempts.length - 1];
+
         if (!newest) throw new Error("a transaction without its first attempt");
         intent.status = "stuck";
         intent.failureCode = null;
@@ -3514,14 +3999,17 @@ const server = createServer(async (req, res) => {
       } else {
         throw new Refusal("invalid_request", "status must be stuck or rejected.");
       }
+
       return send(res, 200, { ok: true });
     }
+
     // Lets a test skip a retirement's or deletion's delay: it is due now, and the next request
     // finishes it.
     if (url.pathname === "/__fixture/due" && req.method === "POST") {
       const input = (await readBody(req)) as { workspaceId?: string; walletId?: string };
       const workspace = workspaceOf(input.workspaceId ?? "");
       const wallet = workspace.wallets.find((item) => item.id === input.walletId);
+
       if (input.walletId === undefined && workspace.lifecycle.state === "deleting") {
         workspace.lifecycle = { ...workspace.lifecycle, destroyAfter: now() };
       } else if (wallet?.lifecycle.state === "retiring") {
@@ -3529,18 +4017,25 @@ const server = createServer(async (req, res) => {
       } else {
         throw new Refusal("conflict", "Nothing of this is being retired or deleted.");
       }
+
       return send(res, 200, { ok: true });
     }
+
     // Lets a test make every sign-in older than the 300 seconds the record and erasure need.
     if (url.pathname === "/__fixture/stale-sign-in" && req.method === "POST") {
       for (const [token, at] of state.signedInAt) state.signedInAt.set(token, at - 301);
+
       return send(res, 200, { ok: true });
     }
+
     const proposeMatch = /^\/__fixture\/propose$/.exec(url.pathname);
+
     if (proposeMatch && req.method === "POST") {
       const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+
       return send(res, 200, propose(token, (await readBody(req)) as Record<string, string>));
     }
+
     if (!url.pathname.startsWith("/api/"))
       throw new Refusal(
         "not_found",
@@ -3550,18 +4045,24 @@ const server = createServer(async (req, res) => {
     expireApprovals();
     advanceTransactions();
     finalizeDue();
+
     const match = compiled.find(
       (item) => item.route.method === req.method && item.pattern.test(url.pathname),
     );
+
     if (!match) throw new Refusal("not_found", "No such endpoint.");
     const values = match.pattern.exec(url.pathname)?.slice(1) ?? [];
+
     const params = Object.fromEntries(
       match.keys.map((key, index) => [key, decodeURIComponent(values[index] ?? "")]),
     );
+
     const query = Object.fromEntries(url.searchParams);
     let body: Record<string, unknown> = {};
+
     if (match.route.body) {
       const parsed = match.route.body.safeParse(await readBody(req));
+
       if (!parsed.success)
         throw new Refusal(
           "invalid_request",
@@ -3570,15 +4071,19 @@ const server = createServer(async (req, res) => {
         );
       body = parsed.data as Record<string, unknown>;
     }
+
     const cookie = /fixture_session=([^;]+)/.exec(req.headers.cookie ?? "")?.[1];
     const userId = cookie ? (state.sessions.get(cookie) ?? null) : null;
     const signedInAt = cookie ? (state.signedInAt.get(cookie) ?? null) : null;
+
     if (match.route.auth === "session" && !userId)
       throw new Refusal("unauthenticated", "Sign in first.");
     const deleting = state.workspaces.get(params.workspaceId ?? "")?.lifecycle.state === "deleting";
+
     if (deleting && match.route.method !== "GET" && !ALLOWED_WHILE_DELETING[match.name]) {
       throw new Refusal("conflict", "This workspace is being deleted. Cancel the deletion first.");
     }
+
     const output = await handlers[match.name]({
       params,
       query,
@@ -3588,6 +4093,7 @@ const server = createServer(async (req, res) => {
       res,
       origin,
     });
+
     // Fails loudly (500) when the fixture drifts from the contract.
     send(res, 200, match.route.response.parse(output));
   } catch (error) {
@@ -3600,6 +4106,7 @@ const server = createServer(async (req, res) => {
         },
       });
     }
+
     process.stderr.write(
       `${JSON.stringify({ event: "fixture.error", path: url.pathname, error: String(error) })}\n`,
     );
@@ -3623,6 +4130,7 @@ const confirmFiles: Record<string, { type: string; body: Buffer }> = {
     body: readFileSync(new URL("../public/favicon.svg", import.meta.url)),
   },
 };
+
 const confirmHtml = readFileSync(new URL("./confirm/index.html", import.meta.url));
 
 /** Like the real page's: nothing inline, nothing from elsewhere, no framing. */
@@ -3640,16 +4148,20 @@ const CONFIRM_CSP = [
 /** The request in words, from the fixture's own records, as the signer's view would show it. */
 function confirmationLines(approval: Approval): { label: string; value: string }[] {
   const subject = approval.subject;
+
   switch (subject.kind) {
     case "approve-intent": {
       const { display, chainId } = subject.intent;
+
       if (display.kind === "order") {
         const venue = subject.venue;
+
         const tif = {
           Alo: "add liquidity only",
           Gtc: "good till cancelled",
           Ioc: "immediate or cancel",
         };
+
         return [
           { label: "Market", value: `${display.coin} perpetual, as named in the wallet's policy` },
           { label: "Market index", value: String(display.asset) },
@@ -3682,6 +4194,7 @@ function confirmationLines(approval: Approval): { label: string; value: string }
           { label: "The agent's note", value: subject.intent.memo || "(none)" },
         ];
       }
+
       return [
         { label: "Amount", value: `${display.amountFormatted} ${display.assetSymbol}` },
         { label: display.rawCall ? "Contract" : "Recipient", value: display.to },
@@ -3694,6 +4207,7 @@ function confirmationLines(approval: Approval): { label: string; value: string }
         { label: "The agent's note", value: subject.intent.memo || "(none)" },
       ];
     }
+
     case "sweep-wallet":
       return [
         {
@@ -3711,6 +4225,7 @@ function confirmationLines(approval: Approval): { label: string; value: string }
       ];
     case "set-policy": {
       const rules = subject.proposed.venues?.hyperliquid;
+
       return [
         { label: "Wallet", value: `${subject.wallet.label} ${subject.wallet.address}` },
         { label: "Policy revision", value: String(subject.proposed.revision) },
@@ -3737,8 +4252,10 @@ function confirmationLines(approval: Approval): { label: string; value: string }
           : []),
       ];
     }
+
     case "add-approver": {
       const envelope = approval.envelope;
+
       return [
         { label: "Person", value: subject.user.displayName },
         { label: "Passkey", value: subject.passkeyLabel },
@@ -3752,6 +4269,7 @@ function confirmationLines(approval: Approval): { label: string; value: string }
         },
       ];
     }
+
     case "remove-approver":
       return [
         { label: "Person", value: subject.user.displayName },
@@ -3766,10 +4284,12 @@ function confirmationLines(approval: Approval): { label: string; value: string }
       return [{ label: "Workspace", value: workspaceOf(approval.summary.workspaceId).name }];
     case "cancel-transaction": {
       const display = subject.intent?.display;
+
       const stops =
         display?.kind === "transfer"
           ? `${display.amountFormatted} ${display.assetSymbol} to ${display.to}`
           : (display?.title ?? subject.sweep?.title ?? "");
+
       return [
         { label: "Stop this transaction", value: stops },
         { label: "From wallet", value: `${subject.wallet.label} ${subject.wallet.address}` },
@@ -3778,14 +4298,19 @@ function confirmationLines(approval: Approval): { label: string; value: string }
         { label: "Most it may cost in fees", value: `${formatAmount(subject.maxFeeWei, 18)} ETH` },
       ];
     }
+
     case "grant-mandate": {
       const { mandate } = subject;
       const hours = mandate.windowSeconds / 3600;
+
       const caps = mandate.assets.flatMap((limit) => {
         const { symbol, decimals } = knownAsset(limit.asset);
+
         const amount = (value: string) =>
           decimals === null ? `${value} base units` : `${formatAmount(value, decimals)} ${symbol}`;
+
         const worst = mandateWorstCase({ ...mandate, assets: [limit] })[0]?.amount ?? 0n;
+
         return [
           { label: "Asset", value: `${symbol ?? limit.asset} on ${limit.chainId}` },
           { label: "Most per payment", value: amount(limit.maxPerAction) },
@@ -3794,6 +4319,7 @@ function confirmationLines(approval: Approval): { label: string; value: string }
           { label: "Most that can leave the wallet", value: amount(worst.toString()) },
         ];
       });
+
       return [
         { label: "Agent that may pay", value: subject.agent.name },
         { label: "From wallet", value: `${subject.wallet.label} ${subject.wallet.address}` },
@@ -3809,10 +4335,12 @@ function confirmationLines(approval: Approval): { label: string; value: string }
         { label: "Their purpose", value: mandate.purpose || "(none)" },
       ];
     }
+
     case "retire-wallet":
     case "delete-workspace": {
       const wallets = subject.kind === "retire-wallet" ? [subject.wallet] : subject.wallets;
       const after = new Date(subject.destroyAfter * 1000).toISOString();
+
       return [
         ...(subject.kind === "delete-workspace"
           ? [{ label: "Wallets", value: String(wallets.length) }]
@@ -3852,9 +4380,11 @@ function confirmationTitle(approval: Approval): string {
 /** The warnings the signer's page shows first, in its words (`apps/approve`'s `WARNING_TEXT`). */
 function confirmationWarnings(approval: Approval): string[] {
   const subject = approval.subject;
+
   const destroys =
     subject.kind === "retire-wallet" ||
     (subject.kind === "delete-workspace" && subject.wallets.length > 0);
+
   return destroys
     ? [
         "After the time below the signer destroys the keys of the wallets listed. Whatever is still in them then is lost for good, and nobody can get it back.",
@@ -3875,6 +4405,7 @@ function approverOf(approval: Approval, credentialUserId: string): boolean {
 
 function confirmationView(approval: Approval) {
   const { id, workspaceId, status, threshold } = approval.summary;
+
   return {
     approvalId: id,
     title: confirmationTitle(approval),
@@ -3905,15 +4436,18 @@ function confirmationView(approval: Approval) {
 /** The request behind a confirmation link; a wrong or missing token finds nothing. */
 function confirmationFor(approvalId: string, token: string | string[] | undefined): Approval {
   const approval = state.approvals.get(approvalId);
+
   if (!approval || approval.confirmToken === null || token !== approval.confirmToken) {
     throw new Refusal("not_found", "This confirmation link is not valid.");
   }
+
   return approval;
 }
 
 /** Whether a passkey answer was made on this page, top level, for `challenge`. */
 function madeHere(response: AssertionResponse, challenge: string | null): boolean {
   const data = clientData(response);
+
   return (
     challenge !== null &&
     data.type === "webauthn.get" &&
@@ -3925,19 +4459,24 @@ function madeHere(response: AssertionResponse, challenge: string | null): boolea
 
 function passkeyAnswer(body: unknown): AssertionResponse {
   const parsed = z.strictObject({ response: AssertionResponse }).safeParse(body);
+
   if (!parsed.success) throw new Refusal("invalid_request", "The passkey response is not valid.");
+
   return parsed.data.response;
 }
 
 /** The approver change behind a possession step, while it still waits for approval. */
 function possessionOf(approval: Approval) {
   const envelope = approval.envelope;
+
   if (envelope.type !== "add-approver") {
     throw new Refusal("not_found", "Only an approver change has this step.");
   }
+
   if (approval.summary.status !== "pending") {
     throw new Refusal("conflict", "This request no longer waits for approval.");
   }
+
   return envelope;
 }
 
@@ -3948,6 +4487,7 @@ function possessionOf(approval: Approval) {
 function possessionRequest(approval: Approval) {
   const envelope = possessionOf(approval);
   approval.possessionChallenge ??= randomToken(32);
+
   return {
     rpId: "localhost",
     challenge: approval.possessionChallenge,
@@ -3965,14 +4505,17 @@ function possessionRequest(approval: Approval) {
 function provePossession(approval: Approval, body: unknown) {
   const envelope = possessionOf(approval);
   const response = passkeyAnswer(body);
+
   if (!madeHere(response, approval.possessionChallenge) || response.id !== envelope.credentialId) {
     throw new Refusal(
       "invalid_request",
       "This answer was not made on this page with the new passkey.",
     );
   }
+
   approval.possessionChallenge = null;
   approval.possessionProven = true;
+
   return { fingerprint: keyFingerprint(envelope.publicKey) };
 }
 
@@ -3984,29 +4527,37 @@ function provePossession(approval: Approval, body: unknown) {
 function holdApproval(approval: Approval, body: unknown) {
   const response = passkeyAnswer(body);
   const { threshold } = approval.summary;
+
   if (approval.summary.status !== "pending" || approval.atSigner.length >= threshold) {
     throw new Refusal("conflict", "This request no longer waits for approval.");
   }
+
   if (approval.envelope.type === "add-approver" && !approval.possessionProven) {
     throw new Refusal(
       "possession_unproven",
       "The person being added has not yet proven on this page that the new passkey is theirs.",
     );
   }
+
   if (!madeHere(response, approval.challenge)) {
     throw new Refusal(
       "invalid_request",
       "This approval was not made on this page for this request.",
     );
   }
+
   const userId = state.credentials.get(response.id)?.userId;
+
   if (!userId || !approverOf(approval, userId)) {
     throw new Refusal("forbidden", "This passkey does not approve for this workspace.");
   }
+
   if (approval.atSigner.includes(userId)) {
     throw new Refusal("conflict", "You approved this request already.");
   }
+
   approval.atSigner.push(userId);
+
   return {
     collected: approval.atSigner.length,
     required: threshold,
@@ -4016,6 +4567,7 @@ function holdApproval(approval: Approval, body: unknown) {
 
 const confirmServer = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", CONFIRM_ORIGIN);
+
   const reply = (code: number, type: string, body: string | Buffer) => {
     res.writeHead(code, {
       "content-type": type,
@@ -4027,33 +4579,44 @@ const confirmServer = createServer(async (req, res) => {
     });
     res.end(body);
   };
+
   const json = "application/json";
+
   try {
     expireApprovals();
     const file = confirmFiles[url.pathname];
+
     if (req.method === "GET" && file) return reply(200, file.type, file.body);
+
     if (req.method === "GET" && /^\/a\/apr_[A-Za-z0-9_-]+$/.test(url.pathname)) {
       return reply(200, "text/html; charset=utf-8", confirmHtml);
     }
+
     const match = /^\/api\/approvals\/([^/]+)(\/assertions|\/possession)?$/.exec(url.pathname);
+
     if (match) {
       const approval = confirmationFor(
         decodeURIComponent(match[1] ?? ""),
         req.headers["x-confirm-token"],
       );
+
       if (req.method === "GET" && !match[2]) {
         return reply(200, json, JSON.stringify(confirmationView(approval)));
       }
+
       if (req.method === "POST" && match[2] === "/assertions") {
         return reply(200, json, JSON.stringify(holdApproval(approval, await readBody(req))));
       }
+
       if (req.method === "GET" && match[2] === "/possession") {
         return reply(200, json, JSON.stringify(possessionRequest(approval)));
       }
+
       if (req.method === "POST" && match[2] === "/possession") {
         return reply(200, json, JSON.stringify(provePossession(approval, await readBody(req))));
       }
     }
+
     throw new Refusal("not_found", "Nothing is here.");
   } catch (error) {
     if (error instanceof Refusal) {
@@ -4063,6 +4626,7 @@ const confirmServer = createServer(async (req, res) => {
         JSON.stringify({ error: { code: error.code, message: error.message } }),
       );
     }
+
     process.stderr.write(
       `${JSON.stringify({ event: "fixture.confirm.error", path: url.pathname, error: String(error) })}\n`,
     );

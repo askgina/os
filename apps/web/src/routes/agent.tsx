@@ -52,6 +52,7 @@ export function AgentPage() {
       await queryClient.invalidateQueries({ queryKey: keys.workspace(workspaceId) });
     },
   });
+
   const disable = useMutation({
     mutationFn: () => api.call("disableAgent", { params: { workspaceId, agentId }, body: {} }),
     onSuccess: async () => {
@@ -65,6 +66,7 @@ export function AgentPage() {
 
   if (!workspace.data) return null;
   const agent = workspace.data.agents.find((item) => item.id === agentId);
+
   if (!agent)
     return <ErrorState error={new Error("This agent does not exist in this workspace.")} />;
   const wallet = workspace.data.wallets.find((item) => item.id === agent.walletId);
@@ -243,6 +245,7 @@ function AgentMandates({
   active: boolean;
 }) {
   const wallet = useWallet(workspace.id, walletId);
+
   return (
     <MandatesCard
       workspace={workspace}
@@ -321,6 +324,7 @@ function RecentIntents({ workspaceId, agentId }: { workspaceId: string; agentId:
   const intents = useIntents(workspaceId);
   const now = useNow();
   const mine = intents.data?.items.filter((intent) => intent.agent.id === agentId) ?? [];
+
   return (
     <Card>
       <CardHeader>

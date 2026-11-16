@@ -36,6 +36,7 @@ export function quietHoursForm(saved: QuietHours | null, deviceZone: string): Qu
  */
 function clockTime(value: string): string | null {
   const match = /^((?:[01]\d|2[0-3]):[0-5]\d)(?::[0-5]\d(?:\.\d+)?)?$/.exec(value.trim());
+
   return match ? (match[1] as string) : null;
 }
 
@@ -46,17 +47,24 @@ function clockTime(value: string): string | null {
  */
 export function parseQuietHours(form: QuietHoursForm): ParsedQuietHours {
   if (!form.enabled) return { ok: true, value: null };
+
   const fail = (field: QuietHoursProblem["field"], message: string): ParsedQuietHours => ({
     ok: false,
     problem: { field, message },
   });
+
   const start = clockTime(form.start);
+
   if (start === null) return fail("start", "Choose when quiet hours start, as hours and minutes.");
   const end = clockTime(form.end);
+
   if (end === null) return fail("end", "Choose when quiet hours end, as hours and minutes.");
+
   if (start === end) return fail("end", "Quiet hours must end at another time than they start.");
   const parsed = QuietHours.safeParse({ start, end, timeZone: form.timeZone.trim() });
+
   if (!parsed.success) return fail("timeZone", "Choose a time zone from the list.");
+
   return { ok: true, value: parsed.data };
 }
 
@@ -66,6 +74,7 @@ export function parseQuietHours(form: QuietHoursForm): ParsedQuietHours {
  */
 export function describeQuietHours(quiet: QuietHours): string {
   const nextDay = quiet.end < quiet.start ? " the next morning" : "";
+
   return `From ${quiet.start} to ${quiet.end}${nextDay}, ${quiet.timeZone} time, notifications wait until the quiet hours end.`;
 }
 

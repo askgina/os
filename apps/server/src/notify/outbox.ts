@@ -31,19 +31,28 @@ import { pushTopic, sendPush } from "./webpush/send.ts";
 
 /** Rows one pass claims at most. */
 const CLAIM_LIMIT = 50;
+
 /** How long a claimed row is held. A sender that dies leaves it to be sent again after this. */
 const LEASE_SECONDS = 60;
+
 /** Failed attempts after which a delivery is given up. */
 const MAX_ATTEMPTS = 8;
+
 const FIRST_BACKOFF_SECONDS = 10;
+
 const MAX_BACKOFF_SECONDS = 600;
+
 /** The longest `Retry-After` honoured; a longer one falls back to the backoff. */
 const MAX_RETRY_AFTER_SECONDS = 3_600;
+
 /** Deliveries one pass sends at once. */
 const SENDERS = 8;
+
 /** The shortest time a push service keeps a message for a device that is offline. */
 const MIN_PUSH_TTL_SECONDS = 60;
+
 const PUSH_TARGET = "push:";
+
 /** How long before keys are destroyed the second lifecycle notice goes out (D10). */
 export const DUE_SOON_SECONDS = 86_400;
 
@@ -138,15 +147,20 @@ export async function enqueueApprovalNotifications(
   approval: OpenedApproval,
 ): Promise<void> {
   const targets: Target[] = [];
+
   if (ctx.config.notify.webhook !== null) targets.push({ target: "webhook", userId: null });
+
   const recipients =
     ctx.config.notify.webPush === null ? [] : await approvalRecipients(tx, approval.workspaceId);
+
   for (const { subscriptionId, userId } of recipients) {
     targets.push({ target: `${PUSH_TARGET}${subscriptionId}`, userId });
   }
+
   await enqueue(tx, approval, "approval.opened", approval.createdAt, targets);
 
   const remindAt = reminderDueAt(approval.createdAt, approval.expiresAt);
+
   if (remindAt === null) return;
   await enqueue(
     tx,
@@ -176,18 +190,22 @@ export async function enqueueLifecycleNotifications(
 ): Promise<void> {
   const webhook: Target[] =
     ctx.config.notify.webhook === null ? [] : [{ target: "webhook", userId: null }];
+
   const recipients =
     ctx.config.notify.webPush === null ? [] : await approvalRecipients(tx, scheduled.workspaceId);
+
   const device = ({ subscriptionId, userId }: { subscriptionId: string; userId: UserId }) => ({
     target: `${PUSH_TARGET}${subscriptionId}`,
     userId,
   });
+
   const approval = { id: scheduled.approvalId, workspaceId: scheduled.workspaceId };
   await enqueue(tx, approval, "lifecycle.scheduled", scheduled.appliedAt, [
     ...webhook,
     ...recipients.map(device),
   ]);
   const dueAt = scheduled.destroyAfter - DUE_SOON_SECONDS;
+
   if (dueAt <= scheduled.appliedAt) return;
   await enqueue(tx, approval, "lifecycle.due_soon", dueAt, [
     ...webhook,
@@ -202,24 +220,31 @@ export async function enqueueLifecycleNotifications(
  */
 async function stillScheduled(ctx: AppContext, approval: ApprovalRow): Promise<number | null> {
   const envelope = approval.envelope;
+
   if (envelope?.type === "retire-wallet") {
     const [wallet] = await ctx.db
       .select({ lifecycle: wallets.lifecycle, destroyAfter: wallets.destroyAfter })
       .from(wallets)
       .where(eq(wallets.id, envelope.wallet.walletId));
+
     const due = wallet?.destroyAfter ? Math.floor(wallet.destroyAfter.getTime() / 1000) : null;
+
     return wallet?.lifecycle === "retiring" && due === envelope.destroyAfter ? due : null;
   }
+
   if (envelope?.type === "delete-workspace") {
     const [workspace] = await ctx.db
       .select({ lifecycle: workspaces.lifecycle, destroyAfter: workspaces.destroyAfter })
       .from(workspaces)
       .where(eq(workspaces.id, approval.workspaceId));
+
     const due = workspace?.destroyAfter
       ? Math.floor(workspace.destroyAfter.getTime() / 1000)
       : null;
+
     return workspace?.lifecycle === "deleting" && due === envelope.destroyAfter ? due : null;
   }
+
   return null;
 }
 
@@ -245,6 +270,7 @@ export async function enqueueMandateUseNotification(
 export async function deliverDueNotifications(ctx: AppContext): Promise<DeliveryCounts> {
   const now = ctx.now();
   const lease = new Date((now + LEASE_SECONDS) * 1000);
+
   const claimed = await ctx.db.transaction(async (tx) => {
     const due = await tx
       .select()
@@ -258,6 +284,7 @@ export async function deliverDueNotifications(ctx: AppContext): Promise<Delivery
       .orderBy(asc(notificationDeliveries.nextAttemptAt), asc(notificationDeliveries.id))
       .limit(CLAIM_LIMIT)
       .for("update", { skipLocked: true });
+
     if (due.length > 0) {
       await tx
         .update(notificationDeliveries)
@@ -269,6 +296,7 @@ export async function deliverDueNotifications(ctx: AppContext): Promise<Delivery
           ),
         );
     }
+
     return due;
   });
 
@@ -281,47 +309,60 @@ export async function deliverDueNotifications(ctx: AppContext): Promise<Delivery
       }
     }),
   );
+
   return counts;
 }
 
 async function deliver(ctx: AppContext, row: DeliveryRow, lease: Date): Promise<Outcome> {
   const [approval] = await ctx.db.select().from(approvals).where(eq(approvals.id, row.approvalId));
+
   if (!approval) throw new Error("a notification without its approval");
   // A lifecycle notice means something only while its destruction is still scheduled; any
   // other approval's notification only while the request still waits for people.
   let until: number | null = null;
+
   if (row.event === "lifecycle.scheduled" || row.event === "lifecycle.due_soon") {
     until = await stillScheduled(ctx, approval);
+
     if (until === null || until <= ctx.now()) {
       return finish(ctx, row, lease, "dropped", { lastCode: "lifecycle_ended" });
     }
   } else if (row.event !== "mandate.used") {
     until = Math.floor(approval.expiresAt.getTime() / 1000);
+
     if (approval.status !== "pending" || until <= ctx.now()) {
       return finish(ctx, row, lease, "dropped", { lastCode: "approval_ended" });
     }
   }
+
   if (row.target.startsWith(PUSH_TARGET)) {
     if (until === null) return finish(ctx, row, lease, "failed", { lastCode: "unknown_target" });
+
     return deliverPush(ctx, row, lease, approval, until);
   }
+
   if (row.target !== "webhook") {
     return finish(ctx, row, lease, "failed", { lastCode: "unknown_target" });
   }
+
   // The operator removed the webhook after this row was written.
   if (ctx.config.notify.webhook === null) {
     return finish(ctx, row, lease, "dropped", { lastCode: "channel_off" });
   }
+
   const result = await sendWebhook(ctx, row, approval);
+
   if (result.ok) {
     return finish(ctx, row, lease, "sent", {
       lastCode: null,
       sentAt: new Date(ctx.now() * 1000),
     });
   }
+
   if (!result.retry) {
     return finish(ctx, row, lease, "failed", { lastCode: result.code, attempts: row.attempts + 1 });
   }
+
   return retry(ctx, row, lease, until, result.code, result.retryAfter);
 }
 
@@ -342,34 +383,45 @@ async function deliverPush(
   if (ctx.config.notify.webPush === null) {
     return finish(ctx, row, lease, "dropped", { lastCode: "channel_off" });
   }
+
   const subscriptionId = row.target.slice(PUSH_TARGET.length);
+
   const [subscription] = await ctx.db
     .select()
     .from(pushSubscriptions)
     .where(eq(pushSubscriptions.id, subscriptionId as PushSubscriptionId));
+
   // Removed by its person, gone at its push service, or moved to someone else's account.
   if (!subscription || row.userId === null || subscription.userId !== row.userId) {
     return finish(ctx, row, lease, "dropped", { lastCode: "unsubscribed" });
   }
+
   const userId = row.userId;
   const recipient = await recipientNow(ctx.db, approval.workspaceId, userId);
+
   if (recipient === null) return finish(ctx, row, lease, "dropped", { lastCode: "not_recipient" });
   const lifecycle = row.event === "lifecycle.scheduled" || row.event === "lifecycle.due_soon";
   const reminder = row.event === "approval.reminder" || row.event === "lifecycle.due_soon";
+
   if (reminder && !recipient.reminders) {
     return finish(ctx, row, lease, "dropped", { lastCode: "reminders_off" });
   }
+
   if (!lifecycle && (await approvedBy(ctx.db, approval.id, userId))) {
     return finish(ctx, row, lease, "dropped", { lastCode: "already_approved" });
   }
 
   const now = ctx.now();
+
   const [person] = await ctx.db
     .select({ quietHours: users.quietHours })
     .from(users)
     .where(eq(users.id, userId));
+
   const allowed = nextAllowedTime(now, person?.quietHours ?? null);
+
   if (allowed >= until) return finish(ctx, row, lease, "dropped", { lastCode: "quiet_hours" });
+
   if (allowed > now) {
     return finish(ctx, row, lease, "held", {
       lastCode: "quiet_hours",
@@ -381,9 +433,11 @@ async function deliverPush(
     .select({ name: workspaces.name, detail: workspaces.notificationDetail })
     .from(workspaces)
     .where(eq(workspaces.id, approval.workspaceId));
+
   if (!workspace) throw new Error("a notification without its workspace");
   const link = approvalLink(ctx.config.publicOrigin, approval.workspaceId, approval.id);
   const pendingCount = await pendingFor(ctx.db, userId, now);
+
   const payload: DeclarativePush = lifecycle
     ? lifecycleMessage({
         level: workspace.detail,
@@ -409,6 +463,7 @@ async function deliverPush(
         link,
         reminder,
       });
+
   const result = await sendPush(
     ctx,
     { endpoint: subscription.endpoint, p256dh: subscription.p256dh, auth: subscription.auth },
@@ -419,28 +474,35 @@ async function deliverPush(
       urgency: "high",
     },
   );
+
   if (result.ok) {
     await ctx.db
       .update(pushSubscriptions)
       .set({ lastSuccessAt: new Date(now * 1000), failureCount: 0 })
       .where(eq(pushSubscriptions.id, subscription.id));
+
     return finish(ctx, row, lease, "sent", { lastCode: null, sentAt: new Date(now * 1000) });
   }
+
   if (result.code === "gone") {
     // The browser unsubscribed, or the push service forgot it: it never comes back.
     await ctx.db.delete(pushSubscriptions).where(eq(pushSubscriptions.id, subscription.id));
+
     return finish(ctx, row, lease, "dropped", { lastCode: "gone" });
   }
+
   await ctx.db
     .update(pushSubscriptions)
     .set({ failureCount: sql`${pushSubscriptions.failureCount} + 1` })
     .where(eq(pushSubscriptions.id, subscription.id));
+
   if (result.code === "rejected") {
     return finish(ctx, row, lease, "failed", {
       lastCode: result.reason,
       attempts: row.attempts + 1,
     });
   }
+
   return retry(ctx, row, lease, until, result.reason, result.retryAfter);
 }
 
@@ -454,6 +516,7 @@ async function operationOf(
   approval: ApprovalRow,
 ): Promise<"payment" | "order" | null> {
   if (approval.kind !== "approve-intent") return null;
+
   const [intent] = await ctx.db
     .select({
       id: intents.id,
@@ -463,10 +526,13 @@ async function operationOf(
     })
     .from(intents)
     .where(eq(intents.approvalId, approval.id));
+
   if (!intent || !isVenueNetwork(intent.chainId)) return "payment";
+
   const opened = Intent.parse(
     await ctx.sealer.open(intent.workspaceId, `intents.payload:${intent.id}`, intent.payload),
   );
+
   return opened.operation.type === "hyperliquid.order" ? "order" : "payment";
 }
 
@@ -477,12 +543,15 @@ async function requesterName(ctx: AppContext, approval: ApprovalRow): Promise<st
       .select({ name: agents.name })
       .from(agents)
       .where(eq(agents.id, approval.requestedById as AgentId));
+
     return agent?.name ?? "";
   }
+
   const [person] = await ctx.db
     .select({ name: users.displayName })
     .from(users)
     .where(eq(users.id, approval.requestedById as UserId));
+
   return person?.name ?? "";
 }
 
@@ -501,15 +570,19 @@ async function retry(
   retryAfter: number | undefined,
 ): Promise<Outcome> {
   const attempts = row.attempts + 1;
+
   if (attempts >= MAX_ATTEMPTS)
     return finish(ctx, row, lease, "failed", { lastCode: code, attempts });
   const now = ctx.now();
   const backoff = Math.min(MAX_BACKOFF_SECONDS, FIRST_BACKOFF_SECONDS * 2 ** row.attempts);
+
   const honoured =
     retryAfter !== undefined &&
     retryAfter <= MAX_RETRY_AFTER_SECONDS &&
     (until === null || now + retryAfter < until);
+
   const delay = honoured ? retryAfter : backoff;
+
   return finish(ctx, row, lease, "retried", {
     lastCode: code,
     attempts,
@@ -557,5 +630,6 @@ async function finish(
     target: row.target === "webhook" ? "webhook" : "push",
     code: change.lastCode,
   });
+
   return outcome;
 }

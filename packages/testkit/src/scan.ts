@@ -31,6 +31,7 @@ export interface MarkerScan {
 
 function collectLeaves(value: unknown, out: Buffer[], depth = 0): void {
   if (depth > 20 || value === null || value === undefined) return;
+
   if (value instanceof Uint8Array) {
     out.push(Buffer.from(value));
   } else if (typeof value === "string") {
@@ -50,8 +51,10 @@ function collectLeaves(value: unknown, out: Buffer[], depth = 0): void {
 /** The value itself plus every view of it that decodes or decompresses. */
 function expand(buffer: Buffer, depth = 0): Buffer[] {
   const views = [buffer];
+
   if (depth > 6) return views;
   const prefix = buffer.subarray(0, 4).toString("latin1");
+
   if (prefix === "zstd" || prefix === "gzip") {
     try {
       const body = buffer.subarray(4);
@@ -60,29 +63,35 @@ function expand(buffer: Buffer, depth = 0): Buffer[] {
     } catch {
       // Not actually compressed data; the raw view above still gets scanned.
     }
+
     return views;
   }
+
   try {
     const leaves: Buffer[] = [];
     collectLeaves(decode(buffer), leaves);
+
     for (const leaf of leaves) {
       if (!leaf.equals(buffer)) views.push(...expand(leaf, depth + 1));
     }
   } catch {
     // Not CBOR; the raw view above still gets scanned.
   }
+
   return views;
 }
 
 function base64Needles(marker: string): string[] {
   const bytes = Buffer.from(marker, "utf8");
   const needles: string[] = [];
+
   for (let pad = 0; pad < 3; pad += 1) {
     const encoded = Buffer.concat([Buffer.alloc(pad, 0), bytes]).toString("base64");
     // Drop the characters that depend on the padding before the marker and on what follows it.
     const start = Math.ceil((pad * 4) / 3) + 1;
     needles.push(encoded.slice(start, encoded.length - 4));
   }
+
   return needles.filter((needle) => needle.length >= 12);
 }
 
@@ -92,6 +101,7 @@ export async function scanForMarkers(
 ): Promise<MarkerScan> {
   const client = new pg.Client({ connectionString });
   await client.connect();
+
   try {
     const { rows: columns } = await client.query<{
       table_schema: string;
@@ -107,11 +117,14 @@ export async function scanForMarkers(
           AND c.table_schema NOT LIKE 'pg_toast%' AND c.table_schema NOT LIKE 'pg_temp%'
         ORDER BY 1, 2, c.ordinal_position`,
     );
+
     const byTable = new Map<string, typeof columns>();
+
     for (const column of columns) {
       const key = `${column.table_schema}.${column.table_name}`;
       byTable.set(key, [...(byTable.get(key) ?? []), column]);
     }
+
     const needles = markers.map((marker) => ({
       marker,
       forms: [
@@ -124,9 +137,12 @@ export async function scanForMarkers(
 
     const hits: MarkerHit[] = [];
     let rowCount = 0;
+
     for (const tableColumns of byTable.values()) {
       const first = tableColumns[0];
+
       if (!first) continue;
+
       const select = tableColumns
         .map((column) =>
           column.data_type === "bytea"
@@ -134,23 +150,31 @@ export async function scanForMarkers(
             : `"${column.column_name}"::text AS "${column.column_name}"`,
         )
         .join(", ");
+
       const { rows } = await client.query<Record<string, unknown>>(
         `SELECT ${select} FROM "${first.table_schema}"."${first.table_name}"`,
       );
+
       rowCount += rows.length;
+
       for (const row of rows) {
         for (const column of tableColumns) {
           const value = row[column.column_name];
+
           if (value === null || value === undefined) continue;
+
           const views = Buffer.isBuffer(value)
             ? expand(value).map((view) => view.toString("latin1"))
             : [String(value)];
+
           views.forEach((text, viewIndex) => {
             const lower = text.toLowerCase();
+
             for (const { marker, forms } of needles) {
               for (const [encoding, needle] of forms) {
                 const haystack = encoding === "hex" ? lower : text;
                 const index = haystack.indexOf(needle);
+
                 if (index === -1) continue;
                 hits.push({
                   marker,
@@ -168,6 +192,7 @@ export async function scanForMarkers(
         }
       }
     }
+
     return { hits, tables: [...byTable.keys()], columns: columns.length, rows: rowCount };
   } finally {
     await client.end();

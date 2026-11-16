@@ -21,17 +21,24 @@ import { browserSubscription, markerForms, pushConfig } from "../notify/support.
 import { TEST_CHAIN_ID, type TestBrowser, type TestPerson } from "../support/context.ts";
 
 const ETH = 10n ** 18n;
+
 const VENDOR = "0x00000000000000000000000000000000000000cc";
+
 const BOB = "Bob Approver";
 
 let f: Fixture;
+
 /** Approvers of the main workspace with the owner. Bob is the one erased. */
 let bob: TestPerson;
+
 let carol: TestPerson;
+
 /** A workspace Bob created, so its first owner. */
 let bobs: WorkspaceId;
+
 /** The main workspace's template, exported while Bob was still a member. */
 let template: WorkspaceTemplate;
+
 let mandateId: string;
 
 const owner = () => f.t.owner.browser.api;
@@ -45,8 +52,10 @@ async function refusal(call: Promise<unknown>): Promise<{ code: string; detail?:
         ? { code: error.code }
         : { code: error.code, detail: error.detail };
     }
+
     throw error;
   }
+
   throw new Error("the call was not refused");
 }
 
@@ -56,18 +65,24 @@ async function joinAsViewer(workspaceId: WorkspaceId, displayName: string): Prom
     params: { workspaceId },
     body: { role: "viewer" },
   });
+
   const token = invite.url.split("/").at(-1) ?? "";
   const browser = f.t.browser();
+
   const start = await browser.api.call("startInviteRegistration", {
     params: { token },
     body: { displayName },
   });
+
   const passkey = f.t.register(start.options);
+
   const session = await browser.api.call("finishInviteRegistration", {
     params: { token },
     body: { ceremonyId: start.ceremonyId, response: passkey.response as never },
   });
+
   if (session.user === null) throw new Error("invite registration did not sign in");
+
   return session.user.id as UserId;
 }
 
@@ -76,16 +91,20 @@ async function rowsNaming(marker: string): Promise<string[]> {
   const { rows: tables } = await f.t.ctx.pool.query<{ name: string }>(
     "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = 'os' AND table_type = 'BASE TABLE'",
   );
+
   const found: string[] = [];
+
   for (const { name } of tables) {
     for (const form of markerForms(marker)) {
       const { rows } = await f.t.ctx.pool.query<{ n: number }>(
         `SELECT count(*)::int AS n FROM os."${name}" AS r WHERE strpos(r::text, $1) > 0`,
         [form],
       );
+
       if ((rows[0]?.n ?? 0) > 0) found.push(`${name}: ${form}`);
     }
   }
+
   return found;
 }
 
@@ -131,10 +150,12 @@ beforeAll(async () => {
     notAfter: f.t.clock.now() + 3 * 86_400,
     purpose: "pay the vendor",
   };
+
   const grant = await owner().call("proposeMandate", {
     params: { workspaceId: ws, walletId: f.agent.walletId },
     body: draft,
   });
+
   expect((await f.t.approve(grant.id as ApprovalId, [bob])).status).toBe("executed");
   const [state] = (await f.t.ctx.signer.listMandates(f.agent.walletId)).mandates;
   expect(state?.grantedBy).toEqual([bob.userId]);
@@ -158,19 +179,23 @@ describe("erasing a person", () => {
       code: "conflict",
       detail: "last_owner",
     });
+
     // The owner joins Bob's workspace as a second owner, with her passkey approving there.
     const invite = await bob.browser.api.call("createInvite", {
       params: { workspaceId: bobs },
       body: { role: "owner" },
     });
+
     await owner().call("acceptInvite", {
       params: { token: invite.url.split("/").at(-1) ?? "" },
       body: {},
     });
+
     const pending = await bob.browser.api.call("listApprovals", {
       params: { workspaceId: bobs },
       query: { status: "pending" },
     });
+
     const enroll = pending.items.find((item) => item.kind === "add-approver");
     expect((await f.t.approve(enroll?.id as ApprovalId, [bob])).status).toBe("executed");
   });
@@ -180,6 +205,7 @@ describe("erasing a person", () => {
       params: { workspaceId: f.workspaceId },
       body: { adminThreshold: 3 },
     });
+
     expect((await f.t.approve(raise.id as ApprovalId, [f.t.owner])).status).toBe("executed");
     expect(await refusal(bob.browser.api.call("eraseMe", { body: {} }))).toEqual({
       code: "conflict",
@@ -191,10 +217,12 @@ describe("erasing a person", () => {
     expect(printed).toEqual([
       expect.objectContaining({ ok: false, code: "conflict", detail: "last_approver" }),
     ]);
+
     const lower = await owner().call("requestAdminThreshold", {
       params: { workspaceId: f.workspaceId },
       body: { adminThreshold: 2 },
     });
+
     expect((await f.t.approve(lower.id as ApprovalId, [f.t.owner, bob, carol])).status).toBe(
       "executed",
     );
@@ -230,14 +258,17 @@ describe("erasing a person", () => {
       const people = approval.workspaceId === bobs ? [f.t.owner] : [bob, carol];
       expect((await f.t.approve(approval.id as ApprovalId, people)).status).toBe("executed");
     }
+
     for (const workspaceId of [f.workspaceId, bobs]) {
       const atSigner = await f.t.ctx.signer.getWorkspace(workspaceId);
       expect(atSigner.approvers.map((a) => a.userId)).not.toContain(bob.userId);
     }
+
     // Removing the passkey that granted it ended Bob's mandate at the signer.
     const [state] = (await f.t.ctx.signer.listMandates(f.agent.walletId)).mandates.filter(
       (m) => m.mandate.id === mandateId,
     );
+
     expect(state?.revokedReason).toBe("grantor_removed");
   });
 
@@ -246,6 +277,7 @@ describe("erasing a person", () => {
       eq(notificationDeliveries.userId, bob.userId),
       eq(notificationDeliveries.state, "pending"),
     );
+
     const waiting = await f.t.ctx.db.select().from(notificationDeliveries).where(bobPending);
     expect(waiting.length).toBeGreaterThan(0);
     expect(await rowsNaming(BOB)).not.toEqual([]);
@@ -287,12 +319,14 @@ describe("erasing a person", () => {
         ok: true,
         brokenAt: null,
       });
+
       const erased = await db
         .select()
         .from(auditEvents)
         .where(
           and(eq(auditEvents.workspaceId, workspaceId), eq(auditEvents.action, "member.erased")),
         );
+
       expect(erased).toMatchObject([
         { actorType: "user", actorId: bob.userId, subjectType: "user", subjectId: bob.userId },
       ]);
@@ -303,9 +337,11 @@ describe("erasing a person", () => {
 
   it("keeps their id in history under the erased name, and exports never name them", async () => {
     await signInAgain(f.t.owner);
+
     const { record } = await owner().call("exportRecord", {
       params: { workspaceId: f.workspaceId },
     });
+
     expect(verifyRecord(recordLines(record))).toEqual({ ok: true, brokenAt: null });
     expect(record).toContain(bob.userId);
     expect(record).not.toContain(BOB);
@@ -319,6 +355,7 @@ describe("erasing a person", () => {
     const clone = await owner().call("importTemplate", {
       body: { template, name: "Copy", includeAgents: false, includeMembers: true },
     });
+
     const invited = clone.invites.map((invite) => invite.userId);
     expect(invited).toContain(carol.userId);
     expect(invited).not.toContain(bob.userId);
@@ -336,10 +373,12 @@ describe("the operator's command", () => {
       { ok: true, userId: vera, alreadyErased: false },
       { ok: true, userId: vera, alreadyErased: true },
     ]);
+
     const erased = await f.t.ctx.db
       .select()
       .from(auditEvents)
       .where(and(eq(auditEvents.action, "member.erased"), eq(auditEvents.subjectId, vera)));
+
     expect(erased).toMatchObject([{ actorType: "system", actorId: null }]);
     expect(
       await owner().call("verifyAudit", { params: { workspaceId: f.workspaceId } }),
@@ -352,6 +391,7 @@ describe("the operator's command", () => {
       params: { workspaceId: f.workspaceId },
       body: { adminThreshold: 1 },
     });
+
     expect((await f.t.approve(lower.id as ApprovalId, [f.t.owner, carol])).status).toBe("executed");
     const printed: object[] = [];
     expect(await eraseCli(["--user", carol.userId], f.t.ctx, (line) => printed.push(line))).toBe(3);

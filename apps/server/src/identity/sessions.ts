@@ -30,22 +30,29 @@ function isHttps(config: AppContext["config"]): boolean {
 /** The value of one cookie in a `Cookie` header, or undefined. */
 export function readCookie(header: string | null | undefined, name: string): string | undefined {
   if (!header) return undefined;
+
   for (const part of header.split(";")) {
     const separator = part.indexOf("=");
+
     if (separator === -1) continue;
+
     if (part.slice(0, separator).trim() === name) return part.slice(separator + 1).trim();
   }
+
   return undefined;
 }
 
 export function createSessions(deps: Deps): Sessions {
   const name = sessionCookieName(deps.config);
+
   return {
     async resolve(request) {
       const value = readCookie(request.headers.get("cookie"), name);
+
       // A cookie value is 32 random bytes; anything else cannot be ours, so skip the query.
       if (value === undefined || !/^[A-Za-z0-9_-]{43}$/.test(value)) return null;
       const idHash = sha256Hex(value);
+
       const [row] = await deps.db
         .select({
           idHash: sessions.idHash,
@@ -62,12 +69,15 @@ export function createSessions(deps: Deps): Sessions {
             gt(sessions.expiresAt, new Date(deps.now() * 1000)),
           ),
         );
+
       if (!row) return null;
+
       const session: Session = {
         user: { id: row.userId, displayName: row.displayName },
         credentialId: row.credentialId,
         idHash: row.idHash,
       };
+
       return session;
     },
   };
@@ -110,7 +120,9 @@ export async function requireRecentSignIn(
     .select({ createdAt: sessions.createdAt })
     .from(sessions)
     .where(eq(sessions.idHash, session.idHash));
+
   const age = row ? ctx.now() - Math.floor(row.createdAt.getTime() / 1000) : Infinity;
+
   if (age > RECENT_SIGN_IN_MAX_AGE_SECONDS) {
     throw new HttpError(
       "forbidden",
@@ -142,6 +154,8 @@ function serializeCookie(config: AppContext["config"], value: string, maxAge: nu
     "SameSite=Strict",
     `Max-Age=${maxAge}`,
   ];
+
   if (isHttps(config)) parts.push("Secure");
+
   return parts.join("; ");
 }

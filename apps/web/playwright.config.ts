@@ -7,6 +7,7 @@ import type { LayoutOptions } from "./test/layout.ts";
  * OS_WEB_BASE_URL to run it against a real control plane serving the built UI instead.
  */
 const external = process.env.OS_WEB_BASE_URL;
+
 // `localhost`, not 127.0.0.1: WebAuthn refuses an IP address as the relying party.
 const baseURL = external ?? "http://localhost:55730";
 
@@ -16,6 +17,7 @@ const phone = {
   isMobile: true,
   hasTouch: true,
 };
+
 const desktop = { viewport: { width: 1280, height: 800 } };
 
 export default defineConfig<LayoutOptions>({

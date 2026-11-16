@@ -7,8 +7,10 @@ import type { QuietHours } from "@askgina/os-api";
 
 /** A request that lives less than this gets no reminder: the first notification is enough. */
 const SHORTEST_REMINDED_SECONDS = 1_800;
+
 /** The reminder comes at least this long before the expiry. */
 const LEAST_REMINDER_LEAD_SECONDS = 600;
+
 const DAY = 86_400;
 
 /**
@@ -17,7 +19,9 @@ const DAY = 86_400;
  */
 export function reminderDueAt(createdAt: number, expiresAt: number): number | null {
   const lifetime = expiresAt - createdAt;
+
   if (lifetime < SHORTEST_REMINDED_SECONDS) return null;
+
   return expiresAt - Math.max(LEAST_REMINDER_LEAD_SECONDS, Math.floor(lifetime / 4));
 }
 
@@ -31,18 +35,22 @@ export function nextAllowedTime(now: number, quietHours: QuietHours | null): num
   if (quietHours === null) return now;
   const start = minutes(quietHours.start);
   const end = minutes(quietHours.end);
+
   if (start === end) return now;
   const local = wallClock(now, quietHours.timeZone);
   const minute = local.hour * 60 + local.minute;
   const inside = start < end ? minute >= start && minute < end : minute >= start || minute < end;
+
   if (!inside) return now;
   // Past midnight in a window that crosses it, or in one that does not, the end is today;
   // before midnight in one that crosses it, the end is tomorrow.
   const days = start > end && minute >= start ? 1 : 0;
+
   const ends = instantOf(
     { year: local.year, month: local.month, day: local.day + days, hour: 0, minute: end },
     quietHours.timeZone,
   );
+
   return Math.max(now, ends);
 }
 
@@ -56,6 +64,7 @@ interface WallClock {
 
 function minutes(time: string): number {
   const [hours = "0", mins = "0"] = time.split(":");
+
   return Number(hours) * 60 + Number(mins);
 }
 
@@ -63,6 +72,7 @@ const formats = new Map<string, Intl.DateTimeFormat>();
 
 function format(timeZone: string): Intl.DateTimeFormat {
   let found = formats.get(timeZone);
+
   if (found === undefined) {
     found = new Intl.DateTimeFormat("en-US", {
       timeZone,
@@ -76,15 +86,18 @@ function format(timeZone: string): Intl.DateTimeFormat {
     });
     formats.set(timeZone, found);
   }
+
   return found;
 }
 
 /** The date and time a clock in `timeZone` shows at `instant`. */
 function wallClock(instant: number, timeZone: string): WallClock & { second: number } {
   const parts: Record<string, number> = {};
+
   for (const part of format(timeZone).formatToParts(new Date(instant * 1000))) {
     if (part.type !== "literal") parts[part.type] = Number(part.value);
   }
+
   return {
     year: parts.year ?? 0,
     month: parts.month ?? 0,
@@ -118,14 +131,18 @@ function instantOf(time: WallClock, timeZone: string): number {
   const offsets = new Set([wall - DAY, wall, wall + DAY].map((probe) => offsetAt(probe, timeZone)));
   const candidates = [...offsets].map((offset) => wall - offset);
   const exact = candidates.filter((instant) => offsetAt(instant, timeZone) === wall - instant);
+
   if (exact.length > 0) return Math.min(...exact);
   // In the gap: the clock reads earlier than `time` at `low` and later at `high`.
   let low = Math.min(...candidates);
   let high = Math.max(...candidates);
+
   while (high - low > 1) {
     const middle = Math.floor((low + high) / 2);
+
     if (asUtc(wallClock(middle, timeZone)) >= wall) high = middle;
     else low = middle;
   }
+
   return high;
 }

@@ -19,6 +19,7 @@ import { createLogger } from "./log.ts";
 async function main(): Promise<void> {
   const log = createLogger("server");
   const config = loadConfig();
+
   // Each workflow worker holds a connection while it runs a step; two are held for good, one
   // listening for data-key shreds and one holding the workflow-bundle lock; the rest serve
   // requests and the World's own listeners.
@@ -26,15 +27,18 @@ async function main(): Promise<void> {
     connectionString: config.databaseUrl,
     max: config.workflowWorkerConcurrency + 14,
   });
+
   // An idle client losing its connection must not take the process down; the pool reconnects.
   pool.on("error", (error) => log.warn("idle database connection failed", { name: error.name }));
 
   await migrateDatabase(pool);
+
   const keyProvider = keyProviderFromEnv(process.env, {
     keyringFileVariable: "KEYRING_FILE",
     // `event` is keys.provider_unavailable or keys.provider_refresh_failed, with ids and counts.
     onEvent: (event) => log.warn("key provider", { ...event }),
   });
+
   // Listening, so a shred in any replica (or the operator's CLI) reaches this cache at once.
   const keys = new DataKeyStore({
     pool,
@@ -42,11 +46,13 @@ async function main(): Promise<void> {
     cacheTtlMs: config.dataKeyCacheSeconds * 1000,
     listen: true,
   });
+
   await keys.ensureMigrated();
   await keys.start();
 
   const db = drizzle(pool, { schema });
   const now = () => Math.floor(Date.now() / 1000);
+
   const ctx: AppContext = {
     config,
     pool,
@@ -70,6 +76,7 @@ async function main(): Promise<void> {
     log,
     now,
   };
+
   ctx.approvals = createApprovalEngine(ctx);
 
   // The encrypted World is created and installed with `setWorld()` by the execution module
@@ -82,30 +89,38 @@ async function main(): Promise<void> {
     hostname: config.host,
     port: config.port,
   });
+
   const internalServer = serve({
     fetch: createInternalApp(ctx).fetch,
     hostname: "127.0.0.1",
     port: config.internalPort,
   });
+
   await prepareSetup(ctx);
+
   // Migrates and starts the World, loads the workflow bundle, starts the sweepers. Another
   // bundle found running later stops this process, so its orchestrator starts it again and
   // the boot check refuses it until the other is gone.
   const background = await startBackground(ctx, {
     onFatal: () => void stop("workflow.bundle_mismatch", 1),
   });
+
   log.info("listening", { event: "server.started", port: config.port });
 
   let stopping = false;
+
   const stop = async (signal: string, exitCode = 0) => {
     if (stopping) return;
     stopping = true;
     log.info("stopping", { event: "server.stopping", signal });
+
     const closed = (server: { close(callback: () => void): void }) => {
       const { promise, resolve } = Promise.withResolvers<void>();
       server.close(() => resolve());
+
       return promise;
     };
+
     // Stop taking requests, let in-flight work settle, then let go of the database.
     await Promise.all([closed(publicServer), closed(internalServer)]);
     await background.stop();
@@ -115,6 +130,7 @@ async function main(): Promise<void> {
     log.info("stopped", { event: "server.stopped" });
     process.exit(exitCode);
   };
+
   process.on("SIGTERM", () => void stop("SIGTERM"));
   process.on("SIGINT", () => void stop("SIGINT"));
 }

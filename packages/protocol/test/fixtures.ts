@@ -22,37 +22,62 @@ import type {
 
 // Fixed identifiers, so digests of the fixtures below are stable test vectors.
 const ULID = "01jd000000000000000000000";
+
 export const WS = `ws_${ULID}1` as const;
+
 export const AGENT = `agt_${ULID}2` as const;
+
 export const WALLET = `wal_${ULID}3` as const;
+
 export const INTENT = `int_${ULID}4` as const;
+
 export const APPROVAL = `apr_${ULID}5` as const;
+
 export const USER_A = `usr_${ULID}6` as const;
+
 export const USER_B = `usr_${ULID}7` as const;
+
 export const USER_C = `usr_${ULID}8` as const;
+
 export const OTHER_AGENT = `agt_${ULID}9` as const;
+
 export const MANDATE = `mnd_${ULID}6` as const;
+
 /** The approval whose transaction the fixture cancel targets. */
 export const TARGET_APPROVAL = `apr_${ULID}e` as const;
+
 /** A second wallet of the workspace, listed by the fixture deletion after `WALLET`. */
 export const OTHER_WALLET = `wal_${ULID}g` as const;
 
 export const ALICE = "0x1111111111111111111111111111111111111111" as const;
+
 export const BOB = "0x2222222222222222222222222222222222222222" as const;
+
 export const TOKEN = "0x3333333333333333333333333333333333333333" as const;
+
 export const ROUTER = "0x4444444444444444444444444444444444444444" as const;
+
 /** The addresses of `WALLET` and `OTHER_WALLET`, as a retire or delete envelope names them. */
 export const WALLET_ADDRESS = "0x5555555555555555555555555555555555555555" as const;
+
 export const OTHER_WALLET_ADDRESS = "0x7777777777777777777777777777777777777777" as const;
+
 /** USDC on Base, the asset of the fixture mandate. */
 export const USDC_BASE = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" as const;
+
 export const BASE = "eip155:8453" as const;
+
 export const MAINNET = "eip155:1" as const;
+
 export const HL_TESTNET = "hyperliquid:testnet" as const;
+
 /** The asset index the fixture venue rules bind to `BTC`. */
 export const BTC_ASSET = 3;
+
 export const NONCE = "AAAAAAAAAAAAAAAAAAAAAA";
+
 export const DIGEST_A = "a".repeat(64);
+
 export const DIGEST_B = "b".repeat(64);
 
 export const T0 = 1_700_000_000;

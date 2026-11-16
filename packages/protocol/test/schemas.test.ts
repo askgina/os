@@ -306,6 +306,7 @@ describe("canonical decimals", () => {
 
 describe("venue intent", () => {
   const order = venueIntent().operation;
+
   if (order.type !== "hyperliquid.order") throw new TypeError("the fixture is an order");
 
   it("accepts an order and a withdrawal, as an intent and as a venue intent only", () => {
@@ -375,6 +376,7 @@ describe("wallet policy", () => {
 
   it("refuses unsorted or duplicated asset limits, and normalizePolicy fixes order", () => {
     const native = policy().assets[0];
+
     if (!native) throw new Error("fixture");
     const token = { ...native, asset: TOKEN };
     // Sorted by "chainId|asset": "0x33…" sorts before "native".
@@ -407,6 +409,7 @@ describe("wallet policy", () => {
 
   it("refuses a capped token that is also a contract-call target", () => {
     const native = policy().assets[0];
+
     if (!native) throw new Error("fixture");
     const token = { ...native, asset: TOKEN };
     const withToken = { assets: [token, native] };
@@ -427,6 +430,7 @@ describe("wallet policy", () => {
 
   it("refuses an asset limit on a chain the wallet may not use", () => {
     const native = policy().assets[0];
+
     if (!native) throw new Error("fixture");
     expect(ok(WalletPolicy, policy({ assets: [{ ...native, chainId: MAINNET }] }))).toBe(false);
   });
@@ -443,6 +447,7 @@ describe("wallet policy", () => {
 
   it("refuses, rather than throws on, malformed cap amounts", () => {
     const limit = { chainId: BASE, asset: "native" as const };
+
     for (const bad of ["1.0", "1e3", "-5", "0x10"]) {
       expect(() =>
         WalletPolicy.safeParse(policy({ assets: [{ ...limit, maxPerTx: bad, maxPerDay: "10" }] })),
@@ -458,6 +463,7 @@ describe("wallet policy", () => {
     expect(ok(WalletPolicy, withVenues)).toBe(true);
     expect(normalizePolicy(withVenues)).toEqual(withVenues);
     const rules = hyperliquidRules();
+
     const shuffled = policy({
       venues: {
         hyperliquid: {
@@ -467,6 +473,7 @@ describe("wallet policy", () => {
         },
       },
     });
+
     expect(ok(WalletPolicy, shuffled)).toBe(false);
     expect(normalizePolicy(shuffled)).toEqual(withVenues);
   });
@@ -474,9 +481,12 @@ describe("wallet policy", () => {
   it("refuses venue rules whose markets are unsorted, repeated or capped above the daily cap", () => {
     const rules = hyperliquidRules();
     const [btc, eth] = rules.markets;
+
     if (btc === undefined || eth === undefined) throw new TypeError("fixture");
+
     const bad = (changes: Partial<HyperliquidRules>) =>
       ok(WalletPolicy, policy({ venues: { hyperliquid: { ...rules, ...changes } } }));
+
     expect(bad({ markets: [eth, btc] })).toBe(false);
     expect(bad({ markets: [btc, { ...btc }] })).toBe(false);
     expect(bad({ markets: [btc, { ...eth, coin: "BTC" }] })).toBe(false);
@@ -588,6 +598,7 @@ describe("mandates in the envelope and the signer contract", () => {
         clientExtensionResults: {},
       },
     };
+
     const authorization = { envelope: grantMandate(), assertions: [assertion] };
     expect(ok(GrantMandateRequest, { mandate: mandate(), authorization })).toBe(true);
     expect(ok(GrantMandateRequest, { mandate: mandate(), authorization, policy: policy() })).toBe(
@@ -596,11 +607,13 @@ describe("mandates in the envelope and the signer contract", () => {
     expect(
       ok(GrantMandateRequest, { mandate: { ...mandate(), recipients: [] }, authorization }),
     ).toBe(false);
+
     const use = {
       approvalId: APPROVAL,
       intent: intent(),
       transaction: { nonce: 0, gas: "21000", maxFeePerGas: "1", maxPriorityFeePerGas: "1" },
     };
+
     expect(ok(SignUnderMandateRequest, use)).toBe(true);
     expect(ok(SignUnderMandateRequest, { ...use, authorization })).toBe(false);
     expect(ok(SignUnderMandateRequest, { ...use, approvalId: newId("mnd") })).toBe(false);
@@ -622,6 +635,7 @@ describe("mandates in the envelope and the signer contract", () => {
 
 describe("reprices and cancels in the envelope and the signer contract", () => {
   const fees = { attempt: 1, maxFeePerGas: "3000000000", maxPriorityFeePerGas: "2000000000" };
+
   const assertion = {
     userId: "usr_01jd0000000000000000000006",
     credentialId: "Y3JlZC1h",
@@ -633,6 +647,7 @@ describe("reprices and cancels in the envelope and the signer contract", () => {
       clientExtensionResults: {},
     },
   };
+
   const attempt = {
     attempt: 1,
     kind: "reprice",
@@ -680,6 +695,7 @@ describe("reprices and cancels in the envelope and the signer contract", () => {
       authorization: { envelope: cancelTransaction(), assertions: [assertion] },
       ...fees,
     };
+
     expect(ok(CancelTransactionRequest, request)).toBe(true);
     expect(ok(CancelTransactionRequest, { ...request, to: ALICE })).toBe(false);
     expect(ok(CancelTransactionRequest, { ...request, attempt: 0 })).toBe(false);
@@ -692,6 +708,7 @@ describe("reprices and cancels in the envelope and the signer contract", () => {
     expect(ok(TransactionAttempt, { ...attempt, kind: "original" })).toBe(false);
     expect(ok(TransactionAttempt, { ...attempt, attempt: 0 })).toBe(false);
     expect(ok(TransactionAttempt, { ...attempt, kind: "replace" })).toBe(false);
+
     const response = {
       approvalId: APPROVAL,
       walletId: WALLET,
@@ -699,10 +716,12 @@ describe("reprices and cancels in the envelope and the signer contract", () => {
       attempt,
       signedTransaction: "0x02",
     };
+
     expect(ok(AttemptResponse, response)).toBe(true);
     expect(ok(AttemptResponse, { ...response, transactionHash: attempt.transactionHash })).toBe(
       false,
     );
+
     const state = {
       approvalId: APPROVAL,
       state: "signed",
@@ -710,6 +729,7 @@ describe("reprices and cancels in the envelope and the signer contract", () => {
       attempts: [{ ...attempt, attempt: 0, kind: "original" }, attempt],
       cloid: null,
     };
+
     expect(ok(ApprovalState, state)).toBe(true);
     const { attempts: _attempts, ...withoutAttempts } = state;
     expect(ok(ApprovalState, withoutAttempts)).toBe(false);
@@ -738,6 +758,7 @@ describe("confirmation messages", () => {
   it("the page is sent back only to an http or https address", () => {
     const back = (returnUrl: string) =>
       ok(SubmitConfirmationResponse, { collected: 1, required: 1, returnUrl });
+
     expect(back(`https://os.example/w/${WS}/approvals/${APPROVAL}`)).toBe(true);
     expect(back("javascript:alert(1)")).toBe(false);
     expect(back("data:text/html,x")).toBe(false);

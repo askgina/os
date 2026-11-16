@@ -21,14 +21,19 @@ import type { ExecutionOptions } from "./transactions.ts";
 import { GENERATED_DIR, loadGenerated, migrateWorld, workflowRuntime } from "./workflow-runtime.ts";
 
 export { mountMcp } from "../mcp/gateway.ts";
+
 export { createApprovalEngine } from "./approvals.ts";
+
 export { createChains } from "./chains.ts";
 
 /** How long a decision may wait for its wake-up before the sweeper delivers it again. */
 const RESUME_GRACE_SECONDS = 5;
+
 /** How long a new request may wait for its workflow before the sweeper starts one. */
 const START_GRACE_SECONDS = 10;
+
 const SWEEP_INTERVAL_MS = 3_000;
+
 const DEFAULT_OPTIONS: ExecutionOptions = { pollSeconds: 5 };
 
 /**
@@ -96,15 +101,18 @@ export async function sweep(ctx: AppContext): Promise<{
         lt(approvals.decidedAt, new Date((now - RESUME_GRACE_SECONDS) * 1000)),
       ),
     );
+
   for (const row of waiting) {
     if (await engine.wake(row.id)) {
       woken += 1;
       continue;
     }
+
     // A run that already finished has nothing left to wake.
     const run = row.runId
       ? await runtime.world.runs.get(row.runId, { resolveData: "none" } as never).catch(() => null)
       : null;
+
     if (run && ["completed", "failed", "cancelled"].includes(run.status)) {
       await ctx.db
         .update(approvals)
@@ -131,9 +139,12 @@ export async function sweep(ctx: AppContext): Promise<{
         ),
       ),
     );
+
   for (const row of unstarted) {
     const outcome = await engine.recoverOrphan(row);
+
     if (outcome === "started") started += 1;
+
     if (outcome === "abandoned") abandoned += 1;
   }
 
@@ -144,6 +155,7 @@ export async function sweep(ctx: AppContext): Promise<{
   // Last: a request it cancels is recovered by the next pass above, and a deletion finishes
   // only once every run of the workspace has.
   const lifecycle = await finalizeIfDue(ctx);
+
   return { woken, started, abandoned, notifications, venueOrders, lifecycle };
 }
 
@@ -169,11 +181,13 @@ export async function startBackground(
   const runtime = workflowRuntime(ctx);
   const generated = await loadGenerated();
   await migrateWorld(ctx.pool);
+
   const mismatch = (error: BundleMismatchError) =>
     ctx.log.error("another workflow bundle runs on this database", {
       event: "workflow.bundle_mismatch",
       bundleId: error.bundleId,
     });
+
   const bundle = await holdBundleLock(ctx.pool, join(GENERATED_DIR, "flow.mjs"), (error) => {
     mismatch(error);
     void stop().then(() => options.onFatal?.(error));
@@ -181,6 +195,7 @@ export async function startBackground(
     if (error instanceof BundleMismatchError) mismatch(error);
     throw error;
   });
+
   const steps = engineOf(ctx).steps();
   registerSteps(steps);
   runtime.world.registerHandler("__wkf_workflow_", generated.flow);
@@ -188,6 +203,7 @@ export async function startBackground(
   engineOf(ctx).attachRuntime(runtime);
 
   let running: Promise<unknown> = Promise.resolve();
+
   const timer = setInterval(() => {
     running = running
       .then(() => sweep(ctx))
@@ -195,9 +211,11 @@ export async function startBackground(
         ctx.log.warn("sweep failed", { error: error instanceof Error ? error.name : "unknown" });
       });
   }, SWEEP_INTERVAL_MS);
+
   timer.unref();
 
   let stopped: Promise<void> | undefined;
+
   const stop = () => {
     stopped ??= (async () => {
       clearInterval(timer);
@@ -207,7 +225,9 @@ export async function startBackground(
       unregisterSteps(steps);
       await bundle.release();
     })();
+
     return stopped;
   };
+
   return { stop };
 }

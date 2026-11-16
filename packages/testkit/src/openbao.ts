@@ -12,7 +12,9 @@ import { TEST_POSTGRES_URL } from "./postgres.ts";
 const execFileAsync = promisify(execFile);
 
 export const OPENBAO_TEST_ADDR = process.env.OPENBAO_TEST_ADDR ?? "http://127.0.0.1:55820";
+
 const ROOT_TOKEN = process.env.OPENBAO_TEST_ROOT_TOKEN ?? "test-root";
+
 const CONTAINER = process.env.OPENBAO_TEST_CONTAINER ?? "os-test-openbao-1";
 
 async function bao(method: string, path: string, body?: unknown): Promise<unknown> {
@@ -22,9 +24,12 @@ async function bao(method: string, path: string, body?: unknown): Promise<unknow
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     signal: AbortSignal.timeout(5000),
   });
+
   const text = await response.text();
+
   if (!response.ok)
     throw new Error(`openbao test setup: ${method} ${path}: ${response.status} ${text}`);
+
   return text === "" ? undefined : JSON.parse(text);
 }
 
@@ -34,6 +39,7 @@ export async function openBaoReachable(): Promise<boolean> {
     const response = await fetch(new URL("/v1/sys/health", OPENBAO_TEST_ADDR), {
       signal: AbortSignal.timeout(1000),
     });
+
     return response.status === 200;
   } catch {
     return false;
@@ -42,6 +48,7 @@ export async function openBaoReachable(): Promise<boolean> {
 
 /** The advisory lock id, on the test Postgres, that stands for the one OpenBao test server. */
 const OPENBAO_LOCK = 0x0b_a0_7e_57;
+
 const LOCK_APPLICATION_PREFIX = "openbao-test-lock:";
 
 /**
@@ -60,17 +67,21 @@ export async function holdOpenBao(
     connectionString: TEST_POSTGRES_URL,
     application_name: `${LOCK_APPLICATION_PREFIX}${holder}`.slice(0, 63),
   });
+
   // A lost connection only means the lock is gone; the holder's own cases then fail on their own.
   client.on("error", () => {});
   await client.connect();
   const deadline = Date.now() + timeoutMs;
+
   try {
     for (;;) {
       const { rows } = await client.query<{ locked: boolean }>(
         "SELECT pg_try_advisory_lock($1) AS locked",
         [OPENBAO_LOCK],
       );
+
       if (rows[0]?.locked) break;
+
       if (Date.now() > deadline) {
         const current = await client.query<{ application_name: string; pid: number }>(
           `SELECT a.application_name, a.pid FROM pg_locks l
@@ -78,26 +89,32 @@ export async function holdOpenBao(
             WHERE l.locktype = 'advisory' AND l.granted AND l.objid = $1`,
           [OPENBAO_LOCK],
         );
+
         const who = current.rows
           .map(
             (row) =>
               `${row.application_name.slice(LOCK_APPLICATION_PREFIX.length)} (pid ${row.pid})`,
           )
           .join(", ");
+
         throw new Error(
           `${holder}: the OpenBao test server is still held after ${timeoutMs} ms by ${who || "a holder that has since left"}; it should hold it for one file at most`,
         );
       }
+
       await delay(250);
     }
   } catch (error) {
     await client.end().catch(() => {});
     throw error;
   }
+
   let released = false;
+
   return async () => {
     if (released) return;
     released = true;
+
     try {
       await client.query("SELECT pg_advisory_unlock($1)", [OPENBAO_LOCK]);
     } finally {
@@ -135,20 +152,25 @@ export async function prepareTransit(): Promise<PreparedTransit> {
   const role = `os-server-${suffix}`;
   await bao("POST", `sys/mounts/${mount}`, { type: "transit" });
   await bao("POST", `${mount}/keys/${key}`, { type: "aes256-gcm96" });
+
   try {
     await bao("POST", "sys/auth/approle", { type: "approle" });
   } catch (error) {
     // Enabled by an earlier run or file; any other failure surfaces at the role below.
     if (!/400/.test((error as Error).message)) throw error;
   }
+
   await bao("PUT", `sys/policies/acl/${role}`, { policy: transitPolicy(mount, key) });
   await bao("POST", `auth/approle/role/${role}`, { token_policies: [role], token_ttl: "1h" });
+
   const roleId = (
     (await bao("GET", `auth/approle/role/${role}/role-id`)) as { data: { role_id: string } }
   ).data.role_id;
+
   const secretId = (
     (await bao("POST", `auth/approle/role/${role}/secret-id`)) as { data: { secret_id: string } }
   ).data.secret_id;
+
   return {
     mount,
     key,

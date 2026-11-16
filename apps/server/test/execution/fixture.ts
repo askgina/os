@@ -74,7 +74,9 @@ export async function fund(address: `0x${string}`, wei: bigint): Promise<void> {
 /** Deploy the test token with `supply` base units held by `holder`; returns its address. */
 export async function deployToken(holder: `0x${string}`, supply: bigint): Promise<`0x${string}`> {
   const [deployer] = await anvil.getAddresses();
+
   if (!deployer) throw new Error("anvil has no unlocked account");
+
   const hash = await anvil.deployContract({
     abi: [
       {
@@ -90,8 +92,11 @@ export async function deployToken(holder: `0x${string}`, supply: bigint): Promis
     args: [holder, supply],
     account: deployer,
   });
+
   const receipt = await anvil.waitForTransactionReceipt({ hash });
+
   if (!receipt.contractAddress) throw new Error("token deployment failed");
+
   return receipt.contractAddress.toLowerCase() as `0x${string}`;
 }
 
@@ -111,6 +116,7 @@ export async function createFixture(
       mountMcp(app, ctx);
     },
   });
+
   const api = t.owner.browser.api;
 
   const newWorkspace = async (name: string) =>
@@ -121,12 +127,15 @@ export async function createFixture(
       params: { workspaceId, walletId },
       body: { draft },
     });
+
     const row = await t.approve(approval.id as ApprovalId, [t.owner]);
+
     if (row.status !== "executed") throw new Error(`policy approval ended ${row.status}`);
   };
 
   const newAgent = async (name: string, workspaceId: WorkspaceId = defaultWorkspace) => {
     const created = await api.call("createAgent", { params: { workspaceId }, body: { name } });
+
     return {
       id: created.agent.id as AgentId,
       token: created.token,
@@ -141,6 +150,7 @@ export async function createFixture(
   await fund(agent.address, 100n * 10n ** 18n);
 
   const clients: Client[] = [];
+
   return {
     t,
     workspaceId: defaultWorkspace,
@@ -153,26 +163,35 @@ export async function createFixture(
         params: { workspaceId },
         body: { role: "approver" },
       });
+
       const token = invite.url.split("/").at(-1) ?? "";
       const browser = t.browser();
+
       const start = await browser.api.call("startInviteRegistration", {
         params: { token },
         body: { displayName },
       });
+
       const passkey = t.register(start.options);
+
       const session = await browser.api.call("finishInviteRegistration", {
         params: { token },
         body: { ceremonyId: start.ceremonyId, response: passkey.response as never },
       });
+
       if (session.user === null) throw new Error("invite registration did not sign in");
+
       const pending = await api.call("listApprovals", {
         params: { workspaceId },
         query: { status: "pending" },
       });
+
       for (const approval of pending.items.filter((item) => item.kind === "add-approver")) {
         const row = await t.approve(approval.id as ApprovalId, [t.owner]);
+
         if (row.status !== "executed") throw new Error(`add-approver ended ${row.status}`);
       }
+
       return {
         userId: session.user.id,
         displayName,
@@ -185,9 +204,11 @@ export async function createFixture(
         requestInit: { headers: { authorization: `Bearer ${token}`, ...headers } },
         fetch: async (input, init) => t.app.fetch(new Request(input, init)),
       });
+
       const client = new Client({ name: "test-agent", version: "1.0.0" });
       await client.connect(transport);
       clients.push(client);
+
       return client;
     },
     async close() {
@@ -204,5 +225,6 @@ const ToolResult = z.looseObject({
 
 export function toolJson(result: unknown): Record<string, unknown> {
   const text = ToolResult.parse(result).content.find((part) => part.type === "text")?.text;
+
   return z.record(z.string(), z.unknown()).parse(JSON.parse(text ?? "{}"));
 }

@@ -24,11 +24,14 @@ export async function postOnce(
       redirect: "manual",
       signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
     });
+
     await response.body?.cancel();
+
     return { status: response.status, retryAfter: retryAfter(response.headers, now) };
   } catch (error) {
     const timedOut =
       error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+
     return { status: null, code: timedOut ? "timeout" : "network" };
   }
 }
@@ -41,9 +44,13 @@ export function isRetryable(status: number): boolean {
 /** `Retry-After` as seconds from `now`: delay-seconds or an HTTP date; absent when unusable. */
 function retryAfter(headers: Headers, now: number): number | undefined {
   const value = headers.get("retry-after")?.trim();
+
   if (value === undefined || value === "") return undefined;
+
   if (/^\d+$/.test(value)) return Number(value);
   const at = Date.parse(value);
+
   if (Number.isNaN(at)) return undefined;
+
   return Math.max(0, Math.ceil(at / 1000 - now));
 }

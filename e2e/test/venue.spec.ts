@@ -68,18 +68,27 @@ import { acknowledged, expectSignedDelivery, webhookSecret } from "../src/webhoo
 test.describe.configure({ mode: "serial" });
 
 const CHAIN = "eip155:31337";
+
 const TESTNET = "hyperliquid:testnet";
+
 const MAINNET = "hyperliquid:mainnet";
+
 const run = Date.now().toString(36);
+
 /** Text an agent types with an order. */
 const ORDER_MEMO = `ORDERMEMO${run} buy a little bitcoin`;
+
 /** Text an agent types with the order whose approval the webhook announces. */
 const NOTICE_MEMO = `NOTICEMARK${run} an order announced with no detail`;
+
 /** Text an agent types with a withdrawal from the venue. */
 const WITHDRAW_MEMO = `WITHDRAWMARK${run} take some of it home`;
+
 /** Text an agent types with an order on the mainnet venue. */
 const MAINNET_MEMO = `MAINNETMARK${run} an order for the mainnet venue`;
+
 const WORKSPACE_NAME = `Trading desk ${run}`;
+
 /** The only mandate recipient; the mandate gate never pays it. */
 const PAYEE = "0x000000000000000000000000000000000000b0b0";
 
@@ -103,13 +112,17 @@ const UNIVERSE: FakeAsset[] = [
   { name: "BTC", szDecimals: 5, maxLeverage: 40 },
   { name: "ETH", szDecimals: 4, maxLeverage: 25 },
 ];
+
 /** The one market every wallet below may trade: BTC, at its index in {@link UNIVERSE}. */
 const BTC = 3;
+
 /** Statuses an order passes through before the venue's answer decides it. */
 const WAITING = ["proposed", "pending_approval", "approved", "signed", "submitted"];
 
 const wei = (amount: string) => parseEther(amount).toString();
+
 const usd6 = (amount: string) => parseUnits(amount, 6).toString();
+
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 
 type HyperliquidRules = NonNullable<NonNullable<PolicyDraft["venues"]>["hyperliquid"]>;
@@ -123,7 +136,9 @@ interface Trader {
 }
 
 const ada = new Person(stack.origin, "Ada");
+
 let workspace: WorkspaceDetail;
+
 /** Trades within 50 USD an order and 200 a day, immediate-or-cancel or resting. */
 let trader: Trader;
 
@@ -173,11 +188,14 @@ async function newTrader(name: string, rules: TraderRules): Promise<Trader> {
     params: { workspaceId: workspace.id },
     body: { name },
   });
+
   const agentId = created.agent.id as Trader["agentId"];
+
   const request = await ada.api.call("requestPolicy", {
     params: { workspaceId: workspace.id, walletId: created.wallet.id },
     body: { draft: policyFor(agentId, rules) },
   });
+
   await ada.confirm(request.id);
   expect((await ada.settled(request.id)).status).toBe("executed");
   await seedVenueAccount(
@@ -185,6 +203,7 @@ async function newTrader(name: string, rules: TraderRules): Promise<Trader> {
     "1000",
     rules.network === MAINNET ? "mainnet" : "testnet",
   );
+
   return {
     agentId,
     token: created.token,
@@ -227,14 +246,17 @@ function approvalIdOf(proposal: Proposal): string {
 async function settles(intentId: string, timeoutMs = 120_000): Promise<IntentDetail> {
   const deadline = Date.now() + timeoutMs;
   let last = "no answer yet";
+
   for (;;) {
     try {
       const intent = await ada.api.call("getIntent", { params: { intentId } });
+
       if (!WAITING.includes(intent.status)) return intent;
       last = intent.status;
     } catch (error) {
       last = `no answer: ${(error as Error).message}`;
     }
+
     if (Date.now() > deadline) throw new Error(`intent ${intentId} is still ${last}`);
     await delay(250);
   }
@@ -243,7 +265,9 @@ async function settles(intentId: string, timeoutMs = 120_000): Promise<IntentDet
 /** The value of the confirmation page's line labelled `label`. */
 function lineValue(view: ConfirmationView, label: string): string {
   const line = view.lines.find((candidate) => candidate.label === label);
+
   if (line === undefined) throw new Error(`the confirmation page shows no "${label}" line`);
+
   return line.value;
 }
 
@@ -255,22 +279,27 @@ async function toolRefusal(
     () => null,
     (error: unknown) => error,
   );
+
   if (!(outcome instanceof ToolRefused)) {
     throw new Error(`expected the tool to refuse, got ${String(outcome)}`);
   }
+
   return { code: outcome.code, detail: outcome.detail };
 }
 
 /** The workspace's whole signer decision log, read to its end: a page holds the oldest 100. */
 async function signerDecisions(): Promise<SignerDecision[]> {
   const decisions: SignerDecision[] = [];
+
   for (let after = 0; ; ) {
     const page = await ada.api.call("listSignerDecisions", {
       params: { workspaceId: workspace.id },
       query: { after: String(after) },
     });
+
     decisions.push(...page.items);
     const last = page.items.at(-1);
+
     if (!last || page.items.length < 100) return decisions;
     after = last.seq;
   }
@@ -288,30 +317,37 @@ async function pendingApprovals(): Promise<number> {
     params: { workspaceId: workspace.id },
     query: { status: "pending" },
   });
+
   return pending.items.length;
 }
 
 /** How many proposals an agent has made, as it lists them. */
 async function intentCount(agent: AgentConnection): Promise<number> {
   const { intents } = await agent.call("list_intents", { limit: 50 });
+
   return Array.isArray(intents) ? intents.length : Number.NaN;
 }
 
 /** How many times a person's passkey has signed anything. */
 function passkeyUses(person: Person): number {
   let uses = 0;
+
   for (const credential of person.authenticator.credentials.values()) uses += credential.signCount;
+
   return uses;
 }
 
 /** Resume the workspace if it is paused; resuming needs the passkey, as always. */
 async function resumeIfPaused(): Promise<void> {
   const { paused } = await ada.api.call("getWorkspace", { params: { workspaceId: workspace.id } });
+
   if (!paused) return;
+
   const resume = await ada.api.call("requestResume", {
     params: { workspaceId: workspace.id },
     body: {},
   });
+
   await ada.confirm(resume.id);
   expect((await ada.settled(resume.id)).status).toBe("executed");
 }
@@ -319,13 +355,17 @@ async function resumeIfPaused(): Promise<void> {
 /** The order request the signer signed for `approvalId`, once it has signed it. */
 async function signedOnce(approvalId: string): Promise<{ request: string; cloid: string }> {
   const deadline = Date.now() + 60_000;
+
   for (;;) {
     const signed = await signedRequest(approvalId);
+
     if (signed !== null) {
       if (signed.cloid === null)
         throw new Error(`${approvalId} was signed with no client order id`);
+
       return { request: signed.request, cloid: signed.cloid };
     }
+
     if (Date.now() > deadline) throw new Error(`the signer has not signed ${approvalId}`);
     await delay(500);
   }
@@ -336,7 +376,9 @@ async function walletVenue(wallet: WalletSummary): Promise<VenueAccount> {
   const detail = await ada.api.call("getWallet", {
     params: { workspaceId: workspace.id, walletId: wallet.id },
   });
+
   if (detail.venue === undefined) throw new Error(`the page of ${wallet.id} shows no venue`);
+
   return detail.venue;
 }
 
@@ -350,6 +392,7 @@ async function expectSignedBy(
   network: FakeNetwork = "testnet",
 ): Promise<void> {
   const parsed = parseExchangeBody(body);
+
   if (typeof parsed === "string") throw new Error(`the venue could not read a request: ${parsed}`);
   expect(isAddressEqual(await recoverExchangeSigner(parsed, network), wallet.address)).toBe(true);
 }
@@ -361,7 +404,9 @@ const venueNetwork = () => `${stack.project}_chain`;
 
 async function serverContainer(): Promise<string> {
   const [server] = await containersOf("server");
+
   if (server === undefined) throw new Error("the stack has no server container");
+
   return server;
 }
 
@@ -373,6 +418,7 @@ async function resolvesVenue(container: string): Promise<boolean> {
     "-e",
     'require("node:dns/promises").lookup("fake-hyperliquid").then(() => console.log("yes"), () => console.log("no"))',
   );
+
   return output.trim() === "yes";
 }
 
@@ -393,6 +439,7 @@ async function reconnectServerToVenue(container: string): Promise<void> {
     "{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}",
     container,
   );
+
   if (networks.split(" ").includes(venueNetwork())) return;
   await docker("network", "connect", "--alias", "server", venueNetwork(), container);
 }
@@ -413,6 +460,7 @@ test.beforeAll(async () => {
 // A failed gate prints what the fake venues took, which no container log shows.
 test.afterEach(async () => {
   const info = test.info();
+
   if (info.status === info.expectedStatus) return;
   process.stderr.write(`\n--- the fake venue after "${info.title}" ---\n${await venueReport()}\n`);
 });
@@ -442,6 +490,7 @@ test("an agent has exactly eight tools, and sees the two venues the server is co
 
 test("an order proposal becomes exactly one order at the venue after a passkey approval on the signer's page", async () => {
   const before = (await venueExchangeLog()).length;
+
   const proposal = await proposeOrder(trader.agent, {
     side: "buy",
     size: "0.0002",
@@ -449,6 +498,7 @@ test("an order proposal becomes exactly one order at the venue after a passkey a
     timeInForce: "Ioc",
     memo: ORDER_MEMO,
   });
+
   // A person always approves an order.
   expect(proposal).toMatchObject({
     authorizedBy: "person",
@@ -494,12 +544,14 @@ test("an order proposal becomes exactly one order at the venue after a passkey a
   const requests = await requestsFor(signed.cloid);
   expect(requests).toHaveLength(1);
   const [posted] = requests;
+
   if (posted === undefined) throw new Error("no request reached the venue");
   expect(posted).toMatchObject({ accepted: true, actionType: "order", dropped: false });
   expect(posted.signer).toBe(trader.wallet.address.toLowerCase());
   await expectSignedBy(posted.body, trader.wallet);
   expect(posted.body).toBe(signed.request);
   const parsed = parseExchangeBody(posted.body);
+
   if (typeof parsed === "string") throw new Error(parsed);
   expect(parsed.action).toEqual({
     type: "order",
@@ -535,6 +587,7 @@ test("the agent cancels a resting order with no passkey, also while the workspac
     timeInForce: "Gtc",
     memo: "rest below the market",
   });
+
   const approvalId = approvalIdOf(proposal);
   const link = await ada.confirmationLink(approvalId);
   const view = await ada.readConfirmation(link);
@@ -552,6 +605,7 @@ test("the agent cancels a resting order with no passkey, also while the workspac
   );
 
   await ada.api.call("pauseWorkspace", { params: { workspaceId: workspace.id }, body: {} });
+
   try {
     // Paused: the agent proposes nothing,
     expect(
@@ -586,6 +640,7 @@ test("the agent cancels a resting order with no passkey, also while the workspac
     ["cancelByCloid", true],
   ]);
   const [order, cancel] = requests;
+
   if (order === undefined || cancel === undefined) throw new Error("a request is missing");
   await expectSignedBy(order.body, trader.wallet);
   await expectSignedBy(cancel.body, trader.wallet);
@@ -648,6 +703,7 @@ test("an order outside the wallet's policy, also one on a venue network the poli
 test("a wallet whose approved policy names Hyperliquid mainnet places an order on the mainnet venue, and neither venue accepts the other network's signature", async () => {
   await setVenueUniverse(UNIVERSE, "mainnet");
   await setVenueBook(BTC, "63000", "64000", "mainnet");
+
   // Its policy, approved with the passkey like every other, names mainnet; its account is at
   // the mainnet venue.
   const mainnet = await newTrader("Mainnet", {
@@ -657,10 +713,12 @@ test("a wallet whose approved policy names Hyperliquid mainnet places an order o
     perDayUsd: "30",
     submitWindowSeconds: 300,
   });
+
   const address = mainnet.wallet.address.toLowerCase();
   // An account at the testnet venue too, so a request that venue refuses below is refused for
   // the signer it recovers and not for a missing account.
   await seedVenueAccount(mainnet.wallet.address, "1000", "testnet");
+
   try {
     const me = await mainnet.agent.call("whoami");
     expect(JSON.stringify(me.wallets)).toContain(MAINNET);
@@ -673,6 +731,7 @@ test("a wallet whose approved policy names Hyperliquid mainnet places an order o
       timeInForce: "Ioc",
       memo: MAINNET_MEMO,
     });
+
     // A person approves it, as every order.
     expect(proposal).toMatchObject({
       authorizedBy: "person",
@@ -698,6 +757,7 @@ test("a wallet whose approved policy names Hyperliquid mainnet places an order o
     const requests = await requestsFor(signed.cloid, "mainnet");
     expect(requests).toHaveLength(1);
     const [posted] = requests;
+
     if (posted === undefined) throw new Error("no request reached the mainnet venue");
     expect(posted).toMatchObject({ accepted: true, actionType: "order", dropped: false });
     expect(posted.signer).toBe(address);
@@ -734,18 +794,22 @@ test("a wallet whose approved policy names Hyperliquid mainnet places an order o
     // And the other way: an order the testnet venue took from the first trader, posted to the
     // mainnet venue, which now holds an account for that wallet too, recovers to another signer.
     const traderAddress = trader.wallet.address.toLowerCase();
+
     const testnetOrder = (await venueExchangeLog("testnet")).find(
       (record) =>
         record.accepted && record.actionType === "order" && record.signer === traderAddress,
     );
+
     if (testnetOrder === undefined) throw new Error("the testnet venue took no order from Trader");
     await seedVenueAccount(trader.wallet.address, "1000", "mainnet");
     const reverse = await postToVenue(testnetOrder.body, "mainnet");
     expect(reverse.status).toBe(200);
     expect(reverse.answer).toMatchObject({ status: "err" });
+
     const onMainnet = (await venueExchangeLog("mainnet")).filter(
       (record) => record.body === testnetOrder.body,
     );
+
     expect(onMainnet.map((record) => record.accepted)).toEqual([false]);
     expect(onMainnet[0]?.signer).not.toBeNull();
     expect(onMainnet[0]?.signer).not.toBe(traderAddress);
@@ -773,12 +837,15 @@ test("an order is never signed under a mandate: with a live mandate, it still wa
     notAfter: nowSeconds() + 86_400,
     purpose: "pay the hosting invoices this week",
   };
+
   const grant = await ada.proposeMandate(workspace.id, trader.wallet.id, draft);
   await ada.confirm(grant.id);
   const granted = await ada.settled(grant.id);
   expect(granted.status).toBe("executed");
+
   if (granted.subject.kind !== "grant-mandate") throw new Error(`${grant.id} grants no mandate`);
   const mandateId = granted.subject.mandate.id;
+
   try {
     const { mandates } = await trader.agent.call("whoami");
     expect(JSON.stringify(mandates)).toContain(mandateId);
@@ -789,6 +856,7 @@ test("an order is never signed under a mandate: with a live mandate, it still wa
       limitPrice: "65000",
       memo: ORDER_MEMO,
     });
+
     expect(proposal).toMatchObject({
       authorizedBy: "person",
       mandateId: null,
@@ -818,27 +886,32 @@ test("a signed order whose submit window passed before it could be posted is nev
     perDayUsd: "30",
     submitWindowSeconds: 5,
   });
+
   const proposal = await proposeOrder(late.agent, {
     side: "buy",
     size: "0.0002",
     limitPrice: "65000",
     memo: "an order that is posted too late",
   });
+
   const approvalId = approvalIdOf(proposal);
   const server = await serverContainer();
   let cloid = "";
   await cutServerFromVenue(server);
+
   try {
     await ada.confirm(approvalId);
     ({ cloid } = await signedOnce(approvalId));
     const { order } = await ada.api.call("getIntent", { params: { intentId: proposal.intentId } });
     const submitBy = order?.submitBy ?? 0;
     expect(submitBy).toBeGreaterThan(0);
+
     // Wait the window out, with a margin for the two clocks.
     while (nowSeconds() <= submitBy + 3) await delay(500);
   } finally {
     await reconnectServerToVenue(server);
   }
+
   expect(await resolvesVenue(server)).toBe(true);
 
   expect((await settles(proposal.intentId, 200_000)).status).toBe("expired");
@@ -855,12 +928,14 @@ test("a server killed after the signer signed an order and before it was posted 
     limitPrice: "65000",
     memo: "an order that survives a crash",
   });
+
   const approvalId = approvalIdOf(proposal);
   const server = await serverContainer();
   let signed = { request: "", cloid: "" };
   // With the server cut off from the venue, the signed request cannot be posted. The approval is
   // sent without waiting for its answer, which the crash may cut short.
   await cutServerFromVenue(server);
+
   try {
     const approving = ada.confirm(approvalId).catch(() => undefined);
     signed = await signedOnce(approvalId);
@@ -870,6 +945,7 @@ test("a server killed after the signer signed an order and before it was posted 
   } finally {
     await reconnectServerToVenue(server);
   }
+
   await compose("up", "-d", "--wait", "--wait-timeout", "300", "server");
   await waitUntilHealthy();
 
@@ -878,6 +954,7 @@ test("a server killed after the signer signed an order and before it was posted 
   const requests = await requestsFor(signed.cloid);
   expect(requests).toHaveLength(1);
   const [posted] = requests;
+
   if (posted === undefined) throw new Error("no request reached the venue");
   expect(posted).toMatchObject({ accepted: true, actionType: "order" });
   await expectSignedBy(posted.body, trader.wallet);
@@ -896,11 +973,13 @@ test("a signed order sent twice is refused the second time, and the venue keeps 
     limitPrice: "65000",
     memo: "an order someone sends twice",
   });
+
   const approvalId = approvalIdOf(proposal);
   await ada.confirm(approvalId);
   expect((await settles(proposal.intentId)).status).toBe("filled");
   const { cloid } = await signedOnce(approvalId);
   const [first, ...others] = await requestsFor(cloid);
+
   if (first === undefined) throw new Error("no request reached the venue");
   expect(others).toEqual([]);
   expect(first.accepted).toBe(true);
@@ -938,6 +1017,7 @@ test("the daily cap counts every order but a reduce-only one, which still closes
     perDayUsd: "30",
     submitWindowSeconds: 300,
   });
+
   try {
     // 0.0003 BTC at 65,000: 19.5 USD of the 30.
     const opening = await proposeOrder(closer.agent, {
@@ -946,6 +1026,7 @@ test("the daily cap counts every order but a reduce-only one, which still closes
       limitPrice: "65000",
       memo: "open a small position",
     });
+
     await ada.confirm(approvalIdOf(opening));
     expect((await settles(opening.intentId)).status).toBe("filled");
     expect((await walletVenue(closer.wallet)).spentTodayUsd6).toBe(usd6("19.5"));
@@ -968,6 +1049,7 @@ test("the daily cap counts every order but a reduce-only one, which still closes
       reduceOnly: true,
       memo: "close most of it",
     });
+
     const closingId = approvalIdOf(closing);
     const link = await ada.confirmationLink(closingId);
     const view = await ada.readConfirmation(link);
@@ -981,6 +1063,7 @@ test("the daily cap counts every order but a reduce-only one, which still closes
     const requests = await requestsFor(cloid);
     expect(requests.map((request) => request.accepted)).toEqual([true]);
     const parsed = parseExchangeBody(requests[0]?.body ?? "");
+
     if (typeof parsed === "string") throw new Error(parsed);
     expect(parsed.action).toMatchObject({
       type: "order",
@@ -996,6 +1079,7 @@ test("the daily cap counts every order but a reduce-only one, which still closes
       limitPrice: "65000",
       memo: "one more small one",
     });
+
     const moreId = approvalIdOf(more);
     expect(
       lineValue(
@@ -1018,6 +1102,7 @@ test("the wallet page shows the signer's own count and, as the venue reports it,
     perDayUsd: "30",
     submitWindowSeconds: 300,
   });
+
   try {
     expect(await walletVenue(rester.wallet)).toMatchObject({
       network: TESTNET,
@@ -1034,11 +1119,13 @@ test("the wallet page shows the signer's own count and, as the venue reports it,
       timeInForce: "Gtc",
       memo: "rest below the market",
     });
+
     const approvalId = approvalIdOf(proposal);
     await ada.confirm(approvalId);
     expect((await settles(proposal.intentId)).status).toBe("placed");
     const { cloid } = await signedOnce(approvalId);
     const resting = (await venueOrders()).find((order) => order.cloid === cloid.toLowerCase());
+
     if (resting === undefined) throw new Error(`the venue has no order ${cloid}`);
     expect(resting.status).toBe("open");
 
@@ -1083,6 +1170,7 @@ test("a withdrawal from the venue goes to the wallet's own address only, after a
     submitWindowSeconds: 300,
     withdrawals: true,
   });
+
   try {
     const pendingBefore = await pendingApprovals();
     const requestsBefore = (await venueExchangeLog()).length;
@@ -1120,6 +1208,7 @@ test("a withdrawal from the venue goes to the wallet's own address only, after a
       amount: "5",
       memo: WITHDRAW_MEMO,
     });
+
     expect(proposal).toMatchObject({
       authorizedBy: "person",
       mandateId: null,
@@ -1140,27 +1229,35 @@ test("a withdrawal from the venue goes to the wallet's own address only, after a
     // One request reached the venue: signed by the wallet, byte for byte what the signer signed,
     // to the wallet's own address.
     const signed = await signedRequest(approvalId);
+
     if (signed === null) throw new Error(`the signer has not signed ${approvalId}`);
     expect(signed.cloid).toBeNull();
+
     const posted = (await venueExchangeLog()).filter(
       (record) =>
         record.actionType === "withdraw3" &&
         record.signer === withdrawer.wallet.address.toLowerCase(),
     );
+
     expect(posted.map((record) => record.accepted)).toEqual([true]);
     const [request] = posted;
+
     if (request === undefined) throw new Error("no withdrawal reached the venue");
     expect(request.body).toBe(signed.request);
     await expectSignedBy(request.body, withdrawer.wallet);
     const parsed = parseExchangeBody(request.body);
+
     if (typeof parsed === "string") throw new Error(parsed);
+
     if (parsed.action.type !== "withdraw3") throw new Error(`a ${parsed.action.type} was posted`);
     expect(parsed.action.hyperliquidChain).toBe("Testnet");
     expect(isAddressEqual(parsed.action.destination, withdrawer.wallet.address)).toBe(true);
     expect(Number(parsed.action.amount)).toBe(5);
+
     const taken = (await venueWithdrawals()).filter((withdrawal) =>
       isAddressEqual(withdrawal.user, withdrawer.wallet.address),
     );
+
     expect(taken).toHaveLength(1);
     expect(isAddressEqual(taken[0]?.destination ?? PAYEE, withdrawer.wallet.address)).toBe(true);
     expect(Number(taken[0]?.amount)).toBe(5);
@@ -1188,6 +1285,7 @@ const APPROVAL_EVENT_KEYS = [
 
 test("an order's approval is announced to the webhook, signed, with no order field (D8)", async () => {
   const secret = await webhookSecret();
+
   // 0.00031 BTC at 64,321: values found in no identifier, time or link.
   const proposal = await proposeOrder(trader.agent, {
     side: "buy",
@@ -1195,12 +1293,15 @@ test("an order's approval is announced to the webhook, signed, with no order fie
     limitPrice: "64321",
     memo: NOTICE_MEMO,
   });
+
   expect(proposal).toMatchObject({ authorizedBy: "person", status: "pending_approval" });
   const approvalId = approvalIdOf(proposal);
+
   try {
     const requests = await acknowledged(
       (body) => body.approvalId === approvalId && body.event === "approval.opened",
     );
+
     const hidden = [
       NOTICE_MEMO,
       `NOTICEMARK${run}`,
@@ -1210,6 +1311,7 @@ test("an order's approval is announced to the webhook, signed, with no order fie
       "perpetual",
       "hyperliquid",
     ];
+
     for (const request of requests) {
       // Exactly the keys of any other approval's notice: no market, side, size or price.
       expect(expectSignedDelivery(secret, request, APPROVAL_EVENT_KEYS, hidden)).toEqual({
@@ -1226,11 +1328,13 @@ test("an order's approval is announced to the webhook, signed, with no order fie
   } finally {
     await ada.reject(approvalId);
   }
+
   expect((await settles(proposal.intentId)).status).toBe("rejected");
   expect(await signedRequest(approvalId)).toBeNull();
 });
 
 const get = (url: string): ProbeRequest => ({ method: "GET", url });
+
 const post = (url: string): ProbeRequest => ({ method: "POST", url });
 
 test("the signer cannot reach either venue, which the server reaches, and no signer route signs typed data, a hash or a raw action", async () => {
@@ -1240,8 +1344,10 @@ test("the signer cannot reach either venue, which the server reaches, and no sig
     get("http://fake-hyperliquid-mainnet:8080/healthz"),
     get(`http://${await venueAddress("mainnet")}:8080/healthz`),
   ];
+
   const server = await serverContainer();
   const [signer] = await containersOf("signer");
+
   if (signer === undefined) throw new Error("the stack has no signer container");
 
   // The control: the server resolves each fake venue and reaches it by name and by address.
@@ -1264,10 +1370,12 @@ test("the signer cannot reach either venue, which the server reaches, and no sig
     "/v1/venue/sign-action",
     "/v1/venue/sign",
   ];
+
   const { statuses } = await reachFrom(
     server,
     routes.map((path) => post(`http://signer:8787${path}`)),
   );
+
   expect(Object.fromEntries(routes.map((path, index) => [path, statuses[index]]))).toEqual({
     "/v1/sign-typed-data": 404,
     "/v1/sign-hash": 404,
@@ -1283,6 +1391,7 @@ test("a server whose venues file pairs one of Hyperliquid's own hosts with the w
     { network: TESTNET, apiUrl: "http://fake-hyperliquid:8080" },
     { network: MAINNET, apiUrl: "http://fake-hyperliquid-mainnet:8080" },
   ]);
+
   expect(both.output).not.toContain("is Hyperliquid's");
   expect(both.output).toMatch(/"code":"(ENOTFOUND|EAI_AGAIN)"/);
   expect(both.exitCode, both.output).toBe(1);
@@ -1297,6 +1406,7 @@ test("a server whose venues file pairs one of Hyperliquid's own hosts with the w
       "api.hyperliquid-testnet.xyz is Hyperliquid's testnet API",
     ],
   ];
+
   for (const [venues, refusal] of wrong) {
     const boot = await bootServerWith(venues);
     expect(boot.output, JSON.stringify(venues)).toContain(refusal);
@@ -1315,13 +1425,19 @@ test("what an agent typed with an order or a withdrawal, and every signed reques
         .map((record) => record.body),
     ),
   ];
+
   expect(bodies.length).toBeGreaterThan(0);
+
   const signatures = bodies.flatMap((body) => {
     const parsed = parseExchangeBody(body);
+
     if (typeof parsed === "string") throw new Error(parsed);
+
     return [parsed.signature.r.slice(2), parsed.signature.s.slice(2)];
   });
+
   const url = await databaseUrl();
+
   const scan = await scanForMarkers(url, [
     ORDER_MEMO,
     NOTICE_MEMO,
@@ -1329,6 +1445,7 @@ test("what an agent typed with an order or a withdrawal, and every signed reques
     MAINNET_MEMO,
     ...signatures,
   ]);
+
   expect(scan.hits).toEqual([]);
   // The control: a name a person typed is readable on purpose. If the scanner cannot find even
   // that, it is blind and the assertion above means nothing.
@@ -1339,8 +1456,10 @@ test("what an agent typed with an order or a withdrawal, and every signed reques
   // is sealed: none of its JSON is readable.
   const sealed = await sealedVenueRequests();
   expect(sealed.length).toBeGreaterThanOrEqual(bodies.length);
+
   for (const { approvalId, request } of sealed) {
     const bytes = request.toString("latin1");
+
     for (const word of ['"action"', '"signature"', '"nonce"', "withdraw3"]) {
       expect(bytes, `${approvalId} holds ${word}`).not.toContain(word);
     }

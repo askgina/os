@@ -40,9 +40,12 @@ import {
 
 /** The first signature's fees (`txParams`). */
 const FEE = 2_000_000_000n;
+
 const TIP = 1_000_000_000n;
+
 /** The harness intent's `maxFeeWei`, over 21000 gas: the highest fee per gas it allows. */
 const INTENT_CEILING = 10n ** 15n;
+
 const MAX_FEE_PER_GAS = INTENT_CEILING / 21_000n;
 
 /** A payment approved with a passkey and signed once. */
@@ -62,13 +65,17 @@ async function pay(world: World, operation?: Operation): Promise<Payment> {
     world,
     operation ?? { type: "evm.transfer", to: RECIPIENT, valueWei: String(PAYMENT) },
   );
+
   const authorization = approveIntent(world, intent, {
     people: world.people.slice(0, world.policy.approvals.threshold),
   });
+
   const params = txParams();
   const signed = await world.t.client.sign({ intent, authorization, transaction: params });
   const { envelope } = authorization;
+
   if (envelope.type !== "approve-intent") throw new Error("not an approve-intent envelope");
+
   return { intent, envelope, params, signed, approvalId: envelope.approvalId };
 }
 
@@ -131,11 +138,13 @@ function withoutFees(signed: `0x${string}`) {
     yParity: _yParity,
     ...rest
   } = parseTransaction(signed);
+
   return rest;
 }
 
 async function decisionsOf(world: World, action: string) {
   const { decisions } = await world.t.client.listDecisions(world.workspaceId, { limit: 1000 });
+
   return decisions
     .filter((decision) => decision.action === action)
     .map((decision) => [decision.outcome, decision.code]);
@@ -144,6 +153,7 @@ async function decisionsOf(world: World, action: string) {
 describe("a reprice", () => {
   it("changes only the two fee fields: nonce, gas, to, value, data and chain equal the first signature", async () => {
     const world = await setUpWorld(startSigner());
+
     for (const operation of [
       undefined,
       { type: "evm.erc20.transfer", token: TOKEN, to: RECIPIENT, amount: "1000" } as const,
@@ -171,9 +181,11 @@ describe("a reprice", () => {
       expect(second.nonce).toBe(payment.params.nonce);
       expect([second.maxFeePerGas, second.maxPriorityFeePerGas]).toEqual([FEE * 2n, TIP * 2n]);
       expect([first.maxFeePerGas, first.maxPriorityFeePerGas]).toEqual([FEE, TIP]);
+
       const from = await recoverTransactionAddress({
         serializedTransaction: next.signedTransaction as `0x02${string}`,
       });
+
       expect(from.toLowerCase()).toBe(world.address);
 
       // The approval reports both attempts; its transaction hash stays the first one's.
@@ -228,11 +240,13 @@ describe("a reprice", () => {
   it("refuses a reprice for an approval never signed, a revoked one, a different envelope, or a different intent", async () => {
     const world = await setUpWorld(startSigner());
     const payment = await pay(world);
+
     const fees = {
       attempt: 1,
       maxFeePerGas: String(FEE * 2n),
       maxPriorityFeePerGas: String(TIP * 2n),
     };
+
     const request = { intent: payment.intent, envelope: payment.envelope, ...fees };
 
     await refused(world.t.client.reprice(newId("apr"), request), "not_found");
@@ -242,11 +256,13 @@ describe("a reprice", () => {
     // The policy's approval was applied, never signed.
     const { decisions } = await world.t.client.listDecisions(world.workspaceId);
     const applied = decisions.find((decision) => decision.action === "set-policy")?.approvalId;
+
     if (!applied) throw new Error("no policy approval");
     await refused(world.t.client.reprice(applied as ApprovalId, request), "conflict");
 
     // Another envelope for the same approval id and intent: not the one people approved.
     const other = approveIntent(world, payment.intent).envelope;
+
     if (other.type !== "approve-intent") throw new Error("not an approve-intent envelope");
     await refused(
       world.t.client.reprice(payment.approvalId, {
@@ -304,16 +320,19 @@ describe("a reprice", () => {
   it("two concurrent reprices for one attempt number sign once, and attempts stay numbered without gaps", async () => {
     const world = await setUpWorld(startSigner());
     const payment = await pay(world);
+
     const [a, b] = await Promise.all([
       reprice(world, payment, 1, FEE * 2n, TIP * 2n),
       reprice(world, payment, 1, FEE * 2n, TIP * 2n),
     ]);
+
     expect(a).toEqual(b);
 
     const settled = await Promise.allSettled([
       reprice(world, payment, 2, FEE * 3n, TIP * 3n),
       reprice(world, payment, 2, FEE * 4n, TIP * 4n),
     ]);
+
     expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     const lost = settled.find((result) => result.status === "rejected");
     expect(lost?.status === "rejected" && lost.reason).toMatchObject({ code: "conflict" });
@@ -347,12 +366,14 @@ describe("a reprice", () => {
     await refused(reprice(windowed, late, 2, FEE * 3n, TIP * 3n), "reprice_window_closed");
     // A repeat of an attempt already signed is still answered.
     expect(await reprice(windowed, late, 1, FEE * 2n, TIP * 2n)).toEqual(last);
+
     // After the window a person decides: a cancel still signs.
     const cancelled = await cancel(windowed, late, cancelEnvelope(windowed, late), {
       attempt: 2,
       maxFeePerGas: FEE * 3n,
       maxPriorityFeePerGas: TIP * 3n,
     });
+
     expect(cancelled.attempt.kind).toBe("cancel");
 
     // A window of 0 refuses every reprice.
@@ -368,11 +389,13 @@ describe("a reprice", () => {
     await refused(reprice(world, payment, 2, FEE * 3n, TIP * 3n), "workspace_paused");
     // A repeat of what was signed before the pause is answered, as for a first signature.
     expect(await reprice(world, payment, 1, FEE * 2n, TIP * 2n)).toEqual(repriced);
+
     const cancelled = await cancel(world, payment, cancelEnvelope(world, payment), {
       attempt: 2,
       maxFeePerGas: FEE * 3n,
       maxPriorityFeePerGas: TIP * 3n,
     });
+
     expect(cancelled.attempt).toMatchObject({ attempt: 2, kind: "cancel" });
   });
 });
@@ -426,6 +449,7 @@ describe("a cancel", () => {
     const world = await setUpWorld(startSigner());
     const payment = await pay(world);
     const fees = { attempt: 1, maxFeePerGas: FEE * 2n, maxPriorityFeePerGas: TIP * 2n };
+
     for (const envelope of [
       cancelEnvelope(world, payment, { txNonce: payment.params.nonce + 1 }),
       cancelEnvelope(world, payment, { walletId: newId("wal") }),
@@ -433,6 +457,7 @@ describe("a cancel", () => {
     ]) {
       await refused(cancel(world, payment, envelope, fees), "envelope_mismatch");
     }
+
     // A target the signer never signed.
     const never = { ...payment, approvalId: newId("apr") };
     await refused(cancel(world, never, cancelEnvelope(world, never), fees), "envelope_mismatch");
@@ -501,11 +526,13 @@ describe("a cancel", () => {
 
     // A second cancel may raise the ceiling of the first; the reprices after it follow it.
     const raised = cancelEnvelope(world, payment, { maxFeeWei: String(21_000n * FEE * 5n) });
+
     const second = await cancel(world, payment, raised, {
       attempt: 3,
       maxFeePerGas: FEE * 4n,
       maxPriorityFeePerGas: TIP * 4n,
     });
+
     expect(second.attempt.kind).toBe("cancel");
     // A policy fee cap lowered since caps a cancel's reprices as well.
     await replacePolicy(world, { fees: { maxPerTxWei: String((21_000n * FEE * 9n) / 2n) } });
@@ -585,6 +612,7 @@ describe("what attempts leave unchanged", () => {
   it("an attempt the vault signs wrongly is refused and nothing is recorded", async () => {
     const honest = createTestVault();
     const state = { cheat: false };
+
     const vault: Vault = {
       createWallet: (walletId) => honest.createWallet(walletId),
       signEvmTransaction: (walletId, credential, transaction) =>
@@ -596,6 +624,7 @@ describe("what attempts leave unchanged", () => {
       signHyperliquid: (...args) => honest.signHyperliquid(...args),
       destroyWallet: (walletId) => honest.destroyWallet(walletId),
     };
+
     const world = await setUpWorld(startSigner({ vault }));
     const payment = await pay(world);
     state.cheat = true;
@@ -621,6 +650,7 @@ describe("mandates and the restore fence", () => {
     const signed = await world.t.client.signUnderMandate(mandate.id, use);
     const before = await world.t.client.getMandate(mandate.id);
     const spent = (await world.t.client.getWallet(world.walletId)).spent;
+
     const fees = {
       attempt: 1,
       maxFeePerGas: String(FEE * 2n),
@@ -632,6 +662,7 @@ describe("mandates and the restore fence", () => {
       mandateId: mandate.id,
       ...fees,
     });
+
     expect(repriced.attempt).toMatchObject({ attempt: 1, kind: "reprice" });
     expect(withoutFees(repriced.signedTransaction)).toEqual(withoutFees(signed.signedTransaction));
     expect(await world.t.client.getMandate(mandate.id)).toEqual(before);
@@ -644,8 +675,10 @@ describe("mandates and the restore fence", () => {
       maxFeePerGas: String(FEE * 3n),
       maxPriorityFeePerGas: String(TIP * 3n),
     };
+
     // A use has no approve-intent envelope: one offered for it is not what the signer stored.
     const envelope = approveIntent(world, intent).envelope;
+
     if (envelope.type !== "approve-intent") throw new Error("not an approve-intent envelope");
     await refused(
       world.t.client.reprice(use.approvalId, {
@@ -683,6 +716,7 @@ describe("mandates and the restore fence", () => {
       world.t.client.reprice(use.approvalId, { intent, mandateId: mandate.id, ...next }),
       "mandate_revoked",
     );
+
     // A person can still cancel it.
     const cancelled = await world.t.client.cancelTransaction(use.approvalId, {
       authorization: authorize(
@@ -701,6 +735,7 @@ describe("mandates and the restore fence", () => {
       maxFeePerGas: String(FEE * 3n),
       maxPriorityFeePerGas: String(TIP * 3n),
     });
+
     expect(cancelled.attempt.kind).toBe("cancel");
     expect((await world.t.client.getMandate(mandate.id)).usage).toEqual(before.usage);
   });
@@ -715,11 +750,13 @@ describe("mandates and the restore fence", () => {
 
     // Envelopes issued from the fence plus the verifier's skew on are accepted.
     t.clock.value += 31;
+
     const cancelled = await cancel(world, payment, cancelEnvelope(world, payment), {
       attempt: 1,
       maxFeePerGas: FEE * 2n,
       maxPriorityFeePerGas: TIP * 2n,
     });
+
     expect(cancelled.attempt.kind).toBe("cancel");
     await refused(reprice(world, payment, 2, FEE * 3n, TIP * 3n), "envelope_fenced");
 
@@ -738,12 +775,14 @@ describe("the database's schema version 6", () => {
     const dir = mkdtempSync(join(tmpdir(), "os-signer-attempts-"));
     dirs.push(dir);
     const sqlitePath = join(dir, "signer.sqlite");
+
     const host = {
       sqlitePath,
       clock: new Clock(),
       vault: createTestVault(),
       tokenKey: randomBytes(32),
     };
+
     let t = startSigner(host);
     const world = await setUpWorld(t);
     const payment = await pay(world);

@@ -42,10 +42,12 @@ export function VenueOrderStatus({
   role: Role;
 }) {
   const order = intent.order;
+
   const cancel = useMutation({
     mutationFn: () => api.call("cancelOrder", { params: { intentId: intent.id }, body: {} }),
     onSuccess: async (next) => {
       queryClient.setQueryData(keys.intent(next.id), next);
+
       if (next.approvalId) {
         queryClient.setQueryData<ApprovalDetail>(keys.approval(next.approvalId), (old) =>
           old?.subject.kind === "approve-intent"
@@ -54,11 +56,14 @@ export function VenueOrderStatus({
         );
         await queryClient.invalidateQueries({ queryKey: keys.approval(next.approvalId) });
       }
+
       await queryClient.invalidateQueries({ queryKey: keys.intents(workspaceId) });
     },
   });
+
   const canCancel = order?.canCancel === true;
   const acts = role !== "viewer";
+
   return (
     <div className="grid min-w-0 grid-cols-1 gap-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -136,6 +141,7 @@ export function VenueAccountCard({ account }: { account: VenueAccount }) {
   const cap = account.maxNotionalPerDayUsd6;
   const share = cap === null ? 0 : percentOf(account.spentTodayUsd6, cap);
   const reported = account.reported;
+
   return (
     <Card>
       <CardHeader>

@@ -21,11 +21,15 @@ import {
 } from "./fixture.ts";
 
 let f: Fixture;
+
 let bob: TestPerson;
+
 let viewer: TestBrowser;
+
 let stranger: TestPerson;
 
 const ETH = 10n ** 18n;
+
 const randomAddress = () => `0x${randomBytes(20).toString("hex")}` as `0x${string}`;
 
 async function joinAsViewer(name: string): Promise<TestBrowser> {
@@ -33,17 +37,21 @@ async function joinAsViewer(name: string): Promise<TestBrowser> {
     params: { workspaceId: f.workspaceId },
     body: { role: "viewer" },
   });
+
   const token = invite.url.split("/").at(-1) ?? "";
   const browser = f.t.browser();
+
   const start = await browser.api.call("startInviteRegistration", {
     params: { token },
     body: { displayName: name },
   });
+
   const passkey = f.t.register(start.options);
   await browser.api.call("finishInviteRegistration", {
     params: { token },
     body: { ceremonyId: start.ceremonyId, response: passkey.response as never },
   });
+
   return browser;
 }
 
@@ -53,6 +61,7 @@ beforeAll(async () => {
   viewer = await joinAsViewer("Vera Viewer");
   stranger = await f.addApprover(await f.newWorkspace("Elsewhere"), "Sam Stranger");
 });
+
 afterAll(async () => {
   await f?.close();
 });
@@ -67,8 +76,10 @@ async function refusal(call: Promise<unknown>): Promise<{ code: string; detail?:
         ? { code: error.code }
         : { code: error.code, detail: error.detail };
     }
+
     throw error;
   }
+
   throw new Error("the call was not refused");
 }
 
@@ -77,6 +88,7 @@ async function agentWith(name: string): Promise<{ agent: TestAgent; client: Clie
   const agent = await f.newAgent(name);
   await f.setPolicy(f.workspaceId, agent.walletId, draftFor(agent.id));
   await fund(agent.address, 50n * ETH);
+
   return { agent, client: await f.mcp(agent.token) };
 }
 
@@ -111,20 +123,26 @@ async function grant(
     params: { workspaceId: f.workspaceId, walletId: agent.walletId },
     body: { ...draftOf(agent, recipients), ...overrides },
   });
+
   expect(opened).toMatchObject({ kind: "grant-mandate", status: "pending", threshold: 1 });
   const row = await f.t.approve(opened.id as ApprovalId, [bob]);
   expect(row.status).toBe("executed");
+
   return row.subjectId as MandateId;
 }
 
 async function propose(client: Client, args: Record<string, unknown>) {
   const answer = toolJson(await client.callTool({ name: "propose_transfer", arguments: args }));
+
   if (typeof answer.intentId !== "string") throw new Error(JSON.stringify(answer));
+
   const [row] = await f.t.ctx.db
     .select()
     .from(intents)
     .where(eq(intents.id, answer.intentId as IntentId));
+
   if (!row?.approvalId) throw new Error("an intent without its approval or use");
+
   return { answer, row, approvalId: row.approvalId };
 }
 
@@ -132,18 +150,23 @@ async function propose(client: Client, args: Record<string, unknown>) {
 async function run(approvalId: ApprovalId) {
   const steps = engineOf(f.t.ctx).steps();
   const result = await steps.execute(approvalId);
+
   if (!result.ok) {
     await steps.fail(approvalId, result.code);
+
     return result;
   }
+
   for (let i = 0; i < 20; i += 1) {
     if ((await steps.followUp(approvalId)).done) return result;
   }
+
   throw new Error("follow-up never finished");
 }
 
 const getIntent = (intentId: string) =>
   f.t.owner.browser.api.call("getIntent", { params: { intentId } });
+
 const getMandate = (mandateId: string) =>
   f.t.owner.browser.api.call("getMandate", {
     params: { workspaceId: f.workspaceId, mandateId },
@@ -239,11 +262,13 @@ describe("granting a mandate", () => {
   it("refuses a draft the wallet's policy or the longest life would refuse, with the reason", async () => {
     const { agent } = await agentWith("Overreach");
     const draft = draftOf(agent, [randomAddress()]);
+
     const call = (body: MandateDraft) =>
       f.t.owner.browser.api.call("proposeMandate", {
         params: { workspaceId: f.workspaceId, walletId: agent.walletId },
         body,
       });
+
     expect(await refusal(call({ ...draft, notAfter: f.t.clock.now() + 8 * 86_400 }))).toEqual({
       code: "invalid_request",
       detail: "lifetime_too_long",
@@ -280,6 +305,7 @@ describe("a proposal a mandate covers", () => {
     const { agent, client } = await agentWith("Covered");
     const recipient = randomAddress();
     const mandateId = await grant(agent, [recipient]);
+
     const pendingBefore = (
       await f.t.owner.browser.api.call("getWorkspace", { params: { workspaceId: f.workspaceId } })
     ).pendingApprovals;
@@ -290,6 +316,7 @@ describe("a proposal a mandate covers", () => {
       amount: "0.5",
       memo: "invoice 17",
     });
+
     expect(answer).toEqual({
       intentId: row.id,
       status: "approved",
@@ -324,6 +351,7 @@ describe("a proposal a mandate covers", () => {
       params: { workspaceId: f.workspaceId },
       query: { status: "all" },
     });
+
     expect(all.items.map((item) => item.id)).not.toContain(approvalId);
     expect(all.items.map((item) => item.kind)).not.toContain("mandate-use");
     expect(
@@ -333,6 +361,7 @@ describe("a proposal a mandate covers", () => {
         })
       ).pendingApprovals,
     ).toBe(pendingBefore);
+
     // Each call starts only when it is awaited: a refusal nobody is listening to yet is an
     // unhandled rejection.
     for (const call of [
@@ -350,16 +379,19 @@ describe("a proposal a mandate covers", () => {
       usedInWindow: (5n * 10n ** 17n).toString(),
     });
     expect(shown.intents.map((intent) => intent.id)).toEqual([row.id]);
+
     const underIt = await f.t.owner.browser.api.call("listIntents", {
       params: { workspaceId: f.workspaceId },
       query: { mandateId },
     });
+
     expect(underIt.items.map((intent) => intent.id)).toEqual([row.id]);
 
     // The agent sees the same over MCP.
     const read = toolJson(
       await client.callTool({ name: "get_intent", arguments: { intentId: row.id } }),
     );
+
     expect(read).toMatchObject({ status: "confirmed", authorizedBy: "mandate", mandateId });
     const listed = toolJson(await client.callTool({ name: "list_intents", arguments: {} }));
     expect(listed.intents).toEqual([
@@ -395,6 +427,7 @@ describe("a proposal a mandate covers", () => {
     const { agent, client } = await agentWith("Uncovered");
     const listed = randomAddress();
     await grant(agent, [listed]);
+
     for (const args of [
       { to: randomAddress(), amount: "0.1" },
       { to: listed, amount: "1.5" },
@@ -404,6 +437,7 @@ describe("a proposal a mandate covers", () => {
         memo: "not covered",
         ...args,
       });
+
       expect(answer).toMatchObject({
         status: "pending_approval",
         authorizedBy: "person",
@@ -411,10 +445,12 @@ describe("a proposal a mandate covers", () => {
       });
       expect(answer.approvalUrl).toEqual(expect.stringContaining(`/approvals/${row.approvalId}`));
       expect(row.mandateId).toBeNull();
+
       const [request] = await f.t.ctx.db
         .select({ kind: approvals.kind })
         .from(approvals)
         .where(eq(approvals.id, row.approvalId as ApprovalId));
+
       expect(request?.kind).toBe("approve-intent");
     }
   });
@@ -428,10 +464,13 @@ describe("a proposal a mandate covers", () => {
     const tieA = await grant(agent, [recipient], { notAfter: now + 86_400 });
     const tieB = await grant(agent, [recipient], { notAfter: now + 86_400 });
     const [lowest] = [tieA, tieB].sort();
+
     const pick = async () =>
       (await propose(client, { chainId: TEST_CHAIN_ID, to: recipient, amount: "0.01", memo: "x" }))
         .answer.mandateId;
+
     expect(await pick()).toBe(lowest);
+
     // Once both tied mandates are revoked, the one ending next is used, then the last one.
     for (const mandateId of [tieA, tieB]) {
       await f.t.owner.browser.api.call("revokeMandate", {
@@ -439,6 +478,7 @@ describe("a proposal a mandate covers", () => {
         body: {},
       });
     }
+
     expect(await pick()).toBe(first);
     await f.t.owner.browser.api.call("revokeMandate", {
       params: { workspaceId: f.workspaceId, mandateId: first },
@@ -452,6 +492,7 @@ describe("a proposal a mandate covers", () => {
     const recipient = randomAddress();
     const mandateId = await grant(agent, [recipient]);
     const before = await f.t.ctx.db.select().from(intents).where(eq(intents.agentId, agent.id));
+
     const refused = toolJson(
       await client.callTool({
         name: "propose_transfer",
@@ -464,10 +505,12 @@ describe("a proposal a mandate covers", () => {
         },
       }),
     );
+
     expect(refused).toMatchObject({
       error: "policy_denied",
       detail: "mandate_recipient_not_allowed",
     });
+
     const over = toolJson(
       await client.callTool({
         name: "propose_transfer",
@@ -480,10 +523,12 @@ describe("a proposal a mandate covers", () => {
         },
       }),
     );
+
     expect(over).toMatchObject({ error: "policy_denied", detail: "mandate_over_per_action_cap" });
     // Another agent's mandate is not this agent's to name.
     const { agent: other } = await agentWith("Pinned elsewhere");
     const theirs = await grant(other, [recipient]);
+
     const foreign = toolJson(
       await client.callTool({
         name: "propose_transfer",
@@ -496,6 +541,7 @@ describe("a proposal a mandate covers", () => {
         },
       }),
     );
+
     expect(foreign).toMatchObject({ error: "not_found" });
     expect(
       await f.t.ctx.db.select().from(intents).where(eq(intents.agentId, agent.id)),
@@ -508,12 +554,14 @@ describe("a proposal a mandate covers", () => {
       memo: "pinned here",
       mandateId,
     });
+
     expect(pinned.answer).toMatchObject({ authorizedBy: "mandate", mandateId });
   });
 
   it("racing for the last of a window: the signer signs one, the other ends denied with its counter code, and the next waits for a person", async () => {
     const { agent, client } = await agentWith("Racer");
     const recipient = randomAddress();
+
     const mandateId = await grant(agent, [recipient], {
       assets: [
         {
@@ -525,6 +573,7 @@ describe("a proposal a mandate covers", () => {
         },
       ],
     });
+
     // Both pass the early check: nothing is used yet.
     const one = await propose(client, {
       chainId: TEST_CHAIN_ID,
@@ -532,12 +581,14 @@ describe("a proposal a mandate covers", () => {
       amount: "0.6",
       memo: "a",
     });
+
     const two = await propose(client, {
       chainId: TEST_CHAIN_ID,
       to: recipient,
       amount: "0.6",
       memo: "b",
     });
+
     expect([one.answer.mandateId, two.answer.mandateId]).toEqual([mandateId, mandateId]);
 
     const results = await Promise.all([run(one.approvalId), run(two.approvalId)]);
@@ -563,6 +614,7 @@ describe("a proposal a mandate covers", () => {
       amount: "0.6",
       memo: "c",
     });
+
     expect(next.answer).toMatchObject({ authorizedBy: "person", status: "pending_approval" });
   });
 
@@ -573,11 +625,13 @@ describe("a proposal a mandate covers", () => {
     // Each records an approval, an intent and audit entries in one transaction; transactions of
     // one workspace that wait on each other's row locks must queue, not deadlock.
     const memos = ["a", "b", "c", "d", "e", "f", "g", "h"];
+
     const all = await Promise.all(
       memos.map((memo) =>
         propose(client, { chainId: TEST_CHAIN_ID, to: recipient, amount: "0.01", memo }),
       ),
     );
+
     expect(all.map((one) => one.answer.mandateId)).toEqual(memos.map(() => mandateId));
   });
 
@@ -586,12 +640,14 @@ describe("a proposal a mandate covers", () => {
     const recipient = randomAddress();
     await grant(agent, [recipient]);
     const nonceBefore = await anvil.getTransactionCount({ address: agent.address });
+
     const { row, approvalId } = await propose(client, {
       chainId: TEST_CHAIN_ID,
       to: recipient,
       amount: "0.25",
       memo: "crash",
     });
+
     const steps = engineOf(f.t.ctx).steps();
     const signer = f.t.ctx.signer;
     const realSign = signer.signUnderMandate.bind(signer);
@@ -604,6 +660,7 @@ describe("a proposal a mandate covers", () => {
         throw new Error("process died");
       },
     });
+
     try {
       await expect(steps.execute(approvalId)).rejects.toThrow("process died");
     } finally {
@@ -613,16 +670,19 @@ describe("a proposal a mandate covers", () => {
         value: realSign,
       });
     }
+
     if (!signedFirst) throw new Error("the signer was never reached");
     expect(
       await f.t.ctx.db.select().from(transactions).where(eq(transactions.intentId, row.id)),
     ).toHaveLength(0);
     // The retried step gets the signer's replay of the first signature, counted once.
     expect(await run(approvalId)).toEqual({ ok: true });
+
     const stored = await f.t.ctx.db
       .select()
       .from(transactions)
       .where(eq(transactions.intentId, row.id));
+
     expect(stored).toHaveLength(1);
     expect(stored[0]?.hash).toBe(signedFirst.transactionHash);
     expect(stored[0]?.nonce).toBe(
@@ -639,10 +699,12 @@ describe("ending a mandate", () => {
     const { agent, client } = await agentWith("Revoked");
     const recipient = randomAddress();
     const mandateId = await grant(agent, [recipient]);
+
     const revoked = await bob.browser.api.call("revokeMandate", {
       params: { workspaceId: f.workspaceId, mandateId },
       body: {},
     });
+
     expect(revoked).toMatchObject({ status: "revoked", endedReason: "revoked" });
     expect(revoked.revokedAt).toBe(f.t.clock.now());
     expect(await f.t.ctx.signer.getMandate(mandateId)).toMatchObject({
@@ -656,27 +718,33 @@ describe("ending a mandate", () => {
         body: {},
       }),
     ).toMatchObject({ status: "revoked", endedReason: "revoked" });
+
     const { answer } = await propose(client, {
       chainId: TEST_CHAIN_ID,
       to: recipient,
       amount: "0.1",
       memo: "after revocation",
     });
+
     expect(answer).toMatchObject({ authorizedBy: "person", status: "pending_approval" });
+
     const ended = await f.t.owner.browser.api.call("listMandates", {
       params: { workspaceId: f.workspaceId },
       query: { agentId: agent.id, status: "ended" },
     });
+
     expect(ended.items.map((item) => item.id)).toEqual([mandateId]);
   });
 
   it("disabling the agent revokes its mandates at the signer and cancels its waiting grants", async () => {
     const { agent } = await agentWith("Disabled");
     const mandateId = await grant(agent, [randomAddress()]);
+
     const waiting = await f.t.owner.browser.api.call("proposeMandate", {
       params: { workspaceId: f.workspaceId, walletId: agent.walletId },
       body: draftOf(agent, [randomAddress()]),
     });
+
     await f.t.owner.browser.api.call("disableAgent", {
       params: { workspaceId: f.workspaceId, agentId: agent.id },
       body: {},
@@ -689,10 +757,12 @@ describe("ending a mandate", () => {
       status: "revoked",
       endedReason: "agent_disabled",
     });
+
     const [grantRequest] = await f.t.ctx.db
       .select({ status: approvals.status })
       .from(approvals)
       .where(eq(approvals.id, waiting.id as ApprovalId));
+
     expect(grantRequest?.status).toBe("cancelled");
   });
 
@@ -713,25 +783,31 @@ describe("ending a mandate", () => {
       status: "revoked",
       endedReason: "operator",
     });
+
     const { answer } = await propose(client, {
       chainId: TEST_CHAIN_ID,
       to: recipient,
       amount: "0.1",
       memo: "after the operator",
     });
+
     expect(answer).toMatchObject({ authorizedBy: "person" });
   });
 
   it("ends in the mirror once it expires", async () => {
     const { agent } = await agentWith("Expiring");
+
     const mandateId = await grant(agent, [randomAddress()], {
       notAfter: f.t.clock.now() + 3_600,
     });
+
     f.t.clock.advance(3_600);
+
     const live = await f.t.owner.browser.api.call("listMandates", {
       params: { workspaceId: f.workspaceId },
       query: { agentId: agent.id, status: "active" },
     });
+
     expect(live.items).toEqual([]);
     expect(await getMandate(mandateId)).toMatchObject({
       status: "expired",

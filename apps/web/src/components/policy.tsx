@@ -20,6 +20,7 @@ interface Row {
 export function policyRows(policy: WalletPolicy | null, context: PolicyContext): Row[] {
   if (!policy) return [];
   const agentName = (id: string) => context.agents.find((agent) => agent.id === id)?.name ?? id;
+
   const rows: Row[] = [
     {
       label: "Networks",
@@ -30,12 +31,14 @@ export function policyRows(policy: WalletPolicy | null, context: PolicyContext):
       value: policy.requesters.map(agentName).join(", ") || "None",
     },
   ];
+
   for (const limit of policy.assets) {
     const info = assetInfo(limit.chainId, limit.asset, context.chains, context.balances);
     const where = `${info.symbol} on ${chainName(limit.chainId, context.chains)}`;
     rows.push({ label: `${where}: per transaction`, value: formatAsset(limit.maxPerTx, info) });
     rows.push({ label: `${where}: per 24 hours`, value: formatAsset(limit.maxPerDay, info) });
   }
+
   if (policy.assets.length === 0) rows.push({ label: "Assets it may send", value: "None" });
   rows.push({
     label: "Recipients",
@@ -61,6 +64,7 @@ export function policyRows(policy: WalletPolicy | null, context: PolicyContext):
     value: `${policy.approvals.threshold} ${policy.approvals.threshold === 1 ? "person" : "people"}`,
   });
   rows.push({ label: "Approval valid for", value: formatDuration(policy.approvals.ttlSeconds) });
+
   return rows;
 }
 
@@ -95,6 +99,7 @@ export function PolicyDiff({
   const labels = [...new Set([...after.keys(), ...before.keys()])];
   const changed = labels.filter((label) => before.get(label) !== after.get(label));
   const same = labels.filter((label) => before.get(label) === after.get(label));
+
   return (
     <div className="grid grid-cols-1 gap-3">
       {current === null ? (
@@ -105,6 +110,7 @@ export function PolicyDiff({
       <ul className="divide-y rounded-md border">
         {[...changed, ...same].map((label) => {
           const isChanged = changed.includes(label);
+
           return (
             <li
               key={label}

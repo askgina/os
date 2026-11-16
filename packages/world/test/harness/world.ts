@@ -22,17 +22,21 @@ interface HarnessGlobals {
 export function keyRequests(): KeyRequest[] {
   const globals = globalThis as HarnessGlobals;
   globals.__harnessKeyRequests ??= [];
+
   return globals.__harnessKeyRequests;
 }
 
 export function createWorld() {
   const connectionString = process.env.WORKFLOW_POSTGRES_URL;
+
   if (!connectionString) throw new Error("WORKFLOW_POSTGRES_URL is not set");
+
   if (process.env.HARNESS_WORLD === "stock") return createStockWorld({ connectionString });
 
   const provider = keyProviderFromEnv(process.env, { keyringFileVariable: "HARNESS_KEYRING_FILE" });
   const pool = new pg.Pool({ connectionString, max: 4 });
   pool.on("error", () => {});
+
   return createEncryptedWorld({
     postgres: { connectionString },
     dataKeys: new DataKeyStore({

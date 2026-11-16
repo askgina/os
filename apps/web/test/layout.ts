@@ -39,59 +39,77 @@ export async function widenText(context: BrowserContext): Promise<void> {
 export async function expectNoSidewaysOverflow(page: Page, screen: string): Promise<void> {
   const report = await page.evaluate(() => {
     const limit = document.documentElement.clientWidth;
+
     const nameOf = (element: Element) => {
       const classes = [...element.classList].slice(0, 4).join(".");
       const text = (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
+
       return `<${element.tagName.toLowerCase()}${classes ? `.${classes}` : ""}> "${text}"`;
     };
+
     const contentRight = (element: Element) => {
       const style = getComputedStyle(element);
+
       return (
         element.getBoundingClientRect().right -
         Number.parseFloat(style.paddingRight) -
         Number.parseFloat(style.borderRightWidth)
       );
     };
+
     const insideScroller = (element: Element) => {
       for (let up = element.parentElement; up && up !== document.body; up = up.parentElement) {
         if (getComputedStyle(up).overflowX !== "visible") return true;
       }
+
       return false;
     };
+
     const wide: { element: Element; right: number }[] = [];
+
     for (const element of document.body.querySelectorAll("*")) {
       const box = element.getBoundingClientRect();
+
       if (box.width === 0 && box.height === 0) continue;
+
       const right =
         getComputedStyle(element).overflowX === "visible"
           ? Math.max(box.right, box.left + element.scrollWidth)
           : box.right;
+
       // One pixel of slack: `scrollWidth` is rounded to whole pixels.
       if (right > limit + 1 && !insideScroller(element)) wide.push({ element, right });
     }
+
     // A container that reaches past the edge usually does so because of what is inside it.
     const innermost = wide.filter(
       ({ element }) =>
         !wide.some((other) => other.element !== element && element.contains(other.element)),
     );
+
     return {
       limit,
       scrollWidth: document.documentElement.scrollWidth,
       offenders: innermost.map(({ element, right }) => {
         let widened: string | null = null;
         let up: Element = element;
+
         while (up.parentElement && up.parentElement !== document.body) {
           const parent = up.parentElement;
           const edge = contentRight(parent);
+
           if (up.getBoundingClientRect().right > edge + 1) {
             widened = `${nameOf(up)} ends past the content edge of ${nameOf(parent)} at ${edge.toFixed(1)}px`;
           }
+
           up = parent;
         }
+
         return `${nameOf(element)} ends at ${right.toFixed(1)}px${widened ? `; ${widened}` : ""}`;
       }),
     };
   });
+
   expect(
     report.offenders,
     `${screen}: elements past the right edge of a ${report.limit}px wide screen`,

@@ -29,6 +29,7 @@ import {
 } from "./harness.ts";
 
 const dirs: string[] = [];
+
 afterAll(() => {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
 });
@@ -47,11 +48,13 @@ function signerHost() {
   const tokenKey = new Uint8Array(randomBytes(32));
   let running: TestSigner | null = startSigner({ sqlitePath, clock, vault, tokenKey });
   const sidecars = [`${sqlitePath}-wal`, `${sqlitePath}-shm`];
+
   const host = {
     sqlitePath,
     clock,
     get t(): TestSigner {
       if (!running) throw new Error("the signer is stopped");
+
       return running;
     },
     stop() {
@@ -62,28 +65,34 @@ function signerHost() {
     },
     start(): TestSigner {
       running = startSigner({ sqlitePath, clock, vault, tokenKey });
+
       return running;
     },
     /** With the signer stopped, as the deploy guide says. */
     backUp() {
       host.stop();
       copyFileSync(sqlitePath, backupPath);
+
       return host.start();
     },
     /** Put the backup's bytes into the same file, as rolling back a disk snapshot does. */
     restoreInPlace() {
       host.stop();
       writeFileSync(sqlitePath, readFileSync(backupPath));
+
       return host.start();
     },
     /** Put the backup back as a new file, as extracting an archive or copying a volume does. */
     restoreAsNewFile() {
       host.stop();
+
       for (const path of [sqlitePath, ...sidecars]) rmSync(path, { force: true });
       copyFileSync(backupPath, sqlitePath);
+
       return host.start();
     },
   };
+
   return host;
 }
 
@@ -91,6 +100,7 @@ const on = (world: World, t: TestSigner): World => ({ ...world, t });
 
 async function decisionActions(world: World): Promise<string[]> {
   const { decisions } = await world.t.client.listDecisions(world.workspaceId);
+
   return decisions.map((decision) => decision.action);
 }
 
@@ -104,6 +114,7 @@ describe("restoring a backup older than the last payment", () => {
     const authorization = approveIntent(world, intent);
 
     const afterBackup = on(world, host.backUp());
+
     const first = await afterBackup.t.client.sign({
       intent,
       authorization,
@@ -123,6 +134,7 @@ describe("restoring a backup older than the last payment", () => {
     const paidAuthorization = approveIntent(world, paid);
     const waiting = intentFor(world, undefined, "waiting at the backup");
     const waitingAuthorization = approveIntent(world, waiting);
+
     const threshold = authorize(
       {
         ...header(host.clock, newId("apr"), world.workspaceId),
@@ -221,11 +233,13 @@ describe("after a fence", () => {
 
     host.clock.value = fenceAt + 30;
     const fresh = intentFor(world);
+
     const signed = await world.t.client.sign({
       intent: fresh,
       authorization: approveIntent(world, fresh),
       transaction: txParams(),
     });
+
     expect(signed.from).toBe(world.address);
     host.stop();
   });
@@ -265,11 +279,13 @@ describe("after a fence", () => {
     const host = signerHost();
     const world = await setUpWorld(host.t);
     const intent = intentFor(world);
+
     const request = {
       intent,
       authorization: approveIntent(world, intent),
       transaction: txParams(),
     };
+
     const first = await world.t.client.sign(request);
     host.t.signer.fence();
     expect(await world.t.client.sign({ ...request, transaction: txParams() })).toEqual(first);
@@ -293,6 +309,7 @@ describe("the database's schema version", () => {
     const db = new DatabaseSync(path);
     const { user_version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
     db.close();
+
     return user_version;
   };
 

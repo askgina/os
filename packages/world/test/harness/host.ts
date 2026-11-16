@@ -6,8 +6,11 @@ import pg from "pg";
 import { vi } from "vitest";
 
 const execFileAsync = promisify(execFile);
+
 const serverScript = fileURLToPath(new URL("./server.ts", import.meta.url));
+
 const worldModule = fileURLToPath(new URL("./world.ts", import.meta.url));
+
 const bootstrap = fileURLToPath(new URL("../../node_modules/.bin/bootstrap", import.meta.url));
 
 export interface Host {
@@ -46,20 +49,25 @@ export async function startHost(options: {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
+
   let output = "";
   const ready = Promise.withResolvers<void>();
+
   const onData = (chunk: Buffer) => {
     output += chunk.toString();
+
     if (output.includes("READY")) ready.resolve();
     else if (output.includes("START_FAILED"))
       ready.reject(new Error(`host failed to start: ${output.slice(-2000)}`));
   };
+
   child.stdout.on("data", onData);
   child.stderr.on("data", onData);
   child.once("exit", (code, signal) =>
     ready.reject(new Error(`host exited before ready (${code ?? signal}): ${output.slice(-2000)}`)),
   );
   const base = `http://127.0.0.1:${options.port}`;
+
   const host: Host = {
     process: child,
     output: () => output,
@@ -68,10 +76,12 @@ export async function startHost(options: {
         base + path,
         body === undefined ? {} : { method: "POST", body: JSON.stringify(body) },
       );
+
       return { status: response.status, json: (await response.json()) as T };
     },
     async kill() {
       running.delete(host);
+
       if (child.exitCode !== null || child.signalCode !== null) return;
       const exited = Promise.withResolvers<void>();
       child.once("exit", () => exited.resolve());
@@ -79,8 +89,10 @@ export async function startHost(options: {
       await exited.promise;
     },
   };
+
   running.add(host);
   await ready.promise;
+
   return host;
 }
 
@@ -95,6 +107,7 @@ export async function sql<T extends pg.QueryResultRow>(
 ): Promise<T[]> {
   const client = new pg.Client({ connectionString: url });
   await client.connect();
+
   try {
     return (await client.query<T>(text, params)).rows;
   } finally {
@@ -109,6 +122,7 @@ export async function waitForHook(url: string, token: string): Promise<void> {
       const rows = await sql(url, "SELECT 1 FROM workflow.workflow_hooks WHERE token = $1", [
         token,
       ]);
+
       if (rows.length === 0) throw new Error(`hook ${token} not created yet`);
     },
     { timeout: 60_000, interval: 200 },

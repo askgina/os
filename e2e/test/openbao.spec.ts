@@ -33,16 +33,24 @@ import {
 test.describe.configure({ mode: "serial" });
 
 const RECIPIENT = "0x00000000000000000000000000000000000ba0ba";
+
 const run = Date.now().toString(36);
+
 const MEMO_MARKER = `BAOMARK${run} pay the storage invoice`;
+
 const REFUSED_MEMO = `BAOREFUSED${run} proposed while OpenBao is away`;
+
 const WORKSPACE_NAME = `Transit ${run}`;
+
 const KEK_PREFIX = "bao:transit/os-kek@";
+
 /** How long OpenBao stays paused in the outage gate (specs/beyond-one-machine.md). */
 const OUTAGE_MS = 20_000;
 
 let ada: Person;
+
 let payer: PayingAgent;
+
 /** The first payment, sealed under the Transit key's first version. */
 let paidIntentId: string;
 
@@ -54,10 +62,15 @@ interface BaoAnswer {
 const Login = z.object({
   auth: z.object({ client_token: z.string(), policies: z.array(z.string()) }),
 });
+
 const Encrypted = z.object({ data: z.object({ ciphertext: z.string() }) });
+
 const Decrypted = z.object({ data: z.object({ plaintext: z.string() }) });
+
 const KeyInfo = z.object({ data: z.object({ min_decryption_version: z.number() }) });
+
 const InitState = z.object({ rootToken: z.string() });
+
 const Rewrap = z.object({
   event: z.string(),
   activeKek: z.string(),
@@ -81,8 +94,10 @@ async function bao(
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     signal: AbortSignal.timeout(10_000),
   });
+
   const text = await response.text();
   const answer: unknown = text === "" ? {} : JSON.parse(text);
+
   return { status: response.status, body: answer };
 }
 
@@ -100,6 +115,7 @@ async function rootToken(): Promise<string> {
     "cat",
     "/state/init.json",
   );
+
   return InitState.parse(JSON.parse(output)).rootToken;
 }
 
@@ -107,10 +123,12 @@ async function rootToken(): Promise<string> {
 async function liveKeks(): Promise<Record<string, number>> {
   const db = new pg.Client({ connectionString: await databaseUrl() });
   await db.connect();
+
   try {
     const { rows } = await db.query<{ kek_id: string; n: number }>(
       "SELECT kek_id, count(*)::int AS n FROM os_keys.data_keys WHERE shredded_at IS NULL GROUP BY kek_id ORDER BY kek_id",
     );
+
     return Object.fromEntries(rows.map((row) => [row.kek_id, row.n]));
   } finally {
     await db.end();
@@ -133,14 +151,17 @@ test.afterAll(async () => {
 test("the server's AppRole can wrap and unwrap under os-kek and do nothing else", async () => {
   const roleId = (await exec("server", "cat", "/run/secrets/server/openbao-role-id")).trim();
   const secretId = (await exec("server", "cat", "/run/secrets/server/openbao-secret-id")).trim();
+
   const login = await bao("POST", "auth/approle/login", undefined, {
     role_id: roleId,
     secret_id: secretId,
   });
+
   expect(login.status).toBe(200);
   const { auth } = Login.parse(login.body);
   expect([...auth.policies].sort()).toEqual(["default", "os-server"]);
   const token = auth.client_token;
+
   try {
     const plaintext = Buffer.alloc(32, 7).toString("base64");
     const encrypted = await bao("POST", "transit/encrypt/os-kek", token, { plaintext });
@@ -160,6 +181,7 @@ test("the server's AppRole can wrap and unwrap under os-kek and do nothing else"
       createKey: await bao("POST", "transit/keys/another", token, { type: "aes256-gcm96" }),
       mounts: await bao("GET", "sys/mounts", token),
     };
+
     expect(Object.fromEntries(Object.entries(refused).map(([k, v]) => [k, v.status]))).toEqual({
       rotate: 403,
       configure: 403,
@@ -207,12 +229,14 @@ test("every data key is wrapped by OpenBao Transit, and nothing the agent typed 
 test("with OpenBao paused for 20 seconds new work fails closed, and a payment approved meanwhile completes once it is back", async () => {
   // The outage, up to three minutes for the payment to resume, and a minute for new work.
   test.setTimeout(420_000);
+
   const { intentId, approvalId } = await propose(
     payer.agent,
     RECIPIENT,
     "0.002",
     "approved while OpenBao is away",
   );
+
   // The confirmation page is opened before the outage; the signer holds what it shows.
   const link = await ada.confirmationLink(approvalId);
   const view = await ada.readConfirmation(link);
@@ -222,10 +246,12 @@ test("with OpenBao paused for 20 seconds new work fails closed, and a payment ap
       () => true,
       () => false,
     );
+
   let pausedAt = 0;
   let refusedAfterMs = 0;
   let unpausedAt = 0;
   let collectedDuringOutage = false;
+
   try {
     await compose("pause", "openbao");
     pausedAt = Date.now();
@@ -233,16 +259,19 @@ test("with OpenBao paused for 20 seconds new work fails closed, and a payment ap
     // then collects the decision, if it can without a key, and resumes the run, which cannot.
     await ada.approveOnConfirmationPage(link, view);
     collectedDuringOutage = await collect();
+
     // New work needs a data key and none is cached: the proposal is refused, not stored.
     const refusal = await propose(payer.agent, RECIPIENT, "0.001", REFUSED_MEMO).then(
       () => null,
       (error: unknown) => error,
     );
+
     refusedAfterMs = Date.now() - pausedAt;
     expect(refusal).toBeInstanceOf(Error);
     // Readiness does not follow the key provider, so sign-in and key-free routes keep working.
     expect((await fetch(`${stack.origin}/readyz`)).status).toBe(200);
     const left = pausedAt + OUTAGE_MS - Date.now();
+
     if (left > 0) await delay(left);
   } finally {
     await compose("unpause", "openbao");
@@ -252,32 +281,41 @@ test("with OpenBao paused for 20 seconds new work fails closed, and a payment ap
   // Each delay below counts from the unpause. The first attempts may still meet OpenBao
   // electing itself leader again.
   const deadline = Date.now() + 60_000;
+
   // A collect that failed half way may have recorded the decision already: that is collected.
   const decided = () =>
     ada.api.call("getApproval", { params: { approvalId } }).then(
       (approval) => approval.status !== "pending",
       () => false,
     );
+
   let collected = collectedDuringOutage;
+
   while (!collected && Date.now() < deadline) {
     collected = (await collect()) || (await decided());
+
     if (!collected) await delay(1_000);
   }
+
   expect(collected).toBe(true);
   const collectedAfterMs = Date.now() - unpausedAt;
 
   let accepted: { intentId: string; approvalId: string } | null = null;
+
   while (accepted === null && Date.now() < deadline) {
     accepted = await propose(payer.agent, RECIPIENT, "0.001", "proposed after the outage").catch(
       () => null,
     );
+
     if (accepted === null) await delay(1_000);
   }
+
   const newWorkAfterMs = Date.now() - unpausedAt;
   expect(accepted).not.toBeNull();
 
   expect(await intentSettles(ada, intentId, 180_000)).toBe("confirmed");
   const paymentResumedAfterMs = Date.now() - unpausedAt;
+
   if (accepted !== null) await ada.reject(accepted.approvalId);
 
   record({
@@ -295,6 +333,7 @@ test("with OpenBao paused for 20 seconds new work fails closed, and a payment ap
     params: { workspaceId: payer.workspace.id },
     query: {},
   });
+
   expect(items.some((intent) => intent.memo === REFUSED_MEMO)).toBe(false);
   expect(items.some((intent) => intent.id === intentId)).toBe(true);
 });
@@ -326,6 +365,7 @@ test("a Transit key rotation, a rewrap and a raised minimum version keep every e
   const config = await bao("POST", "transit/keys/os-kek/config", token, {
     min_decryption_version: 2,
   });
+
   expect(config.status).toBeLessThan(300);
   const key = await bao("GET", "transit/keys/os-kek", token);
   expect(KeyInfo.parse(key.body).data.min_decryption_version).toBe(2);
@@ -333,6 +373,7 @@ test("a Transit key rotation, a rewrap and a raised minimum version keep every e
   expect((await ada.api.call("getIntent", { params: { intentId: paidIntentId } })).memo).toBe(
     MEMO_MARKER,
   );
+
   // And new work goes on under the second version.
   const { intentId, approvalId } = await propose(
     payer.agent,
@@ -340,6 +381,7 @@ test("a Transit key rotation, a rewrap and a raised minimum version keep every e
     "0.001",
     "after the rotation",
   );
+
   await ada.confirm(approvalId);
   expect(await intentSettles(ada, intentId, 120_000)).toBe("confirmed");
   expect(Object.keys(await liveKeks())).toEqual([`${KEK_PREFIX}2`]);

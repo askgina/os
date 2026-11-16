@@ -18,22 +18,28 @@ import { createEncryptedWorld, type EncryptedWorld } from "./index.ts";
 
 function optionalNumber(name: string): number | undefined {
   const raw = process.env[name];
+
   if (raw === undefined || raw === "") return undefined;
   const value = Number(raw);
+
   if (!Number.isFinite(value)) throw new Error(`${name} must be a number`);
+
   return value;
 }
 
 export function createWorld(): EncryptedWorld {
   const connectionString = process.env.WORKFLOW_POSTGRES_URL || process.env.DATABASE_URL;
+
   if (!connectionString) throw new Error("WORKFLOW_POSTGRES_URL is not set");
   const provider = keyProviderFromEnv(process.env, { keyringFileVariable: "WORLD_KEYRING_FILE" });
 
   const queueConcurrency = optionalNumber("WORKFLOW_POSTGRES_WORKER_CONCURRENCY") ?? 50;
+
   const pool = new pg.Pool({
     connectionString,
     max: optionalNumber("WORKFLOW_POSTGRES_MAX_POOL_SIZE") ?? queueConcurrency + 2,
   });
+
   // An idle client that loses its connection must not take the process down.
   pool.on("error", () => {});
 
@@ -41,9 +47,11 @@ export function createWorld(): EncryptedWorld {
     .split(",")
     .map((key) => key.trim())
     .filter((key) => key !== "");
+
   const jobPrefix = process.env.WORKFLOW_POSTGRES_JOB_PREFIX;
   const pollInterval = optionalNumber("WORKFLOW_POSTGRES_POLL_INTERVAL_MS");
   const jobLockStaleSeconds = optionalNumber("WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS");
+
   return createEncryptedWorld({
     postgres: {
       pool,

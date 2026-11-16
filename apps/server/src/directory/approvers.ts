@@ -32,7 +32,9 @@ async function adminThreshold(ctx: AppContext, workspaceId: WorkspaceId): Promis
     .select({ adminThreshold: workspaces.adminThreshold })
     .from(workspaces)
     .where(eq(workspaces.id, workspaceId));
+
   if (!row) throw new HttpError("not_found", "no such workspace");
+
   return row.adminThreshold;
 }
 
@@ -48,8 +50,10 @@ export async function openAddApprover(
     .select({ publicKey: credentials.publicKey })
     .from(credentials)
     .where(and(eq(credentials.id, input.credentialId), isNull(credentials.revokedAt)));
+
   if (!credential) throw new HttpError("not_found", "no such passkey");
   const detail: AddApproverDetail = { userId: input.userId, credentialId: input.credentialId };
+
   return ctx.approvals.open({
     workspaceId: input.workspaceId,
     kind: "add-approver",
@@ -98,6 +102,7 @@ export async function openRemoveApprover(
     afterwards: input.afterwards,
     revokeSignIn: input.revokeSignIn,
   };
+
   return ctx.approvals.open({
     workspaceId: input.workspaceId,
     kind: "remove-approver",
@@ -150,11 +155,14 @@ export async function withdrawApprover(
           : [inArray(approverCredentials.credentialId, input.credentialIds)]),
       ),
     );
+
   // A removal already waiting decides what happens to the membership; a second one would race it.
   if (rows.some((row) => row.state === "removing")) {
     throw new HttpError("conflict", "a change to this member's passkeys is already waiting");
   }
+
   const pendingIds = rows.filter((row) => row.state === "pending").map((r) => r.credentialId);
+
   if (pendingIds.length > 0) {
     const open = await ctx.db
       .select({ id: approvals.id })
@@ -167,6 +175,7 @@ export async function withdrawApprover(
           inArray(approvals.subjectId, pendingIds),
         ),
       );
+
     for (const approval of open) await ctx.approvals.cancel(approval.id);
     // Cancelling runs the kind's `abandon`, which deletes the row; this also covers a request
     // that ended some other way and left its row behind.
@@ -180,7 +189,9 @@ export async function withdrawApprover(
         ),
       );
   }
+
   const opened: ApprovalSummary[] = [];
+
   for (const row of rows) {
     if (row.state !== "active") continue;
     opened.push(
@@ -194,6 +205,7 @@ export async function withdrawApprover(
       }),
     );
   }
+
   return opened;
 }
 
@@ -212,11 +224,14 @@ export async function reconcileApprovers(ctx: AppContext, workspaceId: Workspace
         eq(approverCredentials.state, "pending"),
       ),
     );
+
   if (pending.length === 0) return;
   const state = await ctx.signer.getWorkspace(workspaceId);
   const enrolled = new Set(state.approvers.map((approver) => approver.credentialId));
+
   for (const row of pending) {
     if (!enrolled.has(row.credentialId)) continue;
+
     const changed = await ctx.db.transaction(async (tx) => {
       const updated = await tx
         .update(approverCredentials)
@@ -229,6 +244,7 @@ export async function reconcileApprovers(ctx: AppContext, workspaceId: Workspace
           ),
         )
         .returning();
+
       if (updated.length === 0) return false;
       await appendAudit(
         ctx,
@@ -241,9 +257,12 @@ export async function reconcileApprovers(ctx: AppContext, workspaceId: Workspace
         },
         tx,
       );
+
       return true;
     });
+
     if (!changed) continue;
+
     // The row is `active` now, so the kind's `abandon` (which deletes `pending` rows) leaves it.
     const open = await ctx.db
       .select({ id: approvals.id })
@@ -256,6 +275,7 @@ export async function reconcileApprovers(ctx: AppContext, workspaceId: Workspace
           eq(approvals.subjectId, row.credentialId),
         ),
       );
+
     for (const approval of open) await ctx.approvals.cancel(approval.id);
   }
 }

@@ -43,6 +43,7 @@
 
 /** The header the token travels in. It never goes into a URL the server sees. */
 const TOKEN_HEADER = "x-confirm-token";
+
 /** How long the page shows its result before it goes back to the request. */
 const RETURN_DELAY_MS = 2_000;
 
@@ -170,7 +171,9 @@ export function refusalText(code) {
  */
 export function toBase64Url(buffer) {
   let binary = "";
+
   for (const byte of new Uint8Array(buffer)) binary += String.fromCharCode(byte);
+
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
@@ -182,7 +185,9 @@ export function fromBase64Url(text) {
   const padded = text.replace(/-/g, "+").replace(/_/g, "/");
   const binary = atob(padded.padEnd(Math.ceil(padded.length / 4) * 4, "="));
   const bytes = new Uint8Array(binary.length);
+
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+
   return bytes.buffer;
 }
 
@@ -195,6 +200,7 @@ export function fromBase64Url(text) {
  */
 export function possessionOf(view) {
   if (view.kind !== "add-approver") return "none";
+
   return view.warnings.includes("possession_unproven") ? "unproven" : "proven";
 }
 
@@ -226,6 +232,7 @@ export function requestOptions(webauthn) {
  */
 export function encodeAssertion(credential) {
   const { response } = credential;
+
   return {
     id: credential.id,
     rawId: toBase64Url(credential.rawId),
@@ -248,7 +255,9 @@ export function encodeAssertion(credential) {
 function errorCode(body) {
   if (typeof body !== "object" || body === null || !("error" in body)) return "internal";
   const { error } = body;
+
   if (typeof error !== "object" || error === null || !("code" in error)) return "internal";
+
   return typeof error.code === "string" ? error.code : "internal";
 }
 
@@ -262,8 +271,11 @@ function errorCode(body) {
  */
 function element(tag, className, text) {
   const node = document.createElement(tag);
+
   if (className !== "") node.className = className;
+
   if (text !== undefined) node.textContent = text;
+
   return node;
 }
 
@@ -275,15 +287,18 @@ function element(tag, className, text) {
  */
 function link(href, text) {
   let url;
+
   try {
     url = new URL(href);
   } catch {
     return element("span", "", text);
   }
+
   if (url.protocol !== "https:" && url.protocol !== "http:") return element("span", "", text);
   const anchor = element("a", "", text);
   anchor.href = url.href;
   anchor.rel = "noopener noreferrer";
+
   return anchor;
 }
 
@@ -314,15 +329,18 @@ function showRefusal(main, text) {
  */
 function lines(view) {
   const list = element("dl", "lines");
+
   for (const line of view.lines) {
     const row = element("div", `line line-${line.kind}`);
     const label = element("dt", "", line.label);
+
     // Text nobody checked (an agent's note, a wallet's name) is set apart from what the signer states.
     if (line.kind === "unchecked")
       label.append(" ", element("span", "tag", "Not checked by the signer"));
     row.append(label, element("dd", `value value-${line.kind}`, line.value));
     list.append(row);
   }
+
   return list;
 }
 
@@ -341,6 +359,7 @@ function technicalDetails(view) {
     element("p", "detail-label", "Passkey challenge (the envelope's digest)"),
     element("code", "", view.webauthn.challenge),
   );
+
   return details;
 }
 
@@ -355,6 +374,7 @@ function technicalDetails(view) {
 async function call(path, token, body) {
   /** @type {Response} */
   let response;
+
   try {
     response = await fetch(path, {
       ...(body === undefined
@@ -370,7 +390,9 @@ async function call(path, token, body) {
   } catch {
     return { ok: false, code: "internal" };
   }
+
   const answer = await response.json().catch(() => null);
+
   return response.ok ? { ok: true, body: answer } : { ok: false, code: errorCode(answer) };
 }
 
@@ -386,21 +408,27 @@ async function askPasskey(webauthn, result, nothing) {
   say(result, "Waiting for your passkey…", "");
   /** @type {Credential | null} */
   let credential;
+
   try {
     credential = await navigator.credentials.get({ publicKey: requestOptions(webauthn) });
   } catch (error) {
     const name = error instanceof Error ? error.name : "Error";
     say(result, `Your passkey did not answer (${name}). ${nothing} Try again.`, "refusal");
+
     return null;
   }
+
   if (
     !(credential instanceof PublicKeyCredential) ||
     !(credential.response instanceof AuthenticatorAssertionResponse)
   ) {
     say(result, `Your browser returned no passkey. ${nothing} Try again.`, "refusal");
+
     return null;
   }
+
   const passkey = credential;
+
   return encodeAssertion({
     id: passkey.id,
     rawId: passkey.rawId,
@@ -420,21 +448,28 @@ async function askPasskey(webauthn, result, nothing) {
 async function approve(view, token, button, result) {
   button.disabled = true;
   const assertion = await askPasskey(view.webauthn, result, "Nothing was approved.");
+
   if (assertion === null) {
     button.disabled = false;
+
     return;
   }
+
   say(result, "Sending your approval to the signer…", "");
+
   const answer = await call(
     `/api/approvals/${encodeURIComponent(view.approvalId)}/assertions`,
     token,
     { response: assertion },
   );
+
   if (!answer.ok) {
     say(result, refusalText(answer.code), "refusal");
     button.disabled = !Object.hasOwn(RETRYABLE, answer.code);
+
     return;
   }
+
   const done = /** @type {SubmitConfirmationResponse} */ (answer.body);
   button.hidden = true;
   say(
@@ -443,6 +478,7 @@ async function approve(view, token, button, result) {
     "success",
   );
   const back = new URL(done.returnUrl);
+
   if (back.protocol === "https:" || back.protocol === "http:") {
     setTimeout(() => location.assign(back.href), RETURN_DELAY_MS);
   }
@@ -455,6 +491,7 @@ async function approve(view, token, button, result) {
  */
 function render(main, view, token) {
   const { collected, required } = view.approvals;
+
   const state = element(
     "p",
     `state state-${view.state}`,
@@ -462,20 +499,26 @@ function render(main, view, token) {
       ? `${STATE_TEXT.open} ${collected} of ${required} so far.`
       : STATE_TEXT[view.state],
   );
+
   /** @type {HTMLElement[]} */
   const parts = [element("h1", "title", view.title), state];
+
   if (view.warnings.length > 0) {
     const warnings = element("ul", "warnings");
     warnings.setAttribute("aria-label", "Warnings");
+
     for (const warning of view.warnings) warnings.append(element("li", "", WARNING_TEXT[warning]));
     parts.push(warnings);
   }
+
   parts.push(lines(view));
   const possession = possessionOf(view);
   /** What the possession step enables once done on this page. */
   let unlock = () => {};
+
   /** @type {HTMLElement | null} */
   let decide = null;
+
   if (view.state === "open") {
     decide = element("section", "decide");
     decide.setAttribute("aria-label", "Decision");
@@ -491,6 +534,7 @@ function render(main, view, token) {
         "Your passkey signs this request's digest. The signer accepts the approval only from this page.",
       ),
     );
+
     if (possession !== "none") {
       decide.append(
         element(
@@ -500,12 +544,14 @@ function render(main, view, token) {
         ),
       );
     }
+
     if (possession === "unproven") {
       const waiting = element(
         "p",
         "note",
         "Approving opens once the person being added has proven on this page that the passkey is theirs. Reload this page after they have.",
       );
+
       button.disabled = true;
       decide.append(waiting);
       unlock = () => {
@@ -513,13 +559,16 @@ function render(main, view, token) {
         waiting.remove();
       };
     }
+
     decide.append(button, result);
   }
+
   // Approvals collected before the step existed can leave a request `complete` but unproven;
   // the signer applies it only once the person being added has done the step.
   if (possession === "unproven" && (view.state === "open" || view.state === "complete")) {
     parts.push(possessionStep(view, token, unlock));
   }
+
   if (decide !== null) parts.push(decide);
   const back = element("p", "back");
   back.append(link(view.returnUrl, "Back to the request"));
@@ -553,10 +602,13 @@ function possessionStep(view, token, proven) {
   /** The signer keeps one challenge until an answer uses it, so fetching again is safe. */
   const load = async () => {
     const answer = await call(path, token);
+
     if (!answer.ok) {
       say(result, refusalText(answer.code), "refusal");
+
       return;
     }
+
     challenge = /** @type {PasskeyRequest} */ (answer.body);
     button.disabled = false;
   };
@@ -564,17 +616,24 @@ function possessionStep(view, token, proven) {
   const prove = async (/** @type {PasskeyRequest} */ asked) => {
     button.disabled = true;
     const assertion = await askPasskey(asked, result, "Nothing was proven.");
+
     if (assertion === null) {
       button.disabled = false;
+
       return;
     }
+
     say(result, "Sending your answer to the signer…", "");
     const answer = await call(path, token, { response: assertion });
+
     if (!answer.ok) {
       say(result, refusalText(answer.code), "refusal");
+
       if (Object.hasOwn(RETRYABLE, answer.code)) await load();
+
       return;
     }
+
     const { fingerprint } = /** @type {SubmitPossessionResponse} */ (answer.body);
     button.hidden = true;
     result.replaceChildren(
@@ -604,25 +663,33 @@ function possessionStep(view, token, proven) {
     button,
     result,
   );
+
   return section;
 }
 
 async function start() {
   const main = document.getElementById("main");
   const origin = document.getElementById("origin");
+
   if (main === null || origin === null) return;
   origin.textContent = location.origin;
   const approvalId = /^\/a\/([^/]+)$/.exec(location.pathname)?.[1];
   const token = location.hash.slice(1);
+
   if (approvalId === undefined || token === "") {
     showRefusal(main, REFUSAL_TEXT.not_found);
+
     return;
   }
+
   const answer = await call(`/api/approvals/${approvalId}`, token);
+
   if (!answer.ok) {
     showRefusal(main, refusalText(answer.code));
+
     return;
   }
+
   render(main, /** @type {ConfirmationView} */ (answer.body), token);
 }
 

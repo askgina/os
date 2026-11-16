@@ -24,6 +24,7 @@ export const Proposal = z.strictObject({
   approvalUrl: z.string().nullable(),
   expiresAt: z.number().nullable(),
 });
+
 export type Proposal = z.infer<typeof Proposal>;
 
 /** An agent's connection to the MCP gateway. */
@@ -49,9 +50,11 @@ export class ToolRefused extends Error {
   constructor(text: string) {
     super(text);
     let parsed: unknown = null;
+
     try {
       parsed = JSON.parse(text);
     } catch {}
+
     const refusal = Refusal.safeParse(parsed);
     this.code = refusal.success ? refusal.data.error : null;
     this.detail = refusal.success ? (refusal.data.detail ?? null) : null;
@@ -65,13 +68,17 @@ export async function connectAgent(mcpUrl: string, token: string): Promise<Agent
       authProvider: { token: async () => token },
     }),
   );
+
   const call = async (name: string, args: Record<string, unknown> = {}) => {
     const result = await client.callTool({ name, arguments: args });
     const content = result.content as { type: string; text?: string }[] | undefined;
     const text = content?.find((part) => part.type === "text")?.text ?? "";
+
     if (result.isError) throw new ToolRefused(text);
+
     return (result.structuredContent ?? JSON.parse(text)) as Record<string, unknown>;
   };
+
   return {
     async tools() {
       return (await client.listTools()).tools.map((tool) => tool.name).sort();

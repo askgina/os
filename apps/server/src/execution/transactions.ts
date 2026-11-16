@@ -36,6 +36,7 @@ import { ChainError, chainAccess, type ReceiptState } from "./chains.ts";
  */
 
 export type TransactionRow = typeof transactions.$inferSelect;
+
 type WalletRow = typeof wallets.$inferSelect;
 
 export interface ExecutionOptions {
@@ -64,18 +65,24 @@ export const REPRICE_STOPPED: readonly StuckReason[] = [
 ];
 
 const REBROADCAST_SECONDS = 60;
+
 /** Longest wait between broadcast attempts while the chain will not take a transaction. */
 const MAX_BROADCAST_BACKOFF_SECONDS = 60;
+
 /** How often a `stuck` transaction is looked at again: it is still valid and may be mined. */
 const STUCK_POLL_SECONDS = 600;
+
 /** Gas the estimate is multiplied by, in percent, to absorb state changes before signing. */
 export const GAS_MARGIN_PERCENT = 125n;
+
 /** Used when a simulation failed and gave no estimate; the fee ceiling still bounds the cost. */
 export const FALLBACK_GAS = 200_000n;
 
 const rawLocation = (approvalId: string) => `transactions.raw:${approvalId}`;
+
 const attemptRawLocation = (approvalId: string, attempt: number) =>
   `transactions.raw:${approvalId}:${attempt}`;
+
 const seconds = (date: Date) => Math.floor(date.getTime() / 1000);
 
 /** The transaction an approval signed, or null when it has none (yet). */
@@ -84,10 +91,12 @@ export async function transactionOf(
   approvalId: ApprovalId | null,
 ): Promise<TransactionRow | null> {
   if (approvalId === null) return null;
+
   const [row] = await ctx.db
     .select()
     .from(transactions)
     .where(eq(transactions.approvalId, approvalId));
+
   return row ?? null;
 }
 
@@ -97,7 +106,9 @@ export async function transactionOf(
  */
 export async function shownHash(ctx: AppContext, row: TransactionRow): Promise<ViemHex> {
   const attempt = row.minedAttempt ?? row.latestAttempt;
+
   if (attempt === 0) return row.hash as ViemHex;
+
   const [shown] = await ctx.db
     .select({ hash: transactionAttempts.hash })
     .from(transactionAttempts)
@@ -107,6 +118,7 @@ export async function shownHash(ctx: AppContext, row: TransactionRow): Promise<V
         eq(transactionAttempts.attempt, attempt),
       ),
     );
+
   return (shown?.hash ?? row.hash) as ViemHex;
 }
 
@@ -138,6 +150,7 @@ export async function waitingCancel(
       ),
     )
     .limit(1);
+
   return waiting?.id ?? null;
 }
 
@@ -148,6 +161,7 @@ export async function attemptViews(
   row: TransactionRow,
 ): Promise<TransactionAttemptView[]> {
   const chains = chainAccess(ctx);
+
   return (await attemptsOf(ctx, workspaceId, row)).map((attempt) => ({
     attempt: attempt.attempt,
     kind: attempt.kind,
@@ -181,12 +195,15 @@ export async function transactionInfo(
       .where(eq(workspaces.id, workspaceId)),
     waitingCancel(ctx, row.approvalId),
   ]);
+
   const shown = attempts.find(
     (attempt) => attempt.attempt === (row.minedAttempt ?? row.latestAttempt),
   );
+
   const hash = shown?.hash ?? (row.hash as ViemHex);
   const sent = SENT.includes(row.status);
   const reason = row.stuckReason;
+
   return {
     hash,
     status: row.status,
@@ -227,6 +244,7 @@ export async function endWaitingCancels(ctx: AppContext, approvalId: ApprovalId)
         eq(approvals.status, "pending"),
       ),
     );
+
   for (const { id } of waiting) await ctx.approvals.cancel(id);
 }
 
@@ -266,7 +284,9 @@ export async function attemptsOf(
       .where(eq(transactionAttempts.approvalId, row.approvalId))
       .orderBy(asc(transactionAttempts.attempt)),
   ]);
+
   const first = parseTransaction(raw);
+
   return [
     {
       attempt: 0,
@@ -306,6 +326,7 @@ async function newestAttempt(
       raw: (await ctx.sealer.open(workspaceId, rawLocation(row.approvalId), row.raw)) as ViemHex,
     };
   }
+
   const [newest] = await ctx.db
     .select({ hash: transactionAttempts.hash, raw: transactionAttempts.raw })
     .from(transactionAttempts)
@@ -315,7 +336,9 @@ async function newestAttempt(
         eq(transactionAttempts.attempt, row.latestAttempt),
       ),
     );
+
   if (!newest) throw new Error("the newest attempt of a transaction has no row");
+
   return {
     hash: newest.hash as ViemHex,
     raw: (await ctx.sealer.open(
@@ -354,13 +377,16 @@ export async function recordAttempt(
 ): Promise<void> {
   const { transaction, response } = input;
   const { attempt } = response;
+
   if (response.approvalId !== transaction.approvalId || attempt.kind === "original") {
     throw new Error("the signer returned an attempt of another transaction");
   }
+
   // Every attempt shares the first signature's nonce; that is what makes them exclusive.
   if (parseTransaction(response.signedTransaction as ViemHex).nonce !== transaction.nonce) {
     throw new Error("the signer returned an attempt at another account nonce");
   }
+
   const now = new Date(ctx.now() * 1000);
   await tx
     .insert(transactionAttempts)
@@ -408,14 +434,17 @@ export async function broadcastNewest(
   approvalId: ApprovalId,
 ): Promise<void> {
   const row = await transactionOf(ctx, approvalId);
+
   if (!row || (row.status !== "broadcast" && row.status !== "stuck")) return;
   const newest = await newestAttempt(ctx, workspaceId, row);
+
   try {
     await chainAccess(ctx).broadcast(row.chainId as ChainId, newest.raw, newest.hash);
   } catch (error) {
     if (!(error instanceof ChainError)) throw error;
     ctx.log.warn("broadcasting an attempt failed", { approvalId, code: error.code });
   }
+
   await ctx.db
     .update(transactions)
     .set({ lastBroadcastAt: new Date(ctx.now() * 1000) })
@@ -437,13 +466,16 @@ function chooseFees(
   const gas = (gasEstimate * GAS_MARGIN_PERCENT) / 100n;
   const needed = fees.baseFeePerGas + fees.maxPriorityFeePerGas;
   const affordable = maxFeeWei / gas;
+
   if (affordable < needed) {
     throw new ApprovalFailure(
       "fee_cap_exceeded",
       "current fees are above the approved fee ceiling",
     );
   }
+
   const preferred = 2n * fees.baseFeePerGas + fees.maxPriorityFeePerGas;
+
   return {
     gas,
     // biome-ignore lint/complexity/useMathMinMax: Math.min does not take bigints
@@ -476,16 +508,20 @@ async function reserveNonce(
   chainId: ChainId,
 ): Promise<number> {
   const chains = chainAccess(ctx);
+
   return ctx.db.transaction(async (tx) => {
     // One nonce allocator per wallet and chain.
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${`nonce:${wallet.id}:${chainId}`}, 0))`,
     );
+
     const [existing] = await tx
       .select({ nonce: nonceReservations.nonce })
       .from(nonceReservations)
       .where(eq(nonceReservations.approvalId, approvalId));
+
     if (existing) return existing.nonce;
+
     const [highest] = await tx
       .select({ nonce: sql<number | null>`max(${transactions.nonce})` })
       .from(transactions)
@@ -503,19 +539,23 @@ async function reserveNonce(
           ),
         ),
       );
+
     const [reserved] = await tx
       .select({ nonce: sql<number | null>`max(${nonceReservations.nonce})` })
       .from(nonceReservations)
       .where(
         and(eq(nonceReservations.walletId, wallet.id), eq(nonceReservations.chainId, chainId)),
       );
+
     const next = (value: number | null | undefined) =>
       value === null || value === undefined ? 0 : Number(value) + 1;
+
     const nonce = Math.max(
       await chains.pendingNonce(chainId, wallet.address),
       next(highest?.nonce),
       next(reserved?.nonce),
     );
+
     await tx.insert(nonceReservations).values({
       approvalId,
       walletId: wallet.id,
@@ -523,6 +563,7 @@ async function reserveNonce(
       nonce,
       createdAt: new Date(ctx.now() * 1000),
     });
+
     return nonce;
   });
 }
@@ -565,6 +606,7 @@ export async function signOnce(
   const nonce = await reserveNonce(ctx, approval.id, wallet, chainId);
   const quote = await chainAccess(ctx).fees(chainId);
   let chosen: FeeChoice;
+
   try {
     chosen = chooseFees(input.maxFeeWei, input.gasEstimate, quote);
   } catch (error) {
@@ -573,6 +615,7 @@ export async function signOnce(
   }
 
   let signed: SignResponse;
+
   try {
     signed = await input.sign({
       nonce,
@@ -591,8 +634,10 @@ export async function signOnce(
         "the signer refused to sign",
       );
     }
+
     throw error;
   }
+
   // A repeated request returns the transaction signed the first time, with its own nonce.
   const parsed = parseTransaction(signed.signedTransaction as ViemHex);
   await ctx.db.transaction(async (tx) => {
@@ -644,6 +689,7 @@ export interface FollowUpHooks {
 /** The block whose account nonce counts as final: the head, less the confirmation depth. */
 function finalBlock(head: bigint, confirmations: number): bigint {
   const block = head - BigInt(confirmations) + 1n;
+
   return block < 0n ? 0n : block;
 }
 
@@ -671,11 +717,14 @@ export async function followUpTransaction(
   const now = ctx.now();
   const at = new Date(now * 1000);
   const done = { done: true, waitSeconds: 0 };
+
   /** Final: a cancel request still waiting for it has nothing left to cancel. */
   const finished = async () => {
     await endWaitingCancels(ctx, approval.id);
+
     return done;
   };
+
   /** Move the transaction on from the status it was read with, and its kind with it. */
   const move = (status: TransactionStatusColumn, set: Partial<TransactionRow> = {}) =>
     ctx.db.transaction(async (tx) => {
@@ -689,8 +738,10 @@ export async function followUpTransaction(
           ),
         )
         .returning({ approvalId: transactions.approvalId });
+
       if (updated) await hooks.moved?.(status, tx, { cancelAttempted: false });
     });
+
   /**
    * The outcome, once: `mined` is the attempt the chain mined at the confirmation depth, or null
    * when another transaction used the nonce. Every other attempt is marked replaced. Holds the
@@ -702,6 +753,7 @@ export async function followUpTransaction(
   ) =>
     ctx.db.transaction(async (tx) => {
       await lockAttempts(tx, approval.id);
+
       const [updated] = await tx
         .update(transactions)
         .set({
@@ -718,6 +770,7 @@ export async function followUpTransaction(
           ),
         )
         .returning({ approvalId: transactions.approvalId });
+
       if (!updated) return;
       await tx
         .update(transactionAttempts)
@@ -728,6 +781,7 @@ export async function followUpTransaction(
               : sql`CASE WHEN ${transactionAttempts.attempt} = ${mined.attempt} THEN 'mined' ELSE 'replaced' END`,
         })
         .where(eq(transactionAttempts.approvalId, approval.id));
+
       const [cancel] = await tx
         .select({ attempt: transactionAttempts.attempt })
         .from(transactionAttempts)
@@ -738,13 +792,16 @@ export async function followUpTransaction(
           ),
         )
         .limit(1);
+
       await hooks.moved?.(status, tx, { cancelAttempted: cancel !== undefined });
     });
 
   const age = now - seconds(transaction.createdAt);
   const overdue = age >= ctx.config.reconcileTimeoutSeconds;
+
   const retryLater = (code: string, waitSeconds: number) => {
     ctx.log.warn("chain access failed", { approvalId: approval.id, code });
+
     return { done: false, waitSeconds };
   };
 
@@ -754,36 +811,46 @@ export async function followUpTransaction(
       rawLocation(approval.id),
       transaction.raw,
     )) as ViemHex;
+
     try {
       await chains.broadcast(chainId, raw, transaction.hash as ViemHex);
     } catch (error) {
       if (!(error instanceof ChainError)) throw error;
+
       if (!overdue) {
         // Back off as the attempts age, up to a minute, until the reconcile timeout.
         const backoff = Math.min(
           MAX_BROADCAST_BACKOFF_SECONDS,
           Math.max(options.pollSeconds, Math.floor(age / 4)),
         );
+
         return retryLater(error.code, backoff);
       }
+
       // Out of time. Only a chain that answers "unknown" ends it; an RPC error is no answer.
       let known: boolean;
+
       try {
         known = await chains.known(chainId, transaction.hash as ViemHex);
       } catch (lookup) {
         if (lookup instanceof ChainError) return retryLater(lookup.code, options.pollSeconds);
         throw lookup;
       }
+
       if (!known) {
         // Never accepted and no longer offered, and no other attempt exists before broadcast:
         // its nonce is free again for this wallet.
         await move("rejected");
+
         return done;
       }
     }
+
     await move("broadcast", { lastBroadcastAt: at });
+
     return { done: false, waitSeconds: options.pollSeconds };
   }
+
   // Ended before by this follow-up; repeated so a crash right after cannot leave a cancel
   // request waiting.
   if (FINAL.includes(transaction.status)) return finished();
@@ -791,28 +858,36 @@ export async function followUpTransaction(
   // `broadcast` or `stuck`. A stuck transaction is still valid and may be mined any time, so it
   // is looked at again for as long as the run lives.
   const wait = transaction.status === "stuck" ? STUCK_POLL_SECONDS : options.pollSeconds;
+
   const [wallet] = await ctx.db
     .select({ address: wallets.address })
     .from(wallets)
     .where(eq(wallets.id, transaction.walletId));
+
   if (!wallet) throw new Error("a transaction's wallet no longer exists");
   const attempts = await attemptsOf(ctx, approval.workspaceId, transaction);
+
   let mined: { attempt: Attempt; receipt: Exclude<ReceiptState, { state: "missing" }> } | null =
     null;
+
   let accountNonce = transaction.nonce;
+
   try {
     // The head first: an attempt mined at or below it has a receipt by the time it is read, so a
     // nonce used at the confirmation depth while none of ours has a receipt was used by another
     // transaction.
     const head = await chains.head(chainId);
+
     // Newest first: a reprice is the likelier one, and at most one can be mined.
     for (const attempt of [...attempts].reverse()) {
       const receipt = await chains.receipt(chainId, attempt.hash);
+
       if (receipt.state !== "missing") {
         mined = { attempt, receipt };
         break;
       }
     }
+
     if (mined === null) {
       accountNonce = await chains.latestNonce(
         chainId,
@@ -827,6 +902,7 @@ export async function followUpTransaction(
 
   if (mined !== null) {
     const { attempt, receipt } = mined;
+
     // Mined, but not yet at the confirmation depth: a reorg could still swap it for another
     // attempt, so nothing is decided, repriced or sent until it is.
     if (receipt.state === "pending") return { done: false, waitSeconds: options.pollSeconds };
@@ -834,32 +910,42 @@ export async function followUpTransaction(
       attempt: attempt.attempt,
       blockNumber: receipt.blockNumber,
     });
+
     return finished();
   }
+
   if (accountNonce > transaction.nonce) {
     await settle("superseded", null);
+
     return finished();
   }
 
   const behind = accountNonce < transaction.nonce;
+
   if (!behind) await hooks.reprice?.();
   const current = await transactionOf(ctx, approval.id);
+
   if (!current || current.status !== transaction.status) {
     return { done: false, waitSeconds: options.pollSeconds };
   }
+
   const [workspace] = await ctx.db
     .select({ paused: workspaces.paused })
     .from(workspaces)
     .where(eq(workspaces.id, approval.workspaceId));
+
   // A reason that stopped automatic repricing stands until another attempt exists.
   const stopped =
     current.stuckReason !== null && REPRICE_STOPPED.includes(current.stuckReason)
       ? current.stuckReason
       : null;
+
   const reason: StuckReason =
     stopped ??
     (behind ? "waiting_behind_nonce" : workspace?.paused ? "workspace_paused" : "fee_too_low");
+
   const becomesStuck = current.status === "broadcast" && overdue;
+
   if (becomesStuck) {
     await move("stuck", { stuckReason: reason });
   } else if (current.stuckReason !== reason) {
@@ -868,19 +954,24 @@ export async function followUpTransaction(
       .set({ stuckReason: reason })
       .where(eq(transactions.approvalId, approval.id));
   }
+
   // A node may drop a transaction it has held for long. The newest attempt is offered again,
   // also while stuck: later transactions of the wallet wait behind this nonce.
   const lastBroadcast = current.lastBroadcastAt === null ? 0 : seconds(current.lastBroadcastAt);
+
   if (now - lastBroadcast >= REBROADCAST_SECONDS) {
     await broadcastNewest(ctx, approval.workspaceId, approval.id);
   }
 
   if (!becomesStuck && current.status === "broadcast") return { done: false, waitSeconds: wait };
+
   if (!hooks.reprice || behind || stopped !== null) {
     return { done: false, waitSeconds: STUCK_POLL_SECONDS };
   }
+
   // Stuck and repriced automatically: look again when the next reprice is due.
   let latestSignedAt = seconds(current.createdAt);
+
   if (current.latestAttempt > 0) {
     const [latest] = await ctx.db
       .select({ signedAt: transactionAttempts.signedAt })
@@ -891,10 +982,13 @@ export async function followUpTransaction(
           eq(transactionAttempts.attempt, current.latestAttempt),
         ),
       );
+
     if (latest) latestSignedAt = seconds(latest.signedAt);
   }
+
   const tried = current.repriceTriedAt === null ? 0 : seconds(current.repriceTriedAt);
   const due = Math.max(latestSignedAt, tried) + ctx.config.reprice.afterSeconds;
+
   return {
     done: false,
     waitSeconds: Math.min(STUCK_POLL_SECONDS, Math.max(1, due - now)),

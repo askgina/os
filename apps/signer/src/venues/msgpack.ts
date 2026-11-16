@@ -17,11 +17,14 @@ export class MsgpackMap {
 
   constructor(entries: readonly (readonly [string, MsgpackValue])[]) {
     const seen = new Set<string>();
+
     for (const entry of entries) {
       if (typeof entry[0] !== "string") throw new TypeError("msgpack map keys must be strings");
+
       if (seen.has(entry[0])) throw new TypeError(`duplicate msgpack map key ${entry[0]}`);
       seen.add(entry[0]);
     }
+
     this.entries = Object.freeze(
       entries.map(([key, value]) => Object.freeze([key, value] as const)),
     );
@@ -41,10 +44,12 @@ class Writer {
   uint(value: number, width: 1 | 2 | 4 | 8): void {
     let rest = BigInt(value);
     const bytes: number[] = [];
+
     for (let index = 0; index < width; index++) {
       bytes.unshift(Number(rest & 0xffn));
       rest >>= 8n;
     }
+
     this.#bytes.push(...bytes);
   }
 
@@ -92,6 +97,7 @@ function writeValue(writer: Writer, value: unknown): void {
     if (!Number.isSafeInteger(value) || value < 0 || Object.is(value, -0)) {
       throw new TypeError(`msgpack numbers must be non-negative safe integers, got ${value}`);
     }
+
     if (value <= 0x7f) {
       writer.byte(value);
     } else if (value <= 0xff) {
@@ -114,9 +120,11 @@ function writeValue(writer: Writer, value: unknown): void {
     writer.bytes(bytes);
   } else if (Array.isArray(value)) {
     writeLength(writer, value.length, 0x90, 15, [undefined, 0xdc, 0xdd]);
+
     for (let index = 0; index < value.length; index++) writeValue(writer, value[index]);
   } else if (value instanceof MsgpackMap) {
     writeLength(writer, value.entries.length, 0x80, 15, [undefined, 0xde, 0xdf]);
+
     for (const [key, entry] of value.entries) {
       writeValue(writer, key);
       writeValue(writer, entry);
@@ -128,6 +136,7 @@ function writeValue(writer: Writer, value: unknown): void {
 
 function describe(value: unknown): string {
   if (typeof value !== "object") return typeof value;
+
   return value?.constructor?.name ?? "object";
 }
 
@@ -150,13 +159,17 @@ const INDEX_LIKE_KEY = /^(?:0|[1-9][0-9]*)$/;
 export function msgpackToJson(value: MsgpackValue): JsonValue {
   if (value instanceof MsgpackMap) {
     const object: { [key: string]: JsonValue } = {};
+
     for (const [key, entry] of value.entries) {
       if (INDEX_LIKE_KEY.test(key)) throw new TypeError(`map key ${key} cannot keep its order`);
       object[key] = msgpackToJson(entry);
     }
+
     return object;
   }
+
   if (Array.isArray(value)) return value.map(msgpackToJson);
+
   return value as string | boolean | null | number;
 }
 
@@ -166,11 +179,13 @@ export function msgpackToJson(value: MsgpackValue): JsonValue {
  */
 export function jsonToMsgpack(value: unknown): MsgpackValue {
   if (Array.isArray(value)) return value.map(jsonToMsgpack);
+
   if (value !== null && typeof value === "object") {
     return new MsgpackMap(
       Object.entries(value).map(([key, entry]) => [key, jsonToMsgpack(entry)] as const),
     );
   }
+
   if (
     value === null ||
     typeof value === "string" ||
@@ -179,6 +194,7 @@ export function jsonToMsgpack(value: unknown): MsgpackValue {
   ) {
     return value;
   }
+
   throw new TypeError(`cannot encode ${describe(value)}`);
 }
 
@@ -186,5 +202,6 @@ export function jsonToMsgpack(value: unknown): MsgpackValue {
 export function encodeMsgpack(value: MsgpackValue): Uint8Array {
   const writer = new Writer();
   writeValue(writer, value);
+
   return writer.result();
 }

@@ -21,10 +21,13 @@ import { createFixture, draftFor, type Fixture } from "../execution/fixture.ts";
 import { TEST_CHAIN_ID, type TestPerson } from "../support/context.ts";
 
 const ETH = 10n ** 18n;
+
 const VENDOR = "0x00000000000000000000000000000000000000cc";
 
 let f: Fixture;
+
 let bob: TestPerson;
+
 let treasuryId: WalletId;
 
 const api = () => f.t.owner.browser.api;
@@ -38,8 +41,10 @@ async function refusal(call: Promise<unknown>): Promise<{ code: string; detail?:
         ? { code: error.code }
         : { code: error.code, detail: error.detail };
     }
+
     throw error;
   }
+
   throw new Error("the call was not refused");
 }
 
@@ -51,6 +56,7 @@ beforeAll(async () => {
     params: { workspaceId: ws },
     body: { detail: "summary" },
   });
+
   // A mandate: authority, which no clone may carry.
   const draft: MandateDraft = {
     agentId: f.agent.id,
@@ -70,22 +76,29 @@ beforeAll(async () => {
     notAfter: f.t.clock.now() + 3 * 86_400,
     purpose: "pay the vendor",
   };
+
   const grant = await api().call("proposeMandate", {
     params: { workspaceId: ws, walletId: f.agent.walletId },
     body: draft,
   });
+
   expect((await f.t.approve(grant.id as ApprovalId, [f.t.owner])).status).toBe("executed");
+
   // Two approvers now, and changes need both.
   const raise = await api().call("requestAdminThreshold", {
     params: { workspaceId: ws },
     body: { adminThreshold: 2 },
   });
+
   expect((await f.t.approve(raise.id as ApprovalId, [f.t.owner])).status).toBe("executed");
+
   const treasury = await api().call("createTreasury", {
     params: { workspaceId: ws },
     body: { label: "Treasury" },
   });
+
   treasuryId = treasury.id as WalletId;
+
   const policy = await api().call("requestPolicy", {
     params: { workspaceId: ws, walletId: treasuryId },
     body: {
@@ -95,6 +108,7 @@ beforeAll(async () => {
       }),
     },
   });
+
   expect((await f.t.approve(policy.id as ApprovalId, [f.t.owner, bob])).status).toBe("executed");
 }, 120_000);
 
@@ -107,6 +121,7 @@ async function sourceAddresses(): Promise<string[]> {
     .select({ address: wallets.address })
     .from(wallets)
     .where(eq(wallets.workspaceId, f.workspaceId));
+
   return rows.map((row) => row.address);
 }
 
@@ -124,16 +139,20 @@ describe("origin check", () => {
   it.each(writes)("%s refuses a write without a same-site Origin", async (name) => {
     const route = routes[name];
     const path = route.path.replace(/:[A-Za-z]+/g, "x");
+
     const init = {
       method: route.method,
       headers: { "content-type": "application/json" },
       body: "{}",
     };
+
     const missing = await f.t.owner.browser.fetch(path, { ...init, origin: null });
+
     const foreign = await f.t.owner.browser.fetch(path, {
       ...init,
       origin: "https://evil.example",
     });
+
     for (const response of [missing, foreign]) {
       expect(response.status).toBe(403);
       expect(ApiErrorBody.parse(await response.json()).error.code).toBe("forbidden");
@@ -146,6 +165,7 @@ describe("a workspace template", () => {
     const template = await api().call("exportTemplate", {
       params: { workspaceId: f.workspaceId },
     });
+
     expect(template).toMatchObject({
       format: "askgina.os/workspace-template/v1",
       name: "Execution tests",
@@ -179,6 +199,7 @@ describe("a workspace template", () => {
       ]),
     );
     const text = JSON.stringify(template);
+
     for (const address of await sourceAddresses()) expect(text).not.toContain(address);
     expect(text).not.toContain("mnd_");
     expect(text).not.toContain("osa_");
@@ -201,6 +222,7 @@ describe("cloning a workspace", () => {
       params: { workspaceId: f.workspaceId },
       body: { name: "Execution tests, again", includeAgents: true, includeMembers: true },
     });
+
     const ws = clone.workspace.id as WorkspaceId;
     expect(ws).not.toBe(f.workspaceId);
     expect(clone.workspace).toMatchObject({
@@ -225,12 +247,15 @@ describe("cloning a workspace", () => {
     // New keys: no address of the source, a new agent with its own token.
     expect(clone.workspace.wallets).toHaveLength(2);
     const old = await sourceAddresses();
+
     for (const wallet of clone.workspace.wallets) {
       expect(old).not.toContain(wallet.address);
       expect(wallet.policy).toBeNull();
     }
+
     expect(clone.agents).toHaveLength(1);
     const [agent] = clone.agents;
+
     if (!agent) throw new Error("no agent");
     expect(agent.agentId).not.toBe(f.agent.id);
     expect(agent.token.startsWith("osa_")).toBe(true);
@@ -254,17 +279,21 @@ describe("cloning a workspace", () => {
     expect(await f.t.ctx.db.select().from(mandates).where(eq(mandates.workspaceId, ws))).toEqual(
       [],
     );
+
     const sent = await f.t.ctx.db
       .select({ hash: transactions.hash })
       .from(transactions)
       .innerJoin(wallets, eq(wallets.id, transactions.walletId))
       .where(eq(wallets.workspaceId, ws));
+
     expect(sent).toEqual([]);
+
     const events = await f.t.ctx.db
       .select()
       .from(auditEvents)
       .where(eq(auditEvents.workspaceId, ws))
       .orderBy(asc(auditEvents.seq));
+
     expect(events.slice(0, 2).map((event) => event.action)).toEqual([
       "workspace.created",
       "workspace.cloned",
@@ -279,9 +308,11 @@ describe("cloning a workspace", () => {
         "invite.created",
       ]),
     );
+
     const [cloned] = await api()
       .call("listAudit", { params: { workspaceId: ws } })
       .then((page) => page.items.filter((event) => event.action === "workspace.cloned"));
+
     expect(cloned?.detail).toMatchObject({ source: { workspaceId: f.workspaceId } });
 
     // Once people approve, the policies apply as the template had them, pointing at the clone's
@@ -290,6 +321,7 @@ describe("cloning a workspace", () => {
       const row = await f.t.approve(approval.id as ApprovalId, [f.t.owner]);
       expect(row.status).toBe("executed");
     }
+
     const byKind = new Map(clone.workspace.wallets.map((wallet) => [wallet.kind, wallet.id]));
     const treasury = await f.t.ctx.signer.getWallet(byKind.get("treasury") as WalletId);
     expect(treasury.policy).toMatchObject({
@@ -309,11 +341,13 @@ describe("cloning a workspace", () => {
     const template: WorkspaceTemplate = await api().call("exportTemplate", {
       params: { workspaceId: f.workspaceId },
     });
+
     const stranger = "usr_01jd0000000000000000000042" as UserId;
     const countWorkspaces = async () => (await f.t.ctx.db.select().from(workspaces)).length;
 
     const before = await countWorkspaces();
     const [first, second] = template.wallets;
+
     if (!first?.policy || !second) throw new Error("template changed");
     expect(
       await refusal(
@@ -343,6 +377,7 @@ describe("cloning a workspace", () => {
         includeMembers: true,
       },
     });
+
     // Bob imported it: he is its owner, and the original owner is invited back; the stranger is not.
     expect(imported.workspace.members.map((member) => member.user.id)).toEqual([bob.userId]);
     expect(imported.invites.map((invite) => [invite.userId, invite.role])).toEqual([
@@ -352,9 +387,11 @@ describe("cloning a workspace", () => {
     expect(imported.agents).toEqual([]);
     expect(imported.workspace.wallets.map((wallet) => wallet.kind)).toEqual(["treasury"]);
     expect(imported.approvals).toHaveLength(1);
+
     const [cloned] = await bob.browser.api
       .call("listAudit", { params: { workspaceId: imported.workspace.id } })
       .then((page) => page.items.filter((event) => event.action === "workspace.cloned"));
+
     expect(cloned?.detail).toMatchObject({ source: { templateDigest: expect.any(String) } });
     const row = await f.t.approve(imported.approvals[0]?.id as ApprovalId, [bob]);
     expect(row.status).toBe("executed");

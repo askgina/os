@@ -53,14 +53,19 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
       const route: RouteDefinition = routes[name];
       const input = (rest[0] ?? {}) as LooseInput;
       let path = route.path;
+
       for (const [key, value] of Object.entries(input.params ?? {})) {
         path = path.replace(`:${key}`, encodeURIComponent(value));
       }
+
       const query = new URLSearchParams();
+
       for (const [key, value] of Object.entries(input.query ?? {})) {
         if (value !== undefined) query.set(key, value);
       }
+
       const url = `${baseUrl}${path}${query.size === 0 ? "" : `?${query}`}`;
+
       const response = await doFetch(url, {
         method: route.method,
         credentials: "same-origin",
@@ -70,15 +75,20 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
         },
         ...(route.body === null ? {} : { body: JSON.stringify(input.body ?? {}) }),
       });
+
       const payload: unknown = await response.json().catch(() => null);
+
       if (!response.ok) {
         const parsed = ApiErrorBody.safeParse(payload);
+
         if (parsed.success) {
           const { code, message, detail } = parsed.data.error;
           throw new ApiError(code, message, response.status, detail);
         }
+
         throw new ApiError("internal", `server answered HTTP ${response.status}`, response.status);
       }
+
       return route.response.parse(payload) as never;
     },
   };

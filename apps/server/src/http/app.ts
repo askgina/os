@@ -24,11 +24,14 @@ export function createPublicApp(ctx: AppContext): Hono {
     c.header("cross-origin-opener-policy", "same-origin");
     c.header("cross-origin-resource-policy", "same-origin");
     c.header("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=()");
+
     if (https) c.header("strict-transport-security", "max-age=63072000; includeSubDomains");
+
     if (new URL(c.req.url).pathname.startsWith("/api/")) c.header("cache-control", "no-store");
   });
   app.notFound((c) => {
     const body: ApiErrorBody = { error: { code: "not_found", message: "no such endpoint" } };
+
     return c.json(body, 404);
   });
   app.get("/healthz", (c) => c.json({ ok: true }));
@@ -40,6 +43,7 @@ export function createPublicApp(ctx: AppContext): Hono {
         () => true,
         () => false,
       ));
+
     return c.json({ ok }, ok ? 200 : 503);
   });
   registerIdentity(app, ctx);
@@ -47,7 +51,9 @@ export function createPublicApp(ctx: AppContext): Hono {
   registerExecution(app, ctx);
   registerNotify(app, ctx);
   mountMcp(app, ctx);
+
   if (ctx.config.webDistDir !== undefined) serveWebApp(app, ctx.config.webDistDir);
+
   return app;
 }
 
@@ -59,5 +65,6 @@ export function createInternalApp(ctx: AppContext): Hono {
   const internal = new Hono();
   installErrorHandler(internal, ctx);
   mountWorkflowDelivery(internal, ctx);
+
   return internal;
 }

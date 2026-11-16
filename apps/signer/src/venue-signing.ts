@@ -60,6 +60,7 @@ const DAY_SECONDS = 86_400;
 
 /** The submit window a policy may set, in seconds (`HyperliquidRules.submitWindowSeconds`). */
 const MIN_WINDOW_SECONDS = 5;
+
 const MAX_WINDOW_SECONDS = 300;
 
 type VenueSignatureRow = {
@@ -155,10 +156,12 @@ export function createVenueOperations(internals: VenueInternals) {
     const row = db
       .prepare("SELECT last_nonce FROM venue_nonces WHERE wallet_id = ? AND network = ?")
       .get(walletId, network) as { last_nonce: number } | undefined;
+
     const nonce = nextNonce(row?.last_nonce ?? null, nowMs);
     db.prepare(
       "INSERT INTO venue_nonces (wallet_id, network, last_nonce) VALUES (?, ?, ?) ON CONFLICT (wallet_id, network) DO UPDATE SET last_nonce = excluded.last_nonce",
     ).run(walletId, network, nonce);
+
     return nonce;
   }
 
@@ -170,6 +173,7 @@ export function createVenueOperations(internals: VenueInternals) {
   function actionBody(action: MsgpackMap | object): HyperliquidAction {
     const hashed = action instanceof MsgpackMap;
     const parsed = HyperliquidAction.safeParse(hashed ? msgpackToJson(action) : action);
+
     if (
       !parsed.success ||
       (hashed &&
@@ -180,16 +184,19 @@ export function createVenueOperations(internals: VenueInternals) {
       log.error("venue action does not match its request body", {});
       throw new SignerFailure("internal");
     }
+
     return parsed.data;
   }
 
   /** The request body, checked against the contract after signing; `internal` otherwise. */
   function requestBody(body: HyperliquidRequest): HyperliquidRequest {
     const parsed = HyperliquidRequest.safeParse(body);
+
     if (!parsed.success) {
       log.error("venue request does not match the contract", {});
       throw new SignerFailure("internal");
     }
+
     return parsed.data;
   }
 
@@ -209,17 +216,20 @@ export function createVenueOperations(internals: VenueInternals) {
     const network = intent.chainId;
     const { operation } = intent;
     const nonce = takeNonce(wallet.wallet_id, network, nowMs);
+
     if (operation.type === "hyperliquid.order") {
       const cloid = cloidFor(approvalId);
       const action = orderAction(operation, cloid);
       const body = actionBody(action);
       const expiresAfter = nowMs + submitWindowSeconds * 1000;
       const connectionId = l1ActionHash(action, nonce, expiresAfter);
+
       const signature = internals.signHyperliquidWith(wallet, {
         kind: "l1",
         network,
         connectionId,
       });
+
       return {
         kind: "order",
         asset: operation.asset,
@@ -230,8 +240,10 @@ export function createVenueOperations(internals: VenueInternals) {
         request: requestBody({ action: body, nonce, signature, vaultAddress: null, expiresAfter }),
       };
     }
+
     const destination = wallet.address as Address;
     const body = actionBody(withdrawAction(network, destination, operation.amount, nonce));
+
     const signature = internals.signHyperliquidWith(wallet, {
       kind: "withdraw",
       network,
@@ -239,6 +251,7 @@ export function createVenueOperations(internals: VenueInternals) {
       amount: operation.amount,
       time: nonce,
     });
+
     return {
       kind: "withdraw",
       asset: null,
@@ -259,12 +272,16 @@ export function createVenueOperations(internals: VenueInternals) {
   /** What a repeat of a signed venue approval gets: the same body, read back from the record. */
   function storedResponse(approvalId: string): SignVenueResponse {
     const row = venueSignatureOf(approvalId);
+
     // Signed with this envelope through another route: it was never a venue signature.
     if (!row) throw new SignerFailure("conflict");
     const wallet = internals.findWallet(row.wallet_id);
+
     if (!wallet) throw new SignerFailure("internal");
+
     // Emptied when the wallet's key was destroyed: there is nothing left to hand back.
     if (row.request === "") throw new SignerFailure("wallet_retired");
+
     return {
       approvalId: row.approval_id as ApprovalId,
       walletId: row.wallet_id as WalletId,
@@ -283,21 +300,26 @@ export function createVenueOperations(internals: VenueInternals) {
     const { intent, authorization } = request;
     const { envelope } = authorization;
     internals.requireWorkspace(envelope.workspaceId);
+
     return internals.decide(
       envelope.workspaceId,
       envelope.approvalId,
       VENUE_ACTIONS.sign,
       async (allow) => {
         internals.assertNotDeleted(envelope.workspaceId);
+
         // Idempotency first: a retry of an approval already signed gets the same body.
         if (internals.priorOutcome(envelope, "signed") === "replay") {
           return storedResponse(envelope.approvalId);
         }
+
         internals.assertNotFenced(envelope);
 
         if (envelope.type !== "approve-intent") throw new SignerFailure("envelope_mismatch");
         const wallet = internals.findWallet(envelope.walletId);
+
         if (!wallet) throw new SignerFailure("not_found");
+
         if (
           wallet.workspace_id !== envelope.workspaceId ||
           intent.workspaceId !== envelope.workspaceId ||
@@ -307,14 +329,19 @@ export function createVenueOperations(internals: VenueInternals) {
         ) {
           throw new SignerFailure("envelope_mismatch");
         }
+
         if (intentHash(intent) !== envelope.intentHash) throw new SignerFailure("intent_mismatch");
 
         internals.assertCanSign(envelope.workspaceId, wallet.wallet_id);
+
         if (internals.requireWorkspace(envelope.workspaceId).paused === 1) {
           throw new SignerFailure("workspace_paused");
         }
+
         const policy = internals.currentPolicy(wallet.wallet_id);
+
         if (!policy) throw new SignerFailure("policy_missing");
+
         if (policy.hash !== envelope.policyHash) throw new SignerFailure("policy_changed");
 
         await internals.verify(
@@ -328,32 +355,41 @@ export function createVenueOperations(internals: VenueInternals) {
         // venue nonce and the record cannot be seen half-done by another request.
         return transaction(db, () => {
           internals.assertNotDeleted(envelope.workspaceId);
+
           if (internals.priorOutcome(envelope, "signed") === "replay") {
             return storedResponse(envelope.approvalId);
           }
+
           internals.assertNotFenced(envelope);
           internals.assertCanSign(envelope.workspaceId, wallet.wallet_id);
+
           if (internals.requireWorkspace(envelope.workspaceId).paused === 1) {
             throw new SignerFailure("workspace_paused");
           }
+
           const live = internals.currentPolicy(wallet.wallet_id);
+
           if (!live || live.hash !== envelope.policyHash) {
             throw new SignerFailure("policy_changed");
           }
+
           internals.assertApproversStillPresent(authorization, envelope.workspaceId);
           internals.consumeNonce(envelope);
 
           const nowSeconds = now();
           const spent = internals.spentSince(wallet.wallet_id, nowSeconds - DAY_SECONDS);
+
           const decision = evaluateIntent(
             live.policy,
             intent,
             (chainId, asset) => spent.get(`${chainId}|${asset}`) ?? 0n,
           );
+
           if (!decision.allowed) throw new SignerFailure("policy_denied", decision.code);
           // `evaluateIntent` allows a venue intent only under the venue's rules, and only for the
           // network those rules name.
           const rules = live.policy.venues?.hyperliquid;
+
           if (rules === undefined) throw new SignerFailure("internal");
 
           const signed = signIntent(
@@ -363,6 +399,7 @@ export function createVenueOperations(internals: VenueInternals) {
             rules.submitWindowSeconds,
             nowSeconds * 1000,
           );
+
           internals.recordApproval(
             envelope.approvalId,
             envelope.workspaceId,
@@ -387,6 +424,7 @@ export function createVenueOperations(internals: VenueInternals) {
           // A reduce-only order counts against its market's per-order cap only, and a
           // withdrawal against nothing: neither is a spend of the daily cap.
           const spend = intentSpend(intent);
+
           if (spend.daily) {
             db.prepare(
               "INSERT INTO spends (approval_id, wallet_id, chain_id, asset, amount, at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -399,7 +437,9 @@ export function createVenueOperations(internals: VenueInternals) {
               nowSeconds,
             );
           }
+
           allow();
+
           return {
             approvalId: envelope.approvalId,
             walletId: wallet.wallet_id as WalletId,
@@ -433,16 +473,19 @@ export function createVenueOperations(internals: VenueInternals) {
     workspaceId: WorkspaceId,
   ): Promise<CancelVenueOrderResponse> {
     internals.requireWorkspace(workspaceId);
+
     return internals.decide(workspaceId, approvalId, VENUE_ACTIONS.cancel, (allow) =>
       transaction(db, () => {
         internals.assertNotDeleted(workspaceId);
         const approval = internals.findApproval(approvalId);
         const order = venueSignatureOf(approvalId);
+
         // Only what this database signed in this workspace: after a restore, an order signed
         // after the backup is unknown here and cannot be cancelled through the signer (D9).
         if (!approval || approval.workspace_id !== workspaceId || !order) {
           throw new SignerFailure("not_found");
         }
+
         if (
           order.kind !== "order" ||
           order.asset === null ||
@@ -451,33 +494,42 @@ export function createVenueOperations(internals: VenueInternals) {
         ) {
           throw new SignerFailure("conflict");
         }
+
         const wallet = internals.findWallet(order.wallet_id);
+
         if (!wallet) throw new SignerFailure("internal");
+
         // A destroyed key signs nothing, and the requests signed with it were emptied.
         if (wallet.state === "destroyed") throw new SignerFailure("wallet_retired");
 
         const nowMs = now() * 1000;
+
         const latest = db
           .prepare("SELECT * FROM venue_cancels WHERE approval_id = ? ORDER BY seq DESC LIMIT 1")
           .get(approvalId) as VenueCancelRow | undefined;
+
         if (latest && latest.expires_after > nowMs) return cancelResponse(order, latest);
 
         // The order's own submit window, as people approved it with the order: a later policy
         // neither shortens nor lengthens how long its cancel may wait to be posted.
         const windowMs = order.expires_after - order.signed_at * 1000;
+
         if (windowMs < MIN_WINDOW_SECONDS * 1000 || windowMs > MAX_WINDOW_SECONDS * 1000) {
           throw new SignerFailure("internal");
         }
+
         const network = order.network as VenueNetwork;
         const nonce = takeNonce(wallet.wallet_id, network, nowMs);
         const expiresAfter = nowMs + windowMs;
         const action = cancelByCloidAction(order.asset, order.cloid as Cloid);
         const body = actionBody(action);
+
         const signature = internals.signHyperliquidWith(wallet, {
           kind: "l1",
           network,
           connectionId: l1ActionHash(action, nonce, expiresAfter),
         });
+
         const request = requestBody({
           action: body,
           nonce,
@@ -485,6 +537,7 @@ export function createVenueOperations(internals: VenueInternals) {
           vaultAddress: null,
           expiresAfter,
         });
+
         const row: VenueCancelRow = {
           approval_id: approvalId,
           seq: (latest?.seq ?? 0) + 1,
@@ -493,6 +546,7 @@ export function createVenueOperations(internals: VenueInternals) {
           request: JSON.stringify(request),
           signed_at: now(),
         };
+
         db.prepare(
           "INSERT INTO venue_cancels (approval_id, seq, action_nonce, expires_after, request, signed_at) VALUES (?, ?, ?, ?, ?, ?)",
         ).run(
@@ -504,6 +558,7 @@ export function createVenueOperations(internals: VenueInternals) {
           row.signed_at,
         );
         allow();
+
         return cancelResponse(order, row);
       }),
     );

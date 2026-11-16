@@ -55,6 +55,7 @@ import type { EvmTransaction } from "./vault.ts";
 
 /** `SIGNER_MAX_MANDATE_SECONDS` unless set: seven days. */
 export const DEFAULT_MAX_MANDATE_SECONDS = 604_800;
+
 /** `SIGNER_MAX_LIVE_MANDATES_PER_WALLET` unless set. */
 export const DEFAULT_MAX_LIVE_MANDATES_PER_WALLET = 16;
 
@@ -105,6 +106,7 @@ function markRevoked(
       "UPDATE mandates SET revoked_at = ?, revoked_reason = ? WHERE mandate_id = ? AND revoked_at IS NULL",
     )
     .run(at, reason, mandateId);
+
   return result.changes > 0;
 }
 
@@ -120,6 +122,7 @@ function revokeEach(
   at: number,
 ): MandateId[] {
   const revoked: MandateId[] = [];
+
   for (const row of rows) {
     if (!markRevoked(db, row.mandate_id, reason, at)) continue;
     appendDecision(db, {
@@ -132,6 +135,7 @@ function revokeEach(
     });
     revoked.push(row.mandate_id as MandateId);
   }
+
   return revoked;
 }
 
@@ -147,6 +151,7 @@ export function revokeMandatesOnFence(db: DatabaseSync, at: number): MandateId[]
       "SELECT * FROM mandates WHERE revoked_at IS NULL AND not_after > ? ORDER BY workspace_id, mandate_id",
     )
     .all(at) as MandateRow[];
+
   return revokeEach(db, rows, "operator", MANDATE_ACTIONS.revokeOnFence, at);
 }
 
@@ -196,20 +201,25 @@ export function createMandateOperations(internals: MandateInternals) {
     const { uses } = db
       .prepare("SELECT COUNT(*) AS uses FROM mandate_uses WHERE mandate_id = ?")
       .get(row.mandate_id) as { uses: number };
+
     const spends = db
       .prepare(
         "SELECT s.chain_id, s.asset, s.amount, u.at FROM mandate_uses u JOIN spends s ON s.approval_id = u.approval_id WHERE u.mandate_id = ?",
       )
       .all(row.mandate_id) as { chain_id: string; asset: string; amount: string; at: number }[];
+
     const since = at - mandate.windowSeconds;
     const total = new Map<string, bigint>();
     const inWindow = new Map<string, bigint>();
+
     for (const spend of spends) {
       const key = `${spend.chain_id}|${spend.asset}`;
       const amount = BigInt(spend.amount);
       total.set(key, (total.get(key) ?? 0n) + amount);
+
       if (spend.at > since) inWindow.set(key, (inWindow.get(key) ?? 0n) + amount);
     }
+
     return {
       uses,
       total: (chainId, asset) => total.get(`${chainId}|${asset}`) ?? 0n,
@@ -225,12 +235,15 @@ export function createMandateOperations(internals: MandateInternals) {
   ): MandateStatus {
     if (row.revoked_at !== null) return "revoked";
     const time = mandateTimeState(mandate, at);
+
     if (time !== "live") return time;
+
     const spent =
       usage.uses >= mandate.maxUses ||
       mandate.assets.every(
         (limit) => usage.total(limit.chainId, limit.asset) >= BigInt(limit.maxTotal),
       );
+
     return spent ? "exhausted" : "active";
   }
 
@@ -238,6 +251,7 @@ export function createMandateOperations(internals: MandateInternals) {
     const rows = db
       .prepare("SELECT user_id FROM mandate_grantors WHERE mandate_id = ? ORDER BY user_id")
       .all(mandateId) as { user_id: string }[];
+
     return rows.map((row) => row.user_id as UserId);
   }
 
@@ -247,6 +261,7 @@ export function createMandateOperations(internals: MandateInternals) {
     const mandate = Mandate.parse(JSON.parse(row.mandate));
     const at = now();
     const usage = usageOf(row, mandate, at);
+
     return {
       mandate,
       mandateHash: row.mandate_hash,
@@ -275,6 +290,7 @@ export function createMandateOperations(internals: MandateInternals) {
         "SELECT COUNT(*) AS n FROM mandates WHERE wallet_id = ? AND revoked_at IS NULL AND not_after > ?",
       )
       .get(walletId, at) as { n: number };
+
     return row.n;
   }
 
@@ -301,21 +317,28 @@ export function createMandateOperations(internals: MandateInternals) {
     ) {
       throw new SignerFailure("envelope_mismatch");
     }
+
     // Read again: the wallet may have been retired while this grant was being verified.
     if (internals.findWallet(wallet.wallet_id)?.state !== "active") {
       throw new SignerFailure("wallet_retired");
     }
+
     const policy = internals.currentPolicy(wallet.wallet_id);
+
     if (!policy) throw new SignerFailure("policy_missing");
     const at = now();
+
     const refusal = checkMandateAgainstPolicy(mandate, policy.policy, {
       now: at,
       maxSeconds: internals.maxMandateSeconds,
     });
+
     if (refusal !== null) throw new SignerFailure("mandate_invalid", refusal);
+
     if (liveMandateCount(wallet.wallet_id, at) >= internals.maxLiveMandatesPerWallet) {
       throw new SignerFailure("mandate_invalid", "too_many_live_mandates");
     }
+
     // A repeat of this grant was answered before the checks; any other holder of the id differs.
     if (findMandate(mandateId)) throw new SignerFailure("conflict");
   }
@@ -330,8 +353,10 @@ export function createMandateOperations(internals: MandateInternals) {
   ): Promise<MandateState> {
     const { mandate, authorization } = request;
     const wallet = internals.findWallet(mandate.walletId);
+
     if (!wallet) throw new SignerFailure("not_found");
     const { approvalId } = authorization.envelope;
+
     return internals.authorizedChange({
       workspaceId: wallet.workspace_id,
       authorization,
@@ -353,9 +378,11 @@ export function createMandateOperations(internals: MandateInternals) {
           mandate.notAfter,
           now(),
         );
+
         const grantor = db.prepare(
           "INSERT INTO mandate_grantors (mandate_id, user_id, credential_id) VALUES (?, ?, ?)",
         );
+
         for (const assertion of authorization.assertions) {
           grantor.run(mandate.id, assertion.userId, assertion.credentialId);
         }
@@ -364,8 +391,10 @@ export function createMandateOperations(internals: MandateInternals) {
         const row = db
           .prepare("SELECT * FROM mandates WHERE grant_approval_id = ?")
           .get(approvalId) as MandateRow | undefined;
+
         // A repeat of an applied grant answers for the mandate it granted, under its own id only.
         if (!row || row.mandate_id !== mandateId) throw new SignerFailure("envelope_mismatch");
+
         return stateOf(row);
       },
     });
@@ -373,19 +402,24 @@ export function createMandateOperations(internals: MandateInternals) {
 
   function getMandate(mandateId: MandateId): MandateState {
     const row = findMandate(mandateId);
+
     if (!row) throw new SignerFailure("not_found");
     internals.assertNotDeleted(row.workspace_id);
+
     return stateOf(row);
   }
 
   /** Every mandate of a wallet, live or ended, by `notAfter` then id. */
   function listMandates(walletId: WalletId): ListMandatesResponse {
     const wallet = internals.findWallet(walletId);
+
     if (!wallet) throw new SignerFailure("not_found");
     internals.assertNotDeleted(wallet.workspace_id);
+
     const rows = db
       .prepare("SELECT * FROM mandates WHERE wallet_id = ? ORDER BY not_after, mandate_id")
       .all(walletId) as MandateRow[];
+
     return { mandates: rows.map(stateOf) };
   }
 
@@ -400,8 +434,10 @@ export function createMandateOperations(internals: MandateInternals) {
   ): Promise<SignResponse> {
     const { approvalId, intent, transaction: params } = request;
     const found = findMandate(mandateId);
+
     if (!found) throw new SignerFailure("not_found");
     const wallet = internals.findWallet(found.wallet_id);
+
     if (!wallet) throw new SignerFailure("not_found");
     internals.requireWorkspace(found.workspace_id);
     const hash = intentHash(intent);
@@ -413,26 +449,34 @@ export function createMandateOperations(internals: MandateInternals) {
         // Idempotency: a retry of a use already signed gets the same transaction, even if the
         // mandate ended or the workspace was paused since.
         const prior = internals.findApproval(approvalId);
+
         if (prior) {
           if (prior.state === "revoked") throw new SignerFailure("approval_revoked");
+
           if (prior.state === "signed" && prior.envelope_digest === digest) {
             return internals.storedSignature(approvalId);
           }
+
           throw new SignerFailure("conflict");
         }
 
         internals.assertCanSign(found.workspace_id, found.wallet_id);
         const workspace = internals.requireWorkspace(found.workspace_id);
+
         if (workspace.paused === 1) throw new SignerFailure("workspace_paused");
 
         // Read again under the write lock: the operator may have revoked it meanwhile.
         const row = findMandate(mandateId);
+
         if (!row) throw new SignerFailure("not_found");
+
         if (row.revoked_at !== null) throw new SignerFailure("mandate_revoked");
         const mandate = Mandate.parse(JSON.parse(row.mandate));
         const at = now();
         const time = mandateTimeState(mandate, at);
+
         if (time === "not_yet_valid") throw new SignerFailure("mandate_not_yet_valid");
+
         if (time === "expired") throw new SignerFailure("mandate_expired");
 
         // Raising the admin threshold stops every mandate granted by fewer people.
@@ -445,18 +489,22 @@ export function createMandateOperations(internals: MandateInternals) {
         }
 
         const policy = internals.currentPolicy(row.wallet_id);
+
         if (!policy) throw new SignerFailure("policy_missing");
         const spent = internals.spentSince(row.wallet_id, at - DAY_SECONDS);
+
         const allowedByPolicy = evaluateIntent(
           policy.policy,
           intent,
           (chainId, asset) => spent.get(`${chainId}|${asset}`) ?? 0n,
         );
+
         if (!allowedByPolicy.allowed) {
           throw new SignerFailure("policy_denied", allowedByPolicy.code);
         }
 
         const decision = evaluateMandate(mandate, intent, usageOf(row, mandate, at));
+
         if (!decision.allowed) throw new SignerFailure("mandate_denied", decision.code);
 
         internals.assertFeeWithin(params, intent.maxFeeWei);
@@ -471,10 +519,12 @@ export function createMandateOperations(internals: MandateInternals) {
           unsigned: internals.buildTransaction(intent, params),
           spend: decision.spend,
         });
+
         db.prepare(
           "INSERT INTO mandate_uses (approval_id, mandate_id, intent_id, intent_hash, at) VALUES (?, ?, ?, ?, ?)",
         ).run(approvalId, mandateId, intent.id, hash, at);
         allow();
+
         return response;
       }),
     );
@@ -487,12 +537,16 @@ export function createMandateOperations(internals: MandateInternals) {
   function revokeMandate(mandateId: MandateId, workspaceId: WorkspaceId): Promise<MandateState> {
     internals.assertNotDeleted(workspaceId);
     const found = findMandate(mandateId);
+
     if (!found || found.workspace_id !== workspaceId) throw new SignerFailure("not_found");
+
     return internals.decide(workspaceId, found.grant_approval_id, MANDATE_ACTIONS.revoke, (allow) =>
       transaction(db, () => {
         if (markRevoked(db, mandateId, "requested", now())) allow();
         const row = findMandate(mandateId);
+
         if (!row) throw new SignerFailure("internal");
+
         return stateOf(row);
       }),
     );
@@ -504,11 +558,13 @@ export function createMandateOperations(internals: MandateInternals) {
    */
   function revokeMandatesOfCredential(workspaceId: string, credentialId: string): MandateId[] {
     const at = now();
+
     const rows = db
       .prepare(
         "SELECT m.* FROM mandates m JOIN mandate_grantors g ON g.mandate_id = m.mandate_id WHERE m.workspace_id = ? AND g.credential_id = ? AND m.revoked_at IS NULL AND m.not_after > ? ORDER BY m.mandate_id",
       )
       .all(workspaceId, credentialId, at) as MandateRow[];
+
     return revokeEach(db, rows, "grantor_removed", MANDATE_ACTIONS.revokeOnGrantorRemoval, at);
   }
 
@@ -518,11 +574,13 @@ export function createMandateOperations(internals: MandateInternals) {
    */
   function revokeWalletMandates(walletId: string): MandateId[] {
     const at = now();
+
     const rows = db
       .prepare(
         "SELECT * FROM mandates WHERE wallet_id = ? AND revoked_at IS NULL AND not_after > ? ORDER BY mandate_id",
       )
       .all(walletId, at) as MandateRow[];
+
     return revokeEach(db, rows, "requested", MANDATE_ACTIONS.revokeOnRetire, at);
   }
 
@@ -532,11 +590,13 @@ export function createMandateOperations(internals: MandateInternals) {
    */
   function revokeWorkspaceMandates(workspaceId: string): MandateId[] {
     const at = now();
+
     const rows = db
       .prepare(
         "SELECT * FROM mandates WHERE workspace_id = ? AND revoked_at IS NULL AND not_after > ? ORDER BY mandate_id",
       )
       .all(workspaceId, at) as MandateRow[];
+
     return revokeEach(db, rows, "requested", MANDATE_ACTIONS.revokeOnDelete, at);
   }
 
@@ -547,18 +607,22 @@ export function createMandateOperations(internals: MandateInternals) {
   function revokeMandateByOperator(mandateId: MandateId): MandateId[] {
     const { workspaceId, revoked } = transaction(db, () => {
       const row = findMandate(mandateId);
+
       if (!row) throw new SignerFailure("not_found");
+
       return {
         workspaceId: row.workspace_id,
         revoked: revokeEach(db, [row], "operator", MANDATE_ACTIONS.revokeByOperator, now()),
       };
     });
+
     log.info("decision", {
       action: MANDATE_ACTIONS.revokeByOperator,
       outcome: "allowed",
       workspaceId,
       count: revoked.length,
     });
+
     return revoked;
   }
 
@@ -570,30 +634,36 @@ export function createMandateOperations(internals: MandateInternals) {
     const revoked = transaction(db, () => {
       internals.requireWorkspace(workspaceId);
       const at = now();
+
       const rows = db
         .prepare(
           "SELECT * FROM mandates WHERE workspace_id = ? AND revoked_at IS NULL AND not_after > ? ORDER BY mandate_id",
         )
         .all(workspaceId, at) as MandateRow[];
+
       return revokeEach(db, rows, "operator", MANDATE_ACTIONS.revokeByOperator, at);
     });
+
     log.info("decision", {
       action: MANDATE_ACTIONS.revokeByOperator,
       outcome: "allowed",
       workspaceId,
       count: revoked.length,
     });
+
     return revoked;
   }
 
   /** Every mandate of a workspace, by wallet, `notAfter` and id, for the admin CLI. */
   function listWorkspaceMandates(workspaceId: WorkspaceId): MandateState[] {
     internals.assertNotDeleted(workspaceId);
+
     const rows = db
       .prepare(
         "SELECT * FROM mandates WHERE workspace_id = ? ORDER BY wallet_id, not_after, mandate_id",
       )
       .all(workspaceId) as MandateRow[];
+
     return rows.map(stateOf);
   }
 

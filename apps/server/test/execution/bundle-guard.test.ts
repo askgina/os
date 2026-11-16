@@ -14,21 +14,26 @@ import {
 } from "../../src/execution/bundle-guard.ts";
 
 let database: TestDatabase;
+
 /** The test's own connections, outside every replica. */
 let admin: pg.Pool;
+
 const pools: pg.Pool[] = [];
+
 const dir = mkdtempSync(join(tmpdir(), "os-bundle-guard-"));
 
 /** A pool per process: each replica has its own. */
 function pool(): pg.Pool {
   const created = new pg.Pool({ connectionString: database.url, max: 2 });
   pools.push(created);
+
   return created;
 }
 
 function bundle(name: string, code: string): string {
   const file = join(dir, `${name}.mjs`);
   writeFileSync(file, code);
+
   return file;
 }
 
@@ -43,6 +48,7 @@ async function holders(): Promise<number[]> {
        AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
     [BUNDLE_LOCK_CLASS],
   );
+
   return rows.map((row) => row.objid);
 }
 
@@ -50,6 +56,7 @@ beforeAll(async () => {
   database = await createTestDatabase("bundle_guard");
   admin = pool();
 });
+
 afterAll(async () => {
   await Promise.all(pools.map((p) => p.end()));
   await database.drop();
@@ -77,13 +84,17 @@ describe("the workflow bundle guard", () => {
 
   it("two bundles starting at once do not both get in", async () => {
     const files = [bundle("a", "a"), bundle("b", "b")];
+
     const results = await Promise.allSettled(
       Array.from({ length: 6 }, (_, i) => holdBundleLock(pool(), files[i % 2] as string, never)),
     );
+
     const held = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+
     for (const result of results) {
       if (result.status === "rejected") expect(result.reason).toBeInstanceOf(BundleMismatchError);
     }
+
     expect(new Set(held.map((lock) => lock.bundleId)).size).toBeLessThanOrEqual(1);
     await Promise.all(held.map((lock: BundleLock) => lock.release()));
   });
@@ -93,6 +104,7 @@ describe("the workflow bundle guard", () => {
     const v2 = bundle("lost-v2", "lost 2");
     const mismatches: BundleMismatchError[] = [];
     const held = await holdBundleLock(pool(), v1, (error) => mismatches.push(error));
+
     const kill = (client: pg.PoolClient | pg.Pool) =>
       client.query(
         `SELECT pg_terminate_backend(pid) FROM pg_locks
@@ -111,6 +123,7 @@ describe("the workflow bundle guard", () => {
     // Lost again, and another bundle gets in first: this process hears it. The other starter
     // holds the check lock while the connection dies, so it surely gets in before the retry.
     const other = await admin.connect();
+
     try {
       await other.query("BEGIN");
       await other.query("SELECT pg_advisory_xact_lock($1, 0)", [BUNDLE_CHECK_CLASS]);
@@ -126,6 +139,7 @@ describe("the workflow bundle guard", () => {
     } finally {
       other.release(true);
     }
+
     await held.release();
     // The other starter's connection was closed, not unlocked: Postgres drops its lock when it
     // notices, a moment after the socket closes.

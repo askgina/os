@@ -22,38 +22,51 @@ import { createFixture, type Fixture, toolJson } from "../execution/fixture.ts";
 import { TEST_CHAIN_ID } from "../support/context.ts";
 
 const ETH = 10n ** 18n;
+
 const SUPPLIER = "0x00000000000000000000000000000000000000aa";
+
 const PLUMBER = "0x00000000000000000000000000000000000000bb";
+
 const PUSH_ENDPOINT = "https://push.example.test/send/endpoint-only-the-browser-knows";
 
 let f: Fixture;
+
 let client: Client;
+
 let personPayment: ApprovalId;
+
 let mandatePayment: ApprovalId;
+
 let mandateId: MandateId;
 
 const api = () => f.t.owner.browser.api;
 
 async function propose(args: Record<string, unknown>): Promise<ApprovalId> {
   const answer = toolJson(await client.callTool({ name: "propose_transfer", arguments: args }));
+
   if (typeof answer.intentId !== "string") throw new Error(JSON.stringify(answer));
+
   const [row] = await f.t.ctx.db
     .select({ approvalId: intents.approvalId })
     .from(intents)
     .where(eq(intents.id, answer.intentId as IntentId));
+
   if (!row?.approvalId) throw new Error("an intent without its approval or use");
+
   return row.approvalId;
 }
 
 /** Follow a signed payment to its block, as the workflow does. */
 async function followUp(approvalId: ApprovalId): Promise<void> {
   const steps = engineOf(f.t.ctx).steps();
+
   for (let i = 0; i < 20; i += 1) if ((await steps.followUp(approvalId)).done) return;
   throw new Error("follow-up never finished");
 }
 
 async function exportRecord(): Promise<string[]> {
   const { record } = await api().call("exportRecord", { params: { workspaceId: f.workspaceId } });
+
   return recordLines(record);
 }
 
@@ -90,10 +103,12 @@ beforeAll(async () => {
     notAfter: f.t.clock.now() + 3 * 86_400,
     purpose: "pay the suppliers this week",
   };
+
   const opened = await api().call("proposeMandate", {
     params: { workspaceId: f.workspaceId, walletId: f.agent.walletId },
     body: draft,
   });
+
   const granted = await f.t.approve(opened.id as ApprovalId, [f.t.owner]);
   expect(granted.status).toBe("executed");
   mandateId = granted.subjectId as MandateId;
@@ -207,6 +222,7 @@ describe("exporting a workspace's record", () => {
       amount: "0.02",
       memo: "still waiting",
     });
+
     const { confirmUrl } = await api().call("getApproval", { params: { approvalId: pending } });
     const record = (await exportRecord()).join("\n");
 
@@ -228,12 +244,15 @@ describe("exporting a workspace's record", () => {
       .select()
       .from(transactions)
       .where(eq(transactions.approvalId, personPayment));
+
     if (!row) throw new Error("no transaction");
+
     const raw = (await f.t.ctx.sealer.open(
       f.workspaceId,
       `transactions.raw:${row.approvalId}`,
       row.raw,
     )) as string;
+
     expect(raw.startsWith("0x")).toBe(true);
     expect(record).not.toContain(raw.slice(2));
     expect(record).not.toContain(row.raw.toString("base64"));
@@ -242,12 +261,14 @@ describe("exporting a workspace's record", () => {
 
   it("needs an owner whose passkey signed in within the last five minutes", async () => {
     f.t.clock.advance(RECENT_SIGN_IN_MAX_AGE_SECONDS + 1);
+
     const refused = await api()
       .call("exportRecord", { params: { workspaceId: f.workspaceId } })
       .then(
         () => null,
         (error: unknown) => error,
       );
+
     expect(refused).toBeInstanceOf(ApiError);
     expect(refused).toMatchObject({ code: "forbidden", detail: "sign_in_again" });
 
@@ -255,12 +276,14 @@ describe("exporting a workspace's record", () => {
     expect(verifyRecord(await exportRecord()).ok).toBe(true);
 
     const viewer = await f.addApprover(f.workspaceId, "Vera Approver");
+
     const notOwner = await viewer.browser.api
       .call("exportRecord", { params: { workspaceId: f.workspaceId } })
       .then(
         () => null,
         (error: unknown) => error,
       );
+
     expect(notOwner).toMatchObject({ code: "forbidden" });
   });
 });

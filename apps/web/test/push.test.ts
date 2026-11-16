@@ -13,18 +13,25 @@ import {
 
 const IPHONE_17 =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+
 const IPHONE_16_3 =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 16_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.3 Mobile/15E148 Safari/604.1";
+
 const IPHONE_CHROME =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/131.0.6778.73 Mobile/15E148 Safari/604.1";
+
 /** iPadOS asks for desktop sites: it says Macintosh and names no iOS version. */
 const IPAD_DESKTOP =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15";
+
 const MAC_SAFARI = IPAD_DESKTOP;
+
 const ANDROID_CHROME =
   "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
+
 const WINDOWS_EDGE =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0";
+
 const LINUX_FIREFOX = "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0";
 
 /** A desktop browser with everything push needs, permission not asked yet. */
@@ -141,6 +148,7 @@ describe("deviceState", () => {
   const record: DeviceRecord = { userId, subscriptionId: "psb_1", endpoint: "https://push/1" };
   const browser = { endpoint: "https://push/1", applicationServerKey: "KEY" };
   const devices = [{ id: "psb_1" }, { id: "psb_2" }];
+
   const state = (changes: Partial<DeviceStateInput> = {}) =>
     deviceState({ userId, record, browser, serverKey: "KEY", devices, ...changes });
 

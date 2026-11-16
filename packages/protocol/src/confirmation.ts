@@ -73,6 +73,7 @@ export const ChainLabel = z.strictObject({
     ),
   nativeSymbol: LabelSymbol,
 });
+
 export type ChainLabel = z.infer<typeof ChainLabel>;
 
 /** A token's symbol and decimals, from the operator's assets file mounted into the signer. */
@@ -82,6 +83,7 @@ export const AssetLabel = z.strictObject({
   symbol: LabelSymbol,
   decimals: z.number().int().min(0).max(36),
 });
+
 export type AssetLabel = z.infer<typeof AssetLabel>;
 
 /** The whole chains file. One name per chain. */
@@ -92,6 +94,7 @@ export const ChainLabels = z
     (labels) => new Set(labels.map((label) => label.chainId)).size === labels.length,
     "a chain is named twice",
   );
+
 export type ChainLabels = z.infer<typeof ChainLabels>;
 
 /** The whole assets file. One label per token on each chain. */
@@ -102,6 +105,7 @@ export const AssetLabels = z
     (labels) => new Set(labels.map(assetLimitKey)).size === labels.length,
     "a token is named twice on the same chain",
   );
+
 export type AssetLabels = z.infer<typeof AssetLabels>;
 
 // --- subjects ---------------------------------------------------------------------------------
@@ -120,6 +124,7 @@ export const ConfirmationSubject = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("grant-mandate"), mandate: Mandate }),
   z.strictObject({ kind: z.literal("envelope-only") }),
 ]);
+
 export type ConfirmationSubject = z.infer<typeof ConfirmationSubject>;
 
 /** Why a subject is not what an envelope names. The signer refuses with the same code. */
@@ -145,6 +150,7 @@ function matchSubject(envelope: Envelope, subject: ConfirmationSubject): Matched
     case "approve-intent": {
       if (subject.kind !== "approve-intent") return "envelope_mismatch";
       const { intent } = subject;
+
       if (
         intent.workspaceId !== envelope.workspaceId ||
         intent.walletId !== envelope.walletId ||
@@ -153,17 +159,23 @@ function matchSubject(envelope: Envelope, subject: ConfirmationSubject): Matched
       ) {
         return "envelope_mismatch";
       }
+
       const parsed = Intent.safeParse(intent);
+
       if (!parsed.success || intentHash(parsed.data) !== envelope.intentHash) {
         return "intent_mismatch";
       }
+
       return { kind: "approve-intent", envelope, intent: parsed.data };
     }
+
     case "set-policy": {
       if (subject.kind !== "set-policy") return "envelope_mismatch";
       const parsed = WalletPolicy.safeParse(subject.policy);
+
       if (!parsed.success) return "envelope_mismatch";
       const policy = parsed.data;
+
       if (
         policy.workspaceId !== envelope.workspaceId ||
         policy.walletId !== envelope.walletId ||
@@ -172,13 +184,17 @@ function matchSubject(envelope: Envelope, subject: ConfirmationSubject): Matched
       ) {
         return "envelope_mismatch";
       }
+
       return { kind: "set-policy", envelope, policy };
     }
+
     case "sweep-wallet": {
       if (subject.kind !== "sweep-wallet") return "envelope_mismatch";
       const parsed = Sweep.safeParse(subject.sweep);
+
       if (!parsed.success) return "envelope_mismatch";
       const sweep = parsed.data;
+
       if (
         sweep.workspaceId !== envelope.workspaceId ||
         sweep.walletId !== envelope.walletId ||
@@ -187,13 +203,17 @@ function matchSubject(envelope: Envelope, subject: ConfirmationSubject): Matched
       ) {
         return "envelope_mismatch";
       }
+
       return { kind: "sweep-wallet", envelope, sweep };
     }
+
     case "grant-mandate": {
       if (subject.kind !== "grant-mandate") return "envelope_mismatch";
       const parsed = Mandate.safeParse(subject.mandate);
+
       if (!parsed.success) return "envelope_mismatch";
       const mandate = parsed.data;
+
       if (
         mandate.id !== envelope.mandateId ||
         mandate.workspaceId !== envelope.workspaceId ||
@@ -203,8 +223,10 @@ function matchSubject(envelope: Envelope, subject: ConfirmationSubject): Matched
       ) {
         return "envelope_mismatch";
       }
+
       return { kind: "grant-mandate", envelope, mandate };
     }
+
     case "add-approver":
     case "remove-approver":
     case "set-admin-threshold":
@@ -227,6 +249,7 @@ export function checkSubject(
   subject: ConfirmationSubject,
 ): SubjectMismatch | null {
   const matched = matchSubject(envelope, subject);
+
   return typeof matched === "string" ? matched : null;
 }
 
@@ -237,6 +260,7 @@ export function checkSubject(
  * or a wallet's name; the page sets it apart from everything the signer states.
  */
 export const ConfirmationLineKind = z.enum(["text", "amount", "address", "code", "unchecked"]);
+
 export type ConfirmationLineKind = z.infer<typeof ConfirmationLineKind>;
 
 /** Labels are always the signer's own words; only values carry data. */
@@ -245,6 +269,7 @@ export const ConfirmationLine = z.strictObject({
   value: z.string(),
   kind: ConfirmationLineKind,
 });
+
 export type ConfirmationLine = z.infer<typeof ConfirmationLine>;
 
 /**
@@ -267,6 +292,7 @@ export const ConfirmationWarning = z.enum([
   "market_not_in_policy",
   "venue_rules_missing",
 ]);
+
 export type ConfirmationWarning = z.infer<typeof ConfirmationWarning>;
 
 /**
@@ -290,6 +316,7 @@ export const ConfirmationState = z.enum([
   "used",
   "superseded",
 ]);
+
 export type ConfirmationState = z.infer<typeof ConfirmationState>;
 
 /**
@@ -303,6 +330,7 @@ export const PasskeyRequest = z.strictObject({
   userVerification: z.literal("required"),
   timeoutMs: z.number().int().min(1).max(600_000),
 });
+
 export type PasskeyRequest = z.infer<typeof PasskeyRequest>;
 
 /** What the signer returns to the confirmation page for one approval. */
@@ -338,6 +366,7 @@ export const ConfirmationView = z
       checkSubject(view.envelope, view.subject) === null,
     { path: ["envelope"], message: "the view must describe its own envelope and subject" },
   );
+
 export type ConfirmationView = z.infer<typeof ConfirmationView>;
 
 /** Everything the view is built from. The signer supplies all of it from its own records. */
@@ -396,8 +425,11 @@ export type RenderedConfirmation = {
 };
 
 const AGENT_NOTE = "Agent's note, not checked";
+
 const PURPOSE = "Purpose, not checked";
+
 const WALLET_NAME = "Wallet name, not checked";
+
 const ADMIN_THRESHOLD = "Approvals needed for workspace changes";
 
 type Output = {
@@ -413,9 +445,11 @@ type Output = {
  */
 export function renderConfirmation(input: RenderInput): RenderedConfirmation {
   const matched = matchSubject(input.envelope, input.subject);
+
   if (typeof matched === "string") {
     throw new TypeError(`the subject is not what the envelope names (${matched})`);
   }
+
   const out: Output = { input, lines: [], warnings: new Set() };
   const title = renderMatched(out, matched);
 
@@ -426,6 +460,7 @@ export function renderConfirmation(input: RenderInput): RenderedConfirmation {
   push(out, "Approvals so far", `${approvals.collected} of ${approvals.required}`, "text");
 
   const warnings = ConfirmationWarning.options.filter((code) => out.warnings.has(code));
+
   return { title, lines: out.lines, warnings };
 }
 
@@ -457,27 +492,34 @@ function renderEvmIntent(out: Output, intent: EvmIntent): string {
   limitLines(out, intent.chainId, asset, amount);
   walletLines(out, intent.walletId);
   push(out, "Proposed by agent", intent.agentId, "code");
+
   if (intent.memo !== "") push(out, AGENT_NOTE, uncheckedText(intent.memo), "unchecked");
+
   return title;
 }
 
 function renderOperation(out: Output, intent: EvmIntent): string {
   const { operation, chainId } = intent;
+
   switch (operation.type) {
     case "evm.transfer": {
       const amount = amountText(unitOf(out, chainId, "native"), operation.valueWei);
       push(out, "Amount", amount, "amount");
       recipientLines(out, "To", operation.to);
+
       return `Send ${amount}`;
     }
+
     case "evm.erc20.transfer": {
       const unit = unitOf(out, chainId, operation.token);
       const amount = amountText(unit, operation.amount);
       push(out, "Amount", amount, "amount");
       tokenLines(out, unit, operation.token);
       recipientLines(out, "To", operation.to);
+
       return unit.known ? `Send ${amount}` : `Send ${amount} of an unknown token`;
     }
+
     case "evm.call": {
       out.warnings.add("raw_contract_call");
       addressLines(out, "Contract", operation.to);
@@ -486,6 +528,7 @@ function renderOperation(out: Output, intent: EvmIntent): string {
       push(out, "Function selector", operation.data.slice(0, 10), "code");
       push(out, "Calldata", operation.data, "code");
       push(out, "What the call does", "the signer cannot say what this call does", "text");
+
       return "Call a contract";
     }
   }
@@ -500,11 +543,13 @@ const TIME_IN_FORCE: Record<HyperliquidTimeInForce, { name: string; effect: stri
 };
 
 const VENUE_FUNDS = "Funds at the venue";
+
 const VENUE_FUNDS_TEXT = "held by Hyperliquid; these caps limit new orders, not losses";
 
 /** The current policy's rules for a venue network, when it has any. */
 function venueRules(out: Output, network: VenueNetwork): HyperliquidRules | null {
   const rules = out.input.currentPolicy?.venues?.hyperliquid;
+
   return rules !== undefined && rules.network === network ? rules : null;
 }
 
@@ -514,17 +559,22 @@ function venueName(network: VenueNetwork): string {
 
 function renderVenueIntent(out: Output, intent: VenueIntent): string {
   const rules = venueRules(out, intent.chainId);
+
   if (rules === null) out.warnings.add("venue_rules_missing");
   const { operation } = intent;
+
   const title =
     operation.type === "hyperliquid.order"
       ? orderLines(out, rules, operation)
       : withdrawLines(out, rules, operation.amount);
+
   push(out, "Network", venueName(intent.chainId), "text");
   venueLimitLines(out, rules, intent);
   walletLines(out, intent.walletId);
   push(out, "Proposed by agent", intent.agentId, "code");
+
   if (intent.memo !== "") push(out, AGENT_NOTE, uncheckedText(intent.memo), "unchecked");
+
   return title;
 }
 
@@ -534,6 +584,7 @@ function orderLines(
   order: HyperliquidOrderOperation,
 ): string {
   const market = rules?.markets.find((candidate) => candidate.asset === order.asset);
+
   if (market === undefined) out.warnings.add("market_not_in_policy");
   const side = order.isBuy ? "Buy" : "Sell";
   const size = decimalText(order.size);
@@ -573,6 +624,7 @@ function orderLines(
     "text",
   );
   push(out, VENUE_FUNDS, VENUE_FUNDS_TEXT, "text");
+
   return market === undefined
     ? `${side} ${size} of market ${order.asset}, not in the wallet's policy`
     : `${side} ${size} ${market.coin} perpetual`;
@@ -583,7 +635,9 @@ function withdrawLines(out: Output, rules: HyperliquidRules | null, amount: stri
   push(out, "Amount", text, "amount");
   push(out, "To", "this wallet's own address", "text");
   const { wallet } = out.input;
+
   if (wallet !== null) addressLines(out, "Wallet's own address", wallet.address);
+
   if (rules !== null) {
     push(
       out,
@@ -592,6 +646,7 @@ function withdrawLines(out: Output, rules: HyperliquidRules | null, amount: stri
       "text",
     );
   }
+
   return `Withdraw ${text} from Hyperliquid`;
 }
 
@@ -599,18 +654,25 @@ function withdrawLines(out: Output, rules: HyperliquidRules | null, amount: stri
 function venueLimitLines(out: Output, rules: HyperliquidRules | null, intent: VenueIntent): void {
   if (out.input.currentPolicy === null) {
     push(out, "Wallet policy", "none is set for this wallet", "text");
+
     return;
   }
+
   if (rules === null) {
     push(out, "Venue rules", "none for this network: the signer would refuse this", "text");
+
     return;
   }
+
   const { operation } = intent;
+
   if (operation.type !== "hyperliquid.order") return;
   const market = rules.markets.find((candidate) => candidate.asset === operation.asset);
+
   if (market !== undefined) {
     push(out, "Limit per order", usdText(market.maxNotionalPerOrderUsd6), "amount");
   }
+
   const spent = out.input.spent24h;
   push(
     out,
@@ -619,10 +681,13 @@ function venueLimitLines(out: Output, rules: HyperliquidRules | null, intent: Ve
     "amount",
   );
   const { amount, daily } = intentSpend(intent);
+
   if (!daily) {
     push(out, "Daily cap", "does not count: the order is reduce-only", "text");
+
     return;
   }
+
   if (spent + amount > BigInt(rules.maxNotionalPerDayUsd6)) {
     out.warnings.add("over_remaining_daily_cap");
   }
@@ -635,13 +700,16 @@ function usdText(amount: bigint | string): string {
 /** A canonical decimal with its whole part grouped: "65000" → "65,000", "1670.1" → "1,670.1". */
 function decimalText(value: string): string {
   const [whole = "0", fraction] = value.split(".");
+
   return fraction === undefined ? groupDigits(whole) : `${groupDigits(whole)}.${fraction}`;
 }
 
 function recipientLines(out: Output, label: string, to: Address): void {
   addressLines(out, label, to);
   const policy = out.input.currentPolicy;
+
   if (policy === null) return;
+
   if (policy.recipients.mode === "any") {
     push(out, "Recipient allowlist", "the wallet's policy allows any recipient", "text");
   } else if (policy.recipients.addresses.includes(to)) {
@@ -667,18 +735,24 @@ function tokenLines(out: Output, unit: Unit, token: Address): void {
 /** The intent's asset against the wallet's caps, from the signer's policy and ledger. */
 function limitLines(out: Output, chainId: ChainId, asset: AssetRef, amount: bigint): void {
   const policy = out.input.currentPolicy;
+
   if (policy === null) {
     push(out, "Wallet policy", "none is set for this wallet", "text");
+
     return;
   }
+
   // A contract call that sends no native coin moves nothing the caps measure.
   if (amount === 0n) return;
   const key = assetLimitKey({ chainId, asset });
   const limit = policy.assets.find((candidate) => assetLimitKey(candidate) === key);
+
   if (limit === undefined) {
     push(out, "Limit for this asset", "none: the wallet's policy does not let it leave", "text");
+
     return;
   }
+
   const unit = unitOf(out, chainId, asset);
   const spent = out.input.spent24h;
   push(out, "Limit per transaction", amountText(unit, limit.maxPerTx), "amount");
@@ -688,16 +762,20 @@ function limitLines(out: Output, chainId: ChainId, asset: AssetRef, amount: bigi
     `${amountText(unit, spent)} of ${amountText(unit, limit.maxPerDay)}`,
     "amount",
   );
+
   if (spent + amount > BigInt(limit.maxPerDay)) out.warnings.add("over_remaining_daily_cap");
 }
 
 function walletLines(out: Output, walletId: string): void {
   push(out, "Wallet", walletId, "code");
   const { wallet } = out.input;
+
   if (wallet === null) {
     push(out, "Wallet address", "not found at the signer", "text");
+
     return;
   }
+
   push(out, "Wallet address", wallet.address, "address");
   push(out, WALLET_NAME, uncheckedText(wallet.label), "unchecked");
 }
@@ -706,9 +784,11 @@ function renderSweep(out: Output, sweep: Sweep): string {
   const unit = unitOf(out, sweep.chainId, sweep.asset);
   const amount = amountText(unit, sweep.amount);
   push(out, "Amount", amount, "amount");
+
   if (sweep.asset !== "native") tokenLines(out, unit, sweep.asset);
   addressLines(out, "To", sweep.to);
   const { currentPolicy: policy, wallet } = out.input;
+
   if (sweep.to === wallet?.address) {
     push(out, "Destination", "the wallet itself", "text");
     out.warnings.add("recipient_not_allowlisted");
@@ -728,12 +808,14 @@ function renderSweep(out: Output, sweep: Sweep): string {
     );
     out.warnings.add("recipient_not_allowlisted");
   }
+
   push(out, "Network", chainName(out, sweep.chainId), "text");
   const native = unitOf(out, sweep.chainId, "native");
   push(out, "Network fee ceiling", amountText(native, sweep.maxFeeWei), "amount");
   push(out, "Wallet limits", "do not apply: a sweep needs the workspace-change approvals", "text");
   walletLines(out, sweep.walletId);
   const moved = unit.known ? amount : `${amount} of an unknown token`;
+
   return `Move ${moved} out of the wallet`;
 }
 
@@ -755,20 +837,25 @@ function renderMandate(out: Output, mandate: Mandate): string {
   const worstCase = new Map(
     mandateWorstCase(mandate).map((worst) => [assetLimitKey(worst), worst.amount]),
   );
+
   const window = formatDuration(mandate.windowSeconds);
   let title = "Let an agent pay without asking, up to the amounts below";
+
   for (const limit of mandate.assets) {
     const key = assetLimitKey(limit);
     const unit = unitOf(out, limit.chainId, limit.asset);
     push(out, "Asset", assetOnChain(out, unit, limit.chainId, limit.asset), "text");
+
     if (limit.asset !== "native") addressLines(out, "Token contract", limit.asset);
     push(out, "Most per payment", amountText(unit, limit.maxPerAction), "amount");
     push(out, `Most in any ${window}`, amountText(unit, limit.maxPerWindow), "amount");
     push(out, "Most in total", amountText(unit, limit.maxTotal), "amount");
     const worst = amountText(unit, worstCase.get(key) ?? 0n);
     push(out, "Most that can leave the wallet", worst, "amount");
+
     if (policy !== null) {
       const cap = policy.assets.find((candidate) => assetLimitKey(candidate) === key);
+
       if (cap === undefined) {
         push(out, "Wallet's limits", "none: the wallet's policy does not let it leave", "text");
       } else {
@@ -780,6 +867,7 @@ function renderMandate(out: Output, mandate: Mandate): string {
         );
       }
     }
+
     if (mandate.assets.length === 1) {
       const named = unit.known || limit.asset === "native" ? worst : `${worst} of an unknown token`;
       title = `Let an agent pay up to ${named} without asking`;
@@ -793,6 +881,7 @@ function renderMandate(out: Output, mandate: Mandate): string {
     count === 1 ? "only this address" : `only these ${count} addresses`,
     "text",
   );
+
   for (const to of mandate.recipients) recipientLines(out, "May pay", to);
   push(
     out,
@@ -822,35 +911,44 @@ function renderMandate(out: Output, mandate: Mandate): string {
     "text",
   );
   push(out, "Mandate id", mandate.id, "code");
+
   if (mandate.purpose !== "") push(out, PURPOSE, uncheckedText(mandate.purpose), "unchecked");
+
   return title;
 }
 
 function renderEnvelopeOnly(out: Output, envelope: EnvelopeOnly): string {
   const threshold = String(out.input.adminThreshold);
+
   switch (envelope.type) {
     case "add-approver":
       push(out, "Person", envelope.userId, "code");
       push(out, "Passkey credential id", envelope.credentialId, "code");
       push(out, "Key fingerprint", keyFingerprint(envelope.publicKey), "code");
+
       if (out.input.possessionProven) {
         push(out, "The new person proved they hold this passkey", "yes", "text");
       } else {
         push(out, "The new person proved they hold this passkey", "no", "text");
         out.warnings.add("possession_unproven");
       }
+
       push(out, ADMIN_THRESHOLD, change(threshold, threshold), "text");
+
       return "Add an approver";
     case "remove-approver":
       push(out, "Person", envelope.userId, "code");
       push(out, "Passkey credential id", envelope.credentialId, "code");
       push(out, ADMIN_THRESHOLD, change(threshold, threshold), "text");
+
       return "Remove an approver";
     case "set-admin-threshold":
       push(out, ADMIN_THRESHOLD, change(threshold, String(envelope.adminThreshold)), "text");
+
       return "Change the approvals needed for workspace changes";
     case "resume-workspace":
       push(out, "Effect", "the workspace's wallets can sign again, within their policies", "text");
+
       return "Resume the workspace";
     case "cancel-transaction":
       return renderCancel(out, envelope);
@@ -879,6 +977,7 @@ function renderRetire(out: Output, envelope: RetireWalletEnvelope): string {
     "the key is kept, and the wallet signs nothing until a new policy is approved for it",
     "text",
   );
+
   return "Retire a wallet";
 }
 
@@ -905,6 +1004,7 @@ function renderDelete(out: Output, envelope: DeleteWorkspaceEnvelope): string {
     "the keys are kept, and the workspace stays paused until resuming it is approved",
     "text",
   );
+
   return "Delete this workspace";
 }
 
@@ -917,10 +1017,12 @@ function destroyedWalletLines(out: Output, wallets: readonly WalletRef[]): void 
     out.warnings.add("keys_destroyed");
     out.warnings.add("balances_unchecked");
   }
+
   for (const listed of wallets) {
     push(out, "Wallet", listed.walletId, "code");
     addressLines(out, "Wallet address", listed.address);
     const record = out.input.wallets.find((wallet) => wallet.walletId === listed.walletId);
+
     if (record === undefined) {
       push(
         out,
@@ -930,10 +1032,12 @@ function destroyedWalletLines(out: Output, wallets: readonly WalletRef[]): void 
       );
       continue;
     }
+
     if (record.address !== listed.address) {
       push(out, "Address at the signer", record.address, "address");
       push(out, "At the signer", "another address: the signer will refuse this", "text");
     }
+
     push(out, WALLET_NAME, uncheckedText(record.label), "unchecked");
   }
 }
@@ -948,11 +1052,13 @@ function delayText(envelope: { issuedAt: number; destroyAfter: number }): string
 function renderCancel(out: Output, envelope: CancelTransactionEnvelope): string {
   const target = out.input.cancelTarget;
   let title = "Try to cancel a transaction that was not mined";
+
   if (target === null) {
     push(out, "Transaction to cancel", "not found at the signer", "text");
   } else {
     title = cancelledOperationLines(out, envelope.chainId, target.operation);
   }
+
   push(out, "Request it was approved under", envelope.targetApprovalId, "code");
   push(out, "Network", chainName(out, envelope.chainId), "text");
   push(out, "Transaction number (nonce)", String(envelope.txNonce), "code");
@@ -976,8 +1082,10 @@ function renderCancel(out: Output, envelope: CancelTransactionEnvelope): string 
     "the payment still counts toward them, also when the cancel is included",
     "text",
   );
+
   if (target !== null) {
     push(out, "Attempts signed so far", String(target.attempts), "text");
+
     if (target.cancelling) {
       push(
         out,
@@ -987,30 +1095,37 @@ function renderCancel(out: Output, envelope: CancelTransactionEnvelope): string 
       );
     }
   }
+
   walletLines(out, envelope.walletId);
+
   return title;
 }
 
 /** What the transaction being cancelled would do, and the view's title. */
 function cancelledOperationLines(out: Output, chainId: ChainId, operation: Operation): string {
   const native = unitOf(out, chainId, "native");
+
   switch (operation.type) {
     case "evm.transfer": {
       const amount = amountText(native, operation.valueWei);
       push(out, "Amount it would send", amount, "amount");
       addressLines(out, "To", operation.to);
+
       return `Try to cancel sending ${amount}`;
     }
+
     case "evm.erc20.transfer": {
       const unit = unitOf(out, chainId, operation.token);
       const amount = amountText(unit, operation.amount);
       push(out, "Amount it would send", amount, "amount");
       tokenLines(out, unit, operation.token);
       addressLines(out, "To", operation.to);
+
       return unit.known
         ? `Try to cancel sending ${amount}`
         : `Try to cancel sending ${amount} of an unknown token`;
     }
+
     case "evm.call":
       addressLines(out, "Contract it would call", operation.to);
       push(
@@ -1020,6 +1135,7 @@ function cancelledOperationLines(out: Output, chainId: ChainId, operation: Opera
         "amount",
       );
       push(out, "Function selector", operation.data.slice(0, 10), "code");
+
       return "Try to cancel a contract call";
   }
 }
@@ -1028,6 +1144,7 @@ function cancelledOperationLines(out: Output, chainId: ChainId, operation: Opera
 
 function renderPolicy(out: Output, next: WalletPolicy): string {
   const current = out.input.currentPolicy;
+
   if (current === null) out.warnings.add("first_policy");
   walletLines(out, next.walletId);
   policyField(out, "Policy revision", current, next, (policy) => String(policy.revision), "text");
@@ -1085,6 +1202,7 @@ function renderPolicy(out: Output, next: WalletPolicy): string {
     (policy) => formatDuration(policy.approvals.ttlSeconds),
     "text",
   );
+
   return current === null ? "Set a wallet's first policy" : "Change a wallet's policy";
 }
 
@@ -1101,25 +1219,32 @@ function venuePolicyLines(
     if (before !== null) {
       push(out, "Hyperliquid", "removed: no order or withdrawal can be signed there", "text");
     }
+
     return;
   }
+
   const show = (field: (rules: HyperliquidRules) => string) =>
     change(before && field(before), field(after));
+
   push(
     out,
     "Hyperliquid network",
     show((rules) => venueName(rules.network)),
     "text",
   );
+
   const marketText = (market: HyperliquidRules["markets"][number]) =>
     `${market.coin} (index ${market.asset}): up to ${usdText(market.maxNotionalPerOrderUsd6)} per order`;
+
   const was = new Map((before?.markets ?? []).map((market) => [market.asset, marketText(market)]));
   const now = new Map(after.markets.map((market) => [market.asset, marketText(market)]));
   const assets = [...new Set([...was.keys(), ...now.keys()])].sort((a, b) => a - b);
   let changed = 0;
+
   for (const asset of assets) {
     const old = was.get(asset);
     const next = now.get(asset);
+
     if (before === null && next !== undefined) {
       push(out, "Market allowed", next, "text");
     } else if (old === undefined && next !== undefined) {
@@ -1133,9 +1258,11 @@ function venuePolicyLines(
       push(out, "Market changed", `${old} → ${next}`, "text");
     }
   }
+
   if (before !== null && changed === 0) {
     push(out, "Hyperliquid markets", `unchanged (${after.markets.length})`, "text");
   }
+
   push(
     out,
     "Hyperliquid notional per 24 hours",
@@ -1186,16 +1313,23 @@ function setLines<T extends string>(
 ): void {
   if (current === null) {
     if (next.length === 0) push(out, label, "none", "text");
+
     for (const value of next) push(out, `${member} allowed`, show(value), "code");
+
     return;
   }
+
   const added = next.filter((value) => !current.includes(value));
   const removed = current.filter((value) => !next.includes(value));
+
   if (added.length === 0 && removed.length === 0) {
     push(out, label, `unchanged (${next.length})`, "text");
+
     return;
   }
+
   for (const value of added) push(out, `${member} added`, show(value), "code");
+
   for (const value of removed) push(out, `${member} removed`, show(value), "code");
 }
 
@@ -1213,24 +1347,32 @@ function ruleLines(
   const current = currentPolicy && ruleOf(currentPolicy);
   const next = ruleOf(nextPolicy);
   const after = next.members;
+
   const unchanged =
     current !== null &&
     current.text === next.text &&
     (current.members ?? []).join() === (after ?? []).join();
+
   let summary = next.text;
+
   if (current !== null && unchanged) summary = `${next.text} (unchanged)`;
   else if (current !== null && current.text === next.text) summary = `${next.text}, changed below`;
   else if (current !== null) summary = `${current.text} → ${next.text}`;
   push(out, label, summary, "text");
+
   if (after === null) return;
   const before = current?.members ?? null;
+
   if (before === null) {
     for (const address of after) push(out, `${member} allowed`, address, "address");
+
     return;
   }
+
   for (const address of after.filter((value) => !before.includes(value))) {
     push(out, `${member} added`, address, "address");
   }
+
   for (const address of before.filter((value) => !after.includes(value))) {
     push(out, `${member} removed`, address, "address");
   }
@@ -1241,13 +1383,16 @@ function policyLimitLines(out: Output, current: WalletPolicy | null, next: Walle
   const after = new Map(next.assets.map((limit) => [assetLimitKey(limit), limit]));
   const keys = [...new Set([...before.keys(), ...after.keys()])].sort();
   let changed = 0;
+
   for (const key of keys) {
     const was = before.get(key);
     const now = after.get(key);
     const limit = now ?? was;
+
     if (limit === undefined) continue;
     const unit = unitOf(out, limit.chainId, limit.asset);
     const name = assetOnChain(out, unit, limit.chainId, limit.asset);
+
     if (was === undefined && now !== undefined) {
       changed += 1;
       push(
@@ -1275,6 +1420,7 @@ function policyLimitLines(out: Output, current: WalletPolicy | null, next: Walle
       );
     }
   }
+
   if (changed > 0) return;
   push(
     out,
@@ -1293,17 +1439,21 @@ type Unit =
 /** A label is used only when exactly one entry matches; anything else is shown as unknown. */
 function only<T>(labels: readonly T[], matches: (label: T) => boolean): T | undefined {
   const found = labels.filter(matches);
+
   return found.length === 1 ? found[0] : undefined;
 }
 
 function chainLabel(out: Output, chainId: ChainId): ChainLabel | undefined {
   const label = only(out.input.chains, (candidate) => candidate.chainId === chainId);
+
   if (label === undefined) out.warnings.add("unknown_chain");
+
   return label;
 }
 
 function chainName(out: Output, chainId: ChainId): string {
   const label = chainLabel(out, chainId);
+
   return label === undefined ? chainId : `${label.name} (${chainId})`;
 }
 
@@ -1311,29 +1461,36 @@ function chainName(out: Output, chainId: ChainId): string {
 function unitOf(out: Output, chainId: ChainId, asset: AssetRef): Unit {
   if (asset === "native") {
     const chain = chainLabel(out, chainId);
+
     return chain === undefined
       ? { known: false, baseUnit: "wei" }
       : { known: true, symbol: chain.nativeSymbol, decimals: 18 };
   }
+
   const label = only(
     out.input.assets,
     (candidate) => candidate.chainId === chainId && candidate.asset === asset,
   );
+
   if (label === undefined) {
     out.warnings.add("unknown_token");
+
     return { known: false, baseUnit: "base units" };
   }
+
   return { known: true, symbol: label.symbol, decimals: label.decimals };
 }
 
 /** How a policy or a mandate names one of its assets: "USDC on Base (eip155:8453)". */
 function assetOnChain(out: Output, unit: Unit, chainId: ChainId, asset: AssetRef): string {
   const name = unit.known ? unit.symbol : asset === "native" ? "the native coin" : `token ${asset}`;
+
   return `${name} on ${chainName(out, chainId)}`;
 }
 
 function amountText(unit: Unit, amount: bigint | string): string {
   const value = BigInt(amount);
+
   return unit.known
     ? `${formatUnits(value, unit.decimals)} ${unit.symbol}`
     : `${groupDigits(value.toString())} ${unit.baseUnit}`;
@@ -1348,6 +1505,7 @@ function push(out: Output, label: string, value: string, kind: ConfirmationLineK
 /** "2 → 3", "2 (unchanged)", or just the new value when there was none. */
 function change(current: string | null, next: string): string {
   if (current === null) return next;
+
   return current === next ? `${next} (unchanged)` : `${current} → ${next}`;
 }
 
@@ -1361,45 +1519,55 @@ function checksumAddress(address: Address): string {
   const hex = address.slice(2);
   const hash = keccak_256(utf8ToBytes(hex));
   let out = "0x";
+
   for (let index = 0; index < hex.length; index += 1) {
     const byte = hash[index >> 1] ?? 0;
     const nibble = index % 2 === 0 ? byte >> 4 : byte & 0x0f;
     const character = hex.charAt(index);
     out += nibble >= 8 ? character.toUpperCase() : character;
   }
+
   return out;
 }
 
 /** Thousands separated by commas: "1234567" → "1,234,567". */
 function groupDigits(digits: string): string {
   let out = "";
+
   for (let index = 0; index < digits.length; index += 1) {
     if (index > 0 && (digits.length - index) % 3 === 0) out += ",";
     out += digits.charAt(index);
   }
+
   return out;
 }
 
 /** Base units to whole units with integer arithmetic only: 15000000000000000n, 18 → "0.015". */
 function formatUnits(value: bigint, decimals: number): string {
   const digits = value.toString();
+
   if (decimals === 0) return groupDigits(digits);
   const padded = digits.padStart(decimals + 1, "0");
   const whole = groupDigits(padded.slice(0, -decimals));
   const fraction = padded.slice(-decimals).replace(/0+$/, "");
+
   return fraction === "" ? whole : `${whole}.${fraction}`;
 }
 
 function formatUtc(epochSeconds: number): string {
   const iso = new Date(epochSeconds * 1000).toISOString();
+
   return `${iso.slice(0, 10)} ${iso.slice(11, 19)} UTC`;
 }
 
 function formatDuration(seconds: number): string {
   // Above a day only, so the policy's longest approval lifetime stays "24 hours".
   if (seconds > 86_400 && seconds % 86_400 === 0) return `${seconds / 86_400} days`;
+
   if (seconds % 3600 === 0) return `${seconds / 3600} hour${seconds === 3600 ? "" : "s"}`;
+
   if (seconds % 60 === 0) return `${seconds / 60} minute${seconds === 60 ? "" : "s"}`;
+
   return `${seconds} seconds`;
 }
 
@@ -1411,6 +1579,7 @@ const HIDDEN_CHARACTER = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cs}\p{Default_Ignora
 function uncheckedText(value: string): string {
   return value.replace(HIDDEN_CHARACTER, (character) => {
     const code = character.codePointAt(0) ?? 0;
+
     return `[U+${code.toString(16).toUpperCase().padStart(4, "0")}]`;
   });
 }
@@ -1427,6 +1596,7 @@ export const PossessionChallengeInput = z.strictObject({
   credentialId: Base64Url,
   nonce: Nonce,
 });
+
 export type PossessionChallengeInput = z.infer<typeof PossessionChallengeInput>;
 
 /**
@@ -1453,12 +1623,16 @@ export function keyFingerprint(publicKey: Base64Url): string {
   const key = Uint8Array.from(atob(publicKey.replaceAll("-", "+").replaceAll("_", "/")), (c) =>
     c.charCodeAt(0),
   );
+
   const bytes = sha256(key).subarray(0, 10);
   let bits = 0n;
+
   for (const byte of bytes) bits = (bits << 8n) | BigInt(byte);
   let symbols = "";
+
   for (let shift = 75n; shift >= 0n; shift -= 5n) {
     symbols += CROCKFORD.charAt(Number((bits >> shift) & 31n));
   }
+
   return [0, 4, 8, 12].map((start) => symbols.slice(start, start + 4)).join("-");
 }

@@ -63,6 +63,7 @@ const tokenOf = (path: string) => path.slice(path.indexOf("#") + 1);
 /** A payment's envelope, with no assertions yet, and the subject the control plane sends. */
 function paymentRequest(world: World, intent: EvmIntent = intentFor(world)) {
   const { envelope } = approveIntent(world, intent, { people: [] });
+
   return { envelope, subject: { kind: "approve-intent", intent } as ConfirmationSubject, intent };
 }
 
@@ -70,12 +71,14 @@ function paymentRequest(world: World, intent: EvmIntent = intentFor(world)) {
 async function open(t: TestSigner, envelope: Envelope, subject: ConfirmationSubject) {
   const { path } = await t.client.openConfirmation(envelope.approvalId, { envelope, subject });
   expect(path.startsWith(`/a/${envelope.approvalId}#`)).toBe(true);
+
   return tokenOf(path);
 }
 
 async function payment(world: World, t: TestSigner, intent?: EvmIntent) {
   const request = paymentRequest(world, intent);
   const token = await open(t, request.envelope, request.subject);
+
   return { ...request, token };
 }
 
@@ -84,6 +87,7 @@ describe("opening a confirmation", () => {
     const t = startSigner();
     const world = await setUpWorld(t);
     const { envelope, intent } = paymentRequest(world);
+
     const subject = (other: EvmIntent): ConfirmationSubject => ({
       kind: "approve-intent",
       intent: other,
@@ -201,6 +205,7 @@ describe("opening a confirmation", () => {
   it("a mandate grant is shown with its wallet and that wallet's policy, and only for its own workspace's wallet", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
+
     const grant = (owner: World, walletId: WalletId) => {
       const mandate: Mandate = {
         v: 1,
@@ -225,6 +230,7 @@ describe("opening a confirmation", () => {
         notAfter: t.clock.value + 86_400,
         purpose: "pay the invoices",
       };
+
       const envelope: Envelope = {
         ...header(t.clock, newId("apr"), owner.workspaceId),
         type: "grant-mandate",
@@ -233,16 +239,20 @@ describe("opening a confirmation", () => {
         agentId: owner.agentId,
         mandateHash: mandateHash(mandate),
       };
+
       return { envelope, subject: { kind: "grant-mandate", mandate } as ConfirmationSubject };
     };
 
     const own = grant(world, world.walletId);
+
     const view = await t.confirm.getConfirmation(
       own.envelope.approvalId,
       await open(t, own.envelope, own.subject),
     );
+
     const line = (label: string) =>
       view.lines.find((candidate) => candidate.label === label)?.value;
+
     expect(view.kind).toBe("grant-mandate");
     expect(view.state).toBe("open");
     expect(line("Wallet address")).toBe(world.address);
@@ -261,12 +271,14 @@ describe("the view", () => {
     const t = startSigner();
     const world = await setUpWorld(t);
     const [alice] = world.people as [Person];
+
     // Half an ether already signed today counts against the 1.5 ether daily cap.
     const earlier = intentFor(world, {
       type: "evm.transfer",
       to: RECIPIENT,
       valueWei: String(ETH / 2n),
     });
+
     await t.client.sign({
       intent: earlier,
       authorization: approveIntent(world, earlier),
@@ -276,6 +288,7 @@ describe("the view", () => {
     const { envelope, token } = await payment(world, t);
     // The client parses the view with its schema, which ties it to its own envelope and subject.
     const view = await t.confirm.getConfirmation(envelope.approvalId, token);
+
     const line = (label: string) =>
       view.lines.find((candidate) => candidate.label === label)?.value;
 
@@ -309,18 +322,21 @@ describe("the view", () => {
     // Payments need one approval, everything else two.
     const world = await setUpWorld(t, { people: 3, adminThreshold: 2, policyThreshold: 1 });
     const [alice] = world.people as [Person];
+
     const treasury = await t.client.createWallet({
       workspaceId: world.workspaceId,
       walletId: newId("wal"),
       kind: "treasury",
       label: "treasury",
     });
+
     const nextPolicy: WalletPolicy = {
       ...world.policy,
       revision: 2,
       previousHash: policyHash(world.policy),
       recipients: { mode: "allowlist", addresses: [RECIPIENT] },
     };
+
     const sweep: Sweep = {
       v: 1,
       workspaceId: world.workspaceId,
@@ -331,9 +347,11 @@ describe("the view", () => {
       to: treasury.address,
       maxFeeWei: String(10n ** 15n),
     };
+
     const newcomer = newPerson();
     const base = () => header(t.clock, newId("apr"), world.workspaceId);
     const pay = paymentRequest(world);
+
     const cases: {
       envelope: Envelope;
       subject: ConfirmationSubject;
@@ -395,6 +413,7 @@ describe("the view", () => {
         required: 2,
       },
     ];
+
     for (const { envelope, subject, title, required } of cases) {
       const token = await open(t, envelope, subject);
       const view = await t.confirm.getConfirmation(envelope.approvalId, token);
@@ -404,6 +423,7 @@ describe("the view", () => {
         { collected: 0, required },
       ]);
       expect(view.subject).toEqual(subject);
+
       if (envelope.type === "sweep-wallet") {
         // The destination is checked against the signer's own list of treasuries.
         expect(view.lines.find((line) => line.label === "Destination")?.value).toBe(
@@ -419,12 +439,14 @@ describe("a deletion's confirmation", () => {
   it("lists the signer's wallets with the two warnings, and is superseded once the wallet set changed", async () => {
     const t = startSigner();
     const world = await setUpWorld(t);
+
     const envelope: Envelope = {
       ...header(t.clock, newId("apr"), world.workspaceId),
       type: "delete-workspace",
       wallets: [{ walletId: world.walletId, address: world.address as Sweep["to"] }],
       destroyAfter: t.clock.value + 604_800,
     };
+
     const token = await open(t, envelope, { kind: "envelope-only" });
     const view = await t.confirm.getConfirmation(envelope.approvalId, token);
     expect([view.title, view.state, view.warnings.slice(0, 2)]).toEqual([
@@ -460,12 +482,15 @@ describe("a cancel's confirmation", () => {
       to: RECIPIENT,
       amount: "250000",
     });
+
     const params = txParams();
+
     const { approvalId } = await t.client.sign({
       intent,
       authorization: approveIntent(world, intent),
       transaction: params,
     });
+
     const cancel = (
       changes: Partial<CancelTransactionEnvelope> = {},
     ): CancelTransactionEnvelope => ({
@@ -478,6 +503,7 @@ describe("a cancel's confirmation", () => {
       maxFeeWei: String(10n ** 15n),
       ...changes,
     });
+
     return { approvalId, params, cancel };
   }
 
@@ -524,14 +550,17 @@ describe("a cancel's confirmation", () => {
       token,
       assertAt(alice, envelope, APPROVAL_ORIGIN),
     );
+
     expect(stored).toMatchObject({ collected: 1, required: 1 });
     const { assertions } = await t.client.listConfirmationAssertions(envelope.approvalId);
+
     const cancelled = await t.client.cancelTransaction(approvalId, {
       authorization: { envelope, assertions },
       attempt: 1,
       maxFeePerGas: String(BigInt(params.maxFeePerGas) * 2n),
       maxPriorityFeePerGas: String(BigInt(params.maxPriorityFeePerGas) * 2n),
     });
+
     expect(cancelled.attempt.kind).toBe("cancel");
     expect((await t.confirm.getConfirmation(envelope.approvalId, token)).state).toBe("used");
   });
@@ -598,11 +627,13 @@ describe("submitting an assertion", () => {
     expect(assertions.map((assertion) => [assertion.userId, assertion.credentialId])).toEqual([
       [alice.userId, alice.credential.credentialId],
     ]);
+
     const signed = await t.client.sign({
       intent,
       authorization: { envelope, assertions },
       transaction: txParams(),
     });
+
     expect(signed.approvalId).toBe(envelope.approvalId);
     expect((await t.confirm.getConfirmation(envelope.approvalId, token)).state).toBe("used");
   });
@@ -612,6 +643,7 @@ describe("submitting an assertion", () => {
     const world = await setUpWorld(t);
     const [alice] = world.people as [Person];
     const { envelope, token } = await payment(world, t);
+
     const submit = (response: AssertionResponse) =>
       t.confirm.submitConfirmation(envelope.approvalId, token, response);
 
@@ -652,6 +684,7 @@ describe("submitting an assertion", () => {
         "approver_unknown",
       );
     }
+
     expect((await t.client.listConfirmationAssertions(envelope.approvalId)).assertions).toEqual([]);
   });
 
@@ -697,6 +730,7 @@ describe("submitting an assertion", () => {
     const t = startSigner();
     const world = await setUpWorld(t);
     const other = await setUpWorld(t);
+
     const superseded = async (request: { envelope: Envelope; token: string }, person: Person) => {
       expect(
         (await t.confirm.getConfirmation(request.envelope.approvalId, request.token)).state,
@@ -747,6 +781,7 @@ describe("submitting an assertion", () => {
     const world = await setUpWorld(t, { people: 3, adminThreshold: 2, policyThreshold: 2 });
     const [alice, bob, carol] = world.people as [Person, Person, Person];
     const { envelope, intent, token } = await payment(world, t);
+
     const submit = (person: Person) =>
       t.confirm.submitConfirmation(
         envelope.approvalId,
@@ -798,12 +833,14 @@ describe("submitting an assertion", () => {
     const [alice] = world.people as [Person];
     const { envelope, subject, token } = await payment(world, t);
     const wrong = assertAt(alice, envelope, ORIGIN);
+
     for (let attempt = 0; attempt < 64; attempt += 1) {
       await refused(
         t.confirm.submitConfirmation(envelope.approvalId, token, wrong),
         "assertion_invalid",
       );
     }
+
     await refused(
       t.confirm.submitConfirmation(
         envelope.approvalId,
@@ -831,8 +868,10 @@ describe("request secrets", () => {
     const world = await setUpWorld(t);
     const [alice] = world.people as [Person];
     const { envelope, subject, intent, token } = await payment(world, t);
+
     const fetch: typeof globalThis.fetch = (url, init) =>
       Promise.resolve(t.signer.app.request(String(url), init));
+
     const options = { baseUrl: "http://signer.test", now: t.clock.now, fetch };
     // The approve service's secret, used on the control plane's routes.
     const asControl = createSignerClient({ ...options, secret: t.confirmSecret });

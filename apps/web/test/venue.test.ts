@@ -148,6 +148,7 @@ describe("the policy editor's venue section", () => {
 
   it("sorts markets by index and times in force as the policy holds them", () => {
     const [btc, eth] = venueRulesState(RULES, BOTH).markets;
+
     if (!btc || !eth) throw new Error("expected two markets");
     const rules = toVenueRules(typed({ markets: [eth, btc], timeInForce: ["Ioc", "Alo"] }));
     expect(rules?.markets.map((market) => market.asset)).toEqual([0, 1]);
@@ -311,6 +312,7 @@ describe("an order against the venue caps", () => {
       { notionalUsd6: 1n, reduceOnly: false },
       { ...caps, maxPerOrderUsd6: null },
     );
+
     expect(result.perOrder).toBeNull();
   });
 });
@@ -339,6 +341,7 @@ describe("an order's status", () => {
 
   it("reads an order as an order and a payment as a payment", () => {
     const base = { mandateId: null, status: "cancelled" as const };
+
     const orderDisplay = {
       kind: "order" as const,
       title: "Buy 0.01 BTC at 65000",
@@ -353,6 +356,7 @@ describe("an order's status", () => {
       reduceOnly: false,
       cancellableByAgent: true as const,
     };
+
     const view = {
       cloid: "0x0123456789abcdef0123456789abcdef" as const,
       venueOrderId: 1,
@@ -362,9 +366,11 @@ describe("an order's status", () => {
       venueError: null,
       canCancel: false,
     };
+
     expect(intentSummarySentence({ ...base, display: orderDisplay, order: view })).toMatch(
       /cancelled at the venue/,
     );
+
     const transfer = {
       kind: "transfer" as const,
       title: "Send 0.015 ETH",
@@ -376,6 +382,7 @@ describe("an order's status", () => {
       token: null,
       rawCall: false,
     };
+
     expect(intentSummarySentence({ ...base, display: transfer, order: null })).toMatch(
       /withdrawn before anyone decided/,
     );
