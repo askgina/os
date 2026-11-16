@@ -233,29 +233,33 @@ Success means:
 - [ ] Manual testnet proof (D6; not CI; needs a funded testnet account). Still not done. D2 was
       decided on 2026-11-16 without it, so the gap is a risk carried into mainnet (see
       `Risks and Open Questions`).
-- [ ] Milestone 7: Hyperliquid mainnet (D2 decided 2026-11-16). Each line is ticked only with
-      its evidence.
-  - [ ] Signer: signs a venue intent for the network the wallet's passkey-approved policy names,
+- [x] (2026-11-16) Milestone 7: Hyperliquid mainnet (D2 decided 2026-11-16). Each line is
+      ticked only with its evidence. Commit `2e8460b`; green in CI on `7ac59b7`. The manual
+      line at the end stays open.
+  - [x] Signer: signs a venue intent for the network the wallet's passkey-approved policy names,
         including `hyperliquid:mainnet` under a mainnet policy; `SIGNABLE_VENUE_NETWORKS` and
         its check deleted; an intent whose network differs from the policy's is refused
         `venue_not_allowed` (unit test, both directions).
-  - [ ] Server: `VENUES_FILE` takes at most two entries, at most one per network, either
+  - [x] Server: `VENUES_FILE` takes at most two entries, at most one per network, either
         network; the boot stops only when `api.hyperliquid.xyz` is not paired with
         `hyperliquid:mainnet` or `api.hyperliquid-testnet.xyz` with `hyperliquid:testnet`; any
         other host is accepted with either network; config tests for each case.
-  - [ ] Server and API: a policy draft whose `venues.hyperliquid.network` is not configured is
+  - [x] Server and API: a policy draft whose `venues.hyperliquid.network` is not configured is
         refused `invalid_request`, code `venue_not_configured`; `WorkspaceDetail.venueNetworks`
         in `packages/api` lists the configured networks (testnet first, empty without a venues
         file); directory tests.
-  - [ ] Web: the wallet rules editor offers Hyperliquid only for configured networks and lets
+  - [x] Web: the wallet rules editor offers Hyperliquid only for configured networks and lets
         the person choose the network when both are configured; journey.
-  - [ ] Release gates: a second fake venue in mainnet mode; a mainnet order approved under a
+  - [x] Release gates: a second fake venue in mainnet mode; a mainnet order approved under a
         mainnet policy becomes one accepted request recovered to the wallet with `source` "a";
         a cross-network intent is refused before anyone is asked; the pairing boot gate
-        replaces the mainnet-boot gate.
-  - [ ] Documents: `README.md`, `deploy/README.md`, `docs/threat-model.md`,
+        replaces the mainnet-boot gate. First run was CI: `venue.spec.ts` gates 5 and 6 and
+        the boot gate passed in `stack (amd64)` and `stack (arm64)`.
+  - [x] Documents: `README.md`, `deploy/README.md`, `docs/threat-model.md`,
         `docs/architecture.md` describe mainnet as supported and name its unproven parts.
-  - [ ] Green in CI: run <link to be filled>.
+  - [x] Green in CI: <https://github.com/askgina/os/actions/runs/43842629503> on `7ac59b7`,
+        twelve jobs (check, test, ui, packages, k8s, k8s-ha, stack amd64, arm64, tls, split,
+        replicas, openbao).
   - [ ] Manual, not CI: a real mainnet order with real funds. Not done; needs the owner at the
         phone and a funded mainnet account.
 
