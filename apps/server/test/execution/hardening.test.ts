@@ -287,6 +287,32 @@ describe("stored data", () => {
   });
 });
 
+describe("stored data, once approved", () => {
+  it("ends an approved payment whose stored details cannot be read, without retrying or signing", async () => {
+    const { client } = await agentClient("Damaged approved");
+    const { intentId, approvalId } = await propose(client);
+    await approveOnly(approvalId);
+
+    const damaged = await f.t.ctx.sealer.seal(f.workspaceId, `intents.presentation:${intentId}`, {
+      display: { kind: "transfer" },
+      simulation: null,
+    });
+
+    await f.t.ctx.db.update(intents).set({ presentation: damaged }).where(eq(intents.id, intentId));
+
+    expect(await steps().execute(approvalId)).toEqual({ ok: false, code: "stored_data_invalid" });
+    await steps().fail(approvalId, "stored_data_invalid");
+
+    expect(
+      await f.t.ctx.db.select().from(transactions).where(eq(transactions.approvalId, approvalId)),
+    ).toEqual([]);
+
+    const answer = toolJson(await client.callTool({ name: "get_intent", arguments: { intentId } }));
+
+    expect(answer).toMatchObject({ status: "failed", failureCode: "stored_data_invalid" });
+  });
+});
+
 describe("deciding", () => {
   it("lets a passkey being removed still approve, as the signer still accepts it", async () => {
     const { client } = await agentClient("Removal race");

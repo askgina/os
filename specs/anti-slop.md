@@ -118,6 +118,13 @@ Success means:
     refused as framed). Reading a stored intent now checks its display
     strictly, so a display written by older code stops that intent from
     signing, with a logged error.
+  - Added afterwards: an approved request whose stored details cannot be read
+    ends at once as `failed` with `stored_data_invalid`, logged once, instead
+    of after twelve retries, but only while no transaction or venue order was
+    recorded for it. The agent's `get_intent` and `list_intents` answer such
+    an intent with its status and a note. The web app has words for the code,
+    but its pages for that one intent still answer 500, because they need the
+    display that cannot be read.
   - Not from the refactor, still open: a token with 37 to 255 decimals can be
     proposed and signed, but every HTTP answer that shows it fails the API's
     display schema (at most 36).

@@ -173,6 +173,21 @@ async function walletsFor(ctx: AppContext, agent: AgentRow) {
  * it was approved to place.
  */
 async function intentView(ctx: AppContext, row: IntentRow) {
+  // An intent that ended because what was stored for it cannot be read still has an outcome the
+  // agent must learn. It gets where the intent stands and none of the unreadable content.
+  if (row.failureCode === "stored_data_invalid") {
+    return {
+      intentId: row.id,
+      status: row.status,
+      authorizedBy: row.mandateId === null ? "person" : "mandate",
+      mandateId: row.mandateId,
+      walletId: row.walletId,
+      createdAt: Math.floor(row.createdAt.getTime() / 1000),
+      failureCode: row.failureCode,
+      note: "The stored details of this intent could not be read. Nothing was signed or sent. Propose it again if it is still wanted.",
+    };
+  }
+
   const [summary, transaction] = await Promise.all([
     intentSummary(ctx, row),
     transactionOf(ctx, row.approvalId),

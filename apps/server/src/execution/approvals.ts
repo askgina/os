@@ -44,9 +44,12 @@ import {
   approverCredentials,
   credentials,
   memberships,
+  transactions,
   users,
+  venueOrders,
 } from "../db/schema.ts";
 import type { JsonValue } from "../db/sealed.ts";
+import { StoredDataError } from "../db/stored.ts";
 import { HttpError } from "../http/errors.ts";
 import { enqueueApprovalNotifications, enqueueMandateUseNotification } from "../notify/outbox.ts";
 import type { SettledStatus, StepImplementations } from "./steps.ts";
@@ -962,6 +965,21 @@ export class Engine implements ApprovalEngine {
           }
         } catch (error) {
           if (error instanceof ApprovalFailure) return { ok: false, code: error.code };
+
+          // What was stored for this request cannot be read back. Trying again reads the same
+          // value, so the request ends now instead of after every retry. Only while nothing was
+          // signed for it: once a transaction or an order exists, ending it here could call a
+          // payment failed that the chain or the venue still completes.
+          if (error instanceof StoredDataError && !(await this.#signedAnything(row.id))) {
+            ctx.log.error("an approved request's stored data could not be read", {
+              approvalId: row.id,
+              kind: row.kind,
+              message: error.message,
+            });
+
+            return { ok: false, code: "stored_data_invalid" };
+          }
+
           throw error;
         }
 
@@ -1081,6 +1099,22 @@ export class Engine implements ApprovalEngine {
     }
 
     return "none";
+  }
+
+  /** Whether a transaction or a venue order was already recorded for this request. */
+  async #signedAnything(approvalId: ApprovalId): Promise<boolean> {
+    const [[transaction], [order]] = await Promise.all([
+      this.#ctx.db
+        .select({ id: transactions.approvalId })
+        .from(transactions)
+        .where(eq(transactions.approvalId, approvalId)),
+      this.#ctx.db
+        .select({ id: venueOrders.approvalId })
+        .from(venueOrders)
+        .where(eq(venueOrders.approvalId, approvalId)),
+    ]);
+
+    return transaction !== undefined || order !== undefined;
   }
 
   async #requester(row: ApprovalRow): Promise<Requester> {

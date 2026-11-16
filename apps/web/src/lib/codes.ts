@@ -199,6 +199,8 @@ const meanings = {
     "A cancel people approved was included in its place. Nothing moved; the network fee was paid.",
   cancel_too_late:
     "A cancel was signed, but the network included the payment first, so it went through as sent.",
+  stored_data_invalid:
+    "The saved details of this request could not be read, so it was stopped before anything was signed or sent. Ask the agent to propose it again.",
   nonce_used_elsewhere:
     "Another transaction from this wallet took its place in line, so it can never be included. Nothing moved.",
   workspace_deleting:
