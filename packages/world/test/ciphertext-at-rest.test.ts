@@ -477,9 +477,15 @@ describe.skipIf(!openBaoUp && process.env.CI !== "true")(
         const runId = started.json.runId ?? "";
         await waitForHook(url, token);
         await first.kill();
-        // A fresh process signs in while OpenBao answers, then holds no data key: every key it
-        // needs from here on must come from Transit.
-        const host = await startHost({ port: PORTS.outageB, databaseUrl: url, env });
+        // A fresh process signs in while OpenBao answers and keeps no data key in memory: every
+        // key it needs from here on must come from Transit. Without that, a job the killed host
+        // left unfinished can make this one unwrap the run's key before the pause, and the run
+        // then completes from the cache during the outage.
+        const host = await startHost({
+          port: PORTS.outageB,
+          databaseUrl: url,
+          env: { ...env, HARNESS_KEY_CACHE: "off" },
+        });
         const runsBefore = await runCount(url);
         const refusedNonce = randomBytes(8).toString("hex");
 

@@ -3,6 +3,7 @@
 // instrumented to record every key request so the test can see who asks for keys and when. Its
 // key provider comes from the environment as in `@askgina/os-world/target`: the keyring file in
 // `HARNESS_KEYRING_FILE`, or `KEY_PROVIDER=openbao` with the `OPENBAO_*` variables.
+// `HARNESS_KEY_CACHE=off` makes it hold no unwrapped key between requests.
 import { DataKeyStore, keyProviderFromEnv } from "@askgina/os-keys";
 import { createWorld as createStockWorld } from "@workflow/world-postgres";
 import pg from "pg";
@@ -34,7 +35,11 @@ export function createWorld() {
   pool.on("error", () => {});
   return createEncryptedWorld({
     postgres: { connectionString },
-    dataKeys: new DataKeyStore({ pool, provider }),
+    dataKeys: new DataKeyStore({
+      pool,
+      provider,
+      ...(process.env.HARNESS_KEY_CACHE === "off" ? { cacheTtlMs: 0 } : {}),
+    }),
     // `kind` is the proof's readable attribute. `fence_probe` is written by upstream's
     // conformance suite as a workflow-body attribute, which is refused unless listed.
     readableAttributeKeys: ["kind", "fence_probe"],
