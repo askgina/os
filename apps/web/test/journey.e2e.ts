@@ -608,6 +608,8 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await expect(page.getByRole("button", { name: "Create treasury" })).toHaveCount(0);
     await page.getByRole("link", { name: /Invoice payer/ }).click();
     await page.getByRole("link", { name: "Open wallet" }).click();
+    // Emptying and retiring sit under "More", closed until asked for.
+    await page.locator("summary", { hasText: "More" }).click();
     const card = page.locator("#sweep");
     await expect(card.getByText("Empty this wallet")).toBeVisible();
     // Only destinations the signer accepts are offered: here, the treasury.
@@ -638,6 +640,8 @@ test("first day: setup, agent, limits, one approved payment, one rejected call",
     await page.goto(workspacePath());
     await page.getByRole("link", { name: /Invoice payer/ }).click();
     await page.getByRole("link", { name: "Open wallet" }).click();
+    // With limits in force, the form opens on request.
+    await page.getByRole("button", { name: "Change", exact: true }).click();
     await page.getByLabel("Most per 24 hours ETH").fill("0.3");
     await page.getByRole("button", { name: "Submit for approval" }).click();
     await expect(page.getByRole("heading", { name: /Change the limits of/ })).toBeVisible();
@@ -1319,6 +1323,7 @@ test("the end of a wallet and of a workspace: retire, cancel, destroy, delete", 
   await test.step("a wallet is retired, approved on the signer's page, and the retirement cancelled", async () => {
     await page.getByRole("link", { name: "Set this wallet's policy" }).click();
     await expect(page.getByRole("heading", { name: "Invoice payer's wallet" })).toBeVisible();
+    await page.locator("summary", { hasText: "More" }).click();
     await page.getByRole("button", { name: "Retire this wallet…" }).click();
     const card = page.locator("#retire");
     await expect(card.getByText("1.25 ETH")).toBeVisible();
@@ -1370,6 +1375,7 @@ test("the end of a wallet and of a workspace: retire, cancel, destroy, delete", 
     await page.getByRole("button", { name: "Create treasury" }).click();
     await page.getByRole("link", { name: /Reserve/ }).click();
     const walletId = new URL(page.url()).pathname.split("/").pop() ?? "";
+    await page.locator("summary", { hasText: "More" }).click();
     await page.getByRole("button", { name: "Retire this wallet…" }).click();
     await page.getByRole("button", { name: "Ask for approval to retire" }).click();
     await expect(

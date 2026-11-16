@@ -241,7 +241,23 @@ services:
   anvil:
     profiles: [dev]
     image: ghcr.io/foundry-rs/foundry:stable@sha256:043752653d5be351c71709091b3db97c4421c907eb40ea294195e7f532aadf46
-    entrypoint: ["anvil", "--host", "0.0.0.0", "--chain-id", "31337"]
+    # Keep the test chain across restarts (docker compose stop/up): balances live in anvil-state,
+    # saved every 5 s and on shutdown. `down -v` starts it afresh. Root, to write the volume.
+    entrypoint:
+      [
+        "anvil",
+        "--host",
+        "0.0.0.0",
+        "--chain-id",
+        "31337",
+        "--state",
+        "/state/anvil.json",
+        "--state-interval",
+        "5",
+      ]
+    user: root
+    volumes:
+      - anvil-state:/state
     networks: [chain]
     healthcheck:
       test: ["CMD-SHELL", "cast block-number --rpc-url http://127.0.0.1:8545"]
@@ -285,6 +301,7 @@ networks:
     internal: true
 
 volumes:
+  anvil-state: {}
   postgres-data: {}
   signer-data: {}
   server-secrets: {}

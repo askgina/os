@@ -15,8 +15,20 @@ import {
 } from "@askgina/os-protocol";
 import { useMutation } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { Clock, Plus, Trash2, TriangleAlert } from "lucide-react";
-import { type ReactNode, useId, useState } from "react";
+import {
+  BadgeCheck,
+  CandlestickChart,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  Gauge,
+  Plus,
+  Trash2,
+  TriangleAlert,
+  Users,
+  Wallet as WalletIcon,
+} from "lucide-react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 import {
   CopyButton,
   EmptyState,
@@ -24,8 +36,6 @@ import {
   FormError,
   FullAddress,
   Loading,
-  linkClass,
-  PageHeader,
 } from "@/components/common.tsx";
 import {
   RetireWalletCard,
@@ -36,7 +46,7 @@ import { MandatesCard } from "@/components/mandate.tsx";
 import { PolicyTable } from "@/components/policy.tsx";
 import { Alert } from "@/components/ui/alert.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
-import { Button } from "@/components/ui/button.tsx";
+import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import {
   Card,
   CardContent,
@@ -48,7 +58,7 @@ import { Input, Select, Textarea } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
 import { Progress } from "@/components/ui/progress.tsx";
 import { VenueAccountCard } from "@/components/venue.tsx";
-import { api, keys, queryClient, useWallet, useWorkspace } from "@/lib/api.ts";
+import { api, keys, queryClient, useMandates, useWallet, useWorkspace } from "@/lib/api.ts";
 import { assetInfo, chainName, formatAsset, NATIVE_DECIMALS } from "@/lib/assets.ts";
 import {
   checksumAddress,
@@ -60,6 +70,7 @@ import {
 } from "@/lib/format.ts";
 import { walletChangeable } from "@/lib/lifecycle.ts";
 import { sweepDestinations } from "@/lib/sweep.ts";
+import { cn } from "@/lib/utils.ts";
 import {
   type MarketRow,
   newMarketRow,
@@ -85,6 +96,11 @@ export function WalletPage() {
   return <WalletView wallet={wallet.data} workspace={workspace.data} />;
 }
 
+/**
+ * One wallet, laid out the way a person reads it: the card (what it holds, where to send funds),
+ * the one thing to do next, today's spending, and a short list that leads to each part of the
+ * wallet. Every section below stays on the page; the rarely used ones sit closed under "More".
+ */
 function WalletView({ wallet, workspace }: { wallet: WalletDetail; workspace: WorkspaceDetail }) {
   const agent = workspace.agents.find((item) => item.id === wallet.agentId) ?? null;
   const context = { chains: workspace.chains, agents: workspace.agents, balances: wallet.balances };
@@ -92,152 +108,485 @@ function WalletView({ wallet, workspace }: { wallet: WalletDetail; workspace: Wo
   // A wallet of a workspace being deleted is retiring with it, so this also covers that.
   const active = wallet.lifecycle.state === "active";
   const changeable = walletChangeable(wallet.lifecycle) && workspace.lifecycle.state === "active";
+  const canEdit = canAdmin && changeable;
+  // A wallet with no limits yet opens straight onto the form that sets them.
+  const [editing, setEditing] = useState(!wallet.policy);
+  const more = useHashOpen(MORE_SECTIONS);
+
+  const openEditor = () => {
+    setEditing(true);
+    requestAnimationFrame(() =>
+      document.getElementById("policy")?.scrollIntoView({ block: "start" }),
+    );
+  };
 
   return (
-    <div className="grid grid-cols-1 gap-6">
-      <PageHeader
-        title={wallet.label}
-        description={
-          agent ? (
-            <>
-              The wallet of agent{" "}
-              <Link
-                to="/w/$workspaceId/agents/$agentId"
-                params={{ workspaceId: workspace.id, agentId: agent.id }}
-                className={linkClass}
-              >
-                {agent.name}
-              </Link>
-            </>
-          ) : (
-            "The workspace's shared treasury"
-          )
-        }
-      />
-      <WalletLifecycleNotice wallet={wallet} workspace={workspace} />
-      <WaitingRetirementNotice wallet={wallet} workspace={workspace} />
-      <Card>
-        <CardHeader>
-          <CardTitle>Address</CardTitle>
-          <CopyButton value={checksumAddress(wallet.address)} label="Copy wallet address" />
-        </CardHeader>
-        <CardContent>
-          <FullAddress address={wallet.address} className="text-base" />
-          <p className="mt-2 text-xs text-muted-foreground">
-            {wallet.lifecycle.state === "retiring" || wallet.lifecycle.state === "destroyed"
-              ? "Do not send anything here: this wallet's key is destroyed or soon will be."
-              : "Send funds here to let this wallet pay. Check every group before sending."}
-          </p>
-        </CardContent>
-      </Card>
+    // Phones: one column, the card first. Large screens: the card, the next step, today's spending
+    // and the list stay in a right column that follows the scroll; the sections fill the left.
+    <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start">
+      <div className="grid grid-cols-1 gap-4 lg:col-span-2 empty:hidden">
+        <WalletLifecycleNotice wallet={wallet} workspace={workspace} />
+        <WaitingRetirementNotice wallet={wallet} workspace={workspace} />
+      </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Balances and limits</CardTitle>
-        </CardHeader>
-        <CardContent className="grid grid-cols-1 gap-5">
-          {wallet.balances.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No balances yet.</p>
-          ) : (
-            <ul className="grid grid-cols-1 gap-2">
-              {wallet.balances.map((balance) => (
-                <li
-                  key={`${balance.chainId}|${balance.asset}`}
-                  className="flex justify-between gap-3"
-                >
-                  <span className="text-sm text-muted-foreground">
-                    {chainName(balance.chainId, workspace.chains)}
-                  </span>
-                  <span className="font-medium tabular-nums">
-                    {formatUnits(balance.amount, balance.decimals)} {balance.symbol}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-          {wallet.policy?.assets.map((limit) => {
-            const info = assetInfo(limit.chainId, limit.asset, workspace.chains, wallet.balances);
+      <aside className="grid grid-cols-1 gap-6 lg:sticky lg:top-6 lg:order-2">
+        <WalletCard wallet={wallet} workspace={workspace} agentName={agent?.name ?? null} />
 
-            const spent =
-              wallet.spent.find(
-                (item) => item.chainId === limit.chainId && item.asset === limit.asset,
-              )?.amount ?? "0";
+        <NextStep
+          wallet={wallet}
+          workspace={workspace}
+          canEdit={canEdit}
+          onSetLimits={openEditor}
+        />
 
-            const share = percentOf(spent, limit.maxPerDay);
+        {wallet.policy && wallet.policy.assets.length > 0 ? (
+          <SpentToday wallet={wallet} workspace={workspace} />
+        ) : null}
 
-            return (
-              <div key={`${limit.chainId}|${limit.asset}`} className="grid grid-cols-1 gap-1.5">
-                <div className="flex flex-wrap justify-between gap-2 text-sm">
-                  <span>{info.symbol} spent in the last 24 hours</span>
-                  <span className="tabular-nums">
-                    {formatAsset(spent, info)} of {formatAsset(limit.maxPerDay, info)}
-                  </span>
-                </div>
-                <Progress
-                  value={share}
-                  label={`${info.symbol} spent of the 24-hour limit`}
-                  tone={share >= 90 ? "danger" : share >= 70 ? "warning" : "accent"}
-                />
-                <p className="text-xs text-muted-foreground">
-                  At most {formatAsset(limit.maxPerTx, info)} per transaction
-                </p>
-              </div>
-            );
-          })}
-        </CardContent>
-      </Card>
-
-      {wallet.venue ? <VenueAccountCard account={wallet.venue} /> : null}
-
-      <Card>
-        <CardHeader>
-          <div>
-            <CardTitle>Current limits</CardTitle>
-            {wallet.policy ? (
-              <CardDescription>
-                Revision {wallet.policy.revision}. The signer enforces these.
-              </CardDescription>
+        <div>
+          <SectionLabel>Spending</SectionLabel>
+          <SettingsList>
+            <SettingsRow
+              href="#limits"
+              tone="accent"
+              icon={<Gauge aria-hidden />}
+              label="Spending limit"
+              value={limitSummary(wallet, workspace)}
+            />
+            <SettingsRow
+              href="#mandates"
+              tone="violet"
+              icon={<BadgeCheck aria-hidden />}
+              label="Approved in advance"
+              value={<MandateCount workspace={workspace} walletId={wallet.id} />}
+            />
+            <SettingsRow
+              href="#limits"
+              tone="success"
+              icon={<Users aria-hidden />}
+              label="Who it can pay"
+              value={recipientSummary(wallet)}
+            />
+            {wallet.venue ? (
+              <SettingsRow
+                href="#venue"
+                tone="neutral"
+                icon={<CandlestickChart aria-hidden />}
+                label="Trading account"
+                value={VENUE_NETWORK_NAMES[wallet.venue.network]}
+              />
             ) : null}
-          </div>
-        </CardHeader>
-        <CardContent>
-          {wallet.policy ? (
-            <PolicyTable policy={wallet.policy} context={context} />
-          ) : (
-            <EmptyState title="No limits yet">
-              This wallet can sign nothing until its first limits are set and approved.
-            </EmptyState>
-          )}
-        </CardContent>
-      </Card>
-
-      {wallet.pendingPolicyApprovalId ? (
-        <Alert tone="warning">
-          <Clock aria-hidden />
-          <p>
-            A change to these limits is waiting for approval.{" "}
-            <Link
-              to="/w/$workspaceId/approvals/$approvalId"
-              params={{ workspaceId: workspace.id, approvalId: wallet.pendingPolicyApprovalId }}
-              className={linkClass}
-            >
-              Open it
-            </Link>
+          </SettingsList>
+          <p className="mt-2 px-1 text-xs text-muted-foreground">
+            Every payment waits for a person unless it is approved in advance. The signer enforces
+            these limits, even if the agent or this server is compromised.
           </p>
-        </Alert>
-      ) : null}
+        </div>
+      </aside>
 
-      <MandatesCard
-        workspace={workspace}
-        filter={{ walletId: wallet.id }}
-        editor={active ? { wallet } : null}
-      />
+      <div className="grid min-w-0 grid-cols-1 gap-8 lg:order-1">
+        <section id="limits" className="grid scroll-mt-6 grid-cols-1 gap-4">
+          <SectionLabel>Limits</SectionLabel>
+          {wallet.policy ? (
+            <div className="rounded-2xl border bg-card px-5 py-4 shadow-sm">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <p className="text-xs text-muted-foreground">
+                  Revision {wallet.policy.revision}. The signer enforces these.
+                </p>
+                {canEdit && !editing ? (
+                  <Button size="sm" variant="outline" onClick={openEditor}>
+                    Change
+                  </Button>
+                ) : null}
+              </div>
+              <PolicyTable policy={wallet.policy} context={context} />
+            </div>
+          ) : !editing ? (
+            <p className="px-1 text-sm text-muted-foreground">
+              No limits yet: this wallet can sign nothing until its first limits are set and
+              approved.
+            </p>
+          ) : null}
+          {canEdit && editing ? <PolicyEditor wallet={wallet} workspace={workspace} /> : null}
+        </section>
 
-      {canAdmin && active ? <SweepCard wallet={wallet} workspace={workspace} /> : null}
-      {canAdmin && changeable ? <PolicyEditor wallet={wallet} workspace={workspace} /> : null}
-      {canAdmin && changeable ? <RetireWalletCard wallet={wallet} workspace={workspace} /> : null}
+        <section className="grid grid-cols-1 gap-4">
+          <SectionLabel>Approved in advance</SectionLabel>
+          <MandatesCard
+            workspace={workspace}
+            filter={{ walletId: wallet.id }}
+            editor={active ? { wallet } : null}
+          />
+        </section>
+
+        {wallet.venue ? (
+          <section id="venue" className="grid scroll-mt-6 grid-cols-1 gap-4">
+            <SectionLabel>Trading account</SectionLabel>
+            <VenueAccountCard account={wallet.venue} />
+          </section>
+        ) : null}
+
+        {canAdmin && (active || changeable) ? (
+          <details
+            className="group rounded-2xl border bg-card shadow-sm"
+            open={more.open}
+            onToggle={(event) => more.setOpen(event.currentTarget.open)}
+          >
+            <summary className="flex cursor-pointer list-none items-center justify-between px-5 py-4 text-sm font-medium select-none">
+              More
+              <span className="text-xs text-muted-foreground">
+                Empty this wallet{changeable ? ", retire it" : ""}
+                <ChevronDown
+                  className="ml-2 inline size-4 transition-transform group-open:rotate-180"
+                  aria-hidden
+                />
+              </span>
+            </summary>
+            <div className="grid grid-cols-1 gap-6 border-t p-5">
+              {active ? <SweepCard wallet={wallet} workspace={workspace} /> : null}
+              {changeable ? <RetireWalletCard wallet={wallet} workspace={workspace} /> : null}
+            </div>
+          </details>
+        ) : null}
+      </div>
     </div>
   );
+}
+
+/** The sections under "More"; links elsewhere (`#sweep`) open it. */
+const MORE_SECTIONS = ["sweep", "retire"] as const;
+
+/** Open state for a closed section that a link like `#sweep` points into. */
+function useHashOpen(ids: readonly string[]) {
+  const [open, setOpen] = useState(() => ids.includes(window.location.hash.slice(1)));
+
+  useEffect(() => {
+    const follow = () => {
+      const target = window.location.hash.slice(1);
+
+      if (!ids.includes(target)) return;
+      setOpen(true);
+      requestAnimationFrame(() => document.getElementById(target)?.scrollIntoView());
+    };
+
+    follow();
+    window.addEventListener("hashchange", follow);
+
+    return () => window.removeEventListener("hashchange", follow);
+  }, [ids]);
+
+  return { open, setOpen };
+}
+
+/** The wallet as a card: whose it is, what it holds, and the address to fund it. */
+function WalletCard({
+  wallet,
+  workspace,
+  agentName,
+}: {
+  wallet: WalletDetail;
+  workspace: WorkspaceDetail;
+  agentName: string | null;
+}) {
+  const [first, ...others] = wallet.balances;
+  const gone = wallet.lifecycle.state === "retiring" || wallet.lifecycle.state === "destroyed";
+
+  return (
+    <div>
+      <div className="relative flex min-h-44 flex-col overflow-hidden rounded-2xl bg-[radial-gradient(120%_140%_at_100%_0%,oklch(0.42_0.07_255)_0%,transparent_55%),linear-gradient(135deg,oklch(0.32_0.04_265),oklch(0.24_0.03_280))] p-6 text-[oklch(0.97_0.01_270)] shadow-lg">
+        <div className="flex min-w-0 items-start gap-2 text-sm font-semibold">
+          <WalletIcon className="mt-0.5 size-4 shrink-0 opacity-80" aria-hidden />
+          <div className="min-w-0">
+            <h1 className="truncate">{wallet.label}</h1>
+            {agentName && wallet.agentId ? (
+              <Link
+                to="/w/$workspaceId/agents/$agentId"
+                params={{ workspaceId: workspace.id, agentId: wallet.agentId }}
+                className="block truncate text-xs font-medium opacity-75 hover:underline hover:opacity-100"
+              >
+                Agent {agentName}
+              </Link>
+            ) : (
+              <p className="text-xs font-medium opacity-75">Treasury</p>
+            )}
+          </div>
+        </div>
+        <div className="mt-auto pt-6">
+          <p className="text-4xl font-semibold tracking-tight tabular-nums">
+            {first ? formatUnits(first.amount, first.decimals) : "0"}
+            <span className="ml-1.5 text-xl font-medium opacity-75">
+              {first ? first.symbol : ""}
+            </span>
+          </p>
+          {first ? (
+            <p className="mt-0.5 text-xs opacity-70">
+              {chainName(first.chainId, workspace.chains)}
+              {others.length > 0
+                ? ` · ${others
+                    .map(
+                      (balance) =>
+                        `${formatUnits(balance.amount, balance.decimals)} ${balance.symbol}`,
+                    )
+                    .join(" · ")}`
+                : ""}
+            </p>
+          ) : (
+            <p className="mt-0.5 text-xs opacity-70">No balances yet</p>
+          )}
+        </div>
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <span className="font-mono text-xs opacity-80" title={checksumAddress(wallet.address)}>
+            {shortAddress(wallet.address)}
+          </span>
+          <CopyButton
+            value={checksumAddress(wallet.address)}
+            label="Copy wallet address"
+            className="border-white/25 bg-white/10 text-white hover:bg-white/20"
+          />
+        </div>
+      </div>
+      <details className="mt-2 px-1 text-xs text-muted-foreground">
+        <summary className="cursor-pointer select-none">
+          {gone
+            ? "Do not send anything here: this wallet's key is destroyed or soon will be."
+            : "Send funds to this address to let the wallet pay. Show the full address"}
+        </summary>
+        <FullAddress address={wallet.address} className="mt-2 text-sm text-foreground" />
+        <p className="mt-1">Check every group before sending.</p>
+      </details>
+    </div>
+  );
+}
+
+/** The single most useful thing to do now, if there is one. */
+function NextStep({
+  wallet,
+  workspace,
+  canEdit,
+  onSetLimits,
+}: {
+  wallet: WalletDetail;
+  workspace: WorkspaceDetail;
+  canEdit: boolean;
+  onSetLimits: () => void;
+}) {
+  if (wallet.pendingPolicyApprovalId) {
+    return (
+      <Callout
+        tone="warning"
+        icon={<Clock aria-hidden />}
+        title="A change to these limits is waiting for approval"
+        body="It takes effect once it is approved with a passkey."
+        action={
+          <Link
+            to="/w/$workspaceId/approvals/$approvalId"
+            params={{ workspaceId: workspace.id, approvalId: wallet.pendingPolicyApprovalId }}
+            className={cn(buttonVariants({ size: "sm" }))}
+          >
+            Open it
+          </Link>
+        }
+      />
+    );
+  }
+
+  if (!wallet.policy && wallet.lifecycle.state === "active") {
+    return (
+      <Callout
+        tone="accent"
+        icon={<Gauge aria-hidden />}
+        title={`${wallet.label} can't pay yet`}
+        body={
+          canEdit
+            ? "Choose how much it may spend. You approve that once, with your passkey."
+            : "An owner needs to set its limits first."
+        }
+        action={
+          canEdit ? (
+            <Button size="sm" onClick={onSetLimits}>
+              Set limits
+            </Button>
+          ) : null
+        }
+      />
+    );
+  }
+
+  return null;
+}
+
+function Callout({
+  tone,
+  icon,
+  title,
+  body,
+  action,
+}: {
+  tone: "accent" | "warning";
+  icon: ReactNode;
+  title: string;
+  body: string;
+  action: ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex flex-wrap items-center gap-4 rounded-2xl border px-5 py-4 shadow-sm",
+        tone === "warning" ? "border-warning/40 bg-warning-soft" : "bg-card",
+      )}
+    >
+      <span
+        className={cn(
+          "grid size-9 shrink-0 place-items-center rounded-lg [&_svg]:size-4",
+          tone === "warning" ? "bg-warning/15 text-warning" : "bg-accent-soft text-accent",
+        )}
+      >
+        {icon}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-semibold">{title}</p>
+        <p className="text-sm text-muted-foreground">{body}</p>
+      </div>
+      {action}
+    </div>
+  );
+}
+
+/** What is left of each daily limit, as it stands now. */
+function SpentToday({ wallet, workspace }: { wallet: WalletDetail; workspace: WorkspaceDetail }) {
+  return (
+    <div className="grid grid-cols-1 gap-4 rounded-2xl border bg-card px-5 py-4 shadow-sm">
+      {wallet.policy?.assets.map((limit) => {
+        const info = assetInfo(limit.chainId, limit.asset, workspace.chains, wallet.balances);
+
+        const spent =
+          wallet.spent.find((item) => item.chainId === limit.chainId && item.asset === limit.asset)
+            ?.amount ?? "0";
+
+        const left =
+          BigInt(limit.maxPerDay) > BigInt(spent) ? BigInt(limit.maxPerDay) - BigInt(spent) : 0n;
+
+        const share = percentOf(spent, limit.maxPerDay);
+
+        return (
+          <div key={`${limit.chainId}|${limit.asset}`} className="grid grid-cols-1 gap-2">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <span className="text-sm text-muted-foreground">Left to spend, last 24 hours</span>
+              <span className="text-xs text-muted-foreground">
+                At most {formatAsset(limit.maxPerTx, info)} per payment
+              </span>
+            </div>
+            <p className="text-2xl font-semibold tracking-tight tabular-nums">
+              {formatAsset(left.toString(), info)}
+              <span className="ml-1.5 text-sm font-medium text-muted-foreground">
+                of {formatAsset(limit.maxPerDay, info)}
+              </span>
+            </p>
+            <Progress
+              value={share}
+              label={`${info.symbol} spent of the 24-hour limit`}
+              tone={share >= 90 ? "danger" : share >= 70 ? "warning" : "accent"}
+            />
+            <p className="text-xs text-muted-foreground">
+              {info.symbol} spent in the last 24 hours: {formatAsset(spent, info)}
+            </p>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function SectionLabel({ children }: { children: ReactNode }) {
+  return (
+    <h2 className="mb-2 px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+      {children}
+    </h2>
+  );
+}
+
+function SettingsList({ children }: { children: ReactNode }) {
+  return (
+    <div className="divide-y overflow-hidden rounded-2xl border bg-card shadow-sm [&>*]:border-border">
+      {children}
+    </div>
+  );
+}
+
+const ROW_TONES = {
+  accent: "bg-accent",
+  violet: "bg-[oklch(0.6_0.13_300)]",
+  success: "bg-success",
+  neutral: "bg-muted-foreground",
+} as const;
+
+function SettingsRow({
+  href,
+  tone,
+  icon,
+  label,
+  value,
+}: {
+  href: string;
+  tone: keyof typeof ROW_TONES;
+  icon: ReactNode;
+  label: string;
+  value: ReactNode;
+}) {
+  return (
+    <a href={href} className="flex items-center gap-3 px-5 py-3.5 text-sm hover:bg-muted">
+      <span
+        className={cn(
+          "grid size-7 shrink-0 place-items-center rounded-md text-white [&_svg]:size-4",
+          ROW_TONES[tone],
+        )}
+      >
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block">{label}</span>
+        <span className="block truncate text-xs text-muted-foreground">{value}</span>
+      </span>
+      <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+    </a>
+  );
+}
+
+function limitSummary(wallet: WalletDetail, workspace: WorkspaceDetail): string {
+  const [limit, ...rest] = wallet.policy?.assets ?? [];
+
+  if (!limit) return "Not set";
+  const info = assetInfo(limit.chainId, limit.asset, workspace.chains, wallet.balances);
+  const summary = `${formatAsset(limit.maxPerTx, info)} each, ${formatAsset(limit.maxPerDay, info)} a day`;
+
+  return rest.length > 0 ? `${summary}, +${rest.length} more` : summary;
+}
+
+function recipientSummary(wallet: WalletDetail): string {
+  const recipients = wallet.policy?.recipients;
+
+  if (!recipients) return "Not set";
+
+  return recipients.mode === "any"
+    ? "Anyone you approve"
+    : `${recipients.addresses.length} listed ${recipients.addresses.length === 1 ? "address" : "addresses"}`;
+}
+
+/** How many mandates of this wallet are live; the same list the section below shows. */
+function MandateCount({
+  workspace,
+  walletId,
+}: {
+  workspace: WorkspaceDetail;
+  walletId: WalletDetail["id"];
+}) {
+  const live = useMandates(workspace.id, { walletId }, "active");
+  const count = live.data?.pages.reduce((total, page) => total + page.items.length, 0);
+
+  if (count === undefined) return "…";
+  const more = live.hasNextPage ? "+" : "";
+
+  return count === 0 ? "None" : `${count}${more} live`;
 }
 
 /**

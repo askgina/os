@@ -1,8 +1,17 @@
-import { type ErrorComponentProps, Link, Outlet, useRouter } from "@tanstack/react-router";
+import {
+  type ErrorComponentProps,
+  Link,
+  Outlet,
+  useRouter,
+  useRouterState,
+} from "@tanstack/react-router";
 import { Settings, ShieldCheck } from "lucide-react";
 import { type ReactNode, useEffect } from "react";
 import { EmptyState, ErrorState } from "@/components/common.tsx";
 import { useSession } from "@/lib/api.ts";
+
+/** Pages laid out in two columns on large screens. */
+const WIDE_PAGE = /^\/w\/[^/]+\/wallets\//;
 
 /** The frame around every page. The root route has loaded the session before this renders. */
 export function AppShell() {
@@ -42,6 +51,14 @@ function Frame({
   signedIn: boolean;
   children: ReactNode;
 }) {
+  // A wallet page uses two columns on large screens, so it gets a wider frame; every other page
+  // keeps the narrower one that suits a single column of forms and lists.
+  const wide = useRouterState({
+    select: (state) => WIDE_PAGE.test(state.location.pathname),
+  });
+
+  const width = wide ? "max-w-7xl" : "max-w-5xl";
+
   return (
     <div className="min-h-dvh">
       <a
@@ -51,7 +68,7 @@ function Frame({
         Skip to content
       </a>
       <header className="border-b bg-card">
-        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between gap-4 px-4">
+        <div className={`mx-auto flex h-14 ${width} items-center justify-between gap-4 px-4`}>
           <Link to="/" className="flex items-center gap-2 font-semibold">
             <ShieldCheck className="size-5 text-accent" aria-hidden />
             {productName ?? ""}
@@ -67,7 +84,7 @@ function Frame({
           ) : null}
         </div>
       </header>
-      <main id="main" className="mx-auto max-w-5xl px-4 pt-6 pb-16">
+      <main id="main" className={`mx-auto ${width} px-4 pt-6 pb-16`}>
         {children}
       </main>
     </div>

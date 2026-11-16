@@ -116,7 +116,16 @@ export function EmptyState({
   );
 }
 
-export function CopyButton({ value, label }: { value: string; label: string }) {
+export function CopyButton({
+  value,
+  label,
+  className,
+}: {
+  value: string;
+  label: string;
+  /** For a surface whose colors the outline button does not suit, such as the wallet card. */
+  className?: string;
+}) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -130,6 +139,7 @@ export function CopyButton({ value, label }: { value: string; label: string }) {
       variant="outline"
       size="sm"
       aria-label={label}
+      className={className}
       onClick={() => {
         void navigator.clipboard.writeText(value).then(() => setCopied(true));
       }}
