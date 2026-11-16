@@ -648,7 +648,6 @@ Relevant repo rules:
   workstation, unless the owner names the command (`specs/agent-workspaces-v0.1.md:69`, `:109`).
   Locally: Biome on the changed files and `tsc --noEmit` of the changed package.
 - Exact version pins for every dependency.
-- `docs/references/` is context, not authority.
 
 Terms:
 

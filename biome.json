@@ -10,7 +10,6 @@
       "**",
       "!.agents",
       "!tools/oxlint",
-      "!docs/references",
       "!**/.well-known",
       "!**/migrations/meta",
       "!**/*.gen.ts",

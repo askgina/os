@@ -5,7 +5,7 @@
 - Owner(s): the repository owner (delegated end to end to the coding agent on 2026-11-14)
 - Created: 2026-11-14
 - Last Updated: 2026-11-14
-- Links: [Wayfinder map](https://github.com/askgina/os/issues/1) | [Source idea](../docs/references/chatgpt-combine-encryption-approval-ux.md) | [Its verification](../docs/references/chatgpt-combine-encryption-approval-ux-verification.md) | [Research](./research/)
+- Links: [Wayfinder map](https://github.com/askgina/os/issues/1) | [Research](./research/)
 
 This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`,
 `Decision Log`, and `Outcomes & Retrospective` current as research,
@@ -185,7 +185,7 @@ Each line is also a ticket on the map, where the reasoning is longer and can be 
 Relevant repo rules:
 
 - Read `AGENTS.md` at the repository root before changing files.
-- `docs/references/` is vendored outside material. It is context, not authority. Several of its claims are wrong; the verification note next to it says which.
+- Documentation says what is proven in CI, proven once by hand, or unproven, and never claims more.
 - TypeScript is strict, ESM, and uses erasable syntax only (no enums, no parameter properties, no namespaces), because Node runs the sources directly with type stripping. Relative imports carry the `.ts` extension.
 - No `console.*`. Services log one JSON object per line through their logger, and log identifiers, codes and counts only: never an intent, a memo, a token or key material.
 - Errors that can cross a workflow step, an HTTP response or a log line carry a stable code and a fixed message. They never quote what a person or an agent typed.

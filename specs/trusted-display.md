@@ -707,7 +707,6 @@ and the research agent's rationale.
 Relevant repo rules:
 
 - Read `AGENTS.md` at the repository root before changing files.
-- `docs/references/` is context, not authority.
 - TypeScript is strict ESM with erasable syntax only; relative imports carry `.ts`; Node runs
   sources with type stripping (`specs/agent-workspaces-v0.1.md:188`).
 - No `console.*`. Logs carry identifiers, codes and counts only, never an intent, a memo, a token

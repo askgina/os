@@ -490,7 +490,7 @@ Plan decisions (taken here, reopen in review if wrong):
 
 Relevant repo rules:
 
-- Read `AGENTS.md` at the repository root before changing files. `docs/references/` is context, not authority.
+- Read `AGENTS.md` at the repository root before changing files.
 - The owner's standing rule reserves local builds, whole test suites, coverage and `e2e/run.sh` for CI unless the owner names the command (`specs/agent-workspaces-v0.1.md:109-110`). Locally: `bun run check`, `bunx tsc --noEmit` in one package, and single test files.
 - Every claim in a status update says whether it is written, type-checked, single-test-passed, CI-green or unproven.
 

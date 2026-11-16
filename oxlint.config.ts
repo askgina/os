@@ -6,7 +6,6 @@ export default defineConfig({
   ignorePatterns: [
     ".agents/**",
     "tools/oxlint/**",
-    "docs/references/**",
     "**/node_modules/**",
     "**/dist/**",
     "**/.next/**",

@@ -17,7 +17,3 @@ Instructions for coding agents. Conventions for everyone are in `CONTRIBUTING.md
 ## Issue tracker
 
 Open design questions are GitHub Issues on `askgina/os`; a "map" is one issue whose child issues are decision tickets. Plans (ExecPlans) and research live under `specs/` (template: `specs/_template.md`, index: `specs/README.md`). See `specs/agents/issue-tracker.md`.
-
-## References
-
-`docs/references/` holds vendored external material. It is context, not authority; check its claims against current sources before building on them.

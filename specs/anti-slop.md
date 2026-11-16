@@ -253,7 +253,7 @@ How the relevant pieces fit together:
   `tools/oxlint/anti-slop/`. Oxlint runs them under Node; the rules look at
   syntax only, one file at a time, without the type checker.
 - Biome ignores `tools/oxlint` and `.agents`. Oxlint ignores them too, plus
-  `docs/references`, build output and generated files.
+  build output and generated files.
 
 Assumptions:
 

@@ -84,7 +84,7 @@ What the provider therefore has to do:
 - **AWS KMS.** The symmetric cryptographic request quota is shared per account and Region: 10 000, 20 000 or 100 000 requests per second depending on the Region ([request quotas](https://docs.aws.amazon.com/kms/latest/developerguide/requests-per-second.html)). AAD is the `EncryptionContext`, which "is not secret and not encrypted. It appears in plaintext in AWS CloudTrail Logs" ([encryption context](https://docs.aws.amazon.com/kms/latest/developerguide/encrypt_context.html)). Our AAD carries run and workspace ids and the tenant id, which are readable in Postgres already, so logging them is acceptable `[INFERENCE]`. Automatic rotation keeps the key ARN, so no rewrap is needed for rotation `[INFERENCE from AWS rotation model; not read here]`.
 - **Google Cloud KMS.** `additionalAuthenticatedData` "must be no larger than 64 KiB", "is not stored as part of the ciphertext" and "is not logged by Cloud Audit Logs" ([AAD](https://docs.cloud.google.com/kms/docs/additional-authenticated-data)).
 - Both need an SDK or signed HTTP, cloud credentials (IAM role, workload identity), and cannot be exercised in CI without a cloud account. An emulator would prove the adapter's shape, not IAM, quotas or latency `[INFERENCE]`.
-- The reference conversation says the self-hosted World should be backed by "a KMS-controlled key hierarchy" and that KMS or OpenBao "can be an optional backend, not a mandatory service" (`docs/references/chatgpt-combine-encryption-approval-ux.md:104,948`). OpenBao Transit is the self-hostable form of that.
+- OpenBao Transit is the self-hostable form of a KMS-controlled key hierarchy for the self-hosted World, and it can stay an optional backend rather than a required service.
 
 ### 5. The signer as a single writer
 
@@ -187,9 +187,9 @@ The Compose networks (`compose.yaml:177-185`, `deploy/README.md:40-48`) map to p
 | Asynchronous lost commit                                                                 | Restore a Postgres snapshot taken before signing while `signer-data` stays current                                                                                                                                                                                                                                                                                                   | Yes, deterministically                                         |
 | etcd encryption, node compromise, real partitions, cross-host clock drift                |                                                                                                                                                                                                                                                                                                                                                                                      | No                                                             |
 
-### 12. A correction to the reference conversation
+### 12. Compose files do not carry over to Kubernetes
 
-The reference says "Docker Compose with no hosted services required. The same manifests can later target Kubernetes" (`docs/references/chatgpt-combine-encryption-approval-ux.md:1068-1069`). Compose files are not Kubernetes manifests, and three Compose properties have no direct Kubernetes form (findings 9.2, 9.3, 9.4). Kubernetes needs its own manifests and its own isolation gate.
+It is tempting to expect that the Compose files, which need no hosted service, can later target Kubernetes as they are. Compose files are not Kubernetes manifests, and three Compose properties have no direct Kubernetes form (findings 9.2, 9.3, 9.4). Kubernetes needs its own manifests and its own isolation gate.
 
 ## Options compared
 

@@ -97,7 +97,7 @@ A push to a branch cancels that branch's run in progress. Batch fixes into one p
 | `examples`          | Example agents that connect over MCP, and a notification sidecar.                                                                                               |
 | `e2e`               | Release gates: end-to-end tests against the whole stack.                                                                                                        |
 | `deploy`            | Compose files and deployment configuration: Caddy, the split host, OpenBao, Kubernetes.                                                                         |
-| `docs`              | Documentation. Start with [`docs/architecture.md`](docs/architecture.md). `docs/references/` is vendored outside material: context, not authority.              |
+| `docs`              | Documentation. Start with [`docs/architecture.md`](docs/architecture.md).                                                                                       |
 | `specs`             | Plans, research reports and tracker conventions; see [`specs/README.md`](specs/README.md).                                                                      |
 | `scripts`           | Packing and smoke-testing the published packages.                                                                                                               |
 | `tools/oxlint`      | The vendored anti-slop lint rules.                                                                                                                              |

@@ -109,9 +109,9 @@ On chain: balances and transaction history. Neither the signer nor the control p
 - User ids remain in the chain and in `approval_assertions` (whose WebAuthn `userHandle` is the user id). A person's display name lives only in `users.display_name` (`schema.ts:51-55`). Source-read.
 - The signer's decision log has no user id (`apps/signer/src/db.ts:89-100`); its `approvers` table has `user_id` and the public key (`db.ts:22-29`). Source-read.
 
-### 8. The vendored conversation's lifecycle section
+### 8. A first lifecycle sketch, checked against this design
 
-`docs/references/chatgpt-combine-encryption-approval-ux.md:544-560`, "5. Lifecycle is where this gets interesting", proposes: lifecycle operations as durable workflows; Clone copies configuration with a fresh wallet; Export exports configuration and an encrypted backup separately; Delete revokes credentials, stops the agent, handles remaining assets, then deletes; cloning never silently clones a private key, "unless the owner explicitly authorizes restoring an existing wallet"; provisioning is idempotent. Source-read.
+A first sketch of lifecycle, written before this design, proposed: lifecycle operations as durable workflows; Clone copies configuration with a fresh wallet; Export exports configuration and an encrypted backup separately; Delete revokes credentials, stops the agent, handles remaining assets, then deletes; cloning never silently clones a private key, unless the owner explicitly authorizes restoring an existing wallet; provisioning is idempotent.
 
 What holds:
 
@@ -122,7 +122,7 @@ What holds:
 
 What does not hold:
 
-- "OWS is the wallet authority; your workspace service is the lifecycle authority" (`chatgpt-…-ux.md:482`). In this design the signer is the authority over wallets and policy (`specs/agent-workspaces-v0.1.md:121-123`), and the irreversible lifecycle step (destroying keys) must be decided by the signer too, not by the control plane. Source-read for the v0.1 decision; the extension to lifecycle is this report's recommendation.
+- The wallet library as the wallet authority and the workspace service as the lifecycle authority. In this design the signer is the authority over wallets and policy (`specs/agent-workspaces-v0.1.md:121-123`), and the irreversible lifecycle step (destroying keys) must be decided by the signer too, not by the control plane. Source-read for the v0.1 decision; the extension to lifecycle is this report's recommendation.
 - "Export … encrypted backup" per workspace: v0.1 has one database, one keyring and one vault for the installation; a per-workspace encrypted backup would need per-workspace KEKs and vault separation. `[INFERENCE]`. Not recommended now.
 - "Restoring an existing wallet" into a clone: refused (finding 9).
 - "Pause … suspend workflows": v0.1 pause stops signing at the signer and does not suspend runs (`signer.ts:461-470`). Source-read. Nothing in lifecycle needs runs suspended, only ended before their keys are shredded (finding 10).
