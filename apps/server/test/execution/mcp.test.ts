@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { setTimeout as delay } from "node:timers/promises";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { MCP_TOOL_NAMES } from "../../src/mcp/gateway.ts";
 import { TEST_CHAIN_ID, TEST_ORIGIN } from "../support/context.ts";
 import { createFixture, type Fixture, toolJson } from "./fixture.ts";
@@ -177,5 +178,57 @@ describe("the MCP gateway", () => {
     );
 
     expect(cancelled.status).toBe("cancelled");
+  });
+
+  it("stops waiting on an intent when the agent drops the call", async () => {
+    const client = await f.mcp(f.agent.token);
+
+    const proposed = toolJson(
+      await client.callTool({
+        name: "propose_transfer",
+        arguments: { chainId: TEST_CHAIN_ID, to: RECIPIENT, amount: "0.01", memo: "wait" },
+      }),
+    );
+
+    const dropped = new AbortController();
+    const reads = vi.spyOn(f.t.ctx.db, "select");
+
+    const served = Promise.resolve(
+      f.t.app.fetch(
+        new Request(`${TEST_ORIGIN}/mcp`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            authorization: `Bearer ${f.agent.token}`,
+            "mcp-protocol-version": "2025-06-18",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: {
+              name: "get_intent",
+              arguments: { intentId: proposed.intentId, waitSeconds: 20 },
+            },
+          }),
+          signal: dropped.signal,
+        }),
+      ),
+    );
+
+    // Real time throughout, because the wait under test runs on the server's own clock. The call
+    // is dropped once the handler is inside its wait; the client's promise ends at once either
+    // way, and what must stop is the handler's once-a-second read of the intent: let the reads in
+    // flight finish, then watch two poll intervals for another.
+    await delay(1_500);
+    dropped.abort();
+    await served.catch(() => {});
+    await delay(1_500);
+    const settled = reads.mock.calls.length;
+    await delay(2_500);
+
+    expect(reads.mock.calls.length).toBe(settled);
+    reads.mockRestore();
   });
 });

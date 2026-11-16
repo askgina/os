@@ -84,10 +84,19 @@ Success means:
 - Observation: the refactor surfaced a bug it did not fix. The agent-facing
   `get_intent` tool reads its cancel signal from `extra.signal`, which the MCP
   server SDK 2.4.0 does not set (it is at `extra.mcpReq.signal`), so a client's
-  cancel never ends the wait of up to 50 seconds early. Left as it was, with a
-  comment that says so, because fixing it changes behaviour. Open with the
-  owner.
-  Evidence: `apps/server/src/mcp/gateway.ts`, the `get_intent` handler.
+  cancel never ends the wait of up to 50 seconds early. Left as it was by the
+  refactor, then fixed after it. Reading `extra.mcpReq.signal` alone did not
+  fix it: the SDK aborts that signal from a copy of the HTTP request that
+  nothing references, and Node 26 stops passing an abort on to such a Request
+  after a garbage collection (1 of 200 delivered in a probe; 200 of 200 when
+  the Request is held). The gateway now holds the request it served for the
+  life of the call and the wait also ends when that request aborts. The stock
+  MCP client's cancel still does not reach this stateless server (it does not
+  close the HTTP request); a dropped connection does.
+  Evidence: `apps/server/src/mcp/gateway.ts`, the `get_intent` handler;
+  `apps/server/test/execution/mcp.test.ts`, "stops waiting on an intent when
+  the agent drops the call" (fails without the fix, 6 of 6 local passes with
+  it).
 - Observation: two tests of the signer's pinned TLS failed once during
   verification because the lead's shell still exported
   `NODE_TLS_REJECT_UNAUTHORIZED=0` from a staging session. With it unset they
@@ -169,9 +178,9 @@ Success means:
   `510de59` ([run 43848540131](https://github.com/askgina/os/actions/runs/43848540131)).
 - What was not done: the 189 warnings (long functions, loops, long parameter
   lists) were triaged, not removed; the `SAFETY:` comments were sampled, not
-  each read by a person; `get_intent` in `apps/server/src/mcp/gateway.ts`
-  reads its cancel signal from the wrong place (found by a slice agent, a
-  bug that predates this plan, left unfixed here).
+  each read by a person. The `get_intent` cancel-signal bug a slice agent
+  found (it predates this plan) was fixed afterwards; see
+  `Surprises & Discoveries`.
 - Lesson: a shell variable left from a staging session
   (`NODE_TLS_REJECT_UNAUTHORIZED=0`) made two certificate tests fail and
   looked like a broken refactor. Unset it before trusting a local failure.

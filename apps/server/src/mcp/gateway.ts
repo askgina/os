@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { IntentStatus } from "@askgina/os-api";
@@ -41,6 +42,14 @@ const REQUESTS_PER_MINUTE = 120;
 export const FAILED_AUTH_PER_MINUTE = 10;
 
 const LAST_SEEN_INTERVAL_SECONDS = 60;
+
+/**
+ * The HTTP request the running tool call arrived on, so a waiting tool can tell when the agent
+ * has gone. The request itself is held, not its signal: Node stops passing an abort on to a
+ * Request that nothing references, and the SDK feeds the signal it gives a tool from a copy of
+ * the request that nothing references.
+ */
+const servedRequest = new AsyncLocalStorage<Request>();
 
 /** How often `get_intent` re-reads the status while it waits. */
 const WAIT_POLL_MS = 1_000;
@@ -488,16 +497,16 @@ function buildServer(ctx: AppContext, agent: AgentRow): McpServer {
         let row = await ownIntent(intentId);
         const initial = row.status;
         const deadline = Date.now() + (waitSeconds ?? 0) * 1000;
-        // SAFETY: this only widens `extra` to read an optional `signal`. SDK 2's ServerContext
-        // has no top-level `signal` (it carries one at `extra.mcpReq.signal`), so this reads
-        // undefined and the wait runs to its deadline or a status change.
-        const signal = (extra as { signal?: AbortSignal } | undefined)?.signal;
+        // The wait ends when the agent cancels the call or drops the connection.
+        const { signal } = extra.mcpReq;
+        const request = servedRequest.getStore();
 
         while (
           row.status === initial &&
           !TERMINAL.includes(row.status) &&
           Date.now() < deadline &&
-          !signal?.aborted
+          !signal.aborted &&
+          request?.signal.aborted !== true
         ) {
           await delay(Math.min(WAIT_POLL_MS, deadline - Date.now()));
           row = await ownIntent(intentId);
@@ -682,6 +691,8 @@ export function mountMcp(app: Hono, ctx: AppContext): void {
       handlers.set(agent.id, handler);
     }
 
-    return handler.fetch(request);
+    const serving = handler;
+
+    return servedRequest.run(request, () => serving.fetch(request));
   });
 }
