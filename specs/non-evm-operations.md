@@ -5,7 +5,7 @@
   manual testnet proof is open because no funded testnet account exists). Milestone 7,
   Hyperliquid mainnet (owner decision D2, decided 2026-11-16: mainnet is supported), is open;
   see `Progress`.
-- Owner(s): Eric Juta
+- Owner(s): the repository owner
 - Created: 2026-11-14
 - Last Updated: 2026-11-16
 - Links: [Issue #21](https://github.com/askgina/os/issues/21) | [Map #18](https://github.com/askgina/os/issues/18) | [Research report](research/non-evm-operations.md)
@@ -80,10 +80,10 @@ Success means:
 - [x] (2026-11-14 21:44Z) Define the implementation approach and validation plan (this file).
 - [x] (2026-11-15) Re-checked against main at `98cc6a1` (trusted display, v0.1 defect fixes,
       mandates and notifications landed); owner decisions are now D1 to D9.
-- [x] (2026-11-15) Owner decisions D1 and D3 to D9 taken by the lead under Eric's delegation,
+- [x] (2026-11-15) Owner decisions D1 and D3 to D9 taken by the lead agent under the repository owner's delegation,
       each as the recommended option (see `Decision Log`). D2 (mainnet)
-      stays open with Eric; until he answers, venues are testnet only and a mainnet venue is
-      refused at boot. (D2 decided 2026-11-16 by Eric: mainnet is supported; see Milestone 7.)
+      stays open with the owner; until the owner answers, venues are testnet only and a mainnet venue is
+      refused at boot. (D2 decided 2026-11-16 by the owner: mainnet is supported; see Milestone 7.)
 - [x] (2026-11-15) Milestone 1: protocol shapes, venue policy and evaluation, the order and
       withdrawal confirmation view, the four deny codes, `docs/approval-protocol.md` §1, §3, §4,
       §5, §7, §11 (three vectors, reproduced with OpenSSL) and §12. Local checks only, CI
@@ -443,13 +443,13 @@ Success means:
 
 ## Decision Log
 
-Owner decisions D1 and D3 to D9 were taken on 2026-11-15 by the lead under Eric's delegation
+Owner decisions D1 and D3 to D9 were taken on 2026-11-15 by the lead agent under the repository owner's delegation
 ("delegate to you on decisions like a CTO"), each as the option this plan recommended. D2
-(mainnet) was not delegated; Eric decided it on 2026-11-16 (below). Each was re-checked against
+(mainnet) was not delegated; the owner decided it on 2026-11-16 (below). Each was re-checked against
 main on 2026-11-15; none is moot. Earlier entries, observations and outcomes that say mainnet is
 refused describe the plan before 2026-11-16 and are history as of that date.
 
-- Decision (owner, D1, taken 2026-11-15 by the lead under Eric's delegation, as recommended):
+- Decision (owner, D1, taken 2026-11-15 by the lead agent under the repository owner's delegation, as recommended):
   the first operation that is not an EVM transaction is a Hyperliquid perpetual limit order on
   testnet.
   Rationale: the smallest venue whose guarantees the signer can make true by itself: one
@@ -459,7 +459,7 @@ refused describe the plan before 2026-11-16 and are history as of that date.
   Re-check 2026-11-15: unchanged. Recommendation stands: still the smallest step that keeps
   "the signer builds what it signs".
   Date/Author: 2026-11-14 / research agent
-- Decision (owner, D2, taken 2026-11-16 by Eric): mainnet venue support ships. In the design
+- Decision (owner, D2, taken 2026-11-16 by the owner): mainnet venue support ships. In the design
   (Milestone 7):
   - the signer signs a venue intent for whichever network the wallet's passkey-approved policy
     names; `SIGNABLE_VENUE_NETWORKS` and its check are deleted; every other refusal stays
@@ -479,13 +479,13 @@ refused describe the plan before 2026-11-16 and are history as of that date.
     default (testnet only, mainnet refused at boot and by the signer); that is history as of this
     date.
     Date/Author: 2026-11-16 / lead (open since 2026-11-14 / research agent)
-- Decision (owner, D3, taken 2026-11-15 by the lead under Eric's delegation, as recommended):
+- Decision (owner, D3, taken 2026-11-15 by the lead agent under the repository owner's delegation, as recommended):
   Hyperliquid actions are signed by the wallet's own key; no API wallet is approved.
   Rationale: one signer process gains no isolation from a second key, `approveAgent` would be
   one more action to approve, and deregistered API wallets can be replayed against.
   Re-check 2026-11-15: unchanged. Recommendation stands for the same reason.
   Date/Author: 2026-11-14 / research agent
-- Decision (owner, D4, taken 2026-11-15 by the lead under Eric's delegation, as recommended):
+- Decision (owner, D4, taken 2026-11-15 by the lead agent under the repository owner's delegation, as recommended):
   approving an order includes the right to cancel that one order.
   The signer signs `cancelByCloid` for an order it signed, on the control plane's request,
   without a passkey, also while the workspace is paused. The signer's confirmation view says so.
@@ -496,7 +496,7 @@ refused describe the plan before 2026-11-16 and are history as of that date.
   built by the signer, the sentence "the agent may cancel this order" is shown by the signer and
   cannot be dropped by the control plane. Recommendation stands: cancelling only removes risk.
   Date/Author: 2026-11-14 / research agent
-- Decision (owner, D5, taken 2026-11-15 by the lead under Eric's delegation: option (a),
+- Decision (owner, D5, taken 2026-11-15 by the lead agent under the repository owner's delegation: option (a),
   widening, as recommended): the protocol change is additive within version 1. Existing
   digests and test vectors stay unchanged; `docs/approval-protocol.md` §12 is amended to allow
   new operation kinds in an existing union and new optional members that leave every existing
@@ -513,7 +513,7 @@ refused describe the plan before 2026-11-16 and are history as of that date.
   because orders then reuse the whole intent path (inbox, `get_intent`, `list_intents`,
   `cancel_intent`, follow-up); the cost is the explicit venue branches listed in Milestone 1.
   Date/Author: 2026-11-14 / research agent; re-checked 2026-11-15
-- Decision (owner, D6, taken 2026-11-15 by the lead under Eric's delegation, as recommended):
+- Decision (owner, D6, taken 2026-11-15 by the lead agent under the repository owner's delegation, as recommended):
   the manual testnet proof is funded by a `usdSend` of testnet USDC from an existing funded
   testnet account to the wallet's address (at least 11 USDC: 1 for account activation, 10 for
   the minimum order). No such funded testnet account is in hand on 2026-11-15; the proof runs
@@ -523,7 +523,7 @@ refused describe the plan before 2026-11-16 and are history as of that date.
   Re-check 2026-11-15: unchanged (the faucet rule was not re-read on 2026-11-15).
   Recommendation stands.
   Date/Author: 2026-11-14 / research agent
-- Decision (owner, D7, new 2026-11-15; taken 2026-11-15 by the lead under Eric's delegation:
+- Decision (owner, D7, new 2026-11-15; taken 2026-11-15 by the lead agent under the repository owner's delegation:
   option (a), as recommended): trading mandates. The mandates plan left
   "whether trading mandates (typed swaps) are wanted soon enough to change D3" to this ticket
   (`specs/approval-mandates.md:41-42`, `:996-997`); the owner chose transfers only for mandates.
@@ -534,7 +534,7 @@ refused describe the plan before 2026-11-16 and are history as of that date.
   Recommendation: (a). A notional cap is not a loss cap at a venue, and the one-order path
   should be proven on testnet before anything is signed with no person asked.
   Date/Author: 2026-11-15 / plan refresh
-- Decision (owner, D8, new 2026-11-15; taken 2026-11-15 by the lead under Eric's delegation:
+- Decision (owner, D8, new 2026-11-15; taken 2026-11-15 by the lead agent under the repository owner's delegation:
   option (c), as recommended): how a waiting order is announced. Options:
   (a) leave it: at the `summary` level an order reads "Payment waiting"; (b) relabel every
   `approve-intent` request with a neutral word ("Request waiting"); (c) give `PushFacts` one more
@@ -543,7 +543,7 @@ refused describe the plan before 2026-11-16 and are history as of that date.
   Recommendation: (c). It tells the truth and adds no order detail: no market, side, size,
   price or notional ever reaches a notification.
   Date/Author: 2026-11-15 / plan refresh
-- Decision (owner, D9, new 2026-11-15; taken 2026-11-15 by the lead under Eric's delegation:
+- Decision (owner, D9, new 2026-11-15; taken 2026-11-15 by the lead agent under the repository owner's delegation:
   option (a), as recommended): cancelling after a restore. After the operator
   restores the signer from a backup and sets the restore fence (`apps/signer/src/fence.ts`), an
   order signed after the backup is not in the restored `venue_signatures`, so the signer answers
@@ -819,7 +819,7 @@ Files and interfaces:
   - `intentSpend(intent)` returns `{ asset: SpendAsset; amount: bigint; daily: boolean }`:
     unchanged values for EVM with `daily: true`; for an order `asset: "usd6"`, `amount:
     orderNotionalUsd6(size, limitPx)`, `daily: !reduceOnly`; for a withdrawal `amount: 0n`,
-    `daily: false`. Callers to update (run `xd://lsp` references first; at `98cc6a1`):
+    `daily: false`. Callers to update (find references with the language server first; at `98cc6a1`):
     `apps/signer/src/signer.ts` (`sign`), `apps/signer/src/confirmations.ts`
     (`getConfirmation`), `apps/server/src/execution/intents.ts` (`approveIntentKind().describe`),
     `packages/protocol/src/confirmation.ts` (`renderIntent`),
@@ -1152,7 +1152,7 @@ Acceptance (CI job `test`):
 
 Scope: agents can propose and cancel orders, people see orders in the inbox and the venue
 rules in the policy editor, the control plane submits and reconciles, and a waiting order is
-announced without its details. **(D1, D7 (a) and D8 (c) taken 2026-11-15; D2 was open with Eric
+announced without its details. **(D1, D7 (a) and D8 (c) taken 2026-11-15; D2 was open with the owner
 then, so only the testnet path was built and mainnet was refused at boot; superseded by
 Milestone 7)**
 
@@ -1642,12 +1642,12 @@ Regression checks:
 - Risk: a resting order signed after the last backup cannot be cancelled after a restore (D9).
   Mitigation: D9 (a), taken 2026-11-15: documented in the restore steps, and the default
   policy draft allows only `Ioc`.
-- Closed question (D2, mainnet): decided 2026-11-16 by Eric: mainnet venue support ships. See
+- Closed question (D2, mainnet): decided 2026-11-16 by the owner: mainnet venue support ships. See
   the `Decision Log` entry D2 and Milestone 7.
-- Answered (2026-11-15, by the lead under Eric's delegation; no recommendation, so the
+- Answered (2026-11-15, by the lead agent under the repository owner's delegation; no recommendation, so the
   conservative option): reduce-only orders stay under the per-order cap. Reason: the smaller
   change, and a cap that always applies fails closed.
-- Answered (2026-11-15, by the lead under Eric's delegation; no recommendation, so the
+- Answered (2026-11-15, by the lead agent under the repository owner's delegation; no recommendation, so the
   conservative option): the testnet manual proof is not required to call Milestone 6 done; it
   is its own Progress line, ticked only when run, and was to be required before any mainnet
   decision (D2). Reason: CI proves the milestone; the manual proof needs funds not in hand, and
@@ -1689,13 +1689,13 @@ spot, HIP-3 DEXs.
   file and line references (gates, README, architecture, v0.1 gate text). D5 re-stated against
   the three additive precedents now in §12. Status stays Draft; still six milestones, none
   delivered by other plans.
-- 2026-11-15: D1 and D3 to D9 taken by the lead under Eric's delegation, each as recommended
-  (D5 (a), D7 (a), D8 (c), D9 (a)); D2 stayed open with Eric then, mainnet refused at boot
+- 2026-11-15: D1 and D3 to D9 taken by the lead agent under the repository owner's delegation, each as recommended
+  (D5 (a), D7 (a), D8 (c), D9 (a)); D2 stayed open with the owner then, mainnet refused at boot
   (decided 2026-11-16: mainnet is supported; Milestone 7). The two
   open questions without a recommendation are answered with the conservative option. Repricing
   is built at `61d0326`: the signer migration is version 7 and the server migration
   `0008_venue_orders`; the repricing routes are named.
-- 2026-11-16: Owner decision D2 taken by Eric: mainnet venue support ships. Decision Log entry
+- 2026-11-16: Owner decision D2 taken by the owner: mainnet venue support ships. Decision Log entry
   rewritten as decided; Milestone 7 added to `Progress` (all lines unticked) and to `Plan of
   Work`; one Surprises entry (mainnet needed no new signing code); the mainnet refusals of
   Milestones 4 to 6 marked superseded rather than removed; non-goals, the open question, the

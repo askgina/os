@@ -2,7 +2,7 @@
 
 - Branch: main
 - Status: Ready for Review
-- Owner(s): Eric Juta
+- Owner(s): the repository owner
 - Created: 2026-11-14
 - Last Updated: 2026-11-15
 - Links: [Issue #24](https://github.com/askgina/os/issues/24) | [Map #18](https://github.com/askgina/os/issues/18) | [Research report](research/approval-notifications.md)
@@ -37,14 +37,14 @@ Success means:
 
 - [x] (2026-11-14 00:00Z) Research current behavior and relevant code paths ([report](research/approval-notifications.md)).
 - [x] (2026-11-14 00:00Z) Define the implementation approach and validation plan (this draft).
-- [x] (2026-11-15) Owner decisions D1 to D7 in `Decision Log`: Eric chose the recommended option of each.
+- [x] (2026-11-15) Owner decisions D1 to D7 in `Decision Log`: the owner chose the recommended option of each.
 - [x] (2026-11-15) Milestones 1 and 2 are commit `371c2ce`, CI run 43705883757 green (check, test, ui, stack amd64/arm64/tls). Milestone 1: notification outbox and signed webhook (`apps/server/src/notify/`, migration `0005_notifications`). The webhook also reports `mandate.used`. First start creates `notify-webhook-secret`; Compose passes it.
 - [x] (2026-11-15) Milestone 2: Web Push sender (RFC 8291, RFC 8292), reproducing the RFC 8291 Appendix A body byte for byte. First start creates `vapid-key.pem`.
 - [x] (2026-11-15) Milestone 3: subscriptions, preferences, content levels, API (commit `e8ae6ff`, migration `0006_push_subscriptions`, seven routes). CI run 43707841094: test, ui and stack amd64/arm64/tls green; `check` red on one unformatted Markdown table, fixed in the next commit. All six jobs green at `3bf1a7b`, CI run 43709103267.
 - [x] (2026-11-15) Milestone 4: web app manifest, service worker, notification settings, return path after sign-in (commit `98cc6a1`). CI run 43710836888 green on check, test, ui (five projects) and stack amd64/arm64/tls, including a browser gate that the built app serves `/manifest.webmanifest` and `/sw.js` and that the worker activates under the Content-Security-Policy (activation on the stacks without TLS only).
 - [x] (2026-11-15) Milestone 5: expiry reminders and quiet hours (same commit and run as Milestone 3). The webhook is not held by quiet hours.
 - [x] (2026-11-15) Milestone 6: ntfy sidecar example (`examples/ntfy-sidecar`, its own Compose overlay), docs, threat model, two webhook release gates (commits `b03f277`, `ec28864`). CI run 43709103267 green at `3bf1a7b` on check, test, ui and stack amd64/arm64/tls. No release gate turns Web Push on: push delivery is tested against a local stand-in push service in the server tests only. The sidecar's overlay has not been started against a real ntfy server.
-- [x] (2026-11-16) Manual staging check: a real phone receives a push and opens the approval. Done once on staging at `dc985b6`: the owner's phone showed the notification, he tapped it and approved with a passkey, and the payment confirmed 51 s after it was proposed (approval `apr_01m7gyqzwqb7pb2pyc7y7eb84d`; the run is recorded in [busy-fork.md](./busy-fork.md)). That it showed is the owner's report; the logs hold the hand-over to the push service and the page load.
+- [x] (2026-11-16) Manual staging check: a real phone receives a push and opens the approval. Done once on staging at `dc985b6`: the owner's phone showed the notification, the owner tapped it and approved with a passkey, and the payment confirmed 51 s after it was proposed (approval `apr_01m7gyqzwqb7pb2pyc7y7eb84d`; the run is recorded in [busy-fork.md](./busy-fork.md)). That it showed is the owner's report; the logs hold the hand-over to the push service and the page load.
 
 ## Surprises & Discoveries
 
@@ -65,7 +65,7 @@ Success means:
 
 ## Decision Log
 
-Decisions D1 to D7 were taken by the owner on 2026-11-15: Eric chose the recommended option of each (the entries below still read "open" and "recommended"; the recommendation is the decision). The approval page a notification leads to now links on to the signer's confirmation page (ticket 20, built after this plan was drafted).
+Decisions D1 to D7 were taken by the owner on 2026-11-15, who chose the recommended option of each (the entries below still read "open" and "recommended"; the recommendation is the decision). The approval page a notification leads to now links on to the signer's confirmation page (ticket 20, built after this plan was drafted).
 
 - Decision (D1, open): channels built into the control plane. Recommended: Web Push and the signed, reliable webhook; everything else as sidecars of the webhook.
   Rationale: Web Push reaches the phone people already approve on; sidecars keep third-party tokens out of the control plane.
@@ -371,7 +371,7 @@ External dependencies:
 
 ## Concrete Steps
 
-From the repository root (`/srv/openclaw-data/home/ericjuta/.openclaw/workspace/repos/os`), on a branch `feat/approval-notifications`:
+From the repository root, on a branch `feat/approval-notifications`:
 
     (cd apps/server && bunx tsc --noEmit)
     (cd apps/server && bun run db:generate)        # writes 0002 and 0003 migrations

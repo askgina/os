@@ -3,7 +3,7 @@
 - Branch: main (private), one milestone at a time
 - Status: Ready for Review (built 2026-11-15; Milestones 1 to 7 green in CI run 43729783071,
   Milestone 8 and the export, clone, import and erase screens green in CI run 43732195805)
-- Owner(s): Eric Juta
+- Owner(s): the repository owner
 - Created: 2026-11-14
 - Last Updated: 2026-11-15
 - Links: [Ticket #23](https://github.com/askgina/os/issues/23) | [Map #18](https://github.com/askgina/os/issues/18) | [Research report](./research/workspace-lifecycle.md) | [v0.1 ExecPlan](./agent-workspaces-v0.1.md) | [Trusted display](./trusted-display.md) | [Mandates](./approval-mandates.md) | [Notifications](./approval-notifications.md) | [Stuck transactions](./stuck-transaction-repricing.md)
@@ -66,7 +66,7 @@ Success means:
 
 - [x] (2026-11-14 21:30Z) Research: what a workspace owns, what v0.1 can do, what the signer can and cannot see. See the report.
 - [x] (2026-11-14 21:30Z) Draft this plan with recommended options; owner decisions listed under Risks and Open Questions.
-- [x] (2026-11-15) Owner decisions D1-D12 taken and recorded in the Decision Log. D3 by the owner (2026-11-14): allowlist or own treasury. D1, D2 and D4-D12 by the lead under Eric's delegation ("delegate to you on decisions like a CTO"), each the recommended option.
+- [x] (2026-11-15) Owner decisions D1-D12 taken and recorded in the Decision Log. D3 by the owner (2026-11-14): allowlist or own treasury. D1, D2 and D4-D12 by the lead agent under the repository owner's delegation ("delegate to you on decisions like a CTO"), each the recommended option.
 - [x] (2026-11-14) The sweep, built ahead of the milestones as a fix to v0.1 (a wallet whose agent was removed or disabled could not be emptied): the `Sweep` structure and `sweep-wallet` envelope (protocol), `POST /v1/wallets/:walletId/sweep` (signer), the `sweep-wallet` approval kind and `requestSweep` route on the shared signing path (server, `apps/server/src/execution/sweeps.ts`, `transactions.ts`), "Empty this wallet" and the sweep approval card (web), and a release gate. Proven locally, one file at a time: `packages/protocol/test/digests.test.ts`, `schemas.test.ts`, `signer-client.test.ts`; `apps/signer/test/sweep.test.ts`; `packages/api/test/api.test.ts`; `apps/server/test/execution/sweep.test.ts` on Anvil; `apps/web/test/sweep.test.ts`. Retire, delete, export and clone are not built.
 - [ ] The sweep in CI: the release gate "a person empties a disabled agent's wallet to the treasury while paused, and the signer refuses any other destination" in `e2e/test/release-gates.spec.ts` (`stack (amd64)`, `stack (arm64)`), and the `ui` job with the new card. Written and type-checked, not run. No browser journey covers the card yet.
 - [x] (2026-11-15) Re-checked against main (`2911c20`). The sweep is proven in CI: its release gate (`e2e/test/release-gates.spec.ts:686`) passed in `stack (amd64)` of run 43710836888 on `98cc6a1`, all six jobs green, and the `ui` journey now covers the sweep card (`apps/web/test/journey.e2e.ts:445-466`). Trusted display, the v0.1 defect fixes, mandates and notifications landed since the draft; the milestones below are rewritten for them, D3 is delivered, D8-D12 are new. Nothing else of this plan is built.
@@ -468,7 +468,7 @@ Every owner decision is taken. Each names its question (D1-D12) in Risks and Ope
   2026-11-14. Each entry below states its option.
   Rationale: the owner asked for the remaining epics to be completed with decisions delegated;
   the recommended options were each argued in this plan and its research report.
-  Date/Author: 2026-11-15 / lead, under Eric's delegation
+  Date/Author: 2026-11-15 / lead agent, under the repository owner's delegation
 - Decision (D1, taken 2026-11-15, option a): deletion destroys wallet keys at the signer, after
   a delay the signer enforces, authorized by a `delete-workspace` envelope at the admin threshold
   that names the exact wallet set, approved on the signer's confirmation page.
@@ -530,7 +530,7 @@ Every owner decision is taken. Each names its question (D1-D12) in Risks and Ope
   history. Milestone 8 is in scope.
   Rationale: the notification data is personal and easy to delete; the audit chain stays
   verifiable without a format change. Being erased is the person's entitlement in the product.
-  Date/Author: 2026-11-15 / lead, under Eric's delegation
+  Date/Author: 2026-11-15 / lead agent, under the repository owner's delegation
 - Decision (D7, taken 2026-11-15): finalize waits while any transaction of the subject is
   `signed`, `broadcast` or `stuck`, and while one is `rejected` and no later transaction of its
   wallet on its chain has used its nonce. People clear a stuck one with its `cancel-transaction`
@@ -1388,8 +1388,8 @@ Regression checks:
 - Risk: the tombstone transaction deadlocks with a concurrent proposal, as `FOR UPDATE` did.
   Mitigation: append the audit event first, take no stronger lock (Milestone 4 step 7); test it.
 
-Every owner question below is answered. D3 by the owner (2026-11-14); the others by the lead under
-Eric's delegation (2026-11-15), each with the option this plan recommended. Rejected options are
+Every owner question below is answered. D3 by the owner (2026-11-14); the others by the lead agent under
+the repository owner's delegation (2026-11-15), each with the option this plan recommended. Rejected options are
 kept for the record.
 
 - Question D1 (owner): what deletion does to keys. Answered (2026-11-15): (a) the signer
@@ -1474,7 +1474,7 @@ Evidence on main (`2911c20`). Key lines:
   lifecycle step runs from the existing 3-second sweeper; the tombstone respects the
   `FOR NO KEY UPDATE` audit lock. Threat model, context, line references, validation and risks
   updated. D3 marked answered; D8-D12 added. Nothing of retire, delete, export or clone is built.
-- 2026-11-15: Owner decisions D1, D2 and D4-D12 taken by the lead under Eric's delegation, each
+- 2026-11-15: Owner decisions D1, D2 and D4-D12 taken by the lead agent under the repository owner's delegation, each
   the recommended option; Decision Log, Progress and
   the open questions rewritten as answered. Milestone text follows the taken options: Milestone 8
   is in scope, D7 also waits for a `rejected` transaction whose nonce is unused, D10's webhook

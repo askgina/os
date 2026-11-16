@@ -1,43 +1,50 @@
 # Architecture
 
-This project lets AI agents propose payments from wallets they cannot spend from on their own.
-A person approves each payment with a passkey, on the signer's confirmation page. A separate
-signer service checks that passkey approval itself, checks the wallet's rules, and signs exactly
-one transaction. An agent can also propose a limit order on a Hyperliquid perpetual market, on
-Hyperliquid's testnet or mainnet: the signer builds and signs it after the same passkey approval, and
-the control plane posts it to the venue (see "A venue order, end to end").
+This page explains how the parts of this repository fit together: which service holds what, who
+may reach whom, and the path each kind of request takes from an agent to a signature.
 
-Everything runs on hardware you control. No hosted service is required.
+In short: an AI agent proposes a payment, or a limit order on a Hyperliquid perpetual market, from
+a wallet it cannot spend from on its own. A person approves it with a passkey on the signer's
+confirmation page. A separate signer service checks that passkey approval itself, checks the
+wallet's rules, and signs exactly one transaction or order. Everything runs on machines you
+control; no hosted service is required.
 
-This page describes the design that the v0.1 plan
-([`specs/agent-workspaces-v0.1.md`](../specs/agent-workspaces-v0.1.md)) and the shared contract
-files fix. Two companion documents go deeper:
+Two companion documents go deeper:
 
 - [`approval-protocol.md`](./approval-protocol.md): the exact data formats, digests and checks.
 - [`threat-model.md`](./threat-model.md): what each attacker can and cannot do, and the known limits.
 
+For the design plan of the first release, see
+[`specs/agent-workspaces-v0.1.md`](../specs/agent-workspaces-v0.1.md). [What is proven](#what-is-proven)
+at the end of this page says which parts CI tests, which were tried once by hand, and which are
+unproven.
+
 ## Words used on this page
 
-Each term below has one meaning everywhere in this repository. The definitions follow the plan's
-"Terms" list.
+Each term below has one meaning everywhere in this repository.
 
-| Term           | Meaning                                                                                                                                                                                                          |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Workspace      | The unit people share. It has members, agents and wallets.                                                                                                                                                       |
-| Member         | A person in a workspace with one role: `owner`, `approver` or `viewer`.                                                                                                                                          |
-| Approver       | A member whose passkey the signer accepts for that workspace.                                                                                                                                                    |
-| Agent          | A program you bring that talks to the system over MCP (Model Context Protocol). It has a token and one wallet of its own.                                                                                        |
-| Wallet         | An EVM address whose private key lives only in the signer. Kind `agent` or `treasury`. The same address is the wallet's Hyperliquid account.                                                                     |
-| Intent         | One operation an agent proposes, such as "send 0.25 ETH to 0x1111…" or "buy 0.01 BTC perpetual at 65,000 USD". It never changes after it is made. Its hash identifies it.                                        |
-| Venue          | An exchange the signer signs actions for but never talks to. One exists: Hyperliquid, on its testnet (`hyperliquid:testnet`) or mainnet (`hyperliquid:mainnet`). The control plane posts what the signer signed. |
-| Policy         | The rules for one wallet: chains, which agents may propose, caps, allowed recipients and contracts, fee ceiling, how many approvals. The signer holds it.                                                        |
-| Envelope       | A small statement of one thing a person authorizes, such as "sign this intent under this policy". Its digest is what the passkey signs.                                                                          |
-| Authorization  | An envelope together with the passkey signatures (WebAuthn "assertions") over it.                                                                                                                                |
-| Mandate        | An approval given once, in advance, for one agent's transfers from one wallet to listed recipients, within caps, until an end time. The signer holds it.                                                         |
-| Signer         | The isolated service that holds the wallet keys and decides whether to sign.                                                                                                                                     |
-| Control plane  | The server that people and agents talk to. It can ask the signer. It cannot make the signer sign.                                                                                                                |
-| World          | The Workflow SDK's name for its storage and job-queue backend.                                                                                                                                                   |
-| KEK / data key | A key-encryption key kept outside the database (a keyring file, or an OpenBao Transit key), and a per-run or per-workspace key that the KEK wraps inside it.                                                     |
+| Term              | Meaning                                                                                                                                                                |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workspace         | The unit people share. It has members, agents and wallets.                                                                                                             |
+| Member            | A person in a workspace with one role: `owner`, `approver` or `viewer`.                                                                                                |
+| Approver          | A member whose passkey the signer accepts for that workspace.                                                                                                          |
+| Agent             | A program you bring that talks to the system over MCP (Model Context Protocol). It has a token and one wallet of its own.                                              |
+| Wallet            | An EVM address whose private key lives only in the signer. Kind `agent` or `treasury`. The same address is the wallet's Hyperliquid account.                           |
+| Intent            | One operation an agent proposes, such as "send 0.25 ETH to 0x1111…" or "buy 0.01 BTC perpetual at 65,000 USD". It never changes after it is made; its hash names it.   |
+| Venue             | An exchange the signer signs actions for but never talks to. One exists: Hyperliquid, on `hyperliquid:testnet` or `hyperliquid:mainnet`.                               |
+| Policy            | The rules for one wallet: chains, venue markets, which agents may propose, caps, allowed recipients and contracts, fee ceiling, approvals needed. The signer holds it. |
+| Request           | Something waiting for people's passkeys: an agent's intent, or a change such as a new policy, an approver change or a mandate. It expires.                             |
+| Admin threshold   | How many approvers a change to the workspace needs: approvers, policies, mandates, sweeps, retiring a wallet, deleting the workspace.                                  |
+| Envelope          | A small statement of one thing a person authorizes, such as "sign this intent under this policy". Its digest is what the passkey signs.                                |
+| Authorization     | An envelope together with the passkey signatures (WebAuthn "assertions") over it.                                                                                      |
+| Mandate           | An approval given once, in advance, for one agent's transfers from one wallet to listed recipients, within caps, until an end time. The signer holds it.               |
+| Signer            | The isolated service (`apps/signer`) that holds the wallet keys and decides whether to sign.                                                                           |
+| Confirmation page | The page the `approve` service (`apps/approve`) serves at `APPROVE_ORIGIN`, where people read a request and approve it with a passkey.                                 |
+| Control plane     | The server (`apps/server`, with the web app `apps/web`) that people and agents talk to. It can ask the signer. It cannot make the signer sign.                         |
+| World             | The Workflow SDK's name for its storage and job-queue backend.                                                                                                         |
+| KEK / data key    | A key-encryption key kept outside the database (a keyring file or an OpenBao Transit key), and a per-run or per-workspace key that the KEK wraps.                      |
+| Restore fence     | A time the operator sets on the signer after restoring a backup; the signer then refuses every envelope issued before it.                                              |
+| Release gates     | The end-to-end tests in `e2e/test/` that `./e2e/run.sh` runs against the whole Compose stack.                                                                          |
 
 The schemas for intent, policy and envelope are in
 [`packages/protocol/src/intent.ts`](../packages/protocol/src/intent.ts),
@@ -48,88 +55,87 @@ The schemas for intent, policy and envelope are in
 
 ```mermaid
 flowchart LR
-  subgraph agentsNet [agents network, internal]
-    A[Agent: any MCP client]
-  end
-  subgraph edgeNet [edge network]
-    C[Caddy reverse proxy]
-  end
-  subgraph controlNet [control network]
-    S[server: UI, REST API, MCP gateway, Workflow runtime]
-    P[(Postgres)]
-  end
-  subgraph signingNet [signing network, internal]
-    G[signer]
-    V[(OWS vault and SQLite)]
-  end
-  subgraph approveEdgeNet [approve-edge network, internal]
-    AP[approve: confirmation page]
-  end
-  subgraph chainNet [chain network]
-    R[(EVM JSON-RPC)]
-    H[(Hyperliquid API, testnet or mainnet, when VENUES_FILE names it)]
-  end
-  B[Browser with passkey] -->|HTTPS, PUBLIC_ORIGIN and APPROVE_ORIGIN| C
-  A -->|MCP with bearer token| C
-  C -->|public listener only| S
-  C -->|confirmation site| AP
-  S --> P
-  S -->|control secret: sign, apply, open and list confirmations| G
-  AP -->|confirm secret, approve-signer network: view, submit assertion, possession step| G
+  B["Browser with passkey"]
+  A["Agent: any MCP client"]
+  AG["agent-gateway: Caddy, /mcp only"]
+  C["caddy: the edge, two sites"]
+  S["server: web app, REST API, MCP endpoint, Workflow runtime"]
+  P[("postgres")]
+  AP["approve: confirmation page"]
+  G["signer"]
+  V[("OWS vault and SQLite")]
+  R[("EVM JSON-RPC")]
+  H[("Hyperliquid API, when VENUES_FILE names it")]
+  B -->|"PUBLIC_ORIGIN and APPROVE_ORIGIN"| C
+  A -->|"agents network, internal: MCP with bearer token"| AG
+  AG -->|"control network"| S
+  C -->|"control network: public listener only"| S
+  C -->|"approve-edge network, internal"| AP
+  S -->|"control network"| P
+  S -->|"signing network, internal: control secret"| G
+  AP -->|"approve-signer network, internal: confirm secret"| G
   G --> V
-  S -->|JSON-RPC| R
-  S -->|HTTPS: requests the signer signed, order and account reads| H
+  S -->|"chain network"| R
+  S -->|"HTTPS: requests the signer signed, order and account reads"| H
 ```
 
-The diagram is the one-machine layout of `compose.yaml`; the two-host layout is in "Two trust
-domains on two hosts" below. The rules it encodes:
+The diagram is the one-machine layout of [`compose.yaml`](../compose.yaml); each arrow names the
+Compose network it uses. The two-host layout is in "Two trust domains on two hosts" below. The
+rules it encodes:
 
-- **Agent.** It reaches only Caddy. It cannot resolve the server, Postgres or the signer by name.
-  On MCP it has eight tools, and none of them signs, approves or administers (plan, "MCP tools";
-  `MCP_TOOL_NAMES` in [`gateway.ts`](../apps/server/src/mcp/gateway.ts)). `propose_order` is the
-  eighth; `cancel_intent` also cancels an order of the agent's that rests at the venue.
-- **Caddy.** The only entry point, with two sites. `PUBLIC_ORIGIN` goes to the server's public
-  listener; `APPROVE_ORIGIN` goes to the `approve` service. It drops the `Cookie` header on the
-  way to `approve`.
+- **Agent.** It runs on the internal `agents` network, whose only other member is
+  `agent-gateway`, a second Caddy that forwards `/mcp` to the server and answers 404 to anything
+  else ([`deploy/Caddyfile.agents`](../deploy/Caddyfile.agents)). The agent cannot reach the
+  server, Postgres or the signer by name. Its MCP tools are `whoami`, `get_balances`,
+  `propose_transfer`, `propose_contract_call`, `propose_order`, `get_intent`, `list_intents` and
+  `cancel_intent` (`MCP_TOOL_NAMES` in [`gateway.ts`](../apps/server/src/mcp/gateway.ts)); none
+  of them signs, approves or administers. `cancel_intent` also cancels an order of the agent's
+  that rests at the venue.
+- **Caddy (the edge).** The entry point for browsers, with two sites
+  ([`deploy/Caddyfile`](../deploy/Caddyfile)). `PUBLIC_ORIGIN` goes to the server's public
+  listener; `APPROVE_ORIGIN` goes to the `approve` service. It answers 404 to the Workflow
+  delivery routes, and it drops the `Cookie` header on the way to `approve`. By default the two
+  sites are plain HTTP on ports 8080 and 8081 of 127.0.0.1; [`compose.tls.yaml`](../compose.tls.yaml)
+  serves them over HTTPS with certificates Caddy obtains.
 - **`approve` service.** The signer's confirmation page on its own origin
   ([`apps/approve`](../apps/approve)). It holds no key. It serves one hand-written page and
   relays four routes to the signer, each with the token from the link: the view of one
-  approval, one passkey assertion, and for an approver change the possession challenge and the
+  request, one passkey assertion, and for an approver change the possession challenge and the
   answer to it. Its secret reaches those four signer routes and no other. Only Caddy reaches it,
   on the internal `approve-edge` network, and it reaches only the signer, on the internal
   `approve-signer` network.
-- **Server (control plane).** A Hono server on Node. It serves the UI, the REST API under
-  `/api/v1` ([`packages/api/src/routes.ts`](../packages/api/src/routes.ts)), the MCP gateway at
-  `/mcp`, and runs the Workflow SDK runtime. It lists and explains approval requests and links
-  to the confirmation page, but has no route that takes a passkey approval: it collects the
-  approvals the signer accepted there. The Workflow SDK's delivery routes have no
-  authentication upstream, so they are mounted only on a second listener bound to loopback
-  inside the server's container, never on the public one.
+- **Server (control plane).** A Hono server on Node. It serves the web app, the REST API under
+  `/api/v1` ([`packages/api/src/routes.ts`](../packages/api/src/routes.ts)), the MCP endpoint at
+  `/mcp`, and runs the Workflow SDK runtime. It lists and explains requests and links to the
+  confirmation page, but has no route that takes a passkey approval: it collects the approvals
+  the signer accepted there. The Workflow SDK's delivery routes have no authentication upstream,
+  so they are mounted only on a second listener bound to 127.0.0.1 inside the server's
+  container, never on the public one.
 - **Postgres.** Holds the control plane's tables (schema `os`), the Workflow runtime's tables
   (schemas `workflow` and `graphile_worker`) and the wrapped data keys (schema `os_keys`).
 - **Signer.** Reachable only from the server and the `approve` service, each on its own internal
-  network with no outbound route, and each with its own request secret.
-  It holds the wallet keys in an OWS (Open Wallet Standard) vault and its own records in SQLite.
-  Its HTTP contract is [`packages/protocol/src/signer/api.ts`](../packages/protocol/src/signer/api.ts).
-  It has no route that signs messages, typed data or raw hashes. Its venue route signs typed data
-  it built itself from an approved intent; no route takes typed data from the caller.
+  network with no outbound route, and each with its own request secret. It holds the wallet keys
+  in an OWS ([Open Wallet Standard](https://github.com/open-wallet-standard/core)) vault and its
+  own records in SQLite. Its HTTP contract is
+  [`packages/protocol/src/signer/api.ts`](../packages/protocol/src/signer/api.ts). It has no
+  route that signs messages, typed data or raw hashes. Its venue route signs typed data it built
+  itself from an approved intent; no route takes typed data from the caller.
 - **Chain.** The server talks to EVM nodes over JSON-RPC to read balances, simulate, estimate
   fees, broadcast and watch receipts. The signer never talks to a chain.
 - **Venue.** With `VENUES_FILE` set, the server posts the signer's signed requests to the venue's
   `/exchange` and reads its `/info`: market metadata, an order's status by its client order id,
-  the account's value, positions and resting orders
+  the account's value, positions and resting orders, and the ledger that shows a withdrawal
   ([`apps/server/src/execution/venues/hyperliquid.ts`](../apps/server/src/execution/venues/hyperliquid.ts)).
   The signer never talks to the venue either. A wallet's key is one OWS mnemonic, which also
   derives addresses on other chain families; the signer builds nothing for them and cannot spend
   from them.
 
-A bot of the private Busy fork (`askgina/busy`, name not final) is an agent like any other: it
-holds its own agent token, which the fork's Hub stores sealed and its runner hands to the bot as a
-secret file, and it reaches the gateway over the `os_agents` network. The fork adds no approval
-path; approvals stay on the signer's confirmation page, and the fork does not receive the
-webhook. Its runner holds a Docker socket and must not share the signer's host. Only a stub
-gateway has been used in its gates so far; no Busy bot payment is proven end to end. See "A
-compromised host of bots" in the [threat model](threat-model.md).
+A service that runs many bots, each with its own agent token, is a set of agents like any other.
+Each bot reaches the MCP endpoint over the `agents` network (`os_agents` under the default Compose
+project name) with its own token, and nothing it does adds an approval path: approvals stay on the
+signer's confirmation page. A bot runner that holds a Docker socket controls every container on
+its host, so it must not share the signer's host. The [threat model](threat-model.md) has a
+section on a compromised host of bots.
 
 ## Two trust domains on two hosts
 
@@ -141,51 +147,54 @@ host:
 
 ```mermaid
 flowchart LR
-  B[Browser with passkey]
+  B["Browser with passkey"]
   subgraph signerHost [signer host]
-    E2[Caddy: APPROVE_ORIGIN only]
-    AP[approve]
-    G[signer]
-    V[(OWS vault and SQLite)]
+    E2["Caddy: APPROVE_ORIGIN only"]
+    AP["approve"]
+    G["signer"]
+    V[("OWS vault and SQLite")]
   end
   subgraph controlHost [control host]
-    C[Caddy: PUBLIC_ORIGIN only]
-    S[server]
-    P[(Postgres)]
-    AG[agent-gateway]
+    C["Caddy: PUBLIC_ORIGIN only"]
+    S["server"]
+    P[("Postgres")]
+    AG["agent-gateway"]
   end
-  B -->|PUBLIC_ORIGIN| C
-  B -->|APPROVE_ORIGIN| E2
+  B -->|"PUBLIC_ORIGIN"| C
+  B -->|"APPROVE_ORIGIN"| E2
   C --> S
-  AG -->|/mcp| S
+  AG -->|"/mcp"| S
   S --> P
-  S -->|mutual TLS, control certificate, control secret| G
-  E2 -->|internal network| AP
-  AP -->|mutual TLS, approve certificate, confirm secret| G
+  S -->|"mutual TLS, control certificate, control secret"| G
+  E2 -->|"internal network"| AP
+  AP -->|"mutual TLS, approve certificate, confirm secret"| G
   G --> V
 ```
 
 - **What crosses between the hosts:** one connection, from the server to the signer's port 8787,
-  published only on the signer host's private address. It is TLS 1.3 in which each side accepts
-  exactly one certificate of the other, made by `deploy/split/make-peer-certs.sh`; there is no
-  certificate authority. The signer maps the client certificate to a scope (control or confirm)
-  before it checks the request signature, which every request still carries.
+  published only on the signer host's private address (`SIGNER_BIND_ADDRESS`). It is TLS 1.3 in
+  which each side accepts exactly one certificate of the other, made by
+  `deploy/split/make-peer-certs.sh`; there is no certificate authority. The signer maps the
+  client certificate to a scope (control or confirm) before it checks the request signature,
+  which every request still carries.
 - **What stays on the signer host:** the vault, the signer's SQLite, `token-key`,
-  `vault-passphrase`, the confirm secret, the confirmation page and its edge (plan decision D7:
-  a confirmation page on the control host would give that host the display again).
+  `vault-passphrase`, the confirm secret, the confirmation page and its edge. A confirmation page
+  on the control host would let that host change what people read before they approve.
   `init --domain=signer` makes these secrets; only the request secret and the control plane's
   certificate and key are copied to the control host.
-- **What stays on the control host:** Postgres, the keyring (or the OpenBao credentials), the
-  webhook secret and the VAPID key. `init --domain=control` makes the keyring and the two
-  secrets, and takes the request secret from the operator's copy.
+- **What stays on the control host:** Postgres and its password, the keyring (or the OpenBao
+  credentials), the webhook secret and the VAPID key. `init --domain=control` makes the database
+  password, the keyring, the webhook secret and the VAPID key, and takes the request secret from
+  the operator's copy.
 - **Outbound:** the signer opens no connection; `deploy/split/nftables-signer.conf` is an example
   of host rules that enforce it. The `approve` service has internal networks only. The signer
   host's edge is the one container there that reaches out, to an ACME server.
 
-On Kubernetes ([`deploy/k8s/`](../deploy/k8s/)) the control plane runs in the cluster and, in
-production, the signer host stays outside it, joined by the same mutual TLS (plan decision D4).
-The `kind` overlay puts the signer in the cluster, for CI and evaluation only. The manifests have
-not run in CI yet.
+On Kubernetes ([`deploy/k8s/`](../deploy/k8s/)) the control plane runs in the cluster. In
+production the signer and its confirmation page stay on their own host outside the cluster,
+joined by the same mutual TLS (`overlays/production-example`, component `signer-external`): a
+cluster's administrators reach every node and its Secrets. The `kind` and `kind-ha` overlays put
+the signer in the cluster, for CI and evaluation only.
 
 ### More than one server replica
 
@@ -193,31 +202,35 @@ The server keeps nothing between requests that another replica would need: every
 connects to the same Postgres and the same signer, and anything that must happen once is decided
 in the database.
 
-| What                                             | How replicas agree                                                                                |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
-| An agent's request limit, failed authentications | Token buckets in `os.rate_limits` (UNLOGGED), one row per bucket, counted by the database's clock |
-| The finishing of retirements and deletions       | One bucket in `os.rate_limits`: once a minute across all replicas                                 |
-| The setup token                                  | Never minted at boot; `cli.ts setup-token` replaces it under an advisory lock                     |
-| Account nonces, reprices and cancels             | Advisory transaction locks per wallet and chain, and per approval                                 |
-| Notifications                                    | Outbox rows claimed with `FOR UPDATE SKIP LOCKED` and leased for 60 seconds                       |
-| Workflow steps                                   | The World's queue in Postgres; each replica runs `WORKFLOW_WORKER_CONCURRENCY` workers            |
-| Which workflow bundle runs                       | A shared advisory lock per bundle (class `18680`): a replica on another bundle refuses to start   |
-| A shredded data key                              | `NOTIFY os_keys_shred`; every replica listens and drops the key from its cache                    |
+| What                                             | How replicas agree                                                                                     |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| An agent's request limit, failed authentications | Token buckets in `os.rate_limits` (UNLOGGED), one row per bucket, counted by the database's clock      |
+| The finishing of retirements and deletions       | One bucket in `os.rate_limits`: once a minute across all replicas                                      |
+| The setup token                                  | Never minted at boot; `cli.ts setup-token` replaces it under an advisory lock                          |
+| Account nonces, reprices and cancels             | Advisory transaction locks per wallet and chain, and per request                                       |
+| Notifications                                    | Outbox rows claimed with `FOR UPDATE SKIP LOCKED` and leased for 60 seconds                            |
+| Workflow steps                                   | The World's queue in Postgres; each replica runs `WORKFLOW_WORKER_CONCURRENCY` workers                 |
+| Which workflow bundle runs                       | A shared advisory lock per bundle (class `18680`): a replica on another bundle refuses to deliver runs |
+| A shredded data key                              | `NOTIFY os_keys_shred`; every replica listens and drops the key from its cache                         |
 
 Each replica answers `GET /readyz` with 200 once its database answers and its World delivers
 runs. On Compose the edges find replicas by DNS and send a request that cannot reach its replica
 to another; on Kubernetes a Service does. Upgrades stop every replica first, because a workflow
-run is not pinned to the bundle that started it. The two-replica gate on the real stack is
-written and has not run; the unit tests with two gateways on one database passed in CI.
+run is not pinned to the bundle that started it.
 
 ## One payment, end to end
 
 A person opens the request in the control plane and follows its link to the signer's
 confirmation page, on its own origin, `APPROVE_ORIGIN`. There they check the address bar, read
-the view the signer built from its own records, and approve with a passkey. The control plane
-then collects the approvals from the signer and asks it to sign. The signer accepts an approval
-only when the browser made it at `APPROVE_ORIGIN`, top-level and not in a frame, as a
+the view the signer built from its own records, and approve with a passkey. The signer accepts an
+approval only when the browser made it at `APPROVE_ORIGIN`, top-level and not in a frame, as a
 `webauthn.get`; an approval made on any page the control plane serves is refused.
+
+The control plane then collects the approvals from the signer and asks it to sign. Each request
+has its own workflow run, which does the collecting: it asks the signer 5 seconds after it starts,
+then at doubling intervals of at most two minutes, until the decision or the expiry
+([`apps/server/workflows/approval.ts`](../apps/server/workflows/approval.ts)). Nobody has to come
+back to the control plane after approving.
 
 ```mermaid
 sequenceDiagram
@@ -231,23 +244,24 @@ sequenceDiagram
   Ag->>S: propose_transfer(chain, to, amount, memo)
   S->>S: build canonical Intent, compute intentHash
   S->>S: evaluateIntent against the policy (early feedback only)
-  S->>S: open approval: approve-intent envelope with a fresh nonce and expiry
-  S->>G: open the confirmation (envelope and the intent it names)
+  S->>S: open the request: approve-intent envelope with a fresh nonce and expiry, start its workflow run
+  S->>G: POST /v1/approvals/:approvalId/confirmation (envelope and the intent it names)
   G-->>S: path /a/:approvalId with a fresh token as its fragment, kept sealed in Postgres
   S-->>Ag: intentId, status pending_approval, approvalUrl
-  P->>S: open the approval page
+  P->>S: open the request page
   S-->>P: readable card, with the link to APPROVE_ORIGIN and that path
   P->>A: open the link, whose token stays in the fragment
   P->>A: GET /api/approvals/:approvalId, token in the x-confirm-token header
   A->>G: GET /v1/confirm/:approvalId, confirm secret
   G-->>P: the view the signer rendered from its own records (through approve)
   P->>P: check the address bar, then the passkey signs the envelope digest and the browser stamps APPROVE_ORIGIN
-  P->>A: POST the assertion
+  P->>A: POST /api/approvals/:approvalId/assertions
   A->>G: POST /v1/confirm/:approvalId/assertions
   G->>G: verify: approver of this workspace, origin APPROVE_ORIGIN, top-level, webauthn.get
-  G-->>P: approvals collected and required, link back (through approve)
-  P->>S: back on the approval page, which asks for the request
-  S->>G: list the assertions the signer accepted
+  G-->>P: approvals collected and required (through approve)
+  loop the request's workflow run: after 5 s, then doubling up to every 2 min
+    S->>G: GET /v1/approvals/:approvalId/assertions
+  end
   S->>S: verify each again against APPROVE_ORIGIN, record it, decide
   S->>G: POST /v1/sign (intent, authorization, nonce and gas), HMAC-signed
   G->>G: recompute intentHash and challenge, check policy hash, verify assertions again
@@ -261,7 +275,7 @@ sequenceDiagram
 Every other kind of request (a policy change, an approver change, the admin threshold, resuming
 a workspace, a sweep) is approved the same way, on the same page; the control plane then asks
 the signer to apply it instead of signing. The signer's checks, in order, are in
-[the approval protocol](./approval-protocol.md#the-signing-rule). The design of the
+[the approval protocol](./approval-protocol.md#8-the-signing-rule). The design of the
 confirmation page is in [`specs/trusted-display.md`](../specs/trusted-display.md).
 
 An approver change has one step first. The person being added opens the request's link on the
@@ -277,20 +291,20 @@ recorded for that exact request
 
 A venue order takes the payment's path up to the approval, and then differs in two places: the
 signer encodes a venue action instead of an EVM transaction, and the control plane posts it to
-the venue instead of broadcasting it to a chain
-([`specs/non-evm-operations.md`](../specs/non-evm-operations.md)).
+the venue instead of broadcasting it to a chain. The design is in
+[`specs/non-evm-operations.md`](../specs/non-evm-operations.md).
 
 | Step            | EVM payment                                              | Venue order                                                                                                                                                 |
 | --------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Proposed with   | `propose_transfer`, `propose_contract_call`              | `propose_order`; a withdrawal is `propose_transfer` on `hyperliquid:testnet` or `hyperliquid:mainnet`                                                       |
 | Checked before  | The policy, a simulation                                 | The policy's venue rules, and the venue's metadata: the coin still at the policy's index and listed (`market_metadata_mismatch`), the tick (`invalid_tick`) |
-| Covered by      | One approval, or a mandate                               | One approval only: no mandate covers an order or a withdrawal (D7)                                                                                          |
+| Covered by      | One approval, or a mandate                               | One approval only: no mandate covers an order or a withdrawal                                                                                               |
 | Approved on     | The signer's confirmation page                           | The same page, showing market, index, side, size, limit price, notional, time in force, reduce-only, the submit window, and that caps are not loss caps     |
 | Signer route    | `POST /v1/sign`                                          | `POST /v1/venue/sign`                                                                                                                                       |
 | Who encodes     | The signer builds the transaction                        | The signer builds the action (msgpack and EIP-712, its own encoder), with a nonce from its venue ledger and an `expiresAfter` inside the submit window      |
 | Who sends       | The server broadcasts the raw transaction                | The server posts the signer's request body to `/exchange`, byte for byte                                                                                    |
 | Followed by     | Receipts by transaction hash                             | The order's status by its client order id, every 5 to 60 seconds for an hour, then every 5 minutes                                                          |
-| Stopped with    | A reprice or a cancel, the cancel approved with passkeys | `cancel_intent` or "Cancel order": the signer signs `cancelByCloid` with no passkey, also while paused (D4)                                                 |
+| Stopped with    | A reprice or a cancel, the cancel approved with passkeys | `cancel_intent` or "Cancel order": the signer signs `cancelByCloid` with no passkey, also while the workspace is paused                                     |
 | Loss bounded by | The policy's caps                                        | The account's value at the venue; the caps bound new orders only                                                                                            |
 
 ```mermaid
@@ -304,7 +318,7 @@ sequenceDiagram
   Ag->>S: propose_order(network, coin, side, size, limitPrice, timeInForce, reduceOnly, memo)
   S->>S: evaluateIntent against the policy's venue rules (early feedback only)
   S->>H: POST /info meta: the coin at the policy's index, not delisted
-  S->>S: open approval: approve-intent envelope, never a mandate
+  S->>S: open the request: approve-intent envelope, never a mandate
   S-->>Ag: intentId, status pending_approval, approvalUrl
   P->>G: approve on the confirmation page, as for a payment
   S->>G: POST /v1/venue/sign (intent, authorization), HMAC-signed
@@ -321,16 +335,17 @@ sequenceDiagram
   S->>H: POST /exchange
 ```
 
-Both networks are supported (decided 2026-11-16: mainnet is supported). The signer signs for the
-network the wallet's approved policy names, and on mainnet a signature moves real funds. The
-server stops at boot only when `VENUES_FILE` pairs one of Hyperliquid's own hosts with the other
+Both Hyperliquid networks are supported. The signer signs for the network the wallet's approved
+policy names, and on mainnet a signature moves real funds; an intent for another network is
+refused (`policy_denied`, reason `venue_not_allowed`). `VENUES_FILE` holds at most one entry per
+network. The server stops at boot when it pairs one of Hyperliquid's own hosts with the other
 network (`api.hyperliquid.xyz` must name `hyperliquid:mainnet`, `api.hyperliquid-testnet.xyz`
 must name `hyperliquid:testnet`), and refuses a policy draft whose venue network it has no venue
 for (`venue_not_configured`). Fills, positions and the account's value come from the venue
-through the control plane; the signer sees none of them, and the web app labels them as
-reported, not verified. What each
-party can do is in [the threat model](./threat-model.md#venue-orders); the exact signing and
-cancel rules are in [the approval protocol, section 8](./approval-protocol.md#venue-orders).
+through the control plane; the signer sees none of them, and the web app shows them as the venue
+reports them, apart from the notional the signer counted itself. What each party can do is in
+[the threat model](./threat-model.md#venue-orders); the exact signing and cancel rules are in
+[the approval protocol, section 8](./approval-protocol.md#venue-orders).
 
 ## A payment under a mandate
 
@@ -387,9 +402,9 @@ A **reprice** is the same transaction with both fees higher. The server asks for
 once the newest attempt is `REPRICE_AFTER_SECONDS` old, and an owner or approver can ask now with
 "Speed up"; neither needs a passkey. The signer rebuilds the transaction from its own record of
 the first signature and lets only `maxFeePerGas` and `maxPriorityFeePerGas` rise, within the fee
-ceiling people approved (`intent.maxFeeWei`, and the policy's current cap if lower), within a
-window after the first signature and a number of attempts, and never while the workspace is
-paused.
+ceiling people approved (`intent.maxFeeWei`, and the policy's current cap if lower), within
+`SIGNER_REPRICE_WINDOW_SECONDS` after the first signature and `SIGNER_MAX_TX_ATTEMPTS` attempts,
+and never while the workspace is paused.
 
 A **cancel** is a new request, `cancel-transaction`, which people approve on the confirmation
 page at the wallet policy's threshold like any other. The signer then signs a transfer of
@@ -435,19 +450,20 @@ in [the threat model](./threat-model.md#stuck-transactions); the exact checks ar
 
 People see waiting requests in the approval inbox. The server can also tell them elsewhere, and
 does so through an outbox ([`apps/server/src/notify/`](../apps/server/src/notify/)). The
-transaction that opens a request, or records a payment under a mandate, also writes one row per
-notification to `notification_deliveries`, so a request never exists without its notification and
-a crash loses none. Every three seconds the sweeper claims the rows that are due, leases them for
-a minute so two passes never send one twice, and sends each: at least once, retried with backoff
-until it is delivered, its request is no longer waiting, or eight attempts failed.
+transaction that opens a request, records a payment under a mandate, or schedules a retirement or
+a deletion also writes one row per notification to `notification_deliveries`, so a request never
+exists without its notification and a crash loses none. Every three seconds the sweeper claims
+the rows that are due, leases them for a minute so two passes never send one twice, and sends
+each: at least once, retried with backoff until it is delivered, its request is no longer
+waiting, or eight attempts failed.
 
 ```mermaid
 flowchart LR
-  E[Engine.open or a mandate payment] -->|same transaction| O[(notification_deliveries)]
-  O -->|sweeper, every 3 s| S[server]
-  S -->|signed POST, identifiers only| W[operator's webhook receiver]
-  W -->|its own credential| N[ntfy, chat, pager]
-  S -.->|Web Push, when WEB_PUSH_ENABLED=1| B[browser push services]
+  E["Engine.open, a mandate payment, a scheduled retirement or deletion"] -->|"same transaction"| O[("notification_deliveries")]
+  O -->|"sweeper, every 3 s"| S["server"]
+  S -->|"signed POST, identifiers only"| W["operator's webhook receiver"]
+  W -->|"its own credential"| N["ntfy, chat, pager"]
+  S -.->|"Web Push, when WEB_PUSH_ENABLED=1"| B["browser push services"]
 ```
 
 The one channel built in besides Web Push is a webhook (`NOTIFY_WEBHOOK_URL`): a `POST` of
@@ -507,8 +523,8 @@ threshold. The envelope names the wallets with their addresses (for a deletion, 
 wallets whose keys the signer still holds) and the destroy time. To empty a wallet first, people
 sweep it to an allowed address or the treasury.
 
-The signer keeps each lifecycle in its SQLite (schema version 7). A workspace is `active`,
-`deleting` or `deleted`; a wallet is `active`, `retiring`, `held` or `destroyed`:
+The signer keeps each lifecycle in its SQLite. A workspace is `active`, `deleting` or `deleted`;
+a wallet is `active`, `retiring`, `held` or `destroyed`:
 
 ```mermaid
 stateDiagram-v2
@@ -583,12 +599,13 @@ Who enforces what:
 | Data keys are shredded and the tombstone left                                                                                  | The server, after the signer's finalize                                                                                                                |
 | The balances shown before a deletion                                                                                           | Nobody: the server reads them for display, partially, and the signer cannot see them                                                                   |
 
-Removing an agent is disabling it, which is already final: it ends the agent's mandates and,
-now, its payments still waiting for people, which the server also revokes at the signer. The
-only way a wallet key leaves the signer is the operator's `admin.ts export-wallet` on the signer
-host; no route exports one. What each party can do with this is in
+Removing an agent is disabling it, which is final: it ends the agent's mandates and its payments
+still waiting for people, which the server also revokes at the signer. The only way a wallet key
+leaves the signer is the operator's `admin.ts export-wallet` on the signer host; no route exports
+one. What each party can do with this is in
 [the threat model](./threat-model.md#retiring-a-wallet-and-deleting-a-workspace); the exact
-checks are in [the approval protocol, section 8](./approval-protocol.md).
+checks are in
+[the approval protocol, section 8](./approval-protocol.md#retiring-a-wallet-and-deleting-a-workspace).
 
 ## Exporting, cloning and erasing a person
 
@@ -610,9 +627,9 @@ workspace and its wallets by hand, and through requests people approve on the co
   ([`clone.ts`](../apps/server/src/lifecycle/clone.ts)): new keys at the signer, new agent
   tokens shown once, invite links for members, and one `set-policy` request per wallet.
 - **Erasing a person** (`POST /api/v1/me/erase`, the person with a recent passkey sign-in, or
-  the operator's `apps/server/src/identity/erase-cli.ts --user <id>`): first `remove-approver`
-  requests for the person's passkeys, then, once none approves anywhere, the person's rows
-  ([`apps/server/src/identity/erase.ts`](../apps/server/src/identity/erase.ts)).
+  the operator's `node apps/server/src/identity/erase-cli.ts --user <id>`): first
+  `remove-approver` requests for the person's passkeys, then, once none approves anywhere, the
+  person's rows ([`apps/server/src/identity/erase.ts`](../apps/server/src/identity/erase.ts)).
 
 Who enforces what:
 
@@ -626,7 +643,6 @@ Who enforces what:
 | Erasing is refused while it would leave a workspace without an owner or enough approvers, or one is being deleted | The server (`last_owner`, `last_approver`, `workspace_deleting`)                                   |
 | Erasing keeps the user id, so audit and decision chains still verify                                              | The server: it rewrites no sealed value and no chained field                                       |
 
-Export, clone, import and erasing have unit tests; no release gate runs them on the real stack.
 What each party can do with them is in
 [the threat model](./threat-model.md#exporting-cloning-and-erasing-a-person).
 
@@ -689,11 +705,12 @@ keyring file (`KEY_PROVIDER=file`, the default) or an OpenBao Transit key
 fails; nothing falls back to another provider or to plaintext
 ([`packages/keys`](../packages/keys/README.md#choosing-the-key-provider)).
 
-1. **Workflow payloads.** The upstream Postgres World stores payloads in plaintext. Our World
-   ([`packages/world/src/index.ts`](../packages/world/src/index.ts)) adds the one method the
-   Workflow SDK asks for, `getEncryptionKeyForRun()`. The SDK then encrypts inputs, outputs, hook
-   payloads, stream chunks and step errors with AES-256-GCM under a key that exists once per run.
-2. **Application columns.** The server seals the intent, its presentation, approval details,
+1. **Workflow payloads.** The upstream Postgres World stores payloads in plaintext. This
+   repository's World ([`packages/world/src/index.ts`](../packages/world/src/index.ts)) adds the
+   one method the Workflow SDK asks for, `getEncryptionKeyForRun()`. The SDK then encrypts
+   inputs, outputs, hook payloads, stream chunks and step errors with AES-256-GCM under a key that
+   exists once per run.
+2. **Application columns.** The server seals the intent, its presentation, request details,
    the confirmation page's link with its token, mandates, signed transactions, signed venue
    requests and audit details into `bytea` columns under a per-workspace data key
    ([`packages/keys/src/seal.ts`](../packages/keys/src/seal.ts),
@@ -738,12 +755,39 @@ table is in [the threat model](./threat-model.md#what-is-encrypted-at-rest).
 - **Workflow delivery routes stay on loopback.** Upstream they are unauthenticated. Anyone who
   could call them could forge workflow events.
 - **Agents have their own network.** An agent may run untrusted code or follow injected
-  instructions. It should be able to reach the MCP gateway and nothing else.
+  instructions. It should be able to reach the MCP endpoint and nothing else.
 - **Notification channels are sidecars of one signed webhook.** A chat service's or a pager's
   token inside the control plane would be one more credential its compromise yields.
   A sidecar holds it instead, and the control plane sends only identifiers, signed, so a channel
   learns that something waits, not what.
 
-The decisions behind these boundaries, with the reasons, are recorded on the
-[Wayfinder map](https://github.com/askgina/os/issues/1) (tickets #7 to #15) and in the plan's
-Decision Log.
+Each of these boundaries answers a design question settled before the code was written: who holds
+the wallet keys, who checks an approval, what an agent may reach and request, where policy lives,
+how people are identified and recovered, what is encrypted, what a workspace is, and which stack
+to use. Each question, the options weighed and the answer are recorded as a GitHub issue, all
+linked from [the issue that tracks the first release](https://github.com/askgina/os/issues/1).
+Later decisions, each with its reason, are in the plans under [`specs/`](../specs/).
+
+## What is proven
+
+"Proven in CI" names the job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) and the
+test file; every job runs on every push to `main` and every pull request. The jobs `stack (amd64)`
+and `stack (arm64)` run the release gates and then, each on a fresh stack,
+`e2e/test/lifecycle.spec.ts`, `e2e/test/venue.spec.ts` and `e2e/test/browser.spec.ts`.
+
+| Capability                                                                                                                | Evidence                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A payment approved on the confirmation page lands once; an approval made on a control-plane page is refused               | Proven in CI: `stack (amd64)`, `stack (arm64)`, `e2e/test/release-gates.spec.ts` and `e2e/test/browser.spec.ts`; over HTTPS, `stack (tls)`, `e2e/test/browser.spec.ts`                                                                |
+| An agent on the `agents` network reaches the MCP endpoint and nothing else; the `approve` service reaches only the signer | Proven in CI: `stack (amd64)`, `stack (arm64)`, `e2e/test/release-gates.spec.ts`                                                                                                                                                      |
+| An approver change needs proof of possession of the new passkey                                                           | Proven in CI: `stack (amd64)`, `stack (arm64)`, `e2e/test/release-gates.spec.ts` and `e2e/test/browser.spec.ts`                                                                                                                       |
+| Mandates, reprices and cancels of stuck payments, webhook notifications, restore fence                                    | Proven in CI: `stack (amd64)`, `stack (arm64)`, `e2e/test/release-gates.spec.ts`                                                                                                                                                      |
+| Retiring wallets, deleting workspaces, template and record export, clone, import, erasing a person                        | Proven in CI: `stack (amd64)`, `stack (arm64)`, `e2e/test/lifecycle.spec.ts`                                                                                                                                                          |
+| Hyperliquid orders, cancels and withdrawals on testnet and mainnet                                                        | Proven in CI against fake venues that check every signature: `stack (amd64)`, `stack (arm64)`, `e2e/test/venue.spec.ts`. Unproven against the real venue: the real testnet was never tried, and no real mainnet order has been placed |
+| The signer and confirmation page on their own host, joined by mutual TLS                                                  | Proven in CI: `stack (split)`, `e2e/test/split.spec.ts`, then `e2e/test/release-gates.spec.ts` on the split layout                                                                                                                    |
+| Two server replicas                                                                                                       | Proven in CI: `stack (replicas)`, `e2e/test/replicas.spec.ts`, then `e2e/test/release-gates.spec.ts` with two replicas                                                                                                                |
+| Key-encryption keys in OpenBao Transit                                                                                    | Proven in CI: `stack (openbao)`, `e2e/test/openbao.spec.ts`, then `e2e/test/release-gates.spec.ts`                                                                                                                                    |
+| Kubernetes with the signer in the cluster (`overlays/kind`)                                                               | Proven in CI: `k8s`, `e2e/test/kubernetes.spec.ts` on kind; every overlay is validated with kubeconform                                                                                                                               |
+| Postgres as a three-instance CloudNativePG cluster, with a primary lost during a payment                                  | Proven in CI: `k8s-ha`, `e2e/test/kubernetes-ha.spec.ts` on kind                                                                                                                                                                      |
+| Kubernetes with the signer on its own host (`overlays/production-example`)                                                | Unproven: only validated with kubeconform in `k8s`                                                                                                                                                                                    |
+| Web Push delivery                                                                                                         | Proven in CI against a stand-in push service: `test`, `apps/server/test/notify/`. Proven once by hand: a real phone on a staging deployment showed a push, and a tap opened the request, which was then approved                      |
+| The ntfy sidecar                                                                                                          | Proven in CI: `test`, `examples/ntfy-sidecar/test/bridge.test.ts`, and its image build. Unproven against a real ntfy server                                                                                                           |

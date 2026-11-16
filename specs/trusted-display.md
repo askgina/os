@@ -2,7 +2,7 @@
 
 - Branch: main
 - Status: Ready for Review
-- Owner(s): Eric Juta
+- Owner(s): the repository owner
 - Created: 2026-11-14
 - Last Updated: 2026-11-15
 - Links: [Issue askgina/os#20](https://github.com/askgina/os/issues/20) | [Map askgina/os#18](https://github.com/askgina/os/issues/18) | [Research report](./research/trusted-display.md) | [v0.1 ExecPlan](./agent-workspaces-v0.1.md)
@@ -1346,7 +1346,7 @@ Automated validation:
 
 Manual or runtime validation:
 
-- Start: the phone staging stack described in the continuation notes, with
+- Start: the phone staging stack (one host behind Tailscale Serve HTTPS), with
   `PUBLIC_ORIGIN=https://<machine>.<tailnet>.ts.net:8444` and
   `APPROVE_ORIGIN=https://<machine>.<tailnet>.ts.net:8445`, Tailscale Serve on both ports.
 - Exercise: an agent proposes a 0.001 ETH payment; open the control plane on a laptop; follow

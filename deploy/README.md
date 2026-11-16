@@ -1,6 +1,32 @@
 # Running the stack
 
-From a fresh clone:
+This is the operator's guide: how to run the stack, keep it running and change it. It is for
+whoever administers the machines. It does not explain the design; read
+[`docs/architecture.md`](../docs/architecture.md) for that and
+[`docs/threat-model.md`](../docs/threat-model.md) for what each part protects. Words such as
+workspace, approver, intent, policy and mandate mean what the table "Words used on this page" in
+`docs/architecture.md` says.
+
+Read it in this order:
+
+1. "Starting", "Services", "Networks" and "Volumes": start the stack and learn its parts.
+2. "Backups and restoring", "Rotating the keyring" and "Choosing the key provider", before you
+   hold real funds.
+3. "The setup token" to create the first owner, then "Notifications" if people should hear about
+   waiting requests anywhere but the web app.
+4. The rest when you need it: approvers, mandates, stuck transactions, venues, retiring and
+   deleting, exporting, erasing a person, upgrading, the signer on its own host, more than one
+   server replica, Kubernetes.
+
+CI (`.github/workflows/ci.yml`) runs on every push to `main` and every pull request. Its
+`stack` jobs run the release gates, the end-to-end tests in `e2e/test/` that `./e2e/run.sh` runs
+against the whole Compose stack; the split layout, several server replicas, OpenBao and
+Kubernetes each have CI jobs of their own. Paragraphs marked "What is proven" say which CI job
+and test file prove what, and what has never been tried.
+
+## Starting
+
+You need Docker with Compose v2. From a fresh clone:
 
     cp .env.example .env              # optional; the defaults run on http://localhost:8080
     docker compose --profile dev up -d --build
@@ -8,9 +34,11 @@ From a fresh clone:
 `--profile dev` adds a local chain (`anvil`). Without it, list real chains
 in `deploy/chains.json` first.
 
-For a public host name with HTTPS, set `OS_HOSTNAME` and `PUBLIC_HOST` in `.env` to the name and run
-`docker compose -f compose.yaml -f compose.tls.yaml up -d --build`. Ports 80 and 443 must be
-reachable so Caddy can obtain certificates. Changing the host name later invalidates every passkey.
+For a public host name with HTTPS, set `OS_HOSTNAME` to the name and `APPROVE_ORIGIN` (below) in
+`.env`, and run `docker compose -f compose.yaml -f compose.tls.yaml up -d --build`. The overlay
+sets `PUBLIC_ORIGIN` to `https://` and `OS_HOSTNAME`, and refuses to start without either
+setting. Ports 80 and 443 must be reachable so Caddy can obtain certificates. Changing the host
+name later invalidates every passkey.
 
 Every layout also names the origin of the signer's confirmation page, `APPROVE_ORIGIN`. It is the
 only place people approve with their passkeys (`specs/trusted-display.md`): a person opens a
@@ -66,7 +94,7 @@ The proxy must pass the `Host` header through unchanged. With Tailscale:
 | `caddy`          | The only public entry point, with two sites: the UI and the confirmation page. Refuses `/.well-known/workflow/*` as a second lock.                                                                |
 | `agent-gateway`  | The only thing agent containers can reach. Forwards `/mcp` and nothing else.                                                                                                                      |
 | `anvil`          | `dev` profile: a local chain (id 31337).                                                                                                                                                          |
-| `scripted-agent` | An example agent, not started by `up`. `docker compose --profile dev run --rm -e AGENT_TOKEN=… -e TRANSFER_TO=0x… scripted-agent`.                                                                |
+| `scripted-agent` | `agent` profile: an example agent, not started by `up`. `docker compose run --rm -e AGENT_TOKEN=… -e TRANSFER_TO=0x… scripted-agent`.                                                             |
 
 ## Networks
 
@@ -115,6 +143,7 @@ a key (`docs/threat-model.md`).
 | `signer-secrets`  | `signer-request-secret`, `confirm-request-secret`, `token-key`, `vault-passphrase`.                                                                                                                                         | signer   |
 | `approve-secrets` | A copy of `confirm-request-secret`, which `init` writes again whenever it differs.                                                                                                                                          | approve  |
 | `db-secrets`      | `postgres-password`.                                                                                                                                                                                                        | postgres |
+| `caddy-data`      | With `compose.tls.yaml` only: Caddy's certificates and ACME account. Caddy obtains them again when the volume is lost.                                                                                                      | caddy    |
 
 ## Backups and restoring
 
@@ -168,8 +197,8 @@ after the backup, so its counts would let more leave the wallet than people appr
 brings an ended mandate back: people grant a new one. The control plane shows each ended mandate
 with reason `operator`, and with no usage when the restored signer never held it (the backup is
 older than the grant). The release gate "the operator's restore fence ends every live mandate"
-runs the `fence` command against a running stack and checks this; no gate restores a backup
-that holds a live mandate.
+(`e2e/test/release-gates.spec.ts`) runs the `fence` command against a running stack and checks
+this; no gate restores a backup that holds a live mandate.
 
 The signer also fences itself when it opens a database file that is not the file it last opened:
 one extracted from an archive, copied, or moved to another host. It logs `restore fence set`
@@ -184,7 +213,7 @@ windows by the same clock: keep it synchronized (see "Mandates").
 The fence also stops the reprice of every transaction signed before it; a cancel of one is still
 signed (see "Stuck transactions").
 
-**Venue orders signed after the backup cannot be cancelled (D9).** A restored signer has no
+**Venue orders signed after the backup cannot be cancelled.** A restored signer has no
 record of an order it signed after its backup, so it answers `not_found` to that order's cancel.
 An immediate-or-cancel order is already done; a good-till-cancelled or add-liquidity-only order
 may rest at the venue with no way for this system to cancel it. That is why the venue rules a
@@ -249,9 +278,11 @@ setting):
 - `KEY_PROVIDER=openbao`: an [OpenBao](https://openbao.org/) Transit key, set with
   `OPENBAO_ADDR`, `OPENBAO_AUTH` (`token`, `approle` or `kubernetes`) and its credential files,
   `OPENBAO_TRANSIT_MOUNT` and `OPENBAO_TRANSIT_KEY` (default `transit` and `os-kek`),
-  `OPENBAO_CA_FILE` and `OPENBAO_TIMEOUT_MS`. Use an `https:` address between hosts: the data
-  keys travel to OpenBao and back. `compose.yaml` passes these variables from `.env`; put the
-  credential files in the `server-secrets` volume and name them there.
+  `OPENBAO_CA_FILE` and `OPENBAO_TIMEOUT_MS` (default 2000 milliseconds). Use an `https:`
+  address between hosts: the data keys travel to OpenBao and back. `compose.yaml` passes these
+  variables from `.env`, except the two `kubernetes` ones (`OPENBAO_KUBERNETES_ROLE`,
+  `OPENBAO_KUBERNETES_JWT_FILE`); on Compose use `approle` or `token`. Put the credential files
+  in the `server-secrets` volume and name them in `.env`.
 
 Give the server's OpenBao identity the policy in [`openbao/policy.hcl`](openbao/policy.hcl):
 encrypt, decrypt and read on the one Transit key, nothing else. Replace `transit` and `os-kek`
@@ -274,10 +305,17 @@ server logs `keys.provider_unavailable` and `keys.provider_refresh_failed`. Whoe
 server's OpenBao token, or controls OpenBao, unwraps every data key it is given: with a database
 copy, that reads everything.
 
-The OpenBao provider has unit tests only: against a stand-in for the Transit API, and in CI
-against a development-mode OpenBao from `deploy/compose.test.yaml` (green in CI run
-43732195805). No release gate has run the stack with it yet: the `stack (openbao)` CI entry
-(OpenBao as a real server, AppRole, a 20-second outage, rotation) is written and has not run.
+**What is proven.** In CI job `test`, the provider's unit tests run against a stand-in for the
+Transit API and against a development-mode OpenBao from `deploy/compose.test.yaml`
+(`packages/keys/test/`). CI job `stack (openbao)` runs the whole stack with its keys in OpenBao
+Transit, signed in by AppRole: first its own gates (`e2e/test/openbao.spec.ts`: the AppRole can
+use the one key and nothing else; a payment completes; every data key is wrapped by Transit and
+nothing an agent typed is in the database in the clear; with OpenBao paused for 20 seconds new
+work fails closed and a payment approved meanwhile completes once it is back; a key rotation, a
+rewrap and a raised minimum version keep every earlier payment readable), then every release
+gate. The move from the keyring file to OpenBao has unit tests in CI job `test`
+(`packages/keys/test/composite.test.ts`) and no gate on a running stack. The `kubernetes` sign-in
+is unproven against a real OpenBao.
 
 ## Adding an approver
 
@@ -340,10 +378,10 @@ the control plane may be compromised, because a person's revocation goes through
 
 Two settings in `.env`, both optional:
 
-| Setting                               | Meaning                                                                                                                                                                                                  |
-| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MANDATE_MAX_SECONDS`                 | The longest life of a mandate: 3600 to 2592000 seconds, default 604800 (seven days). Compose gives it to the signer (`SIGNER_MAX_MANDATE_SECONDS`, which decides) and to the server, so they stay equal. |
-| `SIGNER_MAX_LIVE_MANDATES_PER_WALLET` | How many live mandates one wallet may hold: 1 to 64, default 16.                                                                                                                                         |
+| Setting                               | Meaning                                                                                                                                                                                                                                          |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `MANDATE_MAX_SECONDS`                 | The longest life of a mandate: 3600 to 2592000 seconds, default 604800 (seven days). Compose gives it to the signer (`SIGNER_MAX_MANDATE_SECONDS`, which decides) and to the server, so they stay equal. On split hosts set it the same on both. |
+| `SIGNER_MAX_LIVE_MANDATES_PER_WALLET` | How many live mandates one wallet may hold: 1 to 64, default 16.                                                                                                                                                                                 |
 
 **The signer host must keep its clock synchronized** (NTP, `chrony` or `systemd-timesyncd`). The
 signer decides by its own clock when a mandate starts and ends and which payments fall in its
@@ -366,9 +404,10 @@ no tool that speeds up or cancels.
   those people approved, and since every attempt has the one nonce, at most one is ever mined.
   It needs no passkey and stays inside `min(intent.maxFeeWei, policy fees.maxPerTxWei)`, the
   fee ceiling people approved, capped by the wallet's current policy. It stops at that ceiling,
-  `SIGNER_REPRICE_WINDOW_SECONDS` after the first signature, or after `SIGNER_MAX_TX_ATTEMPTS`
-  signatures; the page then says why (`stuckReason`). A payment waiting behind an earlier unmined
-  nonce is not repriced: a higher fee would not help it.
+  `SIGNER_REPRICE_WINDOW_SECONDS` after the first signature, after `SIGNER_MAX_TX_ATTEMPTS`
+  signatures, while the workspace is paused, once the mandate that covered the payment is
+  revoked, and after a restore fence; the page then says why (`stuckReason`). A payment waiting
+  behind an earlier unmined nonce is not repriced: a higher fee would not help it.
 - **Speed up.** An owner or approver can ask for the next attempt now, with no passkey
   (`POST /api/v1/intents/:intentId/speed-up`). Within 15 seconds of the newest attempt the click
   adds none and shows the payment as it is.
@@ -383,7 +422,8 @@ no tool that speeds up or cancels.
   (the payment ends `voided`, `transaction_cancelled`) or the payment (`confirmed` or `reverted`,
   `cancel_too_late`). The payment still counts toward the wallet's 24-hour cap either way: the
   signer counted it when it first signed it and gives nothing back. A cancel costs a network fee.
-- **Paused.** Pausing a workspace stops every reprice, automatic or not; cancels still go through.
+- **Paused.** Pausing a workspace stops every reprice, automatic or not. A cancel's first
+  signature still goes through, but the cancel is not repriced until the workspace resumes.
 
 Five settings in `.env`, all optional; Compose passes them on:
 
@@ -435,14 +475,17 @@ person approves each one on the confirmation page; the signer builds and signs t
 the server posts it to the venue and follows it (`docs/architecture.md`, "A venue order, end to
 end"; `specs/non-evm-operations.md`).
 
-Status: **testnet and mainnet supported, off by default.** Decided 2026-11-16: mainnet is
-supported. A venue is on only when you list it in `VENUES_FILE` and people approve, with
-passkeys, wallet rules that name that network; there is no other switch. On mainnet, orders and
-withdrawals move real funds. The encoder and its signatures match the venue SDK's own signed
-vectors; the signer's routes and the server's half are covered by unit tests, and release gates
-run them against a fake venue, also in mainnet mode. No real mainnet order with real funds has
-ever been placed with this software, and nothing has run against the real Hyperliquid testnet
-either: no funded testnet account is in hand.
+Status: **testnet and mainnet supported, off by default.** A venue is on only when you list it
+in `VENUES_FILE` and people approve, with passkeys, wallet rules that name that network; there
+is no other switch. Using a venue is the choice of whoever runs the workspace. On mainnet, orders
+and withdrawals move real funds.
+
+**What is proven.** In CI job `test`, unit tests check that the encoder's signatures match the
+venue SDK's own signed vectors, and cover the signer's venue routes and the server's half. In
+the `stack (amd64)` and `stack (arm64)` jobs, the release gates in `e2e/test/venue.spec.ts` run
+orders, cancels and withdrawals on the whole stack against a fake Hyperliquid, in testnet mode
+and in mainnet mode. Unproven: nothing has run against the real Hyperliquid testnet, and no
+real mainnet order with real funds has ever been placed with this software.
 
 | Setting       | Service | Meaning                                                                                                                                                                                                                    |
 | ------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -483,9 +526,11 @@ The split layout's control host inherits the setting from `compose.yaml`; the Ku
 manifests do not set it. The server reaches the venue over the `chain` network, which has
 internet access. Then an owner adds venue rules to the wallet's policy in the web app, choosing
 the network when both are configured, and people approve the new policy on the confirmation
-page like any policy change. The web app offers only the networks in `VENUES_FILE`, and the
-server refuses a policy draft that names any other (`venue_not_configured`). The rules a policy
-starts from allow immediate or cancel only, with no withdrawals.
+page like any policy change. The web app offers the networks in `VENUES_FILE` (and the network of
+rules already in force, so the editor shows what the policy says), and the server refuses a
+policy draft that names any other (`venue_not_configured`). The rules a new policy starts from
+name the first configured network (testnet before mainnet) and allow immediate or cancel only,
+a 60-second submit window and no withdrawals; the owner fills in the markets and caps.
 
 **What bounds an order.** The same on both networks: a passkey approval of every order on the
 signer's confirmation page, the markets in the wallet's rules, the per-order and per-day
@@ -504,22 +549,23 @@ twice, stops it too.
 **Funding the account.** This system builds no deposit. The account is funded from outside it,
 by a transfer from another funded account on the same network, or by an ordinary EVM payment to
 the venue's bridge that people approve. Hyperliquid's testnet faucet pays only addresses that
-deposited on mainnet. Neither way has been tried here.
+deposited on mainnet. Neither way has been tried with this software.
 
-**What you see in the server's logs.** One JSON line per event, with the approval id and the
-network, never the request or its fields:
+**What you see in the server's logs.** One JSON line per event, with the approval id (and, for
+most, the network), never the request or its fields:
 
-| `event`        | `message`                                   | Fields                                                                                                                            |
-| -------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `venue.post`   | `venue request posted`                      | `outcome`: `resting`, `filled`, `accepted` (a withdrawal) or `refused` (the venue's text is in the intent, not the log)           |
-| `venue.post`   | `venue request not answered` (warn)         | `outcome: "unreachable"`: tried again after 5 seconds; a request the venue never had ends `expired` once its submit window passes |
-| `venue.status` | `venue order read`, `venue withdrawal read` | `status`: the venue's own word for the order, `accepted` for a withdrawal, or `unknown` when the venue has no record of it        |
-| `venue.status` | `venue reconcile failed` (error)            | `error`: the error's name. Orders older than an hour are read every 5 minutes                                                     |
-| `venue.cancel` | `venue cancel posted`                       | `outcome`: `accepted` or `refused`; the order's status is read right after                                                        |
+| `event`         | `message`                                                  | Fields                                                                                                                                              |
+| --------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `venue.post`    | `venue request posted`                                     | `outcome`: `resting`, `filled`, `accepted` (a withdrawal, or an order read back next) or `refused` (the venue's text is in the intent, not the log) |
+| `venue.post`    | `venue request not answered` (warn)                        | `outcome: "unreachable"`: tried again after 5 seconds; a request the venue never had ends `expired` once its submit window passes                   |
+| `venue.status`  | `venue order read`, `venue withdrawal read`                | `status`: the venue's own word for the order, `accepted` for a withdrawal, or `unknown` when the venue has no record of it                          |
+| `venue.status`  | `venue reconcile failed` (error)                           | `error`: the error's name. Orders older than an hour are read every 5 minutes                                                                       |
+| `venue.cancel`  | `venue cancel posted`                                      | `outcome`: `accepted` or `refused`; the order's status is read right after                                                                          |
+| `venue.account` | `venue account not read`, `venue account not shown` (warn) | `network`: the wallet page could not read the account at the venue, or could not show what it answered                                              |
 
 The signer's decision log records `sign-venue` for each order or withdrawal it signed or refused
 and `cancel-venue-order` for each cancel. A cancel needs no passkey and is allowed while the
-workspace is paused (D4): approving an order includes cancelling it.
+workspace is paused: approving an order includes cancelling it.
 
 **Clocks.** The signer's clock sets each request's nonce and its `expiresAfter`. A signer clock
 behind the venue's by more than the submit window makes every order arrive expired; keep NTP on
@@ -609,12 +655,12 @@ or never finish one, which only delays it. It cannot destroy a key without passk
 threshold over the exact wallet set, before the destroy time, or with a delay outside the
 signer's bounds (`docs/threat-model.md`, "Retiring a wallet and deleting a workspace").
 
-The ten release gates in `e2e/test/lifecycle.spec.ts` run this on the real stack: retiring and
-cancelling, `export-wallet`, destroying a key at its time, a deletion and its cancel, the webhook
-announcement, the wait for a transaction that could still be mined, what a deleted workspace
-leaves, and a pre-deletion database copy after a keyring rotation. They passed in CI run
-43729783071 on amd64 and arm64. The 30-day backup retention in "Backups and restoring" is a
-choice, not something a gate checks.
+**What is proven.** The release gates in `e2e/test/lifecycle.spec.ts` run this on the whole
+stack in CI jobs `stack (amd64)` and `stack (arm64)`: retiring and cancelling, `export-wallet`,
+destroying a key at its time, a deletion and its cancel, the webhook announcement, the wait for
+a transaction that could still be mined, what a deleted workspace leaves, and a pre-deletion
+database copy after a keyring rotation. The 30-day backup retention in "Backups and restoring"
+is a choice, not something a gate checks.
 
 ## Exporting and cloning a workspace
 
@@ -631,10 +677,11 @@ Check a record offline, in a checkout of this repository after `bun install`:
 
     node apps/server/src/lifecycle/verify-record.ts <record file>
 
-It prints `{"ok":true,…}` and exits 0 when every hash, chain and count verifies, 2 when one does
-not (`brokenAt` is the first line that fails), and 1 when the file cannot be read. A record that
-verifies is consistent, not proof that the control plane was honest: keep the `auditHead` and
-`signerDecisionHead` of each export and compare them with the next.
+It prints `{"ok":true,"brokenAt":null}` and exits 0 when every hash, chain and count verifies, 2
+when one does not (`brokenAt` is the first line that fails), and 1 when the file cannot be read
+or the command is used wrongly. A record that verifies is consistent, not proof that the control
+plane was honest: keep the `auditHead` and `signerDecisionHead` from the first line of each
+export and compare them with the next.
 
 An owner can clone a workspace, and anyone signed in can import a template file. The copy carries
 no authority: new wallets with new keys and addresses, new agent tokens shown once, the person
@@ -643,8 +690,8 @@ the members this installation knows, and one policy change per wallet that appli
 new workspace's approvers approve it. No mandate, approval or history is copied. A template
 naming a chain that `deploy/chains.json` does not list is refused before anything is created.
 
-Exporting, cloning and importing have release gates on the full stack
-(`e2e/test/lifecycle.spec.ts`, CI run 43758300592).
+Exporting, cloning and importing have release gates on the whole stack
+(`e2e/test/lifecycle.spec.ts`, CI jobs `stack (amd64)` and `stack (arm64)`).
 
 ## Erasing a person
 
@@ -659,22 +706,26 @@ every chain still verifies.
 
 It is refused, with nothing changed, for the only owner of a workspace (`last_owner`), when
 fewer people would be left to approve than a workspace needs (`last_approver`), and while a
-workspace where they approve is being deleted (`workspace_deleting`).
+workspace where they approve is being deleted (`workspace_deleting`). These names are the
+error's `detail`; its `code` is `conflict`.
 
 For someone who cannot sign in, on the server host:
 
     docker compose exec server node apps/server/src/identity/erase-cli.ts --user <user id>
 
-It prints one JSON line. Exit 0: erased, now or before. Exit 3, `still_approving`: their
-passkeys still approve in the listed workspaces, and the command cannot open the requests that
-remove them; an owner of each removes the person there (or makes them a viewer), people approve
-it, then run the command again. Exit 2: refused, with the code above. Exit 1: usage.
+Its result is the last JSON line it prints (an erasure logs a line before it). Exit 0,
+`{"ok":true,"userId":…,"alreadyErased":…}`: erased, now or before. Exit 3,
+`{"ok":false,"code":"still_approving","workspaces":[…]}`: their passkeys still approve in the
+listed workspaces, and the command cannot open the requests that remove them; an owner of each
+removes the person there (or makes them a viewer), people approve it, then run the command
+again. Exit 2, `{"ok":false,"code":…,"detail":…,"message":…}`: refused, with a `detail` above,
+`try_again`, or the code `not_found` for an unknown user. Exit 1: usage.
 
 Backups taken before an erasure keep the person's name and everything else until they are
 destroyed. The user id stays everywhere, so the audit logs still verify.
 
-Erasing has release gates on the full stack, by the person and by the operator
-(`e2e/test/lifecycle.spec.ts`, CI run 43758300592).
+Erasing has release gates on the whole stack, by the person and by the operator
+(`e2e/test/lifecycle.spec.ts`, CI jobs `stack (amd64)` and `stack (arm64)`).
 
 ## When no approver is left
 
@@ -698,55 +749,24 @@ passkey on another device while you can.
     git pull
     docker compose --profile dev up -d --build
 
-Database migrations run when the server starts. Take a backup first. The Workflow SDK and its
-Postgres backend must stay on the same release line; this repository pins both.
+Use the same `-f` files and profiles you started the stack with. Take a backup first (see
+"Backups and restoring"). The signer and `approve` must be upgraded no later than the server: a
+server ahead of its signer may ask for something the signer does not know, and that request
+fails and must be proposed again. On one machine `up` handles this, because the server waits for
+a healthy signer; on split hosts, upgrade the signer host first (see "Operating it"). With more
+than one server replica, stop every replica first (see "More than one server replica").
 
-The signer migrates its own SQLite when it starts (`PRAGMA user_version`). The first start of a
-signer with the restore fence on a v0.1 database fences it once, because nothing tells it the
-file was not restored: approvals waiting at that moment must be proposed again. A signer refuses
-to start on a database written by a newer signer (`schema_too_new`). Do not go back to a v0.1
-signer image after upgrading: it does not know the fence and would ignore it.
+The server migrates the database when it starts (`apps/server/src/db/migrations/`). The Workflow
+SDK and its Postgres backend must stay on the same release line; this repository pins both. Do
+not run an older server against a database a newer one has migrated: it does not know the newer
+tables and columns, for example later attempts of a repriced transaction or mandate uses.
 
-The signer's schema is now version 7: version 7 adds lifecycle columns to `workspaces` and
-`wallets` (state, destroy time, a wallet's state before a deletion), all with defaults, so every
-existing workspace and wallet starts `active`. The signer also turns on SQLite's `secure_delete`.
-A signer image from before it refuses to start on the migrated file with `schema_too_new`, so
-roll the signer back only together with the `signer-data` backup taken before the upgrade: that
-is a restore, fenced as above, and it forgets every retirement and deletion since, bringing back
-the keys of any finished one. The control plane's migration
-`0008_lifecycle` adds the mirrored `lifecycle`, `destroy_after` and `deleted_at` columns. Upgrade
-the signer and `approve` first, then the server.
-
-Version 6 added the table `signature_attempts`, one row per
-reprice or cancel the signer signed. The migration only creates it; a transaction signed before
-the upgrade can be repriced and cancelled like a new one. A signer image from before it refuses
-to start on the migrated file with `schema_too_new`, so a rollback of the signer means fixing
-forward. The control plane's migration `0007_transaction_attempts` adds `transaction_attempts`
-and the columns that track them; do not run an older control plane against a database that holds
-attempts: it follows only each first signature's hash.
-
-Version 5 added the tables `mandates`, `mandate_grantors` and `mandate_uses`. The migration
-only creates them, and nothing changes for a workspace until someone grants a mandate. A signer
-image from before it refuses to start on the migrated file with `schema_too_new`, so a rollback
-of the signer means fixing forward. The same holds for the control plane: its migration
-`0004_mandates` adds the `mandates` table and lets an approval be a mandate use; do not run an
-older control plane against a database that holds mandate uses.
-
-Version 4 added the table `possession_challenges` for a new approver's possession step. The
-migration only creates that table. A signer image from before it refuses to start on the
-migrated file with `schema_too_new`, so after that upgrade a rollback of the signer means fixing
-forward, not going back to the older image. An approver change that
-was waiting at the upgrade needs the possession step before anyone can approve it. One that had
-all its approvals but was not yet applied is refused by the signer with `possession_unproven`
-when the control plane applies it, ends `failed`, and must be proposed again.
-
-Upgrading from a release in which the control plane's own page could approve (it had the
-signer setting `WEBAUTHN_ORIGINS`): the signer now accepts approvals made on the confirmation
-page only. A request approved on the control plane's page before the upgrade and not yet signed
-or applied ends `failed` with `assertion_invalid`, and must be proposed again. A request that
-waits without approvals simply gains its link to the confirmation page. Set `APPROVE_ORIGIN`
-first if your layout needs another value than the default. `WEBAUTHN_ORIGINS` is no longer
-read anywhere.
+The signer migrates its own SQLite when it starts (`apps/signer/src/db.ts`, `PRAGMA
+user_version`) and turns on SQLite's `secure_delete`. A signer refuses to start on a database
+written by a newer signer (`schema_too_new`). So an upgrade that migrates the signer's database
+cannot be undone by starting the older image. Either fix forward, or restore the `signer-data`
+backup taken before the upgrade: that is a restore, fenced as in "Backups and restoring", and it
+forgets every retirement and deletion since, bringing back the keys of any finished one.
 
 ## Running the signer on its own host
 
@@ -757,13 +777,13 @@ from the control plane's host. The hosts share one connection, the server's to t
 port 8787. It is mutual TLS 1.3 in which each side accepts exactly the other's certificate, with
 no certificate authority, and every request inside it still carries its request signature.
 
-|                        | Signer host                                                                                             | Control host                                                                                                                      |
-| ---------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Compose file, project  | `deploy/split/signer.compose.yaml`, `os-signer`                                                         | `deploy/split/control.compose.yaml`, `os-control`                                                                                 |
-| Services               | `init`, `signer`, `approve`, `caddy` (the `APPROVE_ORIGIN` site only, `deploy/split/Caddyfile.approve`) | `init`, `postgres`, `server`, `caddy` (the `PUBLIC_ORIGIN` site only, `deploy/split/Caddyfile.control`), `agent-gateway`, `anvil` |
-| Volumes                | `signer-data`, `signer-secrets`, `approve-secrets`, `caddy-data`                                        | `postgres-data`, `server-secrets`, `db-secrets`, `caddy-data`                                                                     |
-| Import directory       | `SIGNER_HOST_FILES`: `signer.crt`, `signer.key`, `control.crt`, `approve.crt`, `approve.key`            | `CONTROL_HOST_FILES`: `signer-request-secret`, `control.crt`, `control.key`, `signer.crt`                                         |
-| Reachable from outside | 80 and 443 for the confirmation page; 8787 on `SIGNER_BIND_ADDRESS`, for the control host               | 80 and 443 for `PUBLIC_ORIGIN`                                                                                                    |
+|                        | Signer host                                                                                             | Control host                                                                                                                                                                          |
+| ---------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Compose file, project  | `deploy/split/signer.compose.yaml`, `os-signer`                                                         | `deploy/split/control.compose.yaml`, `os-control`                                                                                                                                     |
+| Services               | `init`, `signer`, `approve`, `caddy` (the `APPROVE_ORIGIN` site only, `deploy/split/Caddyfile.approve`) | `init`, `postgres`, `server`, `caddy` (the `PUBLIC_ORIGIN` site only, `deploy/split/Caddyfile.control`), `agent-gateway`, `anvil` (profile `dev`), `scripted-agent` (profile `agent`) |
+| Volumes                | `signer-data`, `signer-secrets`, `approve-secrets`, `caddy-data`                                        | `postgres-data`, `server-secrets`, `db-secrets`, `caddy-data`                                                                                                                         |
+| Import directory       | `SIGNER_HOST_FILES`: `signer.crt`, `signer.key`, `control.crt`, `approve.crt`, `approve.key`            | `CONTROL_HOST_FILES`: `signer-request-secret`, `control.crt`, `control.key`, `signer.crt`                                                                                             |
+| Reachable from outside | 80 and 443 for the confirmation page; 8787 on `SIGNER_BIND_ADDRESS`, for the control host               | 80 and 443 for `PUBLIC_ORIGIN`                                                                                                                                                        |
 
 **The control host never holds** the vault and the signer's SQLite (`signer-data`), `token-key`,
 `vault-passphrase`, `confirm-request-secret`, `signer.key` or `approve.key`. It holds a copy of
@@ -825,15 +845,15 @@ makes none of those, and never makes a request secret of its own.
 
 The settings the two Compose files set:
 
-| Setting                                                                                     | Read by | Meaning                                                                                                                                                                                                                                                         |
-| ------------------------------------------------------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SIGNER_TLS_CERT_FILE`, `SIGNER_TLS_KEY_FILE`                                               | signer  | Its certificate and key.                                                                                                                                                                                                                                        |
-| `SIGNER_TLS_CONTROL_CERT_FILE`, `SIGNER_TLS_APPROVE_CERT_FILE`                              | signer  | The two client certificates it accepts. The control plane's reaches control routes only, the `approve` service's its four confirmation routes only; another route is refused `unauthenticated` before the request signature is checked. All four files or none. |
-| `SIGNER_HEALTH_PORT`                                                                        | signer  | With TLS, a plain listener on `127.0.0.1` that answers `GET /healthz` and nothing else, for the container's health check (default 8789).                                                                                                                        |
-| `SIGNER_HOST`                                                                               | signer  | The address it listens on (default `0.0.0.0` inside its container; Compose publishes the port on `SIGNER_BIND_ADDRESS` only).                                                                                                                                   |
-| `SIGNER_URL`, `SIGNER_TLS_CERT_FILE`, `SIGNER_TLS_KEY_FILE`, `SIGNER_TLS_PEER_CERT_FILE`    | server  | An `https:` `SIGNER_URL` needs all three files and an `http:` one takes none; the server refuses to start otherwise.                                                                                                                                            |
-| `SIGNER_ADMIN_COMMAND`                                                                      | server  | The prefix of the signer's admin commands that the members page shows owners (default `docker compose exec signer node src/admin.ts`; the control host's file sets the split form). Words of letters, digits and `_./:-`, single spaces; checked at start.      |
-| `SIGNER_URL`, `APPROVE_TLS_CERT_FILE`, `APPROVE_TLS_KEY_FILE`, `APPROVE_TLS_PEER_CERT_FILE` | approve | The same rule as the server's, with `SIGNER_URL=https://signer:8787`.                                                                                                                                                                                           |
+| Setting                                                                                     | Read by | Meaning                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SIGNER_TLS_CERT_FILE`, `SIGNER_TLS_KEY_FILE`                                               | signer  | Its certificate and key.                                                                                                                                                                                                                                                                               |
+| `SIGNER_TLS_CONTROL_CERT_FILE`, `SIGNER_TLS_APPROVE_CERT_FILE`                              | signer  | The two client certificates it accepts. The control plane's reaches control routes only, the `approve` service's its four confirmation routes only; another signed route is refused `unauthenticated` before the request signature is checked (`GET /healthz` answers either). All four files or none. |
+| `SIGNER_HEALTH_PORT`                                                                        | signer  | With TLS, a plain listener on `127.0.0.1` that answers `GET /healthz` and nothing else, for the container's health check (default 8789).                                                                                                                                                               |
+| `SIGNER_HOST`                                                                               | signer  | The address it listens on (default `0.0.0.0` inside its container; Compose publishes the port on `SIGNER_BIND_ADDRESS` only).                                                                                                                                                                          |
+| `SIGNER_URL`, `SIGNER_TLS_CERT_FILE`, `SIGNER_TLS_KEY_FILE`, `SIGNER_TLS_PEER_CERT_FILE`    | server  | An `https:` `SIGNER_URL` needs all three files and an `http:` one takes none; the server refuses to start otherwise.                                                                                                                                                                                   |
+| `SIGNER_ADMIN_COMMAND`                                                                      | server  | The prefix of the signer's admin commands that the members page shows owners (default `docker compose exec signer node src/admin.ts`; the control host's file sets the split form). Words of letters, digits and `_./:-`, single spaces; checked at start.                                             |
+| `SIGNER_URL`, `APPROVE_TLS_CERT_FILE`, `APPROVE_TLS_KEY_FILE`, `APPROVE_TLS_PEER_CERT_FILE` | approve | The same rule as the server's, with `SIGNER_URL=https://signer:8787`.                                                                                                                                                                                                                                  |
 
 ### Operating it
 
@@ -876,12 +896,13 @@ copy, and a copy that skipped the fence could pay an approval twice. So:
    `OS_HOSTNAME`, so nobody enrolls a passkey again. People grant again the mandates they want.
 5. Destroy the old host's copy of the volumes.
 
-**What is proven.** CI job `stack (split)` passes every release gate with the two projects on one
-runner, joined only by a network that carries the mutual TLS (runs 43733608692 and 43735023880).
-Its own gate, `e2e/test/split.spec.ts`, checks three things: the control project has no
-volume with a signer secret and runs no `approve` service; a client without the control
-certificate gets no handshake; the signer reaches nothing outside under the example nftables
-rules. Two real hosts with different administrators have not been tested.
+**What is proven.** CI job `stack (split)` runs the two projects on one runner, joined only by a
+network that carries the mutual TLS. It runs the split gates in `e2e/test/split.spec.ts` (the
+control project holds no signer secret, no confirm secret and no vault, and runs no signer or
+confirmation page; a client without the control certificate gets no handshake; the signer
+cannot reach the internet under the example nftables rules), then every release gate in
+`e2e/test/release-gates.spec.ts`. The lifecycle, venue and browser gates do not run split.
+Unproven: two real hosts with different administrators, and moving a signer between hosts.
 
 ## More than one server replica
 
@@ -904,14 +925,14 @@ Both edges find every replica through Docker's DNS (`dynamic a server 3000`, ref
 second) and send a request that cannot reach its replica to another for up to 10 seconds. Every
 replica reads the same `server-secrets` volume, so all of them use one `notify-webhook-secret` and
 one `vapid-key.pem`; a replica with another VAPID key would break every push subscription. The
-split control host's edge (`deploy/split/Caddyfile.control`) proxies to one address and has not
-been run with replicas.
+split control host's edge (`deploy/split/Caddyfile.control`) finds replicas the same way, but
+no gate runs replicas on a split layout.
 
 | Setting                       | Default | Meaning                                                                                                                                                                                                                                                                                                                       |
 | ----------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DATA_KEY_CACHE_SECONDS`      | 60      | How long a replica keeps an unwrapped data key, 0 to 600. A replica caches only while it listens for shreds, and forgets its cache when that connection drops.                                                                                                                                                                |
 | `FORWARDED_HOPS`              | 1       | How many proxies append to `X-Forwarded-For` before the server, 1 to 5: a failed agent authentication is charged to the entry this many from the end. 1 behind the bundled Caddy; 2 with a load balancer in front of it. Too high lets a client pick the address it is charged to; too low charges every client to one proxy. |
-| `WORKFLOW_WORKER_CONCURRENCY` | 10      | Workflow steps one replica runs at once. `compose.yaml` does not pass it.                                                                                                                                                                                                                                                     |
+| `WORKFLOW_WORKER_CONCURRENCY` | 10      | Workflow steps one replica runs at once, 1 to 200. `compose.yaml` does not pass it.                                                                                                                                                                                                                                           |
 
 **Upgrading: stop every replica first.** A workflow run is not pinned to the code that started
 it, so two versions of the workflow bundle on one database would replay the same run with
@@ -934,10 +955,11 @@ new key goes in inactive first:
     docker compose run --rm init node /init/rotate-keyring.mjs prune --confirm-rewrapped
     docker compose restart server
 
-**Database connections.** Each replica opens up to `WORKFLOW_WORKER_CONCURRENCY + 14`
+**Database connections.** Each replica's pool holds up to `WORKFLOW_WORKER_CONCURRENCY + 14`
 connections, 24 by default: one per workflow worker, one listening for shreds, one holding the
-bundle lock, and the rest for requests and the World's listeners. The operator's commands add
-one or two while they run. Postgres needs `max_connections` of at least replicas × 24 plus that
+bundle lock, and the rest for requests. The World opens up to three listening connections of
+its own beside the pool, so a replica needs about 27 by default. The operator's commands add one
+or two while they run. Postgres needs `max_connections` of at least replicas × 27 plus that
 headroom; `compose.yaml` keeps Postgres's default of 100.
 
 **Readiness.** `GET /readyz` answers 200 `{"ok":true}` once this replica's database answers and
@@ -945,26 +967,33 @@ its World delivers runs, and 503 otherwise; `/healthz` answers whenever the proc
 Compose's health check and the Kubernetes readiness probe use `/readyz`. It does not ask the key
 provider: during an OpenBao outage every replica stays ready, and what needs a key fails.
 
-**What is proven.** The unit tests of this work (two gateways sharing limits on one database,
-one setup token from boots at once, the bundle lock, shred eviction) passed in CI run
-43736178714, whose `test` job failed only on an unrelated protocol test, and every stack in that
-run passed with one replica. The `stack (replicas)` CI entry, two replicas behind both edges with
-one replica killed while it holds an approval, is written and has not run.
+**What is proven.** In CI job `test`, unit tests cover two gateways sharing limits on one
+database, one setup token from boots at once, the bundle lock and shred eviction. CI job
+`stack (replicas)` starts the stack with two server replicas (`e2e/compose.replicas.yaml`) and
+runs the replica gates in `e2e/test/replicas.spec.ts`: both replicas boot before setup and log
+no token, and of two `setup-token` commands at once one token claims the installation; both
+replicas and the edge answer `/readyz`; the replica that started signing a payment is killed and
+the other finishes it with exactly one transaction; each notification reaches the webhook once
+while both replicas sweep; one agent's requests are counted once across both replicas. Then it
+runs every release gate on a fresh two-replica stack. The two-phase keyring rotation above has
+no gate.
 
 ## Kubernetes
 
 [`deploy/k8s/`](k8s/) holds Kustomize manifests for the control plane: `base` (the server, its
 edge, the agent gateway, the namespaces `os` and `os-agents`, and NetworkPolicies), components
-(`signer-external`, `signer-in-cluster`, `postgres-single`, `dev-chain`,
-`notifications-egress`), and two overlays:
+(`signer-external`, `signer-in-cluster`, `postgres-single`, `postgres-cnpg`, `dev-chain`,
+`notifications-egress`), and these overlays:
 
-- `overlays/production-example`: the control plane in the cluster, and the signer with its
-  confirmation page on their own host as above, joined by mutual TLS (`signer-external`). In
-  production the signer and `approve` run outside the cluster: Secrets are not encrypted in etcd
-  by default, cluster administration reaches every node, and a confirmation page in the cluster
-  would give its administrators the page.
+- `overlays/production-example`: the control plane in the cluster, Postgres from
+  `postgres-cnpg` (below), and the signer with its confirmation page on their own host as above,
+  joined by mutual TLS (`signer-external`). Copy it and replace every example value; its
+  `kustomization.yaml` lists them. In production the signer and `approve` run outside the
+  cluster: Secrets are not encrypted in etcd by default, cluster administration reaches every
+  node, and a confirmation page in the cluster would give its administrators the page.
 - `overlays/kind`: everything in one kind cluster, for CI and evaluation only, with its Secrets
   made by `deploy/k8s/make-secrets.sh`.
+- `overlays/kind-ha`: the kind stack with `postgres-cnpg`, for the HA gate below.
 
 The server's Deployment runs two replicas with `strategy: Recreate` (the bundle rule above), uses
 `/readyz` as its readiness probe; get the setup token with
@@ -972,7 +1001,9 @@ The server's Deployment runs two replicas with `strategy: Recreate` (the bundle 
 does nothing on a network plugin that does not enforce it, and kind's plugin fails open when its
 controller cannot start, so run [`k8s/isolation-probe.yaml`](k8s/isolation-probe.yaml) after
 every install, upgrade or change of network plugin; its header has the commands. With
-`notifications-egress` the server may open TCP 443 to any address.
+`notifications-egress` the server may open TCP 443 to any address. No manifest sets
+`VENUES_FILE`: to use a venue on Kubernetes, add it to the `os-server` ConfigMap and mount the
+file yourself.
 
 Postgres in the production example is the component `postgres-cnpg`: a CloudNativePG cluster
 `os-db` of three instances with quorum commit to one standby and `dataDurability: required`, so
@@ -985,34 +1016,43 @@ server connects to the Service `os-db-rw`, which follows the primary, with the p
 Secret `os-db-app` the operator creates. While two of the three instances are down, writes wait
 until one comes back instead of committing on the primary alone. Size
 `max_connections` (200) as `cluster.yaml` explains: about 27 connections per server replica.
-`overlays/kind-ha` is the kind stack with this component, for its CI gate
-(`e2e/run-k8s.sh --ha`, CI job `k8s-ha`), which has not run yet.
 
-**Status: written, not run.** The `k8s` CI job (`kubeconform` on every manifest, then a kind
-cluster with the isolation probe, its control with a policy deleted, and the gate
-`e2e/test/kubernetes.spec.ts`, which includes one payment end to end) has not run yet, and
-`kubectl kustomize` has not been run on the manifests. The release gates do not run on
-Kubernetes. Nothing on Kubernetes is proven.
+**What is proven.** CI job `k8s` checks that the manifests' copies of `deploy/` files match
+their sources (`deploy/k8s/test/files.test.ts`), renders every overlay with `kubectl kustomize`
+and validates it with `kubeconform` against Kubernetes 1.37, then runs `./e2e/run-k8s.sh` on a
+kind cluster with `overlays/kind`. Its gate, `e2e/test/kubernetes.spec.ts`, checks: two server
+replicas are ready; the isolation probe passes, and fails once a namespace's default-deny policy
+is deleted; the signer reaches nothing and the confirmation service reaches only the signer; the
+edge refuses the Workflow delivery routes; the installation is claimed with a setup token from
+the operator's command, never the log; an agent's payment approved on the confirmation page
+lands once. CI job `k8s-ha` runs `./e2e/run-k8s.sh --ha` with `overlays/kind-ha`; its gate,
+`e2e/test/kubernetes-ha.spec.ts`, checks the three instances with quorum commit and
+`max_connections` 200, that only the server and the instances reach Postgres, that a payment
+lands once when the primary is deleted while it is being signed, that both replicas are ready
+again afterwards with every listening connection back, that a shred on one replica reaches the
+other, and that with both standbys gone a write waits and lands once one returns.
+
+Not proven on Kubernetes: the release gates in `e2e/test/release-gates.spec.ts` do not run
+there; `overlays/production-example`, with the signer on a separate host, is rendered and
+validated but never started by a gate; no gate runs on a cluster other than kind.
 
 ## Notifications
 
 People see waiting requests in the approval inbox. To tell them elsewhere, set
-`NOTIFY_WEBHOOK_URL` in `.env` to an address of yours: the server then sends it a signed `POST`
-whenever a request waits for people and whenever a mandate pays, and tries again until your
-receiver accepts it. The receiver turns it into whatever reaches people: a chat message, a pager,
-a phone notification. [`examples/ntfy-sidecar`](../examples/ntfy-sidecar) is a complete receiver
+`NOTIFY_WEBHOOK_URL` in `.env` to an `http:` or `https:` address of yours: the server then sends
+it a signed `POST` whenever a request waits for people, whenever a mandate pays, and when keys
+are scheduled for destruction, and tries again until your receiver accepts it. The receiver
+turns it into whatever reaches people: a chat message, a pager, a phone notification.
+[`examples/ntfy-sidecar`](../examples/ntfy-sidecar) is a complete receiver
 that publishes to an [ntfy](https://ntfy.sh) topic; other channels are built the same way, so the
 control plane never holds a chat service's or a push provider's credential. Web Push to people's
 own browsers is a separate setting, off unless `WEB_PUSH_ENABLED=1` (see "Web Push" below).
-
-This replaces the webhook of v0.1, which sent `{"event","approvalId","workspaceId","kind"}` once,
-unsigned. A receiver built for that one must verify the signature and dedupe, as below.
 
 ### What the server sends
 
 | `event`               | When                                                                                                                                | Body keys                                                                                                                 |
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `approval.opened`     | A request people decide on opens: a payment, a policy or approver change, the admin threshold, a resume, a sweep, a mandate grant.  | `approvalId`, `deliveryId`, `event`, `expiresAt`, `kind`, `link`, `v`, `workspaceId`                                      |
+| `approval.opened`     | Any request people decide on opens: a payment, a policy or approver change, a mandate grant, a cancel, a retirement or a deletion.  | `approvalId`, `deliveryId`, `event`, `expiresAt`, `kind`, `link`, `v`, `workspaceId`                                      |
 | `approval.reminder`   | Not sent to the webhook today: reminders go only to Web Push devices (see "Reminders" below). The format keeps the event.           | The same                                                                                                                  |
 | `mandate.used`        | A payment a mandate covers goes to the signer with no person asked.                                                                 | `approvalId`, `deliveryId`, `event`, `link`, `mandateId`, `v`, `workspaceId`                                              |
 | `lifecycle.scheduled` | People approved retiring a wallet or deleting the workspace; the signer destroys the keys at `destroyAfter` unless someone cancels. | `approvalId`, `deliveryId`, `destroyAfter`, `event`, `kind`, `link`, `v`, `walletId` (null for a deletion), `workspaceId` |
@@ -1086,11 +1126,14 @@ one. A delivery the old receiver refuses in between is not retried.
   due rows every three seconds.
 - 2xx: delivered. 408, 429, any 5xx, no answer, or no answer within five seconds: tried again
   after 10, 20, 40, 80, 160, 320, then 600 seconds, or after the receiver's `Retry-After` (seconds
-  or a date) when that is at most an hour away and, for a request, before it expires. After the
-  eighth failed attempt the delivery is given up.
+  or a date) when that is at most an hour away and, for a request, before it expires (for a
+  `lifecycle.*` notice, before the destroy time). After the eighth failed attempt the delivery is
+  given up.
 - Any other status, a redirect included, gives it up at once. Redirects are not followed.
 - An `approval.*` delivery whose request was decided or has expired by the time it is due is not
-  sent; `mandate.used` always is. With `NOTIFY_WEBHOOK_URL` removed, waiting deliveries are dropped.
+  sent, and neither is a `lifecycle.*` notice whose destruction was cancelled, done or is past
+  (`lifecycle_ended`); `mandate.used` always is. With `NOTIFY_WEBHOOK_URL` removed, waiting
+  deliveries are dropped.
 - A sender that stops in the middle leaves its delivery to be sent again a minute later: one more
   reason to dedupe.
 - The receiver's answer body is never read. The server logs `notification delivered`,
@@ -1101,9 +1144,10 @@ one. A delivery the old receiver refuses in between is not retried.
 
 With `WEB_PUSH_ENABLED=1`, people who can approve may turn on notifications on their own devices,
 and the server then sends each of those devices a notification when a request waits for that
-person, through the push service of the device's browser. It is off unless you set it, because
-those push services are third parties (below). It is opt-in per person and per device: a device
-gets nothing until its person turns notifications on there.
+person, and when keys of one of their workspaces are scheduled for destruction (see "Retiring
+wallets and deleting workspaces"), through the push service of the device's browser. It is off
+unless you set it, because those push services are third parties (below). It is opt-in per
+person and per device: a device gets nothing until its person turns notifications on there.
 
 To turn it on:
 
@@ -1120,7 +1164,7 @@ To turn it on:
 
 | Setting                   | Meaning                                                                                                                                                                                                                               |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WEB_PUSH_ENABLED`        | `1` turns Web Push on. Empty or `0`: off.                                                                                                                                                                                             |
+| `WEB_PUSH_ENABLED`        | `1` turns Web Push on. Empty or `0`: off. Any other value stops the server at start.                                                                                                                                                  |
 | `WEB_PUSH_VAPID_KEY_FILE` | The PEM file with the server's P-256 VAPID private key. Compose sets it to `/run/secrets/server/vapid-key.pem`. Required with `WEB_PUSH_ENABLED=1`; any other kind of key stops the server at start.                                  |
 | `WEB_PUSH_SUBJECT`        | How a push service can reach you: a `mailto:` or `https:` URI, sent with every message. Defaults to `PUBLIC_ORIGIN` when that is `https:`; required otherwise.                                                                        |
 | `WEB_PUSH_ENDPOINT_HOSTS` | Comma-separated lowercase host names. A device's push endpoint must be `https:`, carry no user name or password, and have one of these hosts or a host under one. Setting it replaces the built-in list below; empty keeps that list. |
@@ -1160,6 +1204,11 @@ recorded in the workspace's audit log as `workspace.notification_detail_set`.
 | `count` (default) | `Approval waiting`                                 | `1 request needs your passkey`, or `N requests need your passkey` (to `99+`)         |
 | `summary`         | The kind of request, for example `Payment waiting` | `<requester> in <workspace>`: the agent's or person's name, and the workspace's name |
 
+A scheduled destruction has its own text. At `count`: `Keys scheduled for destruction`, `Open to
+review or cancel`. At `summary`: `Wallet retirement scheduled` or `Workspace deletion scheduled`,
+and `Keys destroyed <date and time> UTC in <workspace>`. The notice 24 hours before starts with
+`In 24 hours: ` and replaces the first.
+
 `summary` cuts each line to 60 characters and removes control and bidirectional characters. No
 level ever holds an amount, a recipient, an address or a memo: the message is built from a
 structure that has no field for them
@@ -1193,7 +1242,8 @@ its expiry, a 24-hour request six hours before. A request that lives less than 3
 none. The reminder's title starts with `Expiring soon: ` and it replaces the first notification on
 the device. Each person can turn reminders off per workspace (`reminders_off`). Reminders go only
 to Web Push devices, never to the webhook, and are dropped like any notification once the
-request is decided or expired.
+request is decided or expired. Turning reminders off also drops the `In 24 hours: ` notice of a
+scheduled destruction on that person's devices; the webhook still gets `lifecycle.due_soon`.
 
 #### Quiet hours
 
@@ -1226,8 +1276,8 @@ page, not a worker.
 
 Until the first owner exists, the server needs a one-time setup token. No boot mints one and no
 log line carries one, because logs are shipped, kept and read by more people than may create the
-first owner; a boot before setup logs only `setup.token_pending`. The operator gets the token
-from a command run in a server container:
+first owner. A boot before setup logs only an event `setup.token_pending` whose message names the
+command. The operator gets the token from that command, run in a server container:
 
     docker compose exec server node apps/server/src/cli.ts setup-token
 

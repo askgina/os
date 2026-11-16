@@ -3,7 +3,7 @@
 - Branch: none yet
 - Status: Ready for Review (built 2026-11-15 in the private repository `askgina/busy`; every
   milestone green in its CI: `Fork` run 43750318626 and `Ultracite` run 43750318548 at `63a9eb0`)
-- Owner(s): Eric Juta
+- Owner(s): the repository owner
 - Created: 2026-11-14
 - Last Updated: 2026-11-15
 - Links: [Ticket #26](https://github.com/askgina/os/issues/26) | [Map #18](https://github.com/askgina/os/issues/18) | [Research](./research/busy-fork.md) | [eve research](./research/eve-without-vercel-services.md) | Built on main since the draft: [trusted display](./trusted-display.md), [mandates](./approval-mandates.md), [notifications](./approval-notifications.md) | PR: none
@@ -76,8 +76,8 @@ Success means:
       threat model and the gates now follow the confirmation page and mandates; new open decisions
       D13 and D14.
 - [x] (2026-11-15) Owner decisions D1, D2, D5, D6, D7, D8, D10, D13 and D14 taken by the lead
-      under Eric's delegation (Decision Log), each as the recommended option, with D1 and D10
-      narrowed to what needs no third-party contact and makes nothing public. Still Eric's:
+      agent under the repository owner's delegation (Decision Log), each as the recommended option, with D1 and D10
+      narrowed to what needs no third-party contact and makes nothing public. Still the owner's:
       making the fork repository public, the fork's product name, and any contact with the
       upstream Busy project.
 - [x] (2026-11-15) Milestone 0: askgina/os packages and tool annotations. `eac3a6b`, green in
@@ -229,27 +229,27 @@ Success means:
 
 ## Decision Log
 
-Owner decisions were taken on 2026-11-15 by the lead under Eric's delegation ("delegate to you on
+Owner decisions were taken on 2026-11-15 by the lead agent under the repository owner's delegation ("delegate to you on
 decisions like a CTO"), each as the option this plan recommended. Where the recommended option
 would have made a repository public or contacted the upstream project, the lead took the
-narrower option that does neither; those calls, and the fork's product name, stay Eric's and are
-marked **Eric's** below.
+narrower option that does neither; those calls, and the fork's product name, stay the owner's and are
+marked **the owner's** below.
 
-- Decision D1, owner, **taken 2026-11-15** by the lead under Eric's delegation, **done**: the
+- Decision D1, owner, **taken 2026-11-15** by the lead agent under the repository owner's delegation, **done**: the
   fork lives in a separate **private mirror** repository, `askgina/busy`, created by pushing
   upstream history at `3dd91e1` (`MatiSolina/busy`), not with GitHub's fork button, with
   upstream kept as a read-only `upstream` remote. GitHub Actions is off in it until Milestone 1
-  lands cheap workflows (no macOS desktop job; benchmark and performance jobs disabled). Eric's
-  unrelated personal private copy `ericjuta/busy` is not used by this plan.
+  lands cheap workflows (no macOS desktop job; benchmark and performance jobs disabled). The
+  owner's unrelated personal private copy of Busy is not used by this plan.
   Alternatives: a GitHub fork (public, because a fork of a public repository cannot be private,
   and listed in upstream's network); inside askgina/os under `vendor/busy`; upstream
   contributions only.
   Rationale: the recommended separate repository keeps upstream history for rebasing, keeps
   pnpm, keeps the Apache-2.0 code out of the MIT askgina/os tree; the private push form makes
-  nothing public and contacts no one. **Eric's**: making the repository public, or turning it
+  nothing public and contacts no one. **The owner's**: making the repository public, or turning it
   into a GitHub fork.
   Date/Author: 2026-11-14 / research agent; taken 2026-11-15 / lead
-- Decision D2, owner, **taken 2026-11-15** by the lead under Eric's delegation, as recommended:
+- Decision D2, owner, **taken 2026-11-15** by the lead agent under the repository owner's delegation, as recommended:
   the fork consumes `@askgina/os-world` and `@askgina/os-keys` as
   built packages published privately to GitHub Packages from askgina/os tags. Alternatives: a git
   dependency on a pinned askgina/os commit; a vendored copy checked by digest. The packages stay
@@ -273,21 +273,21 @@ marked **Eric's** below.
   Rationale: avoids changing Busy's MCP network policy and auth modes; one token per bot keeps
   the blast radius of one bot to one askgina/os agent.
   Date/Author: 2026-11-14 / research agent
-- Decision D5, owner, **taken 2026-11-15** by the lead under Eric's delegation, as recommended:
+- Decision D5, owner, **taken 2026-11-15** by the lead agent under the repository owner's delegation, as recommended:
   bot computers run in containers under the gVisor runtime
   (`runsc`). Alternatives: Firecracker or Kata microVMs (need KVM: bare metal or nested
   virtualization); plain `runc` containers.
   Rationale: runs on the hosts askgina/os already targets without KVM; a user-space kernel between
   untrusted browser and shell work and the host kernel.
   Date/Author: 2026-11-14 / research agent
-- Decision D6, owner, **taken 2026-11-15** by the lead under Eric's delegation, as recommended:
+- Decision D6, owner, **taken 2026-11-15** by the lead agent under the repository owner's delegation, as recommended:
   in production the runner (which holds a Docker socket) runs on a
   host or VM other than the signer's. On one machine it is allowed for development only.
   Rationale: a Docker socket is root on its host; on the signer's host that is the "signer host"
   attacker position (`docs/threat-model.md:239-243`; "One machine running everything gives no
   protection against that machine", `:564`).
   Date/Author: 2026-11-14 / research agent; citation re-checked 2026-11-15
-- Decision D7, owner, **taken 2026-11-15** by the lead under Eric's delegation, as recommended:
+- Decision D7, owner, **taken 2026-11-15** by the lead agent under the repository owner's delegation, as recommended:
   the first fork accepts plaintext in the Busy Hub's own tables,
   keeps that database in its own Postgres that never joins askgina/os networks, and says so in
   its README. Alternatives: seal `messages.text`, `events.data` and `memories.content` and drop
@@ -295,7 +295,7 @@ marked **Eric's** below.
   Rationale: sealing breaks upstream's search (`lib/history-search.ts:167-183`) and touches the
   most-edited upstream files.
   Date/Author: 2026-11-14 / research agent
-- Decision D8, owner, **taken 2026-11-15** by the lead under Eric's delegation, as recommended:
+- Decision D8, owner, **taken 2026-11-15** by the lead agent under the repository owner's delegation, as recommended:
   code tasks, firesides, consultations and Desktop are switched
   off. Alternative: port code tasks (`durable-harness` on a self-hosted World and sandbox), more
   than 10,000 lines.
@@ -307,12 +307,12 @@ marked **Eric's** below.
   Rationale: every independent eve bump would conflict with upstream's template; the attribute
   test in Milestone 4 forces a review whenever upstream bumps.
   Date/Author: 2026-11-14 / research agent
-- Decision D10, owner, **taken 2026-11-15** by the lead under Eric's delegation, as recommended
+- Decision D10, owner, **taken 2026-11-15** by the lead agent under the repository owner's delegation, as recommended
   (the conservative option, which needs no third-party contact): the fork ships under its own
   name and says "based on Busy" only to describe its origin. Alternatives: keep the name "Busy";
   ask upstream for permission (contact with upstream, not taken).
   Rationale: Apache-2.0 section 6 grants no trademark rights (`busy@3dd91e1:LICENSE:139-142`).
-  **Eric's**: the final product name. Until he names it, the fork's README and banner use the
+  **The owner's**: the final product name. Until the owner names it, the fork's README and banner use the
   working name "Ask Gina Bots (working name)", and `askgina/busy` is a private repository name
   only.
   Date/Author: 2026-11-14 / research agent; taken 2026-11-15 / lead
@@ -328,7 +328,7 @@ marked **Eric's** below.
   (`agent/agent.ts`, `channels/eve.ts`, `instructions.ts`, `lib/lazy-tools.ts`, `sandbox.ts`,
   `tools/web_fetch.ts`); building per bot leaves them unchanged.
   Date/Author: 2026-11-14 / research agent
-- Decision D13, owner, new 2026-11-15, **taken 2026-11-15** by the lead under Eric's delegation:
+- Decision D13, owner, new 2026-11-15, **taken 2026-11-15** by the lead agent under the repository owner's delegation:
   allow and document, with small caps, as recommended. An askgina/os agent that a Busy bot uses may
   hold mandates, like any agent. The fork's README and bot settings page say that whoever
   controls the Busy Hub holds every bot's agent token, and so can spend every live mandate of
@@ -340,7 +340,7 @@ marked **Eric's** below.
   loss to `min(maxTotal, maxUses × maxPerAction)` per asset (`docs/threat-model.md:291,297`), the
   same position as any stolen agent token.
   Date/Author: 2026-11-15 / plan refresh
-- Decision D14, owner, new 2026-11-15, **taken 2026-11-15** by the lead under Eric's delegation:
+- Decision D14, owner, new 2026-11-15, **taken 2026-11-15** by the lead agent under the repository owner's delegation:
   do not receive it, as recommended. The fork does not receive the askgina/os signed
   webhook and posts nothing about waiting approvals into Busy chats beyond the bot's own reply.
   Alternative: point `NOTIFY_WEBHOOK_URL` at the Busy Hub and post a chat message per
@@ -383,8 +383,8 @@ marked **Eric's** below.
   `ASKGINA_OS_AGENTS_NETWORK=os-phone_agents`. A bot created through the Hub took the staging
   agent's token in its Wallet route, was redeployed onto that network, and called
   `askgina-os__propose_transfer` through `eve__tool`; no Busy approval card opened. askgina/os
-  created intent `int_01m7gdksdjd542xp0pc05y16aq`, sent the push, the owner approved it with his
-  phone's passkey on the signer's confirmation page, and it confirmed 40 s after the proposal:
+  created intent `int_01m7gdksdjd542xp0pc05y16aq`, sent the push, the owner approved it with a
+  passkey on a phone on the signer's confirmation page, and it confirmed 40 s after the proposal:
   transaction `0xc7cf6d95ed1b3dde5aaa9ea51bb97e89177f3fc0f8cfd6d1db596bacc514cc64` on the
   staging Anvil chain, 0.001 ETH received by the recipient.
   Limits: the model was the stub with scripted tool arguments, so a real model choosing the
@@ -394,7 +394,7 @@ marked **Eric's** below.
   moved it.
 
 - Outcome (2026-11-15, by hand, twice): a real model chose the call. The same rig with the Hub's
-  OpenAI-compatible connection pointed at a real model endpoint (`gpt-6-luna`) and a bot told in
+  OpenAI-compatible connection pointed at a real hosted model (`<model>`) and a bot told in
   plain words to pay "Acme invoice 2217", 0.001 ETH: the model called
   `askgina-os__propose_transfer` with the right recipient, amount and memo both times (intents
   `int_01m7gphs9jkfq3jb0q515n5v9v`, `int_01m7gqeh7v4gteqh87znp00ns9`, both `pending_approval`).
@@ -406,7 +406,7 @@ marked **Eric's** below.
   approval's own run now asks the signer too (`apps/server/workflows/approval.ts`).
 
 - Outcome (2026-11-16, by hand, once): a payment a real model chose settled. Fresh stacks (os at
-  `dc985b6`, the fork at `63a9eb0`, model `gpt-6-luna`), same instruction. The model called
+  `dc985b6`, the fork at `63a9eb0`, the same real hosted model `<model>`), same instruction. The model called
   `askgina-os__propose_transfer` (intent `int_01m7gyj8zrhtvpnrcs6f1t656s`, 01:11:55Z); the owner
   opened the confirmation page on a phone and approved with a passkey (page 01:12:48Z, submit
   01:12:55Z); the transaction confirmed at 01:13:02Z (tx
@@ -419,7 +419,7 @@ marked **Eric's** below.
   A second payment on the same stacks (intent `int_01m7gyqzwnqkw8ffer6mckjt24`, "Acme invoice
   2218", proposed 01:15:02Z) was reached through the notification alone: no link was given to the
   owner, the push was handed to the push service at 01:15:04Z, the owner reports that the
-  notification showed on the phone and that he tapped it, the confirmation page loaded at
+  notification showed on the phone and that they tapped it, the confirmation page loaded at
   01:15:40Z, the passkey was submitted at 01:15:46Z and the transaction confirmed at 01:15:53Z
   (tx `0x90176ad9…b86146`). In this run the model read the first payment's status with
   `get_intent` before it proposed. The signing step started 2.4 s after the passkey, between two
@@ -439,7 +439,7 @@ marked **Eric's** below.
   A second flaw seen there: after sending the approval link the bot ended its turn, so nobody
   reported the result. Fixed in the fork (`87eac69`): the `wallet` skill has the bot send the
   link together with its first `get_intent` call and keep calling while the status waits. Checked
-  by hand on throwaway stacks (os at `82d9003`, model `gpt-6-luna`, an owner with a software
+  by hand on throwaway stacks (os at `82d9003`, the same real hosted model `<model>`, an owner with a software
   passkey from the release gates' helpers who approved 75 s after each proposal on the
   confirmation page and made no call to the app): a new bot sent the link, called `get_intent`
   three times and reported the payment confirmed with its transaction hash ("Acme invoice
@@ -455,7 +455,7 @@ marked **Eric's** below.
 - Outcome: research done; nothing built.
   Evidence: [research/busy-fork.md](./research/busy-fork.md).
   Remaining: every milestone below (owner decisions taken 2026-11-15, except the calls that stay
-  Eric's: a public repository, the product name, contact with upstream).
+  the owner's: a public repository, the product name, contact with upstream).
 - Outcome (2026-11-15): still nothing built. Trusted display, mandates and notifications landed
   on main and delivered none of this plan's milestones; they changed what Milestone 7 drives (the
   confirmation page instead of an in-app approval), what the bot must handle (mandate-covered
@@ -587,8 +587,8 @@ Acceptance:
 
 Scope: a fork that builds and tests exactly like upstream, with licence duties checked by CI and
 an automatic signal when upstream moves. Depends on D1 (the private mirror `askgina/busy`,
-already created at `3dd91e1`, not a GitHub fork) and D10 (own name; the final name is Eric's,
-"Ask Gina Bots (working name)" until he picks), both taken 2026-11-15. The fork's workflows are
+already created at `3dd91e1`, not a GitHub fork) and D10 (own name; the final name is the owner's,
+"Ask Gina Bots (working name)" until the owner picks), both taken 2026-11-15. The fork's workflows are
 cheap: no macOS desktop job, benchmark and performance jobs disabled; Actions stays off in the
 repository until they land. Fetching upstream's public repository is read-only and
 is not contact with the upstream project.
@@ -599,7 +599,7 @@ Files and interfaces:
   (2026). Based on Busy by Matias Solina." as an addendum (Apache-2.0 4(d)).
 - `fork:FORK.md`: new. What the fork changes and why, the switched-off features, the upstream
   commit it is based on, and the list of modified upstream files (generated, see below).
-- `fork:README.md`: a banner naming the fork (D10; "Ask Gina Bots (working name)" until Eric picks
+- `fork:README.md`: a banner naming the fork (D10; "Ask Gina Bots (working name)" until the owner picks
   the final name), "based on Busy", and linking `FORK.md`.
 - `fork:scripts/fork-notice.mjs` and `fork:scripts/fork-notice.test.mjs`: new. Lists files changed
   against the recorded upstream base (`git diff --name-only $UPSTREAM_BASE...HEAD`), excluding new
@@ -1152,7 +1152,7 @@ Regression checks:
   KVM host.
 - Risk: the Docker socket on the runner host. Mitigation: D6 (taken): the runner never shares a
   host with the signer in production.
-- Answered (2026-11-15, by the lead under Eric's delegation; no recommendation, so the
+- Answered (2026-11-15, by the lead agent under the repository owner's delegation; no recommendation, so the
   conservative option): no rootless Docker daemon in the first fork; the runner uses a normal
   daemon on its own host under D6. Reason: smallest scope; gVisor under rootless Docker is not
   proven in this plan, and D6 already confines the socket to a host that holds no askgina/os
@@ -1160,7 +1160,7 @@ Regression checks:
 - Risk: Hub plaintext (D7) is misread as covered by the World. Mitigation: the README states it
   and the threat model lists it.
 - Risk: trademark. Mitigation: D10 (taken): own name, no use of "Busy" as a name, no request to
-  upstream. The name itself stays Eric's.
+  upstream. The name itself stays the owner's.
 - Risk: a compromised Busy Hub spends every live mandate of its bots' agents. Mitigation: D13
   (documented, small caps); the signer bounds each mandate's worst case; disabling an agent in
   askgina/os revokes its mandates at once.
@@ -1180,10 +1180,10 @@ Regression checks:
 - Risk: the eve example's Compose stack, the only askgina/os example of an agent on `agents` plus
   an egress network, has never been started. Mitigation: Milestones 4 and 7 run that topology in
   CI; a failure there is a finding for askgina/os too.
-- Open question, **Eric's**: whether upstream would accept the provider-neutral seams of
-  Milestones 2 and 3. Not delegated: contacting the upstream Busy project is Eric's call, and
+- Open question, **the owner's**: whether upstream would accept the provider-neutral seams of
+  Milestones 2 and 3. Not delegated: contacting the upstream Busy project is the owner's call, and
   no milestone depends on it.
-- Open, **Eric's**: making the fork repository public (D1) and the fork's final product name
+- Open, **the owner's**: making the fork repository public (D1) and the fork's final product name
   (D10). Not delegated; the plan builds in the private mirror `askgina/busy` under the working
   name "Ask Gina Bots (working name)".
 
@@ -1208,10 +1208,10 @@ Regression checks:
   fixed by `5da19e5` (still never started). Stale line references corrected. New open decisions
   D13 (mandates for Busy bots) and D14 (no webhook into Busy). No milestone was delivered by
   other plans; Milestone 0 is still needed.
-- 2026-11-15: D1, D2, D5 to D8, D10, D13 and D14 taken by the lead under Eric's delegation, each
+- 2026-11-15: D1, D2, D5 to D8, D10, D13 and D14 taken by the lead agent under the repository owner's delegation, each
   as recommended. D1 narrowed to a private mirror and done: `askgina/busy` with upstream history
   at `3dd91e1`, Actions off until Milestone 1's cheap workflows (a GitHub fork of a public
-  repository is public); `ericjuta/busy` is unrelated and unused. D10 taken as the no-contact
-  option (own name, no permission request); working name "Ask Gina Bots (working name)". Left with Eric: making any repository public, the product name, contact
+  repository is public); the owner's unrelated personal copy of Busy is unused. D10 taken as the no-contact
+  option (own name, no permission request); working name "Ask Gina Bots (working name)". Left with the owner: making any repository public, the product name, contact
   with upstream. The runner's rootless-Docker question is answered conservatively (not in the
   first fork). The repricing risk now cites the built `stuck` status (#22 at `61d0326`).

@@ -4,14 +4,16 @@ The signer holds every wallet key of a deployment and decides, on its own, wheth
 
 The control plane can ask the signer for things. It cannot make it sign. Every operation that adds authority (signing a transaction, changing a policy, adding an approver, lowering or raising a threshold, resuming a paused workspace) must carry passkey assertions over a statement of that exact operation (an _envelope_). The signer recomputes the envelope's digest, checks each assertion against its own registry of approvers, and acts at most once per approval and per nonce.
 
-The contract is [`packages/protocol/src/signer/api.ts`](../../packages/protocol/src/signer/api.ts). The design and its reasons are in [the ExecPlan](../../specs/agent-workspaces-v0.1.md), Milestone 2.
+The contract is [`packages/protocol/src/signer/api.ts`](../../packages/protocol/src/signer/api.ts). The rules it enforces are in [`docs/approval-protocol.md`](../../docs/approval-protocol.md); how it fits with the other services is in [`docs/architecture.md`](../../docs/architecture.md); the original design and its reasons are in [`specs/agent-workspaces-v0.1.md`](../../specs/agent-workspaces-v0.1.md).
+
+**Status.** Proven in CI: the unit tests in `test/` (job `test`), and the real signer inside the whole Compose stack in every `stack` job (`e2e/test/release-gates.spec.ts`), on its own host behind mutual TLS in `stack (split)` (`e2e/test/split.spec.ts`), and for wallet retirement, workspace deletion and the operator's key export in `stack (amd64)` and `stack (arm64)` (`e2e/test/lifecycle.spec.ts`). EVM transactions are proven against a local development chain only. Hyperliquid orders on testnet and mainnet are proven against fake venues in `stack (amd64)` and `stack (arm64)` (`e2e/test/venue.spec.ts`). Unproven: no order has been sent to the real Hyperliquid testnet, and no order with real funds has been placed on mainnet.
 
 ## What it trusts
 
-- **Its own SQLite file** (`$SIGNER_DATA_DIR/signer.sqlite`): workspaces, approvers, wallet policies with their hash chain, used nonces, signed transactions, the spend ledger, the decision log, the restore fence, open confirmations with the assertions made on them, the possession challenges of approver changes (table `possession_challenges`), mandates with their grantors and every use (tables `mandates`, `mandate_grantors`, `mandate_uses`), and every attempt after a first signature (table `signature_attempts`). Its schema version is `PRAGMA user_version`, now 8 (version 5 added the three mandate tables, version 6 `signature_attempts`, version 7 the lifecycle columns, version 8 `venue_nonces` and `venue_signatures`); the signer migrates it in one transaction when it opens the file, and refuses to open a file written by a newer signer (`SchemaTooNewError`, logged as `schema_too_new`).
+- **Its own SQLite file** (`$SIGNER_DATA_DIR/signer.sqlite`): workspaces, approvers, wallet policies with their hash chain, used nonces, signed transactions, the spend ledger, the decision log, the restore fence, open confirmations with the assertions made on them, the possession challenges of approver changes (table `possession_challenges`), mandates with their grantors and every use (tables `mandates`, `mandate_grantors`, `mandate_uses`), and every attempt after a first signature (table `signature_attempts`). It also holds the venue actions it signed and the nonces it used for them (tables `venue_signatures`, `venue_cancels`, `venue_nonces`), and where each wallet and workspace stands in its lifecycle. The schema version is `PRAGMA user_version` (`SCHEMA_VERSION` in `src/db.ts`); the signer migrates the file in one transaction when it opens it, and refuses to open a file written by a newer signer (`SchemaTooNewError`, logged as `schema_too_new`).
 - **Its vault** (`$SIGNER_DATA_DIR/vault`): an [Open Wallet Standard](https://github.com/open-wallet-standard/core) key store, one wallet with its own mnemonic per wallet id. OWS is used only to keep keys encrypted and sign; it enforces nothing. The signer builds every transaction itself from the approved intent (`to`, `value`, `data`, the chain; ERC-20 calldata is encoded here), so it never signs bytes a caller handed it.
 - **Two request-signing secrets**, one per scope. The control plane's (`SIGNER_HMAC_SECRET_FILE`) proves a request came from the control plane within the last minute; it reaches every route except the four confirm routes. The `approve` service's (`SIGNER_CONFIRM_SECRET_FILE`) reaches only those four, so a compromised confirmation page cannot sign, apply or read anything else. Pausing a workspace, revoking an approval and revoking a mandate need only the control plane's secret, because they only remove authority.
-- **The relying party** (`WEBAUTHN_RP_ID`, `SIGNER_APPROVAL_ORIGIN`). An assertion counts only when the browser made it on the confirmation page: at `SIGNER_APPROVAL_ORIGIN` exactly, top-level (not in a frame: no `crossOrigin: true`, no `topOrigin`), as a `webauthn.get`, under `WEBAUTHN_RP_ID`. The same rule holds when the signer signs, when it applies an admin change, and when it accepts an assertion on a confirmation route. An assertion made on any page the control plane serves is refused with `assertion_invalid`. No setting widens this: the earlier `WEBAUTHN_ORIGINS`, which let the control plane's own page approve, was removed (`specs/trusted-display.md`, milestone 3).
+- **The relying party** (`WEBAUTHN_RP_ID`, `SIGNER_APPROVAL_ORIGIN`). An assertion counts only when the browser made it on the confirmation page: at `SIGNER_APPROVAL_ORIGIN` exactly, top-level (not in a frame: no `crossOrigin: true`, no `topOrigin`), as a `webauthn.get`, under `WEBAUTHN_RP_ID`. The same rule holds when the signer signs, when it applies an admin change, and when it accepts an assertion on a confirmation route. An assertion made on any page the control plane serves is refused with `assertion_invalid`. No setting widens this: the earlier `WEBAUTHN_ORIGINS`, which let the control plane's own page approve, was removed (see [`specs/trusted-display.md`](../../specs/trusted-display.md)).
 - **The operator's label files** (`SIGNER_CHAINS_FILE`, `SIGNER_ASSETS_FILE`): chain names, native coins, token symbols and decimals shown on the confirmation page. They change what a person reads, never what is signed.
 
 It does **not** trust the control plane's database, its idea of who is an approver, or anything it says about a challenge. A compromised control plane can withhold requests, mislead a person in its own pages, and link them to the confirmation page of another request, but the page shows what the signer holds and only an approval made there counts. A compromised `approve` service, or the proxy in front of it, can show a false view on that page and relay an approval over another digest: for a payment the per-wallet caps bound what that can cost; a sweep is bounded by where it may go; a misled change of policy or approvers is not bounded (see "Limits" in [`docs/threat-model.md`](../../docs/threat-model.md)).
@@ -58,6 +60,28 @@ Why a reprice of a transaction signed before the restore fence is refused: a res
 
 `GET /v1/approvals/:approvalId` lists a signed approval's attempts in `attempts`, the first included; for a `cancel-transaction` approval it reports `applied` with the one attempt it produced and its hash. Decision-log actions: `reprice` under the signed approval's id, `cancel-transaction` under the cancel's approval id.
 
+## Venue orders
+
+The signer also signs Hyperliquid perpetual orders and withdrawals, on testnet (`hyperliquid:testnet`) and on mainnet (`hyperliquid:mainnet`) alike (`docs/approval-protocol.md`, section 8, "Venue orders"). It never talks to Hyperliquid: it returns the exact request body, and the control plane posts it. Two routes, both in the control scope, in `venue-signing.ts`:
+
+- `POST /v1/venue/sign` with `{ intent, authorization }` signs the one action of an approved venue intent. The checks follow `POST /v1/sign` in the same order: idempotency (a repeat of the same approval returns the same body), the restore fence, an `approve-intent` envelope that matches the intent, a wallet that may sign, a workspace that is not paused, the policy hash, and passkeys at the policy's threshold; then, in one SQLite transaction, the envelope nonce and the policy against the last 24 hours. The policy allows a venue intent only under its `venues.hyperliquid` rules and only on the network those rules name; an intent for the other network is `policy_denied` with detail `venue_not_allowed`. The signer builds the action itself. An order gets a client order id derived from the approval id, so it can be found at the venue after a crash, and an expiry of the signer's clock plus the policy's submit window. A withdrawal goes to the wallet's own address. The action nonce is above every nonce the wallet used on that network. It answers `{ approvalId, walletId, network, account, cloid, request }`. An order's notional counts against the wallet's daily cap; a reduce-only order counts only against its market's per-order cap, and a withdrawal counts against nothing.
+- `POST /v1/venue/orders/:approvalId/cancel` with `{ workspaceId }` signs the cancel (`cancelByCloid`) of an order this signer signed, with no passkey: approving an order includes the right to cancel it. It is allowed while the workspace is paused or being deleted and while the wallet is retiring. It is `not_found` for an approval this database did not sign as an order of that workspace, `conflict` for a withdrawal, and `wallet_retired` once the wallet's key is destroyed. Within a cancel's own expiry a repeat returns the same cancel, so retries post identical bytes; after it, a new cancel with a larger nonce.
+
+Decision-log actions: `sign-venue` and `cancel-venue-order`. No mandate covers a venue intent.
+
+## Retiring a wallet and deleting a workspace
+
+Destroying a key is treated like signing (`docs/approval-protocol.md`, section 8, "Retiring a wallet and deleting a workspace"). People approve a `retire-wallet` or `delete-workspace` envelope on the confirmation page at the admin threshold. It names the exact wallets, by id and address, and the time `destroyAfter` at which the keys go; `destroyAfter` minus the envelope's `issuedAt` must lie between `SIGNER_MIN_DESTROY_DELAY_SECONDS` and `SIGNER_MAX_DESTROY_DELAY_SECONDS` (`destroy_delay_out_of_range`). Six routes, all in the control scope, in `lifecycle.ts`:
+
+- `POST /v1/wallets/:walletId/retire` applies a `retire-wallet` envelope. The wallet becomes `retiring` and signs nothing from then on (`wallet_retired`), and its live mandates end with reason `requested`, in the same transaction.
+- `POST /v1/wallets/:walletId/retire/cancel` keeps the key: the wallet becomes `held` and signs nothing until a new policy is approved for it. No passkey, because it destroys nothing. Refused while the workspace is being deleted: cancel the deletion instead.
+- `POST /v1/wallets/:walletId/retire/finalize` destroys the key once the signer's clock is past `destroyAfter` (`destroy_not_due` before). The wallet becomes `destroyed`. No passkey: it does only what people approved.
+- `POST /v1/workspaces/:workspaceId/delete` applies a `delete-workspace` envelope, which must list every wallet of the workspace whose key still exists (`wallet_set_mismatch` otherwise). The workspace becomes paused and `deleting`, every listed wallet `retiring`, and every live mandate ends. While it waits, the workspace refuses everything (`workspace_deleting`) except a `cancel-transaction` approval, so a stuck transaction can be cleared before its key goes, and venue cancels.
+- `POST /v1/workspaces/:workspaceId/delete/cancel` makes the workspace active again, still paused, and puts each wallet back as it was. Mandates stay revoked.
+- `POST /v1/workspaces/:workspaceId/delete/finalize`, once `destroyAfter` has passed, destroys every key, removes the workspace's approvers, confirmations, assertions and possession challenges, blanks the text of its mandates, and marks it `deleted` (`workspace_deleted` for anything after that except reading its state and decision log). Used nonces, approvals, spends, policies, mandate ids and hashes, and the decision log stay, so nothing of it can be replayed.
+
+Finalizing is the one irreversible step. It runs in one write transaction: each key is deleted from the key store first, then the rows change, and the signed transactions and venue requests of a destroyed key are emptied. A repeat returns the state. Decision-log actions: `retire-wallet`, `cancel-retire-wallet`, `destroy-wallet`, `delete-workspace`, `cancel-delete-workspace`.
+
 ## Confirmation pages
 
 The confirmation page lets a person read an approval as the signer holds it and approve it there, on its own origin, so the control plane cannot show one operation and collect a passkey assertion for another (`specs/trusted-display.md`). It is the only place an approval is made, for every envelope kind. Six routes, in `confirmations.ts`:
@@ -81,6 +105,7 @@ A payment needs its policy's threshold, a cancel its wallet's current policy's; 
 | `unauthenticated`               | 401  | The request signature is missing, wrong, or more than 60 seconds from the signer's clock.                                                          |
 | `not_found`                     | 404  | Unknown route, workspace, wallet, approver or mandate, or a mandate of another workspace.                                                          |
 | `conflict`                      | 409  | An id already exists with different content, or an approval already acted on cannot change.                                                        |
+| `destroy_not_due`               | 409  | A retirement or deletion was finalized before its `destroyAfter`.                                                                                  |
 | `confirmation_closed`           | 409  | The approval can no longer collect assertions: revoked, used, expired, superseded or complete.                                                     |
 | `possession_unproven`           | 409  | The person being added has not proven on the confirmation page that they hold the passkey an approver change adds.                                 |
 | `rate_limited`                  | 429  | More than 64 assertions were submitted for one confirmation.                                                                                       |
@@ -111,36 +136,43 @@ A payment needs its policy's threshold, a cancel its wallet's current policy's; 
 | `fee_not_raised`                | 403  | A reprice or cancel does not raise both fees above the latest attempt's.                                                                           |
 | `attempts_exhausted`            | 403  | The approval has `SIGNER_MAX_TX_ATTEMPTS` attempts, the first signature included.                                                                  |
 | `reprice_window_closed`         | 403  | `SIGNER_REPRICE_WINDOW_SECONDS` passed since the first signature: only a cancel, with passkeys, is signed now.                                     |
+| `workspace_deleting`            | 403  | The workspace is being deleted: only cancelling or finalizing the deletion, a `cancel-transaction`, a venue cancel and reads.                      |
+| `workspace_deleted`             | 403  | The workspace was deleted: only its state and its decision log can be read.                                                                        |
+| `wallet_retired`                | 403  | The wallet is retiring, held or destroyed: it signs nothing and takes no mandate.                                                                  |
+| `wallet_set_mismatch`           | 403  | A deletion's wallets are not exactly the workspace's wallets whose keys still exist, by id and address.                                            |
+| `destroy_delay_out_of_range`    | 403  | `destroyAfter` minus `issuedAt` is outside `SIGNER_MIN_DESTROY_DELAY_SECONDS` to `SIGNER_MAX_DESTROY_DELAY_SECONDS`.                               |
 | `vault_error`                   | 500  | The key store failed, or a wallet was requested while the owner passphrase file is absent.                                                         |
 | `internal`                      | 500  | Anything else. Nothing about it is returned; the log has the failing route.                                                                        |
 
 ## Configuration
 
-| Variable                              | Meaning                                                                                                                             |
-| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `SIGNER_PORT`                         | Listener port (default 8787).                                                                                                       |
-| `SIGNER_DATA_DIR`                     | Holds `signer.sqlite` and `vault/`.                                                                                                 |
-| `SIGNER_HMAC_SECRET_FILE`             | Base64 file, at least 32 bytes: the request-signing secret shared with the control plane.                                           |
-| `SIGNER_CONFIRM_SECRET_FILE`          | Base64 file, at least 32 bytes, not the request secret: shared with the `approve` service.                                          |
-| `SIGNER_KEY_FILE`                     | Base64 file, exactly 32 bytes: seals the per-wallet OWS tokens stored in SQLite.                                                    |
-| `SIGNER_VAULT_PASSPHRASE_FILE`        | The OWS owner passphrase, read only when a wallet is created. Absent: existing wallets still sign.                                  |
-| `WEBAUTHN_RP_ID`                      | The relying party ID passkeys were registered under.                                                                                |
-| `SIGNER_APPROVAL_ORIGIN`              | The confirmation page's exact origin, the only one an approval may be made at: a host under `WEBAUTHN_RP_ID` or another port on it. |
-| `SIGNER_RETURN_ORIGIN`                | The control plane's origin, where the confirmation page sends people afterwards.                                                    |
-| `SIGNER_CHAINS_FILE`                  | The control plane's chains file; the signer reads each chain's id, `name` and `nativeSymbol`.                                       |
-| `SIGNER_ASSETS_FILE`                  | JSON array of `{ chainId, asset, symbol, decimals }` for the tokens the page names.                                                 |
-| `SIGNER_MAX_INTENT_TTL_SECONDS`       | Ceiling on an intent approval's lifetime (default 86400).                                                                           |
-| `SIGNER_MAX_ADMIN_TTL_SECONDS`        | Ceiling on other envelopes' lifetime (default 86400).                                                                               |
-| `SIGNER_MAX_MANDATE_SECONDS`          | Longest mandate life granted, from now or its `notBefore` if later: 3600 to 2592000 (default 604800, seven days).                   |
-| `SIGNER_MAX_LIVE_MANDATES_PER_WALLET` | Live (not revoked, not past `notAfter`) mandates one wallet may hold: 1 to 64 (default 16).                                         |
-| `SIGNER_MAX_TX_ATTEMPTS`              | Attempts per approval, the first signature included: 2 to 64 (default 16).                                                          |
-| `SIGNER_REPRICE_WINDOW_SECONDS`       | How long after the first signature a reprice is signed with no person: 0 to 604800 (default 86400; 0 refuses every reprice).        |
-| `SIGNER_HOST`                         | The address to listen on (default `0.0.0.0`). On its own host, the private interface the control plane reaches.                     |
-| `SIGNER_TLS_CERT_FILE`                | Mutual TLS: the signer's certificate, PEM. With the next three, the listener speaks TLS 1.3 only. All four or none.                 |
-| `SIGNER_TLS_KEY_FILE`                 | Mutual TLS: the key of `SIGNER_TLS_CERT_FILE`.                                                                                      |
-| `SIGNER_TLS_CONTROL_CERT_FILE`        | Mutual TLS: the control plane's certificate, the one client allowed on control routes.                                              |
-| `SIGNER_TLS_APPROVE_CERT_FILE`        | Mutual TLS: the `approve` service's certificate, the one client allowed on the four confirm routes. Not the control certificate.    |
-| `SIGNER_HEALTH_PORT`                  | With TLS only: the plain health listener's port on `127.0.0.1` (default 8789; not 8788, which `approve` uses).                      |
+| Variable                              | Meaning                                                                                                                              |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `SIGNER_PORT`                         | Listener port (default 8787).                                                                                                        |
+| `SIGNER_DATA_DIR`                     | Holds `signer.sqlite` and `vault/`.                                                                                                  |
+| `SIGNER_HMAC_SECRET_FILE`             | Base64 file, at least 32 bytes: the request-signing secret shared with the control plane.                                            |
+| `SIGNER_CONFIRM_SECRET_FILE`          | Base64 file, at least 32 bytes, not the request secret: shared with the `approve` service.                                           |
+| `SIGNER_KEY_FILE`                     | Base64 file, exactly 32 bytes: seals the per-wallet OWS tokens stored in SQLite.                                                     |
+| `SIGNER_VAULT_PASSPHRASE_FILE`        | The OWS owner passphrase, read only when a wallet is created. Absent: existing wallets still sign.                                   |
+| `WEBAUTHN_RP_ID`                      | The relying party ID passkeys were registered under.                                                                                 |
+| `SIGNER_APPROVAL_ORIGIN`              | The confirmation page's exact origin, the only one an approval may be made at: a host under `WEBAUTHN_RP_ID` or another port on it.  |
+| `SIGNER_RETURN_ORIGIN`                | The control plane's origin, where the confirmation page sends people afterwards.                                                     |
+| `SIGNER_CHAINS_FILE`                  | The control plane's chains file; the signer reads each chain's id, `name` and `nativeSymbol`.                                        |
+| `SIGNER_ASSETS_FILE`                  | JSON array of `{ chainId, asset, symbol, decimals }` for the tokens the page names.                                                  |
+| `SIGNER_MAX_INTENT_TTL_SECONDS`       | Ceiling on an intent approval's lifetime (default 86400).                                                                            |
+| `SIGNER_MAX_ADMIN_TTL_SECONDS`        | Ceiling on other envelopes' lifetime (default 86400).                                                                                |
+| `SIGNER_MAX_MANDATE_SECONDS`          | Longest mandate life granted, from now or its `notBefore` if later: 3600 to 2592000 (default 604800, seven days).                    |
+| `SIGNER_MAX_LIVE_MANDATES_PER_WALLET` | Live (not revoked, not past `notAfter`) mandates one wallet may hold: 1 to 64 (default 16).                                          |
+| `SIGNER_MAX_TX_ATTEMPTS`              | Attempts per approval, the first signature included: 2 to 64 (default 16).                                                           |
+| `SIGNER_REPRICE_WINDOW_SECONDS`       | How long after the first signature a reprice is signed with no person: 0 to 604800 (default 86400; 0 refuses every reprice).         |
+| `SIGNER_MIN_DESTROY_DELAY_SECONDS`    | Shortest delay from a retirement or deletion envelope's `issuedAt` to its `destroyAfter`: 0 to 7776000 (default 604800, seven days). |
+| `SIGNER_MAX_DESTROY_DELAY_SECONDS`    | Longest such delay: 1 to 31536000, at least the minimum (default 7776000, 90 days).                                                  |
+| `SIGNER_HOST`                         | The address to listen on (default `0.0.0.0`). On its own host, the private interface the control plane reaches.                      |
+| `SIGNER_TLS_CERT_FILE`                | Mutual TLS: the signer's certificate, PEM. With the next three, the listener speaks TLS 1.3 only. All four or none.                  |
+| `SIGNER_TLS_KEY_FILE`                 | Mutual TLS: the key of `SIGNER_TLS_CERT_FILE`.                                                                                       |
+| `SIGNER_TLS_CONTROL_CERT_FILE`        | Mutual TLS: the control plane's certificate, the one client allowed on control routes.                                               |
+| `SIGNER_TLS_APPROVE_CERT_FILE`        | Mutual TLS: the `approve` service's certificate, the one client allowed on the four confirm routes. Not the control certificate.     |
+| `SIGNER_HEALTH_PORT`                  | With TLS only: the plain health listener's port on `127.0.0.1` (default 8789; not 8788, which `approve` uses).                       |
 
 `WEBAUTHN_ORIGINS` is no longer read; remove it from an older environment. The signer refuses to start when a secret is missing or malformed, when the confirm secret equals the request secret, when `SIGNER_APPROVAL_ORIGIN` is not under the RP ID or equals `SIGNER_RETURN_ORIGIN` (the control plane's origin), or when a label file has a name or symbol that could pass for something else (symbols `^[A-Za-z0-9.]{1,11}$`, chain names printable ASCII up to 40 characters, decimals 0 to 36). It runs with umask 077, and on SIGTERM finishes requests in flight before closing the database.
 
@@ -156,11 +188,11 @@ At start the signer logs `tls_expiry` with the whole days left on each of the th
 
 The main port then needs a client certificate, so a second listener, plain HTTP on `127.0.0.1:SIGNER_HEALTH_PORT`, answers `GET /healthz` and nothing else, for the container's health check. Without TLS there is no second listener and `GET /healthz` is on the main port, as on one machine.
 
-Tested: `test/tls.test.ts` in CI job `test`, and the release gates through two Compose projects in `stack (split)` (CI runs 43733608692 and 43735023880).
+Proven in CI: `test/tls.test.ts` in job `test`; and in job `stack (split)`, the split gates (`e2e/test/split.spec.ts`) and then the release gates (`e2e/test/release-gates.spec.ts`) with the signer and its confirmation page in a second Compose project, joined to the control plane only by mutual TLS.
 
 ## Admin CLI
 
-Runs on the signer host, with the same environment, against the same SQLite file:
+Runs on the signer host, with the same environment, against the same SQLite file. In the Compose stack, prefix each command with `docker compose exec signer` (the image's working directory is `apps/signer`); before the signer serves after a restore, use `docker compose run --rm signer` instead.
 
 ```sh
 node src/admin.ts enroll-approver --workspace ws_… --user usr_… \
@@ -170,6 +202,7 @@ node src/admin.ts fence
 node src/admin.ts list-mandates --workspace ws_…
 node src/admin.ts revoke-mandate --mandate mnd_…
 node src/admin.ts revoke-mandate --all --workspace ws_…
+node src/admin.ts export-wallet --workspace ws_… --wallet wal_… --out /absolute/path
 ```
 
 Each command prints one JSON line. `enroll-approver` adds exactly the passkey typed on the command line as an approver of the workspace, in one transaction with an `enroll-approver-by-operator` entry in the decision log; it refuses an unknown workspace (`not_found`) or a credential already enrolled (`conflict`). It is how a workspace whose people lost every passkey regains control; its wallets are untouched. There is no HTTP route for this: anything relayed over HTTP passes through the control plane, which could swap in its own key. **Host access is the root of trust:** whoever can run this command on the signer host can add an approver, so treat shell access to that host as signing authority.
@@ -178,11 +211,15 @@ Each command prints one JSON line. `enroll-approver` adds exactly the passkey ty
 
 `list-mandates` prints the workspace's mandates as identifiers, status, times and use counts, never their purpose or recipients. `revoke-mandate --mandate` ends one mandate, and `revoke-mandate --all --workspace` every live mandate of a workspace, with reason `operator` and one `revoke-mandate-by-operator` entry each; both print `{"ok":true,"action":"revoke-mandate-by-operator","revoked":[…]}` with the ids they revoked (none for a mandate already revoked). An unknown workspace or mandate is `not_found`.
 
+`export-wallet` writes the wallet's mnemonic to a new file at the absolute path given, readable by the signer's user only, and records `export-wallet-by-operator` in the decision log; the printed line names the workspace, the wallet, its address and the file, never the mnemonic. It is for an operator taking a wallet's funds out of the system, and it is the only way a key ever leaves the signer host; there is no HTTP route for it. It refuses a path that already exists (`out_exists`), a path it cannot write (`out_unwritable`) and a wallet whose key was destroyed (`wallet_retired`). Whoever holds the file holds the wallet: write it to memory-backed storage, never under `SIGNER_DATA_DIR`, move the funds and destroy the file ([`deploy/README.md`](../../deploy/README.md#retiring-wallets-and-deleting-workspaces) shows the Compose steps).
+
 `verify-log` recomputes the workspace's decision-log hash chain and compares its end with the head stored on the workspace row, which every append updates in the same transaction. It detects damaged, edited or deleted rows, including the newest ones. The chain is not keyed, so someone who can write the SQLite file can rewrite every row and the head consistently; it does not detect that.
+
+Every command exits 0 on success and 2 with `{"ok":false,"code":…}` on a refusal or a usage error; `verify-log` exits 1 when the chain is broken.
 
 ## Decision log
 
-Recorded, per workspace: every allowed change (workspace creation, wallets, policies, approvers, thresholds, pause, resume, signatures, sweeps, reprices, cancels, revocations, operator enrollment, restore fences, mandate grants, uses and revocations) and every refusal of a request that passed the request signature and the body's schema and names a workspace the signer knows. Not recorded: requests with a missing or bad request signature, malformed bodies or paths, requests for workspaces, wallets or approvals the signer does not know (`not_found`), and refusals before a workspace is resolved. Those appear only as one JSON line on the signer's stdout with the route and code.
+Recorded, per workspace: every allowed change (workspace creation, wallets, policies, approvers, thresholds, pause, resume, signatures, sweeps, reprices, cancels, revocations, operator enrollment, restore fences, mandate grants, uses and revocations, venue orders and their cancels, retirements, deletions, destroyed keys and the operator's key exports) and every refusal of a request that passed the request signature and the body's schema and names a workspace the signer knows. Not recorded: requests with a missing or bad request signature, malformed bodies or paths, requests for workspaces, wallets or approvals the signer does not know (`not_found`), and refusals before a workspace is resolved. Those appear only as one JSON line on the signer's stdout with the route and code.
 
 ## Back up
 
@@ -195,6 +232,20 @@ Back up `SIGNER_DATA_DIR` (the SQLite file and the vault together), `SIGNER_KEY_
 
 ## Restoring
 
-Every restore is fenced, because nothing in a backup says whether a payment happened after it. Run `node src/admin.ts fence` before the signer serves. From then on the signer refuses every envelope issued before the fence plus 30 seconds (`envelope_fenced`), so an approval used after the backup cannot be signed again; approvals waiting at the restore must be proposed again. An approval this database already signed still returns its stored transaction, and its attempts already stored are still answered, but it gets no new reprice (`envelope_fenced`): it can only be cancelled. Every move of the fence also revokes every live mandate with reason `operator`: the restored database forgot the uses counted after the backup, so its counts would let more leave the wallet than people approved. Grant them again.
+Every restore is fenced, because nothing in a backup says whether a payment happened after it. Run `node src/admin.ts fence` before the signer serves. From then on the signer refuses every envelope issued before the fence plus 30 seconds (`envelope_fenced`), so an approval used after the backup cannot be signed again; approvals waiting at the restore must be proposed again. A venue order signed after the backup is unknown to the restored database, so the signer cannot sign its cancel (`not_found`); cancel it at the venue another way. An approval this database already signed still returns its stored transaction, and its attempts already stored are still answered, but it gets no new reprice (`envelope_fenced`): it can only be cancelled. Every move of the fence also revokes every live mandate with reason `operator`: the restored database forgot the uses counted after the backup, so its counts would let more leave the wallet than people approved. Grant them again.
 
-The signer also records which file its database is (inode and creation time) and fences by itself when it opens another one: a copy, an extracted archive, a move to another host. It logs `restore fence set` with `reason: new_database_file` and records `fence-set-on-new-database-file`. It cannot tell a restore that rolls the same file back in place (a disk snapshot), so the operator's step stays. The first start on a v0.1 file fences once, because no file was recorded.
+The signer also records which file its database is (inode and creation time) and fences by itself when it opens another one: a copy, an extracted archive, a move to another host. It logs `restore fence set` with `reason: new_database_file` and records `fence-set-on-new-database-file`. It cannot tell a restore that rolls the same file back in place (a disk snapshot), so the operator's step stays. The first start on a database file written by a signer that did not yet record its file fences once.
+
+## Checking a change
+
+From the repository root, after `bun install`:
+
+```sh
+bun run check            # Biome, Markdown included
+bun run lint:slop        # Oxlint with the repository's anti-slop rules
+cd apps/signer && ../../node_modules/.bin/tsc --noEmit
+```
+
+Run the test file that covers what you changed, one at a time, from the repository root, for example `node_modules/.bin/vitest run apps/signer/test/venue-signing.test.ts`. `test/` has one file per area, named after it (for example `signing`, `mandates`, `repricing`, `confirmations`, `lifecycle`, `fence`, `admin`, `tls`, `venue-signing`); `hyperliquid-encoding.test.ts` reproduces the vectors of Hyperliquid's Python SDK. `test/ows.test.ts` signs against a local chain: start it first with `bun run services:up` (anvil on 127.0.0.1:55545; `bun run services:down` removes it). `smoke/image.smoke.test.ts` checks a built image with Docker and runs only when `SIGNER_IMAGE` names one (`SIGNER_IMAGE=<tag> bun run smoke:image` in `apps/signer`); CI does not run it.
+
+CI runs every test in `test/` in job `test`, the type-check in job `check`, and the signer inside the whole stack in the `stack` jobs (see "Status" at the top).

@@ -2,7 +2,7 @@
 
 - Branch: none yet
 - Status: Ready for Review (built 2026-11-15; every milestone green in CI run 43744005029)
-- Owner(s): Eric Juta
+- Owner(s): the repository owner
 - Created: 2026-11-14
 - Last Updated: 2026-11-15
 - Links: [Ticket #25](https://github.com/askgina/os/issues/25) | [Map #18](https://github.com/askgina/os/issues/18) | [Research report](./research/beyond-one-machine.md) | [v0.1 plan](./agent-workspaces-v0.1.md)
@@ -41,7 +41,7 @@ Success means:
 ## Progress
 
 - [x] (2026-11-14 21:38Z) Research current behavior and relevant code paths: [`specs/research/beyond-one-machine.md`](./research/beyond-one-machine.md).
-- [x] (2026-11-15) Owner decisions D1 to D9 (see `Decision Log`). D5 was taken (2026-11-14): (a). D1 to D4 and D6 to D9 were taken 2026-11-15 by the lead under Eric's delegation, each as the recommended option (a).
+- [x] (2026-11-15) Owner decisions D1 to D9 (see `Decision Log`). D5 was taken (2026-11-14): (a). D1 to D4 and D6 to D9 were taken 2026-11-15 by the lead agent under the repository owner's delegation, each as the recommended option (a).
 - [x] (2026-11-15) CI evidence for Milestones 3, 4 and 5, which supersedes every "CI pending" on
       the lines below: run 43739857058 at `1752478` (the first on Blacksmith runners):
       `stack (replicas)` green (one setup token across two replicas, `/readyz` on both, the
@@ -354,25 +354,25 @@ Success means:
 
 ## Decision Log
 
-Owner decisions. All are taken: D5 by Eric on 2026-11-14, the others on 2026-11-15 by the lead under Eric's delegation ("delegate to you on decisions like a CTO"), each as the option the plan recommended. The plan is written for the taken options, and every milestone that depends on one says so.
+Owner decisions. All are taken: D5 by the owner on 2026-11-14, the others on 2026-11-15 by the lead agent under the repository owner's delegation ("delegate to you on decisions like a CTO"), each as the option the plan recommended. The plan is written for the taken options, and every milestone that depends on one says so.
 
-- Decision D1 (owner, taken 2026-11-15 by the lead under Eric's delegation): order of directions. Options: (a) signer split first (the fence is already built), then key provider, replicas, Kubernetes, HA Postgres; (b) Kubernetes first; (c) key provider first.
+- Decision D1 (owner, taken 2026-11-15 by the lead agent under the repository owner's delegation): order of directions. Options: (a) signer split first (the fence is already built), then key provider, replicas, Kubernetes, HA Postgres; (b) Kubernetes first; (c) key provider first.
   Chosen: (a), the recommended option. Rationale: it is still the only direction that changes what a compromised control-plane host can do; the rest is availability.
-- Decision D2 (owner, taken 2026-11-15 by the lead under Eric's delegation): first non-file key provider. Options: (a) OpenBao Transit; (b) AWS KMS; (c) Google Cloud KMS; (d) none, file keyring only.
+- Decision D2 (owner, taken 2026-11-15 by the lead agent under the repository owner's delegation): first non-file key provider. Options: (a) OpenBao Transit; (b) AWS KMS; (c) Google Cloud KMS; (d) none, file keyring only.
   Chosen: (a), the recommended option. Rationale: self-hostable, MPL-licensed, a small HTTP API, and a real server can run in CI; cloud KMS cannot be proven without a cloud account.
-- Decision D3 (owner, taken 2026-11-15 by the lead under Eric's delegation): Kubernetes packaging. Options: (a) Kustomize base and overlays; (b) Helm chart; (c) both; (d) documentation only.
+- Decision D3 (owner, taken 2026-11-15 by the lead agent under the repository owner's delegation): Kubernetes packaging. Options: (a) Kustomize base and overlays; (b) Helm chart; (c) both; (d) documentation only.
   Chosen: (a), the recommended option. Rationale: plain YAML that `kubectl` applies and `kubeconform` checks, with no release Secrets holding rendered values.
-- Decision D4 (owner, taken 2026-11-15 by the lead under Eric's delegation): where the signer and the `approve` service may run when the control plane is on Kubernetes. Options: (a) outside the cluster only, on the signer's own host; (b) in a separate cluster; (c) in the same cluster, documented as "cluster administrators are the signer host".
+- Decision D4 (owner, taken 2026-11-15 by the lead agent under the repository owner's delegation): where the signer and the `approve` service may run when the control plane is on Kubernetes. Options: (a) outside the cluster only, on the signer's own host; (b) in a separate cluster; (c) in the same cluster, documented as "cluster administrators are the signer host".
   Chosen: (a) for production, the recommended option; the in-cluster component exists for CI and evaluation only. Rationale: Secrets are unencrypted in etcd by default and cluster administration reaches every node, and an `approve` service in the cluster gives cluster administrators the confirmation page.
 - Decision D5 (owner, taken 2026-11-14, applied): what a restore promises. Options: (a) every restore is fenced, so approvals waiting at backup time must be proposed again; (b) keep the v0.1 promise that waiting approvals survive a restore.
   Chosen: (a). Rationale: the operator cannot know from the backup whether a payment happened after it; (b) can pay twice. Status 2026-11-15: built in `018d2f5`; `deploy/README.md:136-175`, `docs/approval-protocol.md:385-428` and `docs/threat-model.md:245-262` all say (a), so the earlier contradiction with the deploy guide is gone. Nothing left to decide.
-- Decision D6 (owner, taken 2026-11-15 by the lead under Eric's delegation): Postgres durability on Kubernetes. Options: (a) CloudNativePG, 3 instances, `dataDurability: required`; (b) `preferred`; (c) asynchronous.
+- Decision D6 (owner, taken 2026-11-15 by the lead agent under the repository owner's delegation): Postgres durability on Kubernetes. Options: (a) CloudNativePG, 3 instances, `dataDurability: required`; (b) `preferred`; (c) asynchronous.
   Chosen: (a), the recommended option. Rationale: no acknowledged audit entry, shred, mandate grant or notification row is ever lost; writes pause when no standby is available, which stalls approvals but loses nothing.
-- Decision D7 (owner, new 2026-11-15, taken 2026-11-15 by the lead under Eric's delegation): where the confirmation page runs in a split deployment (the `approve` service, the edge that serves `APPROVE_ORIGIN`, its TLS certificate and the copy of the confirm secret). Options: (a) on the signer host, with its own small edge, the signer itself still unpublished except to the control host; (b) on a third host with its own administrators, reaching the signer over mutual TLS; (c) on the control host.
+- Decision D7 (owner, new 2026-11-15, taken 2026-11-15 by the lead agent under the repository owner's delegation): where the confirmation page runs in a split deployment (the `approve` service, the edge that serves `APPROVE_ORIGIN`, its TLS certificate and the copy of the confirm secret). Options: (a) on the signer host, with its own small edge, the signer itself still unpublished except to the control host; (b) on a third host with its own administrators, reaching the signer over mutual TLS; (c) on the control host.
   Chosen: (a), the recommended option. Rationale: (c) gives a control-host compromise the confirmation page and so reopens the display gap the trusted display closed (`specs/trusted-display.md`, "Risks", says it runs with the signer on split hosts), and (b) adds a third set of administrators without lowering the worst case, since root on the signer host already controls everything.
-- Decision D8 (owner, new 2026-11-15, taken 2026-11-15 by the lead under Eric's delegation): server egress on Kubernetes when the signed webhook or Web Push is on. Options: (a) allow the server pods TCP 443 to any address while either is configured, and rely on the server's own checks (`NOTIFY_WEBHOOK_URL` is one fixed URL, `WEB_PUSH_ENDPOINT_HOSTS` limits push endpoints); (b) only the CIDRs the operator lists, which push services with changing addresses cannot meet; (c) no notifications on Kubernetes.
+- Decision D8 (owner, new 2026-11-15, taken 2026-11-15 by the lead agent under the repository owner's delegation): server egress on Kubernetes when the signed webhook or Web Push is on. Options: (a) allow the server pods TCP 443 to any address while either is configured, and rely on the server's own checks (`NOTIFY_WEBHOOK_URL` is one fixed URL, `WEB_PUSH_ENDPOINT_HOSTS` limits push endpoints); (b) only the CIDRs the operator lists, which push services with changing addresses cannot meet; (c) no notifications on Kubernetes.
   Chosen: (a), the recommended option. Rationale: a NetworkPolicy cannot name a host, and the Compose server already reaches the internet for RPC; the host checks stay in the server.
-- Decision D9 (owner, new 2026-11-15, taken 2026-11-15 by the lead under Eric's delegation): whether a planned move of the signer to a new host may keep live mandates and waiting approvals. Options: (a) no: a move is a new database file, the signer fences itself and every live mandate ends (today's code); (b) add a hand-over command that lets the operator vouch that no copy is kept, and skip the fence.
+- Decision D9 (owner, new 2026-11-15, taken 2026-11-15 by the lead agent under the repository owner's delegation): whether a planned move of the signer to a new host may keep live mandates and waiting approvals. Options: (a) no: a move is a new database file, the signer fences itself and every live mandate ends (today's code); (b) add a hand-over command that lets the operator vouch that no copy is kept, and skip the fence.
   Chosen: (a), the recommended option. Rationale: the signer cannot tell a move from a copy, and a kept copy plus a skipped fence is exactly the double payment the fence exists to stop; people grant mandates again.
 
 Plan decisions (taken here, reopen in review if wrong):
@@ -418,7 +418,7 @@ Plan decisions (taken here, reopen in review if wrong):
   Date/Author: 2026-11-14 / research agent
 - Decision: no boot mints or logs a setup token, on any deployment; `SETUP_TOKEN_IN_LOG` is removed and `cli.ts setup-token` is the only source. Supersedes the decision above.
   Rationale: the token appeared in kept logs twice (a staging log and a CI log); a setting that keeps a secret-in-logs mode is a mode nobody should run.
-  Date/Author: 2026-11-15 / lead, by Eric's delegation
+  Date/Author: 2026-11-15 / lead agent, by the repository owner's delegation
 - Decision: the server Deployment uses `strategy: Recreate`, and a boot guard refuses to start the queue while a live replica runs a different workflow bundle.
   Rationale: runs are not pinned to a bundle (see `Surprises & Discoveries`). Zero-downtime upgrades are out of scope.
   Date/Author: 2026-11-14 / research agent
@@ -491,7 +491,7 @@ Plan decisions (taken here, reopen in review if wrong):
 Relevant repo rules:
 
 - Read `AGENTS.md` at the repository root before changing files. `docs/references/` is context, not authority.
-- The owner's standing rule reserves local builds, whole test suites, coverage and `e2e/run.sh` for CI unless he names the command (`specs/agent-workspaces-v0.1.md:109-110`). Locally: `bun run check`, `bunx tsc --noEmit` in one package, and single test files.
+- The owner's standing rule reserves local builds, whole test suites, coverage and `e2e/run.sh` for CI unless the owner names the command (`specs/agent-workspaces-v0.1.md:109-110`). Locally: `bun run check`, `bunx tsc --noEmit` in one package, and single test files.
 - Every claim in a status update says whether it is written, type-checked, single-test-passed, CI-green or unproven.
 
 Terms used here (the product's terms are in `docs/architecture.md`, "Words used on this page"):
@@ -861,7 +861,7 @@ The invariant holds in every row: whether a human approved is decided by the sig
   Mitigation: measure on the first run; if needed run it on pushes to `main`, nightly, and on pull requests that touch `deploy/k8s/**`.
 - Open question: whether the World's run-status and stream listeners reconnect after a Postgres failover. Owner/next step: milestone 6 gate.
 - Answered (2026-11-15): stuck-transaction repricing, built on main at `61d0326`, keeps no per-process state that decides anything. Repricing, speed-up and cancel take `pg_advisory_xact_lock` on `attempts:<approvalId>` (`apps/server/src/execution/transactions.ts:332-336`) and store attempts in `0007_transaction_attempts`, so replicas already serialize on it; Milestone 4 needs no change for it.
-- Answered (2026-11-15): D1 to D4 and D6 to D9 are taken as the recommended option (a) by the lead under Eric's delegation; see `Decision Log`.
+- Answered (2026-11-15): D1 to D4 and D6 to D9 are taken as the recommended option (a) by the lead agent under the repository owner's delegation; see `Decision Log`.
 
 ## Artifacts and Notes
 
@@ -915,7 +915,7 @@ The invariant holds in every row: whether a human approved is decided by the sig
   `threat-model.md:564-566`). New owner decisions D7 (where the confirmation page runs), D8
   (server egress on Kubernetes) and D9 (whether a planned move keeps mandates). Stuck-transaction
   repricing is in flight and not cited. Still Draft.
-- 2026-11-15: D1 to D4 and D6 to D9 taken as the recommended options by the lead under Eric's
+- 2026-11-15: D1 to D4 and D6 to D9 taken as the recommended options by the lead agent under the repository owner's
   delegation; the Decision Log, the owner-decisions Progress line, the milestone dependencies and
   the open questions say so. Repricing (#22) is built on main at `61d0326`: signer schema 6,
   server migrations through `0007_transaction_attempts`; Milestone 4's migration is `0008` today,

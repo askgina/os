@@ -1,14 +1,22 @@
 # eve agent example
 
-A real agent runtime, [vercel/eve](https://github.com/vercel/eve) `1.0.0-rc.17`, running with no
-Vercel service, whose one consequential ability is to **propose** a payment through the askgina/os
-MCP gateway. A person approves the proposal with a passkey on the askgina/os confirmation page,
-or approved it in advance with a mandate; the signer verifies the passkey and enforces the
-mandate itself. The agent holds no key and cannot approve anything.
+An example agent for this repository: a real agent runtime, [vercel/eve](https://github.com/vercel/eve)
+`1.0.0-rc.17`, running with no Vercel service, whose one consequential ability is to **propose** a
+payment through the control plane's MCP gateway (`agent-gateway` in the root `compose.yaml`). A
+person approves the proposal with a passkey on the signer's confirmation page, or approved it in
+advance with a mandate; the signer verifies the passkey and enforces the mandate itself. The agent
+holds no key and cannot approve anything. It runs next to the stack, in a Compose project of its
+own with its own Postgres, and is not part of the stack itself.
+
+**Status.** Proven in CI: `test/smoke.test.ts` (job `test`) builds the agent with `eve build`,
+runs it as a plain process against a stand-in MCP gateway with the offline model, checks that it
+proposes the transfer it was asked for, and scans its database for the conversation in
+plaintext; the same job builds the image. Unproven: this directory's `compose.yaml` has never
+been started, and the agent has never talked to a real gateway or a real model in CI.
 
 What it shows:
 
-- **Our encrypting World.** eve's durable state runs on `@askgina/os-world/target` (selected in
+- **The encrypting World.** eve's durable state runs on `@askgina/os-world/target` (selected in
   `agent/agent.ts` through `experimental.workflow.world`). What the agent is told, what it says
   and what it passes to tools is stored as AES-256-GCM ciphertext, under a per-run key wrapped by
   a keyring file kept outside the database.
@@ -41,17 +49,20 @@ What it shows:
 ## Run it against a running stack
 
 1. Start the stack from the repository root (`docker compose up -d`) and sign in.
-2. In the UI, create an agent. Copy the token it shows once (`osa_…`).
+2. In the UI, create an agent and approve limits for its wallet. Copy the token the UI shows once
+   (`osa_…`).
 3. Start the example (the stack's `agents` network must exist; set `AGENTS_NETWORK` if your
    stack's Compose project is not named `os`, in which case the network is `<project>_agents`):
 
    ```sh
-   AGENT_TOKEN=osa_… EVE_CHAT_PASSWORD=$(openssl rand -base64 18) \
+   export AGENT_TOKEN=osa_… EVE_CHAT_PASSWORD=$(openssl rand -base64 18)
    MODEL_BASE_URL=https://your-endpoint/v1 MODEL_API_KEY=… MODEL_ID=your-model \
-   docker compose -f examples/eve-agent/compose.yaml up --build
+   docker compose -f examples/eve-agent/compose.yaml up -d --build
    ```
 
    Use `OFFLINE_MODEL=1` instead of the three `MODEL_*` variables to try it without a model.
+   `docker compose -f examples/eve-agent/compose.yaml logs -f agent`, in the same shell (the
+   file needs both exported variables), follows its log.
 4. Talk to it:
 
    ```sh
@@ -60,30 +71,34 @@ What it shows:
      http://127.0.0.1:55810/eve/v1/session
    ```
 
-   Read its replies at `/eve/v1/session/<sessionId>/stream`.
-5. Approve the proposal with your passkey in the inbox. The agent's `check_intent` reports the
-   outcome.
+   Read its replies at `/eve/v1/session/<sessionId>/stream`. The port is 55810 on 127.0.0.1
+   unless `EVE_AGENT_PORT` names another.
+5. Open the `approvalUrl` the agent replies with (or the request in the UI's approval inbox),
+   follow its link to the signer's confirmation page and approve there with your passkey. The
+   agent's `check_intent` reports the outcome.
 
 ### The model
 
 Any OpenAI-compatible chat completions endpoint: set `MODEL_BASE_URL`, `MODEL_API_KEY` and
-`MODEL_ID`, and `MODEL_CONTEXT_WINDOW_TOKENS` if it is not 64000. Nothing is tied to a vendor.
-eve needs the context window stated because it would otherwise look the model up in the AI
-Gateway's catalog.
+`MODEL_ID`. Nothing is tied to a vendor. eve needs the context window stated because it would
+otherwise look the model up in the AI Gateway's catalog: `agent/agent.ts` reads it from
+`MODEL_CONTEXT_WINDOW_TOKENS` (default 64000), but `compose.yaml` does not pass that variable to
+the container, so add it under the `agent` service's `environment` to change it.
 
 ## Limits
 
 - **An eve upgrade strands in-flight sessions** on a self-hosted World: a conversation waiting on
   something does not survive an eve version change. Proposals already made are unaffected (they
-  live in askgina/os); ask the agent again after upgrading.
+  live in the control plane); ask the agent again after upgrading.
 - **eve's own approval is not the control here**, and must not become it: an `answers` POST to
-  eve authorizes nothing in askgina/os.
+  eve authorizes nothing in the control plane or the signer.
 - Metadata (run ids, timestamps, step names, event types, attribute keys) is stored in
   plaintext; payloads are not, and attribute values are withheld unless listed as readable.
-- **This Compose file has never been started.** CI builds the image and runs the smoke test,
-  which starts eve as a plain process. Expect to fix something the first time you run it.
+- **This Compose file has never been started** (see "Status"). Expect to fix something the
+  first time you run it.
 - The agent's container can reach the internet, because it has to reach its model. The scripted
-  example cannot. What it can reach inside askgina/os is still only the MCP gateway.
+  example (`examples/scripted-agent`) cannot. What it can reach inside the stack is still only
+  the MCP gateway.
 - eve's invocation API will not work: it reads back the run attribute `$eve.invocation_token`,
   which is not on the readable list because it is a token.
 - Only eve's own HTTP channel and one session were tested. Other channels (Slack, Discord and
@@ -92,3 +107,16 @@ Gateway's catalog.
 - One replica. Several replicas on one database are untested.
 - Never set `EVE_WORKFLOW_WORLD`: it exists only so the smoke test can build the same agent on
   the stock World as a control for its scanner.
+
+## Checking a change
+
+From the repository root, after `bun install`: `bun run check` (Biome), `bun run lint:slop`
+(Oxlint with the repository's anti-slop rules), and
+`cd examples/eve-agent && ../../node_modules/.bin/tsc --noEmit`. The smoke test needs Postgres:
+start it with `bun run services:up` (127.0.0.1:55432; `bun run services:down` removes it), then
+run `node_modules/.bin/vitest run examples/eve-agent/test/smoke.test.ts` from the repository
+root. It builds and runs the agent on this World and, as the scanner's control, on the stock
+World, so it takes minutes.
+
+CI runs the smoke test in job `test`, the type-check in job `check`, and builds the image
+(`docker build -f examples/eve-agent/Dockerfile .`) in job `test`. Leave the image build to CI.

@@ -8,7 +8,13 @@ a small service next to the stack that verifies the webhook and talks to the out
 its own credential. The webhook's format is in
 [`deploy/README.md`](../../deploy/README.md#notifications).
 
-It needs nothing but Node: `node:http`, `node:crypto` and `fetch`.
+It needs nothing but Node: `node:http`, `node:crypto` and `fetch`. It is an example, not part of
+the stack: it runs as an overlay on the root `compose.yaml`, or on another machine.
+
+**Status.** Proven in CI: `test/bridge.test.ts` (job `test`) runs the sidecar against a stand-in
+ntfy server and checks verification, deduplication, the fixed texts, links and settings; the
+same job builds the image. Unproven: the Compose overlay is not started in CI, and delivery to a
+real ntfy server and the ntfy phone app is not tested.
 
 ## What a notification says
 
@@ -21,7 +27,10 @@ kind, no time.
 | `approval.reminder` | `Approval expiring soon`            |
 | `mandate.used`      | `Paid under an approval in advance` |
 
-An event it does not know is answered 204 and not published.
+An event it does not know is answered 204 and not published. Today that includes the server's
+`lifecycle.scheduled` and `lifecycle.due_soon` events, which announce a wallet retirement or a
+workspace deletion. The server does not send `approval.reminder` to the webhook today (reminders
+go to Web Push devices only); the sidecar handles it for when it does.
 
 With `NTFY_INCLUDE_LINK=1`, tapping the notification opens the delivery's link (ntfy's `Click`
 header): the request's page in the control plane, or for `mandate.used` the mandate's page. The
@@ -115,10 +124,22 @@ waits, or stay silent. It cannot make the sidecar publish other text, or a link 
 
 ## Files
 
-| Path                         | What                                                                |
-| ---------------------------- | ------------------------------------------------------------------- |
-| `src/bridge.ts`              | Verification, dedupe and publishing                                 |
-| `src/config.ts`              | Settings and the files they name                                    |
-| `src/main.ts`                | Starts the server                                                   |
-| `test/bridge.test.ts`        | Against a stand-in ntfy server: `bunx vitest run` in this directory |
-| `compose.yaml`, `Dockerfile` | The overlay next to the stack, and the image                        |
+| Path                         | What                                         |
+| ---------------------------- | -------------------------------------------- |
+| `src/bridge.ts`              | Verification, dedupe and publishing          |
+| `src/config.ts`              | Settings and the files they name             |
+| `src/main.ts`                | Starts the server                            |
+| `test/bridge.test.ts`        | Against a stand-in ntfy server               |
+| `compose.yaml`, `Dockerfile` | The overlay next to the stack, and the image |
+
+## Checking a change
+
+From the repository root, after `bun install`: `bun run check` (Biome), `bun run lint:slop`
+(Oxlint with the repository's anti-slop rules), and
+`cd examples/ntfy-sidecar && ../../node_modules/.bin/tsc --noEmit`. Then
+`node_modules/.bin/vitest run examples/ntfy-sidecar/test/bridge.test.ts` from the repository root;
+it needs no running service.
+
+CI runs that test in job `test`, the type-check in job `check`, and builds the image
+(`docker build -f examples/ntfy-sidecar/Dockerfile .`) in job `test`. Leave the image build to
+CI.

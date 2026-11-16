@@ -1,5 +1,7 @@
 # Issue tracker: GitHub
 
+These are instructions for the maintainers' coding agents. `/wayfinder` is the `wayfinder` agent skill vendored in `.agents/skills/wayfinder`; `/triage` is an agent skill that is not part of this repository. A person contributing by hand does not need either.
+
 Repository issues and Wayfinder maps and tickets live in GitHub Issues. Committed repository specs remain under `specs/`. Use the `gh` CLI for all tracker operations.
 
 ## Conventions

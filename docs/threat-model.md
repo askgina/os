@@ -11,6 +11,28 @@ venue orders [`specs/non-evm-operations.md`](../specs/non-evm-operations.md).
 Components and terms are introduced in [`architecture.md`](./architecture.md); the exact checks
 are in [`approval-protocol.md`](./approval-protocol.md).
 
+Evidence is stated in one of three ways. **Proven in CI** names the job of
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) and the test file; every job runs on
+every push to `main` and every pull request. **Proven once by hand** says what was done; nothing
+keeps it true. **Unproven** means nothing has tested it. The release gates are the end-to-end
+tests in [`e2e/test/`](../e2e/test/) that `./e2e/run.sh` runs against the whole Compose stack.
+
+## In short
+
+- **Protected:** the wallet keys stay in the signer. The signer signs only what people approved
+  with a passkey on its own confirmation page, or what a mandate they granted there covers, and
+  only within the wallet's policy. This holds against a malicious agent, a stolen agent token,
+  and a compromised control plane, its database or its web UI.
+- **Not protected:** a person who approves a harmful request because they were misled or did not
+  read the confirmation page; anything the signer host's administrator wants; a compromised
+  confirmation page origin (the `approve` service, its edge, DNS or its certificate); losses at a
+  venue beyond the order caps; denial of service by the control plane.
+- **What the operator must do:** keep the signer host apart from everything else and administer
+  it with care; back up each trust domain separately and protect the signer's backups as the
+  funds; run the restore `fence` step on every restore of the signer; keep the signer host's
+  clock synchronized; raise each workspace's admin threshold to 2 once a second approver exists;
+  have people compare a new approver's key fingerprint before approving the change.
+
 ## Assets
 
 1. **Funds in the wallets.** The wallet private keys, and the ability to make the signer use
@@ -35,10 +57,12 @@ are in [`approval-protocol.md`](./approval-protocol.md).
 
 ## Trust boundaries
 
-1. **Agent → control plane.** An agent reaches only Caddy and the MCP gateway. Its eight tools
-   can propose, read and withdraw its own intents while they wait, and cancel its own order at a
-   venue. None signs, approves, administers, or speeds up or cancels a sent transaction (plan,
-   "MCP tools"; [`gateway.ts`](../apps/server/src/mcp/gateway.ts), `MCP_TOOL_NAMES`).
+1. **Agent → control plane.** An agent reaches only Caddy and the MCP gateway. Its tools
+   (`whoami`, `get_balances`, `propose_transfer`, `propose_contract_call`, `propose_order`,
+   `get_intent`, `list_intents`, `cancel_intent`) can propose, read and withdraw its own intents
+   while they wait, and cancel its own order at a venue. None signs, approves, administers, or
+   speeds up or cancels a sent transaction (plan, "MCP tools";
+   [`gateway.ts`](../apps/server/src/mcp/gateway.ts), `MCP_TOOL_NAMES`).
 2. **Browser → control plane.** People sign in with passkeys. Sessions are rows behind an
    httpOnly, SameSite=Strict cookie; only a SHA-256 of the cookie value is stored
    ([`apps/server/src/db/schema.ts`](../apps/server/src/db/schema.ts), table `sessions`). No
@@ -61,9 +85,14 @@ are in [`approval-protocol.md`](./approval-protocol.md).
    `webauthn.get` ([`verify-authorization.ts`](../packages/protocol/src/webauthn/verify-authorization.ts)).
    The service holds no key, sets no cookie, and Caddy drops any cookie on the way to it. A
    link's token is in its fragment, so it reaches the service only in a request header
-   ([`specs/trusted-display.md`](../specs/trusted-display.md)).
+   ([`specs/trusted-display.md`](../specs/trusted-display.md)). The approval's own workflow run
+   on the server collects the decision from the signer: it first asks five seconds after it
+   starts, then at doubling intervals of at most two minutes, until the decision or the expiry
+   ([`apps/server/workflows/approval.ts`](../apps/server/workflows/approval.ts)). No signed-in
+   browser needs to come back.
 6. **`approve` service → signer.** Requests carry an HMAC request signature under a second
-   secret, which the signer accepts on its four confirmation routes and nowhere else
+   secret, which the signer accepts on its confirmation routes (`getConfirmation`,
+   `submitConfirmation`, `getPossession`, `submitPossession`) and nowhere else
    ([`signer/api.ts`](../packages/protocol/src/signer/api.ts), `scope`). With mutual TLS, only the
    `approve` service's certificate reaches those routes.
 7. **Control plane → the operator's webhook receiver.** When `NOTIFY_WEBHOOK_URL` is set, the
@@ -96,7 +125,7 @@ are in [`approval-protocol.md`](./approval-protocol.md).
 - **Not stopped:** a persuasive memo that talks a person into approving. Within its policy, an
   approved intent spends real money, and an approved order can lose more than its notional cap
   at the venue (see "Venue orders"). The agent can cancel an order of its own that rests at the
-  venue, which only removes what people approved (D4). Within a live mandate, the agent's
+  venue, which only removes what people approved. Within a live mandate, the agent's
   transfers to the mandate's recipients are signed with no person asked, until the mandate's
   caps are spent. A raw contract call to an allowlisted contract can move
   things the caps cannot measure ([`policy.ts`](../packages/protocol/src/policy.ts),
@@ -113,26 +142,36 @@ are in [`approval-protocol.md`](./approval-protocol.md).
   real agent; transfers inside that agent's live mandates, which no person sees before they are
   signed. Disabling the agent stops its token at once and revokes its mandates (see "Mandates").
 
-### A compromised host of bots (the private Busy fork)
+### A compromised host of bots
 
-The private fork `askgina/busy` (based on Busy; the name is not final) runs agents as bots. Each
-bot holds its own agent token: the fork's Hub stores it sealed and hands it to the runner as a
-secret file, and the bot reaches the gateway over the `os_agents` network.
+An operator may run agents as bots on a separate host of bots. One such host is `askgina/busy`, a
+separate repository that forks an outside project named [Busy](https://github.com/MatiSolina/busy)
+so that its bots run on the operator's own machines; its plan is
+[`specs/busy-fork.md`](../specs/busy-fork.md). To this stack each bot is an ordinary agent: it
+holds its own agent token and reaches the MCP gateway over the agents network (`os_agents`).
+Nothing in this section needs that repository; what it says about the fork comes from its plan.
 
-- **Can:** whoever controls the Hub or the runner holds every bot's agent token, so it is a
-  stolen agent token for each of them: propose, cancel those agents' own requests, and spend any
-  live mandate of theirs up to its worst case with no person asked.
-- **Cannot:** approve anything. The gateway tools carry no Busy approval card; the only
-  authorization is a passkey approval on the signer's confirmation page, or a mandate granted
-  there. The bot sends the approval link as plain text, and the page refuses to load in a frame.
-  The fork does not receive this stack's webhook.
-- **Bound it:** small mandates or none for bot agents; one agent per bot; disable the agent here
-  on any doubt about the Hub, which stops its token and revokes its mandates at once. The runner
-  holds a Docker socket: never run it on the signer's host. The Hub's own tables are plaintext;
-  bots' workflow state is encrypted by `@askgina/os-world` with a keyring per bot.
-- **Proven:** the fork's unit CI and a real-stack gate with a bot on the encrypting World. The
-  wallet connection is unit-tested and gated against a stub gateway only; no payment by a Busy
-  bot has been proven end to end.
+- **Can:** whoever controls the host (in the fork, its Hub web app, which stores each token
+  sealed, or the runner that starts bots and hands each its token as a secret file) holds every
+  bot's agent token. That is a stolen agent token for each of them: propose, cancel those
+  agents' own requests, and spend any live mandate of theirs up to its worst case with no person
+  asked.
+- **Cannot:** approve anything. No gateway tool approves; the only authorization is a passkey
+  approval on the signer's confirmation page, or a mandate granted there. A bot sends the
+  request's link as plain text; the confirmation page and the control plane's pages refuse to
+  load in a frame, so no chat card can host them. The fork does not receive this stack's
+  webhook.
+- **Bound it:** small mandates or none for bot agents; one agent per bot; on any doubt about the
+  host, disable the agent here, which stops its token and revokes its mandates at once. The
+  fork's runner holds a Docker socket, which is root on its host: never run it on the signer's
+  host. The fork's Hub keeps its own tables (messages, memories) in plaintext; the bots' workflow
+  state is encrypted by `@askgina/os-world`, the encrypting World this repository publishes, with
+  a keyring per bot.
+- **Proven once by hand, on a local chain, not in CI:** on one machine running both stacks, a
+  real hosted model, told in plain words to pay an invoice, called `propose_transfer` through a
+  bot of the fork; the owner approved on the confirmation page with a phone's passkey; the
+  transaction confirmed on a local Anvil chain. The fork's own CI gates use a scripted model and a
+  stub gateway. No job of this repository's CI runs a bot.
 
 ### Read access to the control plane's database
 
@@ -205,18 +244,21 @@ This covers code execution in the server and a script injected into a page on `P
   retirement or deletion people did not want, described falsely, or with false balances beside
   it, and a deletion it stalls by cancelling it (see "Retiring a wallet and deleting a
   workspace"); for venue orders, an order it withholds, posts late inside its submit window or
-  cancels, and false fills and balances it reports (see "Venue orders"). The release gate "an
-  approval made on the control plane's page is refused" and the browser gate "a script on the
-  control plane's page cannot get an approval" test the
-  refusal against the real stack; the release gate "an approver change whose key the new person
-  does not hold cannot be approved" tests the possession step.
+  cancels, and false fills and balances it reports (see "Venue orders").
+- **Proven in CI:** the release gate "an approval made on the control plane's page is refused"
+  and the release gate "an approver change whose key the new person does not hold cannot be
+  approved" ([`release-gates.spec.ts`](../e2e/test/release-gates.spec.ts); jobs
+  `stack (amd64)`, `stack (arm64)`, `stack (split)`, `stack (replicas)`, `stack (openbao)`), and
+  the browser gate "a script on the control plane's page cannot get an approval"
+  ([`browser.spec.ts`](../e2e/test/browser.spec.ts); jobs `stack (amd64)`, `stack (arm64)`,
+  `stack (tls)`).
 
 ### A compromised `approve` service, or Caddy, DNS or the certificate for `APPROVE_ORIGIN`
 
 - **Can:** show a false view on the confirmation page and relay assertions over other digests,
   which is the display gap again; read the details of any request whose link it sees; send up
   to 64 submissions per confirmation.
-- **Stopped by:** it holds no key. Its secret reaches only the signer's four confirmation routes,
+- **Stopped by:** it holds no key. Its secret reaches only the signer's confirmation routes,
   which read a view, store an assertion, and issue and check a new approver's possession
   challenge; it cannot sign, apply, open a confirmation or list assertions
   ([`apps/signer/src/index.ts`](../apps/signer/src/index.ts)). Every assertion it
@@ -296,7 +338,8 @@ This covers code execution in the server and a script injected into a page on `P
 
 ### The signer host
 
-- **Can:** everything for the wallets on it. It holds the vault, the per-wallet OWS tokens and
+- **Can:** everything for the wallets on it. It holds the vault of OWS (Open Wallet Standard, the
+  library in which the signer keeps and uses wallet keys), the per-wallet OWS tokens and
   the key that seals them. It is the only place a wallet key can be exported
   (`admin.ts export-wallet`, recorded as `export-wallet-by-operator` in the decision log). The
   key is also the wallet's Hyperliquid account, so whoever holds it can sign any venue action,
@@ -340,8 +383,8 @@ Back up each trust domain separately and protect the signer's backups as you wou
 - **Stopped by:** exact version pins for every dependency (`bunfig.toml`, plan "Context and
   Orientation"); the signer's small dependency set and its isolation.
 - **Not stopped:** a malicious release that is pinned on purpose. The OWS native binary statically
-  links 669 Rust crates whose licences and contents were not audited (finding F13 of the OWS
-  research).
+  links hundreds of Rust crates whose licences and contents were not audited (finding F13 of
+  [the OWS research](../specs/research/ows-node-sdk-in-an-isolated-signer.md)).
 
 ## Mandates
 
@@ -355,7 +398,7 @@ one that sends no coin. The signer verifies the grant's assertions itself, keeps
 and counts every use in the same database transaction as the signature
 ([`apps/signer/src/mandates.ts`](../apps/signer/src/mandates.ts); `approval-protocol.md`,
 sections 7 and 8). The control plane chooses which proposals go to a mandate, but cannot widen,
-extend, refund or revive one. No mandate covers a venue order or withdrawal (D7):
+extend, refund or revive one. No mandate covers a venue order or withdrawal:
 `evaluateMandate` refuses a venue intent with `mandate_operation_not_allowed`, and
 `propose_order` never looks for one, so every order waits for a passkey (see "Venue orders").
 
@@ -407,7 +450,8 @@ and in the grant's `approvals.detail`. The signer keeps the canonical mandate in
 its SQLite, as it keeps policies: the signer volume is the funds' trust domain already.
 
 What the release gates in [`e2e/test/release-gates.spec.ts`](../e2e/test/release-gates.spec.ts)
-check on the real stack, and what they do not:
+check on the real stack (CI jobs `stack (amd64)`, `stack (arm64)`, `stack (split)`,
+`stack (replicas)`, `stack (openbao)`), and what they do not:
 
 - "a mandate approved on the confirmation page at the admin threshold lets its agent pay a
   listed recipient with no person asked": the grant, its view on the confirmation page, two
@@ -473,7 +517,7 @@ shows the kind of request, the requester's name (the agent's or the person's) an
 workspace's name, each line cut to 60 characters with control and bidirectional characters
 removed ([`content.ts`](../apps/server/src/notify/content.ts)). No level shows an amount, a
 recipient, an address or a memo: the structure a message is built from has no field for them.
-At `summary` a waiting venue order reads "Order waiting", not "Payment waiting" (D8), and no
+At `summary` a waiting venue order reads "Order waiting", not "Payment waiting", and no
 level shows its market, side, size, price or notional.
 Names are plaintext already, but `summary` puts them on lock screens and in the push services'
 hands, and a name is text a member typed: an agent called "URGENT approve refund" reads as an
@@ -524,15 +568,16 @@ link in its own browser has no session there and often no passkey: open links in
 browser, or turn links off (the sidecar's default).
 
 What the release gates in [`e2e/test/release-gates.spec.ts`](../e2e/test/release-gates.spec.ts)
-check on the real stack, with a webhook receiver on its `control` network:
+check on the real stack, with a webhook receiver on its `control` network (CI jobs
+`stack (amd64)`, `stack (arm64)`, `stack (split)`, `stack (replicas)`, `stack (openbao)`):
 
 - "an approval is announced once, signed, with no sealed content, even after a failed delivery":
   the receiver fails the first attempt with 503; the same delivery id comes again and is accepted,
-  both attempts verify with the secret read from the server's volume, the body has exactly its
-  eight keys and none of the proposal's memo, recipient or amount, and the outbox holds one
+  both attempts verify with the secret read from the server's volume, the body has exactly the
+  keys of its event and none of the proposal's memo, recipient or amount, and the outbox holds one
   delivery, sent, after one failed attempt.
 - "a payment under a mandate is announced to the webhook as mandate.used, signed, with no sealed
-  content": one delivery with exactly its seven keys, naming the payment's own record and the
+  content": one delivery with exactly the keys of its event, naming the payment's own record and the
   mandate's page.
 
 The sidecar's own tests ([`examples/ntfy-sidecar/test/bridge.test.ts`](../examples/ntfy-sidecar/test/bridge.test.ts))
@@ -540,9 +585,12 @@ cover a changed body, another secret, an old or future timestamp, a repeated and
 delivery id, ntfy failing, and links on other origins. The server's tests
 ([`apps/server/test/notify/`](../apps/server/test/notify/)) cover the outbox's transaction, retry
 and drop rules, the reminder and quiet-hours times, what each content level contains, and Web
-Push encryption against RFC 8291's own example. Push delivery is tested only against a local
-stand-in push service, in the server's tests; no release gate turns Web Push on, and no real
-phone has received a push from this build. Nothing tests a receiver whose clock is wrong.
+Push encryption against RFC 8291's own example; both run in CI job `test`. In CI, push delivery
+is tested only against a local stand-in push service, in the server's tests; no release gate
+turns Web Push on. Proven once by hand: a real phone received a push about a waiting payment,
+the owner tapped it, approved on the confirmation page with a passkey, and the payment
+confirmed on a local chain ([`specs/approval-notifications.md`](../specs/approval-notifications.md),
+"Progress"). Nothing tests a receiver whose clock is wrong.
 
 ## Stuck transactions
 
@@ -596,8 +644,8 @@ speed-up, and the signer refuses one too. A cancel is still signed: it moves not
 its own passkeys.
 
 What the release gates in [`e2e/test/release-gates.spec.ts`](../e2e/test/release-gates.spec.ts)
-check on the real stack, with Anvil's mining held back so a payment stays unmined until the gate
-lets it be mined:
+check on the real stack (the same CI jobs), with Anvil's mining held back so a payment stays
+unmined until the gate lets it be mined:
 
 - "a payment the chain does not mine is signed again with a higher fee by itself, differs only
   in its fees, and is mined exactly once": the node drops the first attempt and a block is mined
@@ -607,8 +655,9 @@ lets it be mined:
   recipient is paid once, the nonce rises by one, and the spend counts once.
 - "an approver speeds up a stuck payment with no passkey, and the agent that proposed it sees
   every attempt but can neither speed it up nor cancel it": a click within 15 seconds adds
-  nothing, a later one adds an attempt with no passkey assertion; the agent has its eight tools,
-  its token gets 401 from the speed-up and cancel routes and 404 from the agents network, and
+  nothing, a later one adds an attempt with no passkey assertion; the agent's tools are exactly
+  the expected list, none of which acts on a sent payment; its token gets 401 from the speed-up
+  and cancel routes and 404 from the agents network; and
   `get_intent` shows each attempt and the stuck reason.
 - "a cancel a person asks for, approved on the confirmation page at the wallet's threshold while
   the workspace is paused, is mined in the payment's place: nothing moves, the nonce is used
@@ -633,8 +682,8 @@ The first operation that is not an EVM transaction is a limit order on a Hyperli
 market, on Hyperliquid's testnet or mainnet, with a withdrawal of USDC from the wallet's Hyperliquid
 account back to the wallet's own address
 ([`specs/non-evm-operations.md`](../specs/non-evm-operations.md)). A wallet's EVM address is also
-its Hyperliquid account, and the wallet's own key signs every venue action; no API wallet is
-approved (D3).
+its Hyperliquid account, and the wallet's own key signs every venue action; no API wallet (a
+second key Hyperliquid lets an account authorize for trading) is approved.
 
 An agent proposes an order with `propose_order`, or a withdrawal with `propose_transfer` on the
 network the wallet's policy names, `hyperliquid:testnet` or `hyperliquid:mainnet`. The server
@@ -654,14 +703,14 @@ section 8, "Venue orders"). The server stores the request sealed, posts it to th
 byte, and follows the order by its client order id, which the signer derives from the approval
 id.
 
-Approving an order includes the right to cancel that one order (D4). The signer signs its
+Approving an order includes the right to cancel that one order. The signer signs its
 `cancelByCloid` with no passkey, also while the workspace is paused, when the agent calls
 `cancel_intent` or an owner or approver presses "Cancel order"; a cancel moves nothing. No
-mandate covers an order or a withdrawal (D7), so each one waits for a passkey.
+mandate covers an order or a withdrawal, so each one waits for a passkey.
 
 | If this is compromised                                | It can                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | It cannot                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| An agent's token                                      | Propose orders in the markets its wallet's policy lists, each waiting for a passkey; propose withdrawals where the policy allows them; cancel its own orders at the venue (D4); read the fills and account the venue reports                                                                                                                                                                                                                                                                                                                             | Get an order signed with no person (D7); trade a market the policy does not list or exceed its caps; withdraw to an address other than the wallet's own; cancel another agent's order                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| An agent's token                                      | Propose orders in the markets its wallet's policy lists, each waiting for a passkey; propose withdrawals where the policy allows them; cancel its own orders at the venue; read the fills and account the venue reports                                                                                                                                                                                                                                                                                                                                  | Get an order signed with no person; trade a market the policy does not list or exceed its caps; withdraw to an address other than the wallet's own; cancel another agent's order                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | The control plane                                     | On mainnet as on testnet: not post a signed request, or post it at any moment until its `expiresAfter`; hold a signed withdrawal, which has no expiry of its own, until the venue's nonce rule refuses it (about two days, by the venue's documentation) and then post or drop it; have the signer cancel any order it signed, at any time, also while paused; skip the metadata check, so people may approve an index whose coin changed; report false fills, positions, account value and liquidations to people and agents; read sealed order content | Get a signature over a Hyperliquid action the signer did not build from an approved intent: no route takes an action, typed data, a message or a hash; change the market index, side, size, limit price, time in force, reduce-only flag, client order id, nonce or expiry of an approved order; set a priority fee or a builder (the signer fixes `grouping` to `na` and sets no builder); get two orders from one approval (a second post fails on the venue's nonce rule); exceed a cap; extend the submit window; withdraw to any address but the wallet's own; get anything signed, on mainnet or testnet, without a person's approval, or for a network other than the one the wallet's approved policy names |
 | One approver's passkey                                | Approve an order or a withdrawal where the wallet's threshold is 1, as for a payment                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Approve anything outside the policy's venue rules                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | The `approve` service                                 | Show a person one order and relay their approval for another waiting order                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Get anything signed beyond what an approved intent and the policy allow                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -692,7 +741,7 @@ balance, and retiring a wallet or deleting a workspace destroys the key whatever
 account holds; after that, the signer signs no cancel (`wallet_retired`), so an order still
 resting stays at the venue. Withdraw first, with a person's approval.
 
-**After a restore (D9).** A restored signer has no record of an order it signed after its
+**After a restore.** A restored signer has no record of an order it signed after its
 backup, so it answers `not_found` to that order's cancel. An immediate-or-cancel order is
 already done; a good-till-cancelled or add-liquidity-only order may rest at the venue with no
 way for this system to cancel it. The venue rules a policy starts from in the web app allow only
@@ -700,10 +749,11 @@ immediate or cancel for that reason. The restore fence refuses every approval is
 orders included, and the signer's next nonce is never below its clock, so a restored signer
 does not reuse a nonce while its clock is right.
 
-**Mainnet.** Decided 2026-11-16: mainnet is supported. The signer signs a venue action for the
-network the wallet's approved policy names, `hyperliquid:testnet` or `hyperliquid:mainnet`, and
-refuses an intent whose network is not the policy's (`venue_not_allowed`)
-([`venue-signing.ts`](../apps/signer/src/venue-signing.ts)). A mainnet signature moves real funds
+**Mainnet.** Hyperliquid's testnet and mainnet are both supported. The signer signs a venue
+action for the network the wallet's approved policy names, `hyperliquid:testnet` or
+`hyperliquid:mainnet`, and refuses an intent whose network is not the policy's (`policy_denied`
+with `venue_not_allowed`; `evaluateVenueIntent` in
+[`evaluate.ts`](../packages/protocol/src/evaluate.ts)). A mainnet signature moves real funds
 at the venue. The controls are the same as on testnet, and none is specific to mainnet:
 
 - a person approves each order with a passkey on the signer's confirmation page, which shows the
@@ -721,7 +771,8 @@ otherwise the boot stops with
 `VENUES_FILE: api.hyperliquid.xyz is Hyperliquid's mainnet API; its entry must name hyperliquid:mainnet`,
 or its testnet twin ([`config.ts`](../apps/server/src/config.ts)). Any other host, such as a fake
 or a proxy, is accepted with either network, with at most one entry per network. A policy draft
-whose venue network the server has no venue for is refused with `venue_not_configured`. Mainnet
+whose venue network the server has no venue for is refused as `invalid_request` with code
+`venue_not_configured`. Mainnet
 is on for a wallet when an operator configures the venue and people approve, with passkeys, a
 policy that names it; there is no other switch.
 
@@ -749,29 +800,35 @@ never the request.
 
 What is proven, and what is not:
 
-- The encoder and the signatures: equal to the venue SDK's own signed vectors
-  (`hyperliquid-python-sdk` at `2fdb18f9`) for orders and cancels on both networks and for
-  testnet withdrawals, through
-  real OWS ([`hyperliquid-encoding.test.ts`](../apps/signer/test/hyperliquid-encoding.test.ts),
-  [`ows.test.ts`](../apps/signer/test/ows.test.ts)); green in CI. A mainnet withdrawal signature
-  is checked only by recovering its signer, not against an SDK vector.
-- The signer's venue routes and their refusals (caps, fence, pause, a cancel with no passkey):
-  unit tests ([`venue-signing.test.ts`](../apps/signer/test/venue-signing.test.ts)), green in CI
-  (runs 43735023880 and 43737561979) for testnet. For mainnet, green in CI (run 43842629503):
-  unit tests for a mainnet order signed under a mainnet policy, and for the refusals across
-  networks (a testnet policy with a mainnet intent, and the reverse).
-- Mainnet at the release gates: green in CI (run 43842629503, amd64 and arm64), against a
-  second fake venue in mainnet mode ([`venue.spec.ts`](../e2e/test/venue.spec.ts)). A fake venue
-  is not the venue: no real mainnet order has been placed.
-- The control plane's proposal checks, posting, follow-up, cancel and the withdrawal ledger read:
-  unit tests ([`orders.test.ts`](../apps/server/test/execution/orders.test.ts)) against a fake
-  venue that checks signatures with an encoder of its own (`@askgina/os-testkit/fake-hyperliquid`).
-  Unit-tested; the real-stack gate is pending.
-- Not run: the real Hyperliquid testnet, because no funded testnet account is in hand (the manual
-  proof is open, D6), and so also whether the real venue's ledger entry for a withdrawal carries
-  its nonce, which the follow-up relies on after a lost answer. No real order has ever been
-  placed, on mainnet or testnet, and no real funds have moved at a venue; on mainnet, posting is
-  tested only against the fake venue in mainnet mode.
+- **Proven in CI, job `test`:** the encoder and the signatures equal the venue SDK's own signed
+  vectors (`hyperliquid-python-sdk` at `2fdb18f9`) for orders and cancels on both networks and
+  for testnet withdrawals, through real OWS
+  ([`hyperliquid-encoding.test.ts`](../apps/signer/test/hyperliquid-encoding.test.ts),
+  [`ows.test.ts`](../apps/signer/test/ows.test.ts)). A mainnet withdrawal signature is checked
+  only by recovering its signer, not against an SDK vector.
+- **Proven in CI, job `test`:** the signer's venue routes and their refusals (caps, fence, pause,
+  a cancel with no passkey, a mainnet order under a mainnet policy, and the refusals across
+  networks: a testnet policy with a mainnet intent, and the reverse)
+  ([`venue-signing.test.ts`](../apps/signer/test/venue-signing.test.ts)); the control plane's
+  proposal checks, posting, follow-up, cancel and withdrawal ledger read
+  ([`orders.test.ts`](../apps/server/test/execution/orders.test.ts)), against a fake venue that
+  checks signatures with an encoder of its own (`@askgina/os-testkit/fake-hyperliquid`).
+- **Proven in CI, jobs `stack (amd64)` and `stack (arm64)`:** the venue gates
+  ([`venue.spec.ts`](../e2e/test/venue.spec.ts)) on the whole stack, against two fake venues,
+  one in testnet mode and one in mainnet mode: an order approved with a passkey on the
+  confirmation page becomes exactly one order at the venue; the agent cancels its own resting
+  order with no passkey; an order outside the policy, or on a network the policy does not name,
+  is refused before anyone is asked; a mainnet policy places a mainnet order and neither venue
+  accepts the other network's signature; no mandate signs an order; an order whose submit window
+  passed is never posted; a server killed between signing and posting sends one request; a
+  second post is refused; the daily cap and reduce-only; a withdrawal to the wallet's own address
+  only; the webhook carries no order field; the signer cannot reach either venue; a venues file
+  that pairs one of Hyperliquid's own hosts with the wrong network stops the server; no order
+  content is in the database in the clear. A fake venue is not the venue.
+- **Unproven:** the real Hyperliquid testnet has never been tried, so neither has whether the
+  real venue's ledger entry for a withdrawal carries its nonce, which the follow-up relies on
+  after a lost answer. No real order has ever been placed, on mainnet or testnet, and no real
+  funds have moved at a venue.
 
 ## Retiring a wallet and deleting a workspace
 
@@ -868,17 +925,18 @@ people and revokes them at the signer
 
 Tests: [`apps/signer/test/lifecycle.test.ts`](../apps/signer/test/lifecycle.test.ts) (applying,
 cancelling, the delay bounds, the fence, a vault that fails mid-destroy, what a deleted
-workspace keeps, the version 7 migration),
+workspace keeps, the signer database migration),
 [`apps/server/test/lifecycle/retire.test.ts`](../apps/server/test/lifecycle/retire.test.ts) and
 [`delete.test.ts`](../apps/server/test/lifecycle/delete.test.ts) (mandates ended on approval, a
 cancel keeping the keys and the pause, the wait for a given-up transaction, the wait for runs, a
 proposal racing the tombstone, a deleted workspace whose stored data cannot be opened, disabling
-an agent), and the key store's tests of `shredTenant`. On the real stack, the ten release gates
-in [`e2e/test/lifecycle.spec.ts`](../e2e/test/lifecycle.spec.ts) passed in CI run 43729783071 on
-amd64 and arm64: retiring and cancelling, the operator's `export-wallet`, destroying a key at its
-time, a deletion pausing the workspace and ending its mandates, the webhook announcement,
-cancelling a deletion, waiting on a transaction that could still be mined, what a deleted
-workspace leaves, and a pre-deletion database copy after a keyring rotation.
+an agent), and the key store's tests of `shredTenant`, all in CI job `test`. On the real stack,
+the lifecycle gates in [`e2e/test/lifecycle.spec.ts`](../e2e/test/lifecycle.spec.ts) run in CI
+jobs `stack (amd64)` and `stack (arm64)`: retiring and cancelling, the operator's
+`export-wallet`, destroying a key at its time, a deletion pausing the workspace and ending its
+mandates, the webhook announcement, cancelling a deletion, waiting on a transaction that could
+still be mined, what a deleted workspace leaves, and a pre-deletion database copy after a
+keyring rotation.
 
 ## Exporting, cloning and erasing a person
 
@@ -958,6 +1016,13 @@ A clone or import no longer invites an erased person.
 - **Copies taken before erasure.** Backups keep the name and everything else until they are
   destroyed. Records and templates already downloaded keep the id.
 
+Export, clone, import and erasing a person have gates on the real stack
+([`lifecycle.spec.ts`](../e2e/test/lifecycle.spec.ts); CI jobs `stack (amd64)` and
+`stack (arm64)`), beside their unit tests in CI job `test`
+([`export.test.ts`](../apps/server/test/lifecycle/export.test.ts),
+[`clone.test.ts`](../apps/server/test/lifecycle/clone.test.ts),
+[`erase.test.ts`](../apps/server/test/identity/erase.test.ts)).
+
 ## Key providers
 
 `KEY_PROVIDER=file` (the default) keeps the key-encryption keys in the keyring file;
@@ -978,11 +1043,14 @@ composite wraps new keys under Transit and unwraps each key with the provider th
 - **Rotating the Transit key** and raising its `min_decryption_version` makes copies wrapped
   under older versions, backups included, unopenable.
 
-Export, clone, import and erasing a person have release gates on the real stack
-([`lifecycle.spec.ts`](../e2e/test/lifecycle.spec.ts)), beside their unit tests
-([`export.test.ts`](../apps/server/test/lifecycle/export.test.ts),
-[`clone.test.ts`](../apps/server/test/lifecycle/clone.test.ts),
-[`erase.test.ts`](../apps/server/test/identity/erase.test.ts)).
+Proven in CI, job `stack (openbao)` ([`openbao.spec.ts`](../e2e/test/openbao.spec.ts)), on a
+stack with no keyring file: the server's OpenBao role can wrap and unwrap under its Transit key
+and do nothing else; every data key is wrapped by Transit, and nothing an agent typed is in the
+database in the clear; with OpenBao paused, new work fails closed, and a payment approved
+meanwhile completes once it is back; after a Transit key rotation, a rewrap and a raised
+minimum version, earlier payments still read. The release gates then run on a fresh stack of
+that kind. Unproven: that a backup wrapped under a retired Transit version cannot be opened;
+this rests on OpenBao's own behaviour.
 
 ## Running on more than one machine
 
@@ -1040,12 +1108,17 @@ Two more things the split brings:
   every start and refuses to start with an expired certificate.
 
 A move of the signer to another host is a new database file: the signer fences itself, every
-waiting approval is refused, and every live mandate ends (decision D9 in the plan), because a
+waiting approval is refused, and every live mandate ends (the plan's "Decision Log"), because a
 move cannot be told from a copy.
 
-Proven: the release gates and `split.spec.ts` in CI job `stack (split)` (runs 43733608692 and
-43735023880), with both Compose projects on one runner. Not tested: two real hosts with different
-administrators.
+Proven in CI, job `stack (split)`: [`split.spec.ts`](../e2e/test/split.spec.ts) (the control
+project holds no signer secret, confirm secret or vault and runs no signer or confirmation page;
+a container on the shared network without the control plane's key gets no handshake; with the
+example nftables rules applied, the signer cannot reach the internet), then every release gate
+across the two projects. Both Compose projects run on one CI runner. The signer's check of
+certificate expiry is unit-tested in job `test` ([`tls.test.ts`](../apps/signer/test/tls.test.ts)).
+Unproven: two real hosts, let alone two hosts with different administrators; renewing
+certificates on a running pair.
 
 ### Several server replicas
 
@@ -1062,15 +1135,21 @@ administrators.
   token is never in the log, so reading the log is not enough.
 - **A shred reaches every replica.** See "What is encrypted at rest".
 
-Proven: the unit tests, with two gateways on one database, in CI run 43736178714. The real-stack
-gate `stack (replicas)` is written and has not run.
+Proven in CI, job `test`: the shared limits with two gateways on one database
+([`rate-limit.test.ts`](../apps/server/test/support/rate-limit.test.ts)). Proven in CI, job
+`stack (replicas)`: [`replicas.spec.ts`](../e2e/test/replicas.spec.ts) on two server replicas
+behind both edges (two replicas boot before setup and log no token, and of two `setup-token`
+commands at once one token claims the installation; both answer `/readyz`; the replica that
+started signing a payment is killed and the other finishes it with exactly one transaction;
+each notification reaches the webhook once; one agent's 121st request in a minute is refused
+through Caddy), then every release gate on a fresh two-replica stack. Both replicas run on one
+Docker host. A shred heard by the other replica is proven in job `k8s-ha` (see "Kubernetes").
 
 ### Kubernetes
 
-The manifests in [`deploy/k8s/`](../deploy/k8s/) are written and have not run in CI. They claim
-isolation only as far as the isolation probe
-([`deploy/k8s/isolation-probe.yaml`](../deploy/k8s/isolation-probe.yaml)) and the gate
-`e2e/test/kubernetes.spec.ts` check it, and neither has run yet:
+The manifests in [`deploy/k8s/`](../deploy/k8s/) claim isolation only as far as the isolation
+probe ([`deploy/k8s/isolation-probe.yaml`](../deploy/k8s/isolation-probe.yaml)) and the gate
+[`e2e/test/kubernetes.spec.ts`](../e2e/test/kubernetes.spec.ts) check it:
 
 - an agent pod gets no DNS, no Kubernetes API and no internet, and reaches only the gateway's MCP
   endpoint;
@@ -1088,6 +1167,26 @@ administers the cluster is the control plane; with the signer in the cluster (CI
 only) they are the signer host. In production the signer and its confirmation page run outside
 the cluster. With notifications on, the server may open TCP 443 to any address, and its own
 checks of the webhook URL and push hosts are what limit it.
+
+Proven in CI, job `k8s`: every overlay validates against Kubernetes 1.37 with kubeconform; on a
+throwaway kind cluster with the `kind` overlay (signer in the cluster, one Postgres), two server
+replicas are ready, each alone in its pod; the isolation probe passes and fails once a
+namespace's default-deny policy is deleted; the signer reaches nothing and the confirmation
+service only the signer; the edge refuses the delivery routes; the installation is claimed with
+a setup token from the operator's command, never the log; and an agent's payment approved on the
+confirmation page lands once.
+
+Proven in CI, job `k8s-ha` ([`kubernetes-ha.spec.ts`](../e2e/test/kubernetes-ha.spec.ts)), with
+the `kind-ha` overlay: Postgres is a CloudNativePG cluster of three instances that commits only
+with a standby; the isolation probe passes and only the server and the instances reach Postgres;
+the primary is deleted while a payment is being signed and the payment lands once; after the
+failover both replicas are ready, a new payment lands once, every `LISTEN` connection is back and
+both replicas hold the workflow-bundle lock; a shred made on one replica is heard by the other at
+once; with both standbys gone a write waits instead of committing alone.
+
+Unproven: the `production-example` overlay, with the signer outside the cluster, has never been
+applied to a cluster (only validated); no cluster other than kind, and no network plugin other
+than kind's, has been tested.
 
 ## What is encrypted at rest
 
@@ -1193,8 +1292,9 @@ two hosts with different administrators have not been tested (see "Running on mo
 machine").
 
 **OWS signs in-process.** The OWS library runs inside the signer's process. It is a key store,
-not an isolation boundary, and its own policy is not used as an authority (OWS research,
-verdict and F2–F5). The signer process is the boundary.
+not an isolation boundary, and its own policy is not used as an authority (verdict and findings
+F2 to F5 of [the OWS research](../specs/research/ows-node-sdk-in-an-isolated-signer.md)). The
+signer process is the boundary.
 
 **The first approvers of a workspace are trust on first use.** When a workspace is registered,
 the signer cannot check who its first approvers are. It only keeps the set from changing later
@@ -1235,8 +1335,9 @@ made in the 30 seconds after it, must be made again. The signer notices on its o
 database file that is not the one it last opened (a copy, an extracted archive, a move to another
 host). A restore that rolls the same file back in place, such as a disk snapshot, is fenced only
 by the operator's `fence` step, which the deploy guide makes part of every restore. The fence
-relies on the signer host's clock: a clock set back across a restore weakens it. A v0.1 signer
-image does not know the fence, so going back to one after an upgrade drops it.
+relies on the signer host's clock: a clock set back across a restore weakens it. A signer image
+built from v0.1 (the first plan, before the fence existed) does not know the fence, so going
+back to one after an upgrade drops it.
 
 **A sweep has no cap.** It moves a whole balance in one transaction, approved at the admin
 threshold. What bounds a misled sweep is the destination rule: the money can only reach an
@@ -1259,22 +1360,24 @@ means the signer host's operator can always add an approver.
 
 ## Out of scope for v0.1
 
-From the map's "Not yet specified" list ([askgina/os#1](https://github.com/askgina/os/issues/1)):
+These are not built, so this document claims nothing about them. The project tracks what is not
+yet specified in [issue #1](https://github.com/askgina/os/issues/1).
 
 - Approvals wider than one action, beyond transfers: mandates cover native and ERC-20 transfers
   to listed recipients (see "Mandates"); contract calls, trades, venue orders and session
   delegation are not covered by anything but one approval per action.
 - Operations that are not EVM transactions, beyond Hyperliquid perpetual limit orders and
-  withdrawals to the wallet's own address, on testnet and mainnet (see "Venue orders"; mainnet
-  decided 2026-11-16): other chains, other venues, other Hyperliquid actions (stop and trigger
-  orders, transfers between accounts, leverage changes).
+  withdrawals to the wallet's own address, on testnet and mainnet (see "Venue orders"): other
+  chains, other venues, other Hyperliquid actions (stop and trigger orders, transfers between
+  accounts, leverage changes).
 - Shipping agent runtimes or sandboxes.
-- Cloud KMS key providers, and HA Postgres (CloudNativePG is planned and not built). The signer
-  on its own host, OpenBao Transit, several server replicas and the Kubernetes manifests are in
-  "Running on more than one machine" and "Key providers", each with what is proven.
+- Cloud KMS key providers. The signer on its own host, OpenBao Transit, several server replicas,
+  Kubernetes and Postgres as a three-instance CloudNativePG cluster are in "Running on more than
+  one machine" and "Key providers", each with what is proven.
 - Notifications outside the inbox beyond Web Push and the signed webhook with its sidecars (see
   "Notifications"): email, and chat adapters built into the control plane.
 - For stuck transactions: a new gas limit, legacy (type 0) and blob transactions, L2-specific
   fee fields, private order flow, and a signer that watches the chain itself.
 
-Also out of scope: hosted or multi-tenant operation by Ask Gina.
+Also out of scope: running one installation for many unrelated organizations as a hosted
+service.

@@ -1,15 +1,27 @@
 # @askgina/os-keys
 
-Key management for data that askgina/os stores in Postgres: key-encryption keys (KEKs) kept
-in a file outside the database, random 32-byte data keys kept inside it, wrapped under a KEK,
-and `seal`/`open` for encrypting single values with a data key.
+Key management for data stored in Postgres: key-encryption keys (KEKs) kept outside the
+database (in a keyring file or in OpenBao Transit), random 32-byte data keys kept inside it,
+wrapped under a KEK, and `seal`/`open` for encrypting single values with a data key.
+
+It is part of the [askgina/os](https://github.com/askgina/os) repository, a self-hosted service
+in which AI agents propose payments that people approve with passkeys. There, the control plane
+(`apps/server`) seals its own content columns with it, and
+[`@askgina/os-world`](https://github.com/askgina/os/tree/main/packages/world) encrypts workflow
+payloads with it. It is published to GitHub Packages (`npm.pkg.github.com`) as
+`@askgina/os-keys`, as ES modules with type declarations, tested on Node 26; the entry points
+are `@askgina/os-keys` and `@askgina/os-keys/seal`.
+
+**Status.** Proven in CI: the tests in `test/` against a real Postgres and a development OpenBao
+(job `test`); the package built, packed and imported from its tarball by a separate project
+(job `packages`); the control plane's whole stack with its KEK in OpenBao Transit and no keyring
+file (job `stack (openbao)`, `e2e/test/openbao.spec.ts`).
 
 ## The threat
 
 Someone who gets a copy of the database (a leaked backup, a read-only SQL credential, a
 compromised replica) should learn nothing that a person or an agent typed. So nothing readable
-is stored: workflow payloads are encrypted by [`@askgina/os-world`](../world) with one data key
-per run, and the control plane seals its own content columns with one data key per workspace.
+is stored: workflow payloads are encrypted by `@askgina/os-world` with one data key per run, and the control plane seals its own content columns with one data key per workspace.
 The data keys are in the database only in wrapped form; unwrapping them needs the keyring file,
 which lives on the host, not in Postgres. A database copy without the keyring is ciphertext.
 This does not protect against someone who has both the database and the keyring, or who
@@ -55,7 +67,8 @@ controls a running server process.
 
 Encryption covers payloads, not structure. In the workflow tables, names, ids, hook tokens,
 timestamps, statuses and attributes stay readable; the full table is in the
-[`@askgina/os-world` README](../world/README.md#what-stays-readable). In `os_keys.data_keys`:
+[`@askgina/os-world` README](https://github.com/askgina/os/tree/main/packages/world#what-stays-readable).
+In `os_keys.data_keys`:
 scope, id, tenant id, KEK id and timestamps. Ciphertext lengths reveal plaintext lengths.
 
 ## Choosing the key provider
@@ -90,9 +103,19 @@ which copies wrapped under older versions (in backups, too) no longer open.
 
 ## Operations
 
-Every command reads `DATABASE_URL` and the key provider's variables above, and prints one JSON
-line with ids and counts. Exit code 4 means the key provider could not be reached or refused;
-rows `rewrap` moved before that stay moved, so run it again. `shred` and `shred-tenant` do not
+The commands are one script, `src/cli.ts` in the repository (run as
+`node packages/keys/src/cli.ts …` from its root, or inside the server's container) and
+`dist/cli.js` in the published package (`node node_modules/@askgina/os-keys/dist/cli.js …`):
+
+    cli.ts rewrap [--batch <n>]
+    cli.ts shred <run|workspace> <id>
+    cli.ts shred-tenant <run|workspace> <tenant id>
+
+Every command reads `DATABASE_URL` (and `DATABASE_PASSWORD_FILE` when the password is kept in a
+file instead of in the URL) and the key provider's variables above, with the keyring file in
+`KEYRING_FILE`, and prints one JSON line with ids and counts. Exit code 1 means a usage or
+configuration error. Exit code 4 means the key provider could not be reached or refused; rows
+`rewrap` moved before that stay moved, so run it again. `shred` and `shred-tenant` do not
 contact the key provider.
 
 Rotate the KEK in the keyring file:
@@ -134,9 +157,27 @@ found this way. The same cache TTL applies.
   the browser without authentication: with the keyring it is an open decryption oracle.
 - The keyring file is the root of all of this. Keep it out of the database and readable only by
   the service user. A backup needs both the database and the keyring from the same moment
-  (see [`deploy/README.md`](../../deploy/README.md#backups-and-restoring)); store the two
-  archives encrypted, and apart if you can, because together they read everything. A keyring that is not valid
-  JSON is reported without quoting its contents.
+  (see "Backups and restoring" in the repository's
+  [`deploy/README.md`](https://github.com/askgina/os/blob/main/deploy/README.md#backups-and-restoring));
+  store the two archives encrypted, and apart if you can, because together they read everything.
+  A keyring that is not valid JSON is reported without quoting its contents.
 - With Transit, the KEK never leaves OpenBao, but OpenBao, or anyone holding the server's
   OpenBao token, unwraps every data key it is given; with a database copy that reads everything.
   A backup then needs the database and an OpenBao that still holds the key versions it used.
+
+## Checking a change
+
+In the repository, from its root, after `bun install`: `bun run check` (Biome),
+`bun run lint:slop` (Oxlint with the repository's anti-slop rules), and
+`cd packages/keys && ../../node_modules/.bin/tsc --noEmit`. Start the test services once with
+`bun run services:up` (Postgres on 127.0.0.1:55432 and a development OpenBao on
+127.0.0.1:55820; `bun run services:down` removes them), then run the test file you changed, for
+example `node_modules/.bin/vitest run packages/keys/test/data-key-store.test.ts`. `seal`,
+`keyring`, `providers` and `transit-stub` need no service; `data-key-store`, `composite` and
+`cli` need Postgres; `transit` needs OpenBao too, and outside CI skips its cases when OpenBao is
+not up.
+
+CI runs the tests in job `test`, the type-check in job `check`, and in job `packages` builds the
+package (`bun run build` in `packages/keys`), packs it with `scripts/pack-packages.mjs` and
+imports and type-checks it from the tarball with `scripts/smoke-packed-world.mjs`. The workflow
+`.github/workflows/packages.yml` does the same on a `world-v*` tag and then publishes.

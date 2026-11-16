@@ -1,9 +1,22 @@
 # @askgina/os-world
 
 The Workflow SDK's Postgres World (`@workflow/world-postgres` 5.2.0) with payload encryption
-switched on. Every workflow run gets its own random data key, kept wrapped in Postgres by
-[`@askgina/os-keys`](../keys), under a key-encryption key that lives in a file outside the
-database.
+switched on. A World is the Workflow SDK's name for its storage and job-queue backend. Every
+workflow run gets its own random data key, kept wrapped in Postgres by
+[`@askgina/os-keys`](https://github.com/askgina/os/tree/main/packages/keys), under a
+key-encryption key (KEK) that lives outside the database, in a keyring file or in OpenBao
+Transit.
+
+It is part of the [askgina/os](https://github.com/askgina/os) repository, a self-hosted service
+in which AI agents propose payments that people approve with passkeys; its control plane
+(`apps/server`) runs its workflows on this World, and so does the example agent in
+`examples/eve-agent`. It is published to GitHub Packages (`npm.pkg.github.com`) as
+`@askgina/os-world`, as ES modules with type declarations, tested on Node 26; the entry points
+are `@askgina/os-world` and `@askgina/os-world/target`.
+
+**Status.** Proven in CI: the tests in `test/` (job `test`; see "What is proven" below); the
+package built, packed and imported from its tarball by a separate project (job `packages`); the
+control plane's workflows on it in every `stack` job.
 
 ## The threat
 
@@ -38,9 +51,14 @@ await world.start(); // runs the key-table migration, then upstream's start
 await start(workflow, args, { [TENANT_START_OPTION]: workspaceId });
 ```
 
-Frameworks that pick the World by module name can use `WORKFLOW_TARGET_WORLD=@askgina/os-world/target`,
-configured by `WORKFLOW_POSTGRES_URL` (or `DATABASE_URL`), `WORLD_KEYRING_FILE` and, optionally,
-`WORLD_READABLE_ATTRIBUTE_KEYS` (comma-separated).
+Frameworks that pick the World by module name can use
+`WORKFLOW_TARGET_WORLD=@askgina/os-world/target`, configured by `WORKFLOW_POSTGRES_URL` (or
+`DATABASE_URL`), `WORLD_KEYRING_FILE` (or `KEY_PROVIDER=openbao` with the `OPENBAO_*` variables
+of `@askgina/os-keys`) and, optionally, `WORLD_READABLE_ATTRIBUTE_KEYS` (comma-separated). The
+upstream pool and queue settings `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` (default 50),
+`WORKFLOW_POSTGRES_MAX_POOL_SIZE` (default that plus 2), `WORKFLOW_POSTGRES_JOB_PREFIX`,
+`WORKFLOW_POSTGRES_POLL_INTERVAL_MS` and `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS` are passed
+through.
 
 ### Run attributes
 
@@ -55,9 +73,10 @@ value would read as a diverged replay. The World rejects the write and the SDK f
 with `setAttributes failed World validation`. Set the attribute from a step, or list its key.
 
 List a key as readable only if its value can never carry what a person or an agent typed. A
-runtime that reads its own attributes back needs those keys listed: eve needs its ids, kinds and
-version (see [`examples/eve-agent`](../../examples/eve-agent)), and its session title, which is
-the first user message by default, must stay off the list.
+runtime that reads its own attributes back needs those keys listed: the eve agent runtime needs
+its ids, kinds and version (see
+[`examples/eve-agent`](https://github.com/askgina/os/tree/main/examples/eve-agent)), and its
+session title, which is the first user message by default, must stay off the list.
 
 ## What is proven
 
@@ -97,7 +116,7 @@ that carry codes, never user content.
 ## Rotate and shred
 
 Key rotation and crypto-erasure are done with the `@askgina/os-keys` CLI; see
-[its README](../keys/README.md#operations). Shredding a run (`cli.ts shred run wrun_…`) leaves its
+[its README](https://github.com/askgina/os/tree/main/packages/keys#operations). Shredding a run (`cli.ts shred run wrun_…`) leaves its
 metadata rows in place and makes every payload of that run unreadable. A KEK or keyring outage
 does not fail runs or fall back to plaintext: deliveries fail and graphile-worker retries them,
 so alert on key-provider failures and stuck deliveries, not on failed runs.
@@ -121,3 +140,18 @@ both small. If the start then fails, an orphan key row remains; it protects noth
 row. If the start then names a tenant, the key store refuses because the stored key has none, so
 that start fails rather than binding the run to no tenant. A single-deployment install, which is
 what askgina/os runs, never sends this probe: `start()` probes only for cross-deployment starts.
+
+## Checking a change
+
+In the repository, from its root, after `bun install`: `bun run check` (Biome),
+`bun run lint:slop` (Oxlint with the repository's anti-slop rules), and
+`cd packages/world && ../../node_modules/.bin/tsc --noEmit`. The test files are left to CI, like
+every other step that builds: before they run, `test/global-setup.ts` builds the proof host's
+workflows with the SDK's `workflow build`. They need the test services (`bun run services:up`:
+Postgres, and OpenBao for the key-provider cases) and run one after the other, because their
+hosts use fixed ports.
+
+CI runs the tests in job `test`, the type-check in job `check`, and in job `packages` builds the
+package (`bun run build` in `packages/world`), packs it with `scripts/pack-packages.mjs` and
+imports and type-checks it from the tarball with `scripts/smoke-packed-world.mjs`. The workflow
+`.github/workflows/packages.yml` does the same on a `world-v*` tag and then publishes.

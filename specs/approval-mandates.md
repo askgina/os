@@ -2,7 +2,7 @@
 
 - Branch: main
 - Status: Ready for Review
-- Owner(s): Eric Juta
+- Owner(s): the repository owner
 - Created: 2026-11-14
 - Last Updated: 2026-11-15
 - Links: [Ticket #19](https://github.com/askgina/os/issues/19) | [Research report](./research/approval-mandates.md) | [Map #18](https://github.com/askgina/os/issues/18) | [v0.1 ExecPlan](./agent-workspaces-v0.1.md)
@@ -68,7 +68,7 @@ Success means:
 
 - [x] (2026-11-14 21:36Z) Research: current behavior, prior art and options read from source and documentation; report written ([research/approval-mandates.md](./research/approval-mandates.md)). Nothing built or run.
 - [x] (2026-11-14 21:36Z) Implementation approach and validation plan drafted (this file).
-- [x] (2026-11-15) Owner decisions D1 to D7 taken: Eric chose the recommended option of each (Decision Log). Build started.
+- [x] (2026-11-15) Owner decisions D1 to D7 taken: the owner chose the recommended option of each (Decision Log). Build started.
 - [x] (2026-11-15) Milestone 1: protocol structures, evaluator, signer contract, normative document, and the grant's confirmation view. Commit `b7effa5`; CI run 43697354475 green (check, test, ui, stack amd64/arm64/tls). Added beyond the plan: setting the restore fence revokes every live mandate (protocol document section 8).
 - [x] (2026-11-15) Milestone 2, commit `b60495d`, CI run 43699193896 green (six jobs): the signer grants, counts, signs under and revokes mandates (schema version 5, five routes, fence and approver-removal revocation, admin `list-mandates` and `revoke-mandate`). A pending grant shows as superseded while the wallet's current policy would refuse it. `mandate_wallet_mismatch` cannot occur at the signer: the policy check runs first and answers `policy_denied wallet_mismatch`.
 - [x] (2026-11-15) Milestone 3, commits `b55508e` and `9a03b20`, CI run 43701634327 green (six jobs; run 43701069934 was red on one unhandled rejection in the new test file): the control plane routes proposals through mandates; API and MCP report it (migration `0004_mandates`, four API routes, `mandate-use` rows never visible through the API, exactly seven MCP tools). Selection also skips a mandate whose grantors are fewer than the admin threshold. Disabling an agent also cancels its waiting grants.
@@ -182,7 +182,7 @@ Decisions this plan takes (delegated to the planning agent; each can be reopened
   required; (D3) native and ERC-20 transfers only; (D4) people in the web UI only; (D5) 7 days;
   (D6) rolling 24 hours; (D7) no fixed-list approval in this plan.
   Rationale: owner's answers in one form.
-  Date/Author: 2026-11-15 / Eric Juta
+  Date/Author: 2026-11-15 / the repository owner
 - Decision: a `grant-mandate` envelope is approved on the signer's confirmation page like every
   other kind, so the signer builds its view (`packages/protocol/src/confirmation.ts`). The signer
   tables are added as the next `PRAGMA user_version` after 4, not as version 2.

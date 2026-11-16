@@ -1,10 +1,19 @@
 # @askgina/os-web
 
-The web UI of Agent Workspaces: where people set up the server, create workspaces, agents and
+The control plane's web UI: where people set up the server, create workspaces, agents and
 wallets, set each wallet's limits, manage members and invites, read the audit log, and decide
-what agents ask for. The approval page is the product: on a phone it shows, without scrolling,
-what will happen, how much, to whom, from which wallet and agent, the agent's memo, the fee
-ceiling, the wallet's limits, the time left and how many approvals are in.
+what agents ask for. It is a single-page app that the control plane (`apps/server`) serves from
+its own origin; it talks only to the control plane's API and holds no key. The page that matters
+most is a request's approval page: on a phone it shows, without scrolling, what will happen, how
+much, to whom, from which wallet and agent, the agent's memo, the fee ceiling, the wallet's
+limits, the time left and how many approvals are in.
+
+**Status.** Proven in CI: the plain-logic tests in `test/*.test.ts` (job `test`), and the browser
+journeys in `test/journey.e2e.ts` on every Playwright project against the development fixture,
+then the production build (job `ui`). The real UI against the whole stack is proven in the
+browser gate, `e2e/test/browser.spec.ts`, in `stack (amd64)`, `stack (arm64)` and `stack (tls)`.
+The journeys for venue orders, retiring and deleting, and export and erasure run against the
+fixture only.
 
 Approving does not happen here. The approval page links to the signer's confirmation page, on
 its own origin (`APPROVE_ORIGIN`, served by `apps/approve`), names that page's host, and tells the
@@ -57,6 +66,29 @@ same happens when a session ends while a page is open. `src/lib/return-path.ts` 
 backslash, schemes, absolute URLs, control characters, and an encoded `/`, `\` or control
 character in the path (`%2F`, `%5C`, `%09`), and then lands on the workspace list instead.
 
+## Pages
+
+The routes are in `src/router.tsx`; each page is a file in `src/routes/`.
+
+| Path                                  | Page                                                                                         |
+| ------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `/setup`                              | Claiming a new server with the operator's setup token, and registering the first passkey.    |
+| `/login`                              | Sign-in with a passkey; `?next=` returns to the page that asked.                             |
+| `/join/<token>`                       | Accepting an invite.                                                                         |
+| `/erased`                             | Where a person lands, signed out, after erasing themselves.                                  |
+| `/`                                   | The workspace list.                                                                          |
+| `/settings`                           | Passkeys, notifications on this device, quiet hours, and erasing oneself.                    |
+| `/w/<workspace>/approvals/<approval>` | One request's approval page, outside the workspace frame so the decision fits on one screen. |
+| `/w/<workspace>`                      | The workspace overview.                                                                      |
+| `/w/<workspace>/approvals`            | The approval inbox.                                                                          |
+| `/w/<workspace>/wallets/<wallet>`     | A wallet: balances, limits, mandates, venue rules and orders, sweeping and retiring.         |
+| `/w/<workspace>/agents/<agent>`       | An agent: how to connect it, its wallet, its recent requests and its mandates.               |
+| `/w/<workspace>/mandates/<mandate>`   | One mandate and the payments signed under it.                                                |
+| `/w/<workspace>/payments/<intent>`    | A payment signed under a mandate, which has no approval page.                                |
+| `/w/<workspace>/members`              | Members, roles and invites.                                                                  |
+| `/w/<workspace>/activity`             | The audit log.                                                                               |
+| `/w/<workspace>/created`              | The one-time page of a copied or imported workspace: new agent tokens and invite links.      |
+
 ## Stuck transactions
 
 Once a payment or a sweep is sent, its request's page (and a mandated payment's own page) shows
@@ -81,6 +113,21 @@ the signer's page with passkeys. Afterwards the page follows the payment until t
 decides: "Cancelled on chain" (`voided`, nothing moved, a fee was paid) or the payment's own
 outcome. Every refusal of a speed-up or a cancel, and the outcomes `transaction_cancelled`,
 `cancel_too_late` and `nonce_used_elsewhere`, have their own sentences (`src/lib/codes.ts`).
+
+## Venue orders
+
+A wallet's limits can allow limit orders on Hyperliquid perpetuals, on testnet or mainnet,
+in the policy editor's venue section (`src/lib/venue.ts`): the network, each market by coin and
+index with its most notional per order, a cap on notional in any 24 hours, the times in force, the submit
+window, and whether USDC may be withdrawn to the wallet's own address. The editor offers only the
+networks the server is set up for (and says so when it is set up for none), starts new rules on
+testnet when both are set up, and says that mainnet orders use real funds. Wherever caps are shown
+it says that they limit the notional of new orders, not losses (`VENUE_LOSS_BOUND`). An order's
+approval page shows what the signer signs, the worst-case notional against the caps, the submit
+window and the venue account's value as what can be lost; it has no network fee. The wallet page
+shows the signer's count of the last 24 hours and the venue account as the server reads it,
+labelled as reported by Hyperliquid through the server, and lists resting orders, each with
+"Cancel order", which needs no passkey. A mandate never covers an order.
 
 ## Retiring a wallet, deleting a workspace, removing an agent
 
@@ -214,6 +261,11 @@ only if the wallet's limits still allow it, a payment the agent proposes (throug
 against the wallet's limits too, and anything else goes to the inbox. It is a fixture: the real
 page is `apps/approve/public/`, and the stand-in says on screen that it checks no signature.
 
+The fixture has both Hyperliquid networks set up. An order proposed through `/__fixture/propose`
+(`kind: "order"`) is checked against the wallet's venue rules; once approved, an
+immediate-or-cancel order fills at its limit price at once and any other rests at a stand-in
+venue until cancelled. Nothing reaches Hyperliquid. `/__fixture/reset` empties the fixture.
+
 A sent transaction's newest attempt is "mined" two seconds after it was offered.
 `/__fixture/settle` with `{ intentId, status: "stuck" }` holds a payment back instead: nothing of
 it is mined, its fee is too low, and its attempts are dated three minutes back (the server's
@@ -243,7 +295,8 @@ the React plugin's Fast Refresh: a change reloads the page.
 
 ## Tests
 
-- `bunx vitest run test/<file>.test.ts`: plain logic, such as the status sentences, the
+- `node_modules/.bin/vitest run apps/web/test/<file>.test.ts`, from the repository root: plain
+  logic, such as the status sentences, the
   operator command, the sign-in return path and the mandate editor's helpers (whole units to
   base units, the worst case, the end-time choices, the sentences, the meaning of every mandate
   code), and `transaction.test.ts` for sent transactions (attempt labels, fees in gwei, that a
@@ -254,9 +307,12 @@ the React plugin's Fast Refresh: a change reloads the page.
   the Home Screen, before and after iOS 16.4, blocked) and the state of this device, and
   `quiet-hours.test.ts` the quiet hours form. `export.test.ts` covers the export file names, the
   template file check, the fresh sign-in refusal and the copy's one-time handover;
-  `lifecycle.test.ts` the delays, balances and which waiting request a page links.
-- `bunx playwright test --project=<phone-light|phone-dark|desktop-light|desktop-dark|phone-wide-font>`:
-  the first-day journey in Chromium with a virtual authenticator. Every approval goes through
+  `lifecycle.test.ts` the delays, balances and which waiting request a page links;
+  `venue.test.ts` the venue section of the policy editor, orders in words and against the caps,
+  and every venue code; `sweep.test.ts` where a wallet may be swept to.
+- `bunx playwright test --project=<phone-light|phone-dark|desktop-light|desktop-dark|phone-wide-font>`,
+  in `apps/web` (once before: `bunx playwright install chromium`): the journeys in
+  `test/journey.e2e.ts`, starting with the first day, in Chromium with a virtual authenticator. Every approval goes through
   the confirmation page's link and back. A second person, with their own authenticator, joins as
   an approver, proves on the confirmation page that the new passkey is theirs, and the owner
   approves the change after the fingerprints match. The owner then approves payments in advance,
@@ -275,7 +331,10 @@ the React plugin's Fast Refresh: a change reloads the page.
   fixture only. A third, also fixture-only, downloads a template, signs in again for the record
   (`/__fixture/stale-sign-in`), copies the workspace and imports the template, each showing its
   token once and gone after a reload, then has the only owner refused erasure and a viewer
-  erased. Headless Chromium reaches no push service, so
+  erased. A fourth, also fixture-only, sets a wallet's venue rules for Hyperliquid mainnet,
+  approves a good-till-cancelled order on the confirmation page, finds it resting at the
+  fixture's stand-in venue and cancels it with no passkey; nothing reaches Hyperliquid. Headless
+  Chromium reaches no push service, so
   the browser's push subscription is a stand-in (`test/push-stand-in.ts`: real keys, a made-up
   endpoint) and messages reach the real worker through the DevTools protocol, unencrypted; the
   permission, the worker's registration under the production Content-Security-Policy and the
@@ -298,10 +357,21 @@ the React plugin's Fast Refresh: a change reloads the page.
   after any layout change. It is a stress run for sideways overflow and wrapping only: its text
   runs taller than with any real font, so it skips the rule that a request's decision (a payment,
   or a cancel) fits on the first phone screen. That rule holds on `phone-light` and `phone-dark`.
-- `bunx tsc --noEmit` checks the types.
+- `../../node_modules/.bin/tsc --noEmit`, in `apps/web`, checks the types.
 
 ## Production
 
-CI runs `bun run build`, which writes `dist/`. The control plane serves those files itself, from
-the same origin as the API and under the same Content-Security-Policy, so the UI needs no server
-of its own.
+`bun run build` writes `dist/`. The control plane serves those files itself, from the same origin
+as the API and under the same Content-Security-Policy, so the UI needs no server of its own.
+
+## Checking a change
+
+From the repository root, after `bun install`: `bun run check` (Biome), `bun run lint:slop`
+(Oxlint with the repository's anti-slop rules), and in `apps/web`
+`../../node_modules/.bin/tsc --noEmit`. Then the plain-logic test file you touched, from the
+repository root (`node_modules/.bin/vitest run apps/web/test/<file>.test.ts`), and the journeys on
+one project, `cd apps/web && bunx playwright test --project=phone-light`, plus `phone-wide-font`
+after a layout change. None of these needs Docker or a running stack.
+
+CI runs the plain-logic tests in job `test`, the type-check in job `check`, and in job `ui` every
+Playwright project and then `bun run build`. The production build itself is left to CI.

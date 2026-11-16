@@ -3,7 +3,7 @@
 - Branch: main
 - Ticket: [askgina/os#28](https://github.com/askgina/os/issues/28), on the map [askgina/os#18](https://github.com/askgina/os/issues/18)
 - Status: In progress
-- Owner: lead agent, under Eric's instruction of 2026-11-16 ("setup anti-slop + refactor")
+- Owner: lead agent, under the repository owner's instruction of 2026-11-16 ("setup anti-slop + refactor")
 
 This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`,
 `Decision Log`, and `Outcomes & Retrospective` current as research,

@@ -1,10 +1,30 @@
 # Approval protocol, version 1
 
-This document is normative. It is precise enough to write a second verifier from. The reference
-implementation is [`packages/protocol/src/`](../packages/protocol/src/). Where this document and
-that code disagree, the code is what runs; please report the difference as a bug.
+This is the exact specification of what a person approves and what the signer will sign: the
+data formats, how each is hashed, the envelopes a passkey signs, how a wallet's policy is
+evaluated, the checks the signer runs before it signs, how the control plane and the signer
+authenticate each other, the confirmation page's routes, and test vectors. It is written for
+anyone who reviews the security of this repository, writes a second verifier, or changes
+[`packages/protocol`](../packages/protocol/) or [`apps/signer`](../apps/signer/).
 
-The words MUST, MUST NOT and SHOULD have their RFC 2119 meanings.
+Context, in one paragraph. An AI agent proposes a payment or an order (an **intent**) for a
+**wallet** it cannot spend from alone. People approve it with a passkey on the **confirmation
+page**, which the `approve` service ([`apps/approve`](../apps/approve/)) serves at
+`APPROVE_ORIGIN`. The **signer** ([`apps/signer`](../apps/signer/)) holds the wallet keys and
+signs only when the approval and the wallet's **policy** both allow it. The **control plane**
+([`apps/server`](../apps/server/)) relays requests between them and is treated as something that
+could be compromised: nothing in this document trusts it. Every term has one meaning, defined in
+[the architecture's word list](./architecture.md#words-used-on-this-page).
+
+Status: this is version 1 of the protocol, the only version. The reference implementation is
+[`packages/protocol/src/`](../packages/protocol/src/); the signer enforces it in
+[`apps/signer/src/`](../apps/signer/src/). Where this document and that code disagree, the code is
+what runs; report the difference as a bug ([`CONTRIBUTING.md`](../CONTRIBUTING.md)). The test
+vectors in section 11 are pinned by tests that CI runs on every push (job `test`), and the
+signer's checks in section 8 are covered by [`apps/signer/test/`](../apps/signer/test/) in the
+same job.
+
+The words MUST, MUST NOT, SHOULD and MAY have their RFC 2119 meanings.
 
 ## 1. Primitives
 
@@ -17,7 +37,7 @@ Source: [`primitives.ts`](../packages/protocol/src/primitives.ts).
 | `Hex`            | `0x` and an even number of lowercase hex digits. `0x` is the empty byte string.                                                                                                                                                                                                                             | `0xa9059cbb…`                                |
 | `Hex32`          | `0x` and 64 lowercase hex digits.                                                                                                                                                                                                                                                                           | a transaction hash                           |
 | `Digest`         | 64 lowercase hex digits, no prefix. A SHA-256 output.                                                                                                                                                                                                                                                       | `52d18224…9da3`                              |
-| `ChainId`        | CAIP-2 `eip155:` and a decimal number from 1, at most 15 digits (so it is exact as a JavaScript number), no leading zero.                                                                                                                                                                                   | `eip155:8453`                                |
+| `ChainId`        | CAIP-2 `eip155:` and a decimal number from 1, at most 15 digits (so it is exact as a JavaScript number), no leading zero. An EVM chain only.                                                                                                                                                                | `eip155:8453`                                |
 | `Amount`         | A base-unit integer as a decimal string (`0`, or no leading zero, at most 78 digits), at most 2^256 − 1. Strings, so no JSON number ever rounds it.                                                                                                                                                         | `"250000000000000000"`                       |
 | `PositiveAmount` | An `Amount` that is not `"0"`.                                                                                                                                                                                                                                                                              |                                              |
 | `EpochSeconds`   | A JSON integer of seconds since the Unix epoch, from 0 to 32503680000.                                                                                                                                                                                                                                      | `1700000000`                                 |
@@ -29,7 +49,7 @@ Venue primitives, from [`venues.ts`](../packages/protocol/src/venues.ts):
 
 | Name              | Encoding                                                                                                                                                                                                             | Example                |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| `VenueNetwork`    | `"hyperliquid:testnet"` or `"hyperliquid:mainnet"`. Takes the place of a `ChainId` in a venue intent and its envelope.                                                                                               | `hyperliquid:testnet`  |
+| `VenueNetwork`    | `"hyperliquid:testnet"` or `"hyperliquid:mainnet"`, both supported alike. Takes the place of a `ChainId` in a venue intent and its envelope.                                                                         | `hyperliquid:testnet`  |
 | `Network`         | A `ChainId` or a `VenueNetwork`.                                                                                                                                                                                     |                        |
 | `Decimal`         | A canonical decimal string matching `^(0\|[1-9][0-9]{0,19})(\.[0-9]{0,7}[1-9])?$`: no sign, exponent, leading zero (except `0.`), trailing zero or trailing point, at most 8 fraction digits. One value, one string. | `"0.0147"`, `"1670.1"` |
 | `PositiveDecimal` | A `Decimal` that is not `"0"`.                                                                                                                                                                                       |                        |
@@ -65,16 +85,16 @@ digest(tag, value) = SHA-256( UTF-8( tag || "\n" || canonicalJson(value) ) )
 `"\n"` is one line-feed byte (0x0A). The tags separate the kinds of structure, so a digest of one
 kind can never stand in for another kind:
 
-| Tag                         | Used for                                                               |
-| --------------------------- | ---------------------------------------------------------------------- |
-| `askgina.os/v1/intent`      | `intentHash(intent)`                                                   |
-| `askgina.os/v1/policy`      | `policyHash(policy)`                                                   |
-| `askgina.os/v1/authorize`   | `envelopeChallenge(envelope)`, the WebAuthn challenge                  |
-| `askgina.os/v1/audit`       | audit log entries                                                      |
-| `askgina.os/v1/sweep`       | `sweepHash(sweep)`                                                     |
-| `askgina.os/v1/possession`  | `possessionChallenge(input)`, the possession step's WebAuthn challenge |
-| `askgina.os/v1/mandate`     | `mandateHash(mandate)`                                                 |
-| `askgina.os/v1/mandate-use` | `mandateUseDigest(input)`, the signer's record of one use of a mandate |
+| Tag                         | Used for                                                                    |
+| --------------------------- | --------------------------------------------------------------------------- |
+| `askgina.os/v1/intent`      | `intentHash(intent)`                                                        |
+| `askgina.os/v1/policy`      | `policyHash(policy)`                                                        |
+| `askgina.os/v1/authorize`   | `envelopeChallenge(envelope)`, the WebAuthn challenge                       |
+| `askgina.os/v1/audit`       | the control plane's audit log entries and the signer's decision log entries |
+| `askgina.os/v1/sweep`       | `sweepHash(sweep)`                                                          |
+| `askgina.os/v1/possession`  | `possessionChallenge(input)`, the possession step's WebAuthn challenge      |
+| `askgina.os/v1/mandate`     | `mandateHash(mandate)`                                                      |
+| `askgina.os/v1/mandate-use` | `mandateUseDigest(input)`, the signer's record of one use of a mandate      |
 
 `intentHash`, `policyHash`, `sweepHash`, `mandateHash` and `mandateUseDigest` are the digest as a
 lowercase hex `Digest`.
@@ -225,16 +245,16 @@ signer cannot see one (section 8).
 A **sweep** (source: [`sweep.ts`](../packages/protocol/src/sweep.ts)) is the structure a
 `sweep-wallet` envelope binds by its hash. Like an intent it is immutable.
 
-| Field         | Type             | Meaning                                                              |
-| ------------- | ---------------- | -------------------------------------------------------------------- |
-| `v`           | `1`              | Protocol version.                                                    |
-| `workspaceId` | `ws_…`           | The workspace.                                                       |
-| `walletId`    | `wal_…`          | The wallet to empty.                                                 |
-| `chainId`     | `ChainId`        | The chain the transaction is for.                                    |
-| `asset`       | `AssetRef`       | The native coin, or the ERC-20 contract whose `transfer` is called.  |
-| `amount`      | `PositiveAmount` | Base units to move.                                                  |
-| `to`          | `Address`        | The destination. Not the zero address, and not the `asset` contract. |
-| `maxFeeWei`   | `PositiveAmount` | Ceiling on `gas × maxFeePerGas` of the signed transaction.           |
+| Field         | Type             | Meaning                                                                                   |
+| ------------- | ---------------- | ----------------------------------------------------------------------------------------- |
+| `v`           | `1`              | Protocol version.                                                                         |
+| `workspaceId` | `ws_…`           | The workspace.                                                                            |
+| `walletId`    | `wal_…`          | The wallet to empty.                                                                      |
+| `chainId`     | `ChainId`        | The chain the transaction is for.                                                         |
+| `asset`       | `AssetRef`       | The native coin, or the ERC-20 contract whose `transfer` is called. Not the zero address. |
+| `amount`      | `PositiveAmount` | Base units to move.                                                                       |
+| `to`          | `Address`        | The destination. Not the zero address, and not the `asset` contract.                      |
+| `maxFeeWei`   | `PositiveAmount` | Ceiling on `gas × maxFeePerGas` of the signed transaction.                                |
 
 The amount, the destination and the fee ceiling are therefore covered by the passkey, but none of
 them appears in the envelope itself: the control plane stores the envelope unencrypted, and keeps
@@ -281,9 +301,10 @@ appear in the envelope: the control plane keeps the mandate sealed.
 challenge = digest("askgina.os/v1/authorize", envelope)    (32 bytes)
 ```
 
-The challenge MUST be given to WebAuthn as those 32 bytes. With `@simplewebauthn/server`, pass a
-`Uint8Array`: a string is treated as UTF-8 and base64url-encoded again, and the signer could
-then never recompute what the browser signed (finding 3 of
+The challenge MUST be given to WebAuthn as those 32 bytes. With `@simplewebauthn/server`'s
+`generateAuthenticationOptions`, pass a `Uint8Array`: a string is treated as UTF-8 and
+base64url-encoded again, and the signer could then never recompute what the browser signed
+(finding 3 of
 [`specs/research/passkey-assertion-bound-to-one-approval.md`](../specs/research/passkey-assertion-bound-to-one-approval.md)).
 
 An **assertion** is `{ userId, credentialId, response }`. `response` is a WebAuthn
@@ -440,30 +461,51 @@ The signer adds `too_many_live_mandates` (section 8, "Mandates"). The reasons to
 
 ## 8. The signing rule
 
-The signer's HTTP contract is [`signer/api.ts`](../packages/protocol/src/signer/api.ts). A sign
-request (`POST /v1/sign`) carries `{ intent, authorization, transaction }`. The plan
-([`specs/agent-workspaces-v0.1.md`](../specs/agent-workspaces-v0.1.md), Milestone 2) fixes these
-checks, in order. Every refusal is returned with its code. A refusal is recorded in the
-workspace's decision log when the request passed step 1 and names a workspace the signer knows;
-requests with a bad request signature or a malformed body, and requests naming an unknown
-workspace or wallet (`not_found`), are only logged to the signer's stdout.
+The signer's HTTP contract is [`signer/api.ts`](../packages/protocol/src/signer/api.ts): every
+route, its scope, its request and answer schemas, and every error code with its HTTP status
+(`signerErrorStatus`). A refusal answers `{ error: { code, message, detail? } }`, where `detail`
+is the rule's code for `policy_denied`, `mandate_denied` and `mandate_invalid`.
+
+The signer keeps a **decision log** per workspace: its own append-only, hash-chained record of
+what it allowed and refused (`GET /v1/workspaces/:workspaceId/decisions`). The operator checks the
+chain on the signer host with `node src/admin.ts verify-log --workspace <ws_id>`, one of the
+commands of the signer's admin command line,
+[`apps/signer/src/admin.ts`](../apps/signer/src/admin.ts), run from `apps/signer` (with Compose,
+`docker compose exec signer node src/admin.ts …`; [`deploy/README.md`](../deploy/README.md) shows
+each one).
+
+A refusal is recorded in the decision log when the request passed step 1 below and names a
+workspace the signer knows. Requests with a bad request signature or a malformed body, and
+requests naming an unknown workspace or wallet (`not_found`), are only logged to the signer's
+stdout.
+
+Two lifetimes bound envelopes, both signer settings with a default of 86400 seconds:
+`SIGNER_MAX_INTENT_TTL_SECONDS` (the **longest intent lifetime**) and
+`SIGNER_MAX_ADMIN_TTL_SECONDS` (the **longest admin lifetime**, for every envelope approved at
+the workspace's `adminThreshold`).
+
+A sign request (`POST /v1/sign`) carries `{ intent, authorization, transaction }`. The signer
+runs these checks, in order:
 
 1. The request signature (section 10) and the body's schema.
-2. Idempotency. If this approval id was already signed with an identical envelope, return the
-   stored signed transaction. If the envelope differs → `conflict`.
+2. Idempotency. If this approval id was revoked → `approval_revoked`. If it was already signed
+   with an identical envelope, return the stored signed transaction. Any other record of this
+   approval id → `conflict`.
 3. The restore fence. If the signer holds a fence and `envelope.issuedAt < fence + 30` →
    `envelope_fenced` (see below).
-4. The envelope is `approve-intent`. Its workspace, wallet, agent and chain equal the intent's
-   and the wallet's. `intentHash(intent)` equals `envelope.intentHash`. Otherwise
-   `intent_mismatch` or `envelope_mismatch`.
-5. The workspace is not paused (`workspace_paused`). The approval is not revoked
-   (`approval_revoked`). Because step 2 comes first, a repeat of an approval already signed
-   returns the stored transaction even while paused: pausing stops new signatures, it does not
-   recall one that exists.
+4. The envelope is `approve-intent`, and its workspace, wallet, agent and chain equal the
+   intent's and the wallet's (`envelope_mismatch`). `intentHash(intent)` equals
+   `envelope.intentHash` (`intent_mismatch`).
+5. The workspace is not being deleted and the wallet is `active` (`workspace_deleting`,
+   `wallet_retired`; see "Retiring a wallet and deleting a workspace" below), and the workspace
+   is not paused (`workspace_paused`). Because step 2 comes first, a repeat of an approval
+   already signed returns the stored transaction even while paused: pausing stops new
+   signatures, it does not recall one that exists.
 6. The wallet has a policy (`policy_missing`), and its hash equals `envelope.policyHash`
    (`policy_changed`).
 7. Section 6 passes, with the approvers from the signer's own table, the policy's
-   `approvals.threshold`, and a lifetime no longer than the policy's `approvals.ttlSeconds`.
+   `approvals.threshold`, and a lifetime no longer than the policy's `approvals.ttlSeconds` or
+   the longest intent lifetime, whichever is shorter.
 8. `gas × maxFeePerGas ≤ intent.maxFeeWei`, and `maxPriorityFeePerGas ≤ maxFeePerGas`
    (`fee_cap_exceeded`).
 9. In one database transaction with nothing awaited inside it: the fence is checked again; the
@@ -499,13 +541,15 @@ cannot set or move it.
 **Sweeps.** `POST /v1/wallets/:walletId/sweep` carries `{ sweep, authorization, transaction }`
 with a `sweep-wallet` envelope. It follows the steps above with these differences: in step 4 the
 envelope's workspace, wallet and chain equal the sweep's and the path's, and
-`sweepHash(sweep)` equals `envelope.sweepHash` (`envelope_mismatch`); step 5 does not apply, so a
-paused workspace can still be emptied (resuming it first would let its agents sign again); steps
-6 and 7 are replaced by the destination rule and section 6 at the workspace's `adminThreshold`
-with the signer's longest admin lifetime; step 8 uses `sweep.maxFeeWei`. The destination rule,
-from the signer's own records only: `to` is on the wallet's current recipient allowlist (mode
-`allowlist`), or `to` is the address of a `treasury` wallet of the same workspace other than the
-swept wallet; anything else, including the wallet's own address, → `sweep_destination_not_allowed`.
+`sweepHash(sweep)` equals `envelope.sweepHash` (`envelope_mismatch`); in step 5 the pause check
+does not apply, so a paused workspace can still be emptied (resuming it first would let its
+agents sign again); steps 6 and 7 are replaced by the destination rule and section 6 at the
+workspace's `adminThreshold` with the longest admin lifetime; step 8 uses `sweep.maxFeeWei`. A
+`treasury` wallet is one created with kind `treasury` rather than `agent` (`WalletKind`). The
+destination rule, from the signer's own records only: `to` is on the wallet's current recipient
+allowlist (mode `allowlist`), or `to` is the address of a `treasury` wallet of the same workspace
+other than the swept wallet; anything else, including the wallet's own address, →
+`sweep_destination_not_allowed`.
 A policy whose recipients are `any` allows no destination by itself. When the wallet has a policy,
 `sweep.chainId` must be in its `chains` and `sweep.maxFeeWei` must not exceed `fees.maxPerTxWei`
 (`policy_denied` with `chain_not_allowed` or `over_fee_cap`); its caps do not apply. Inside the
@@ -515,8 +559,13 @@ sent to the token contract. The sweep is recorded as a spend of the wallet.
 
 The other envelope kinds (`set-policy`, `add-approver`, `remove-approver`,
 `set-admin-threshold`, `resume-workspace`) follow the same shape, including the fence, verified
-with the workspace's `adminThreshold` instead of the policy's threshold. Pausing a workspace and
-revoking an approval need only the request signature, because they only remove authority.
+with the workspace's `adminThreshold` instead of the policy's threshold and with the longest
+admin lifetime. A `set-policy` is also refused as `policy_changed` when its `previousPolicyHash`
+is not the hash of the wallet's current policy; as `policy_invalid` when the policy is not the
+next revision, when its `approvals.threshold` exceeds the workspace's `adminThreshold`, or when
+its `approvals.ttlSeconds` exceeds the longest intent lifetime; and as `threshold_unreachable`
+when its threshold exceeds the number of distinct approvers. Pausing a workspace and revoking an
+approval need only the request signature, because they only remove authority.
 `add-approver` has one more check: the signer applies it only when the confirmation of that
 exact envelope (same approval id, same envelope digest) records that the person being added
 proved on the confirmation page that they hold the new key (section 10, "The possession step").
@@ -528,14 +577,20 @@ the first transaction's hash and every attempt, for an intent, a sweep or a mand
 attempt's hash).
 
 There is no HTTP route that adds an approver without assertions from existing approvers. When
-every passkey of a workspace is lost, the operator enrolls a new one with the signer's admin
-command line on the signer host, which records `enroll-approver-by-operator` in the decision log.
-Host access is the root of trust. That command has no possession step: the operator enrolls the
-exact key typed on the host.
+every passkey of a workspace is lost, the operator enrolls a new one on the signer host with the
+signer's admin command line:
+
+```sh
+node src/admin.ts enroll-approver --workspace <ws_id> --user <usr_id> \
+  --credential-id=<base64url> --public-key=<base64url COSE key>
+```
+
+It records `enroll-approver-by-operator` in the decision log. Host access is the root of trust.
+That command has no possession step: the operator enrolls the exact key typed on the host.
 
 ### Mandates
 
-Five routes, all in the control scope (section 10), serve mandates
+These routes, all in the control scope (section 10), serve mandates
 ([`signer/api.ts`](../packages/protocol/src/signer/api.ts)):
 
 | Route                                 | Body                                  | Answer                         |
@@ -548,7 +603,7 @@ Five routes, all in the control scope (section 10), serve mandates
 
 **Granting.** A grant carries a `grant-mandate` envelope and follows the shape of the other
 envelope kinds above: the same idempotency, the same restore fence, section 6 at the workspace's
-`adminThreshold` with the signer's longest admin lifetime, and the nonce recorded in the same
+`adminThreshold` with the longest admin lifetime, and the nonce recorded in the same
 database transaction that stores the mandate. In place of steps 4 and 6:
 
 - The path's id, `envelope.mandateId` and `mandate.id` are equal; the envelope's workspace,
@@ -607,7 +662,8 @@ recorded in the decision log:
 - When the restore fence is set, every live mandate (`operator`). The uses counted after the
   backup are forgotten, so the restored counts would let more leave the wallet than people
   approved. Grant them again.
-- When the operator revokes one on the signer host with the admin command line (`operator`).
+- When the operator revokes one, or every live one of a workspace, on the signer host with
+  `node src/admin.ts revoke-mandate` (`operator`).
 
 **State.** `MandateState` is the mandate and its hash, the grant's approval id and time, who
 granted it, the revocation time and reason, the number of uses, and per asset what moved under it
@@ -621,7 +677,7 @@ A signed transaction may never be mined: the base fee rose above its fee cap, it
 or a node dropped it. The signer then signs further **attempts** of the same approval, all at the
 account nonce of the first signature, so at most one of them can be mined. Attempt 0 is the first
 signature. Attempts 1 and up are a **reprice** (the same transaction with both fees higher) or a
-**cancel** (a transfer of nothing from the wallet to itself). Two routes, both in the control
+**cancel** (a transfer of nothing from the wallet to itself). These routes, all in the control
 scope, serve them ([`signer/api.ts`](../packages/protocol/src/signer/api.ts)); in both,
 `:approvalId` is the approval that was signed:
 
@@ -699,7 +755,7 @@ passkeys at the wallet policy's threshold. It follows the shape of `POST /v1/sig
 6. The wallet has a policy (`policy_missing`) and `maxFeeWei ≤ fees.maxPerTxWei`
    (`fee_cap_exceeded`).
 7. Section 6 passes at the policy's `approvals.threshold`, with a lifetime no longer than its
-   `approvals.ttlSeconds` and the signer's longest intent lifetime. A paused workspace may cancel:
+   `approvals.ttlSeconds` and the longest intent lifetime. A paused workspace may cancel:
    a cancel moves nothing and carries its own passkeys.
 8. In one database transaction with nothing awaited inside it: steps 3 to 6 again; the
    assertions are at least the current threshold (`insufficient_approvals`) from current
@@ -719,7 +775,7 @@ workspace is in the decision log, with action `reprice` under the signed approva
 
 ### Venue orders
 
-A venue intent (section 3) is never a transaction. Two routes, both in the control scope, serve
+A venue intent (section 3) is never a transaction. These routes, both in the control scope, serve
 it ([`signer/api.ts`](../packages/protocol/src/signer/api.ts),
 [`apps/signer/src/venue-signing.ts`](../apps/signer/src/venue-signing.ts)):
 
@@ -733,23 +789,27 @@ it ([`signer/api.ts`](../packages/protocol/src/signer/api.ts),
 of `order`, `cancelByCloid` or `withdraw3` and its keys in the order the venue hashes them.
 There is no caller-chosen parameter, and no route takes an action, typed data, a message or a
 hash. `/v1/sign`, signing under a mandate and repricing refuse a venue intent as
-`invalid_request`.
+`invalid_request`. The signer never contacts the venue. The control plane posts `request` to the
+venue its own configuration names for that network (`VENUES_FILE`, at most one venue per
+network).
 
 **Signing** follows steps 1 to 7 of the signing rule above, with `envelope.chainId` a venue
-network, `hyperliquid:testnet` or `hyperliquid:mainnet`; the signer signs for whichever network
-the wallet's approved policy names, and an intent for any other network fails `evaluateIntent`
-(rule 3 of the venue rules above: `policy_denied` with `venue_not_allowed`). Step 8 does not
-apply. In one database transaction with nothing awaited inside it: the fence, the lifecycle,
-the pause, the policy hash and the approvers are checked again; the envelope nonce is unused
+network, `hyperliquid:testnet` or `hyperliquid:mainnet`. Both networks are supported alike: the
+signer signs for whichever network the wallet's approved policy names, and an intent for any
+other network fails `evaluateIntent` (rule 3 of the venue rules in section 7: `policy_denied`
+with `venue_not_allowed`). Step 8 does not apply. In one database transaction with nothing
+awaited inside it: the fence, the lifecycle, the pause, the policy hash and the approvers are
+checked again; the envelope nonce is unused
 (`nonce_reused`); `evaluateIntent` against the 24-hour ledger passes (`policy_denied`); the
 action nonce is the signer's clock in milliseconds, or one more than the last nonce the wallet
 used on that network if that is larger, and is recorded as the wallet's last. For an order, the
 signer builds the `order` action from the intent with client order id
 `cloidFor(approvalId)` and `grouping: "na"`, sets `expiresAfter` to its clock in milliseconds
-plus the policy's `submitWindowSeconds`, and signs the action's hash as an L1 action. For a
-withdrawal, the destination is the wallet's own address (the intent has no field for it), its
-`time` is the nonce, and `expiresAfter` is null. The signature must recover to the wallet's
-address over the payload the signer built, with a low `s` (`vault_error` otherwise, and nothing
+plus the policy's `submitWindowSeconds`, and signs it as a Hyperliquid L1 action (encoding
+below). For a withdrawal, the destination is the wallet's own address (the intent has no field
+for it), its `time` is the nonce, `expiresAfter` is null, and it is signed as a Hyperliquid
+user-signed action. The signature must recover to the wallet's address over the payload the
+signer built, with a low `s` (`vault_error` otherwise, and nothing
 is recorded). The signer records the approval as `signed`, the request, and for an order that
 is not reduce-only its notional (`ceil(size × limitPx × 10^6)` micro-USD) as a `usd6` spend on
 the venue network. A repeat returns the stored answer, also while the workspace is paused.
@@ -757,12 +817,30 @@ the venue network. A repeat returns the stored answer, also while the workspace 
 attempts, and the order's `cloid` (null for a withdrawal). `GET /v1/wallets/:id` reports venue
 spends in `venueSpent`; `spent` stays EVM only.
 
-**Cancelling an order** needs only the request signature (owner decision D4): approving an order
-includes the right to cancel that one order. It is allowed while the workspace is paused or
-being deleted and while the wallet is retiring. The path's approval id must be an order this
-signer signed in the named workspace (`not_found`; a withdrawal is `conflict`; after a restore,
-an order signed after the backup is unknown, owner decision D9). If the newest cancel of that
-order has not expired by the signer's clock, it is returned again. Otherwise the signer signs a
+**Encoding at the venue** ([`apps/signer/src/venues/hyperliquid.ts`](../apps/signer/src/venues/hyperliquid.ts)),
+following Hyperliquid's own Python SDK:
+
+- `cloidFor(approvalId)` is the first 16 bytes of
+  `SHA-256("askgina.os/v1/hyperliquid-cloid\n" || approvalId)`, so the order can be found at the
+  venue by its approval id after a crash.
+- An L1 action (`order`, `cancelByCloid`) is signed over its "connection id",
+  `keccak256(msgpack(action) || uint64be(nonce) || 0x00 || 0x00 || uint64be(expiresAfter))`.
+  The first `0x00` says there is no vault address. The signature is over EIP-712 typed data
+  `Agent { source, connectionId }`, with `source` `"a"` on mainnet and `"b"` on testnet, in the
+  domain `{ name: "Exchange", version: "1", chainId: 1337, verifyingContract: 0x0…0 }`.
+- A `withdraw3` is signed as EIP-712 typed data
+  `HyperliquidTransaction:Withdraw { hyperliquidChain, destination, amount, time }` in the domain
+  `{ name: "HyperliquidSignTransaction", version: "1", chainId, verifyingContract: 0x0…0 }`.
+  `hyperliquidChain` is `"Testnet"` or `"Mainnet"`; `chainId` is 421614 on testnet and 42161 on
+  mainnet, which the action carries as `signatureChainId` (`0x66eee` or `0xa4b1`).
+
+**Cancelling an order** needs only the request signature: approving an order includes the right
+to cancel that one order, and the confirmation page says so. It is allowed while the workspace is
+paused or being deleted and while the wallet is retiring. The path's approval id must be an order
+this signer signed in the named workspace (`not_found`; a withdrawal is `conflict`). After a
+restore, an order signed after the backup is unknown to the signer, so it cannot be cancelled
+through the signer. If the newest cancel of that order has not expired by the signer's clock, it
+is returned again. Otherwise the signer signs a
 new `cancelByCloid` of the order's asset and cloid with a new nonce and an `expiresAfter` of its
 clock plus the order's own submit window. A destroyed wallet's key cancels nothing
 (`wallet_retired`).
@@ -770,13 +848,24 @@ clock plus the order's own submit window. A destroyed wallet's key cancels nothi
 Every signature and every refusal for a known workspace is in the decision log, with action
 `sign-venue` or `cancel-venue-order`; returning a stored answer records nothing.
 
+**Evidence.** Proven in CI: the encoding reproduces the Hyperliquid Python SDK's own test vectors
+(job `test`, [`apps/signer/test/hyperliquid-encoding.test.ts`](../apps/signer/test/hyperliquid-encoding.test.ts));
+the signer's venue rules are covered by
+[`apps/signer/test/venue-signing.test.ts`](../apps/signer/test/venue-signing.test.ts) (job
+`test`); and the release gates (the end-to-end tests in `e2e/test/` that `./e2e/run.sh` runs
+against the whole Compose stack) place, cancel and withdraw on two fake venues, one testnet and one
+mainnet, each of which checks every signature, and show that neither venue accepts the other
+network's signature (jobs `stack (amd64)` and `stack (arm64)`,
+[`e2e/test/venue.spec.ts`](../e2e/test/venue.spec.ts)). Unproven: no order has been sent to the
+real Hyperliquid testnet, and no real mainnet order with real funds has been placed.
+
 ### Retiring a wallet and deleting a workspace
 
 Destroying a key is treated like signing: people approve it with passkeys at the workspace's
 `adminThreshold`, on the confirmation page, over an envelope that names the exact wallets and the
 destroy time, and the signer enforces a delay the control plane cannot shorten. The signer cannot
 see balances, so the delay and a free cancel are the protection against destroying a key that
-still holds assets. Six routes, all in the control scope (section 10), serve it
+still holds assets. These routes, all in the control scope (section 10), serve it
 ([`signer/api.ts`](../packages/protocol/src/signer/api.ts),
 [`apps/signer/src/lifecycle.ts`](../apps/signer/src/lifecycle.ts)).
 
@@ -799,7 +888,7 @@ while `retiring` or `destroyed`.
 **Retiring and deleting** carry a `retire-wallet` or `delete-workspace` envelope and follow the
 shape of the other non-signing kinds above: the same idempotency (a repeat of the same envelope
 returns the state), the same restore fence (`envelope_fenced`), section 6 at the workspace's
-`adminThreshold` with the signer's longest admin lifetime, and the nonce recorded in the same
+`adminThreshold` with the longest admin lifetime, and the nonce recorded in the same
 database transaction that applies the change. In place of steps 4 to 6:
 
 - `retire-wallet`: the path's wallet and `envelope.wallet` are the same wallet of the envelope's
@@ -821,8 +910,9 @@ of the wallet, or of the workspace, with reason `requested`.
 (`workspace_deleting`, `workspace_deleted`): signing, sweeping, signing under or granting a
 mandate, setting a policy, adding or removing an approver, changing the threshold, resuming,
 creating a wallet, and opening a confirmation of any kind but one: while a deletion waits, a
-`cancel-transaction` confirmation can still be opened and approved, so that a transaction that
-holds the deletion back (owner decision D7) can be cleared before its key is destroyed. Revoking
+`cancel-transaction` confirmation can still be opened and approved. The control plane does not
+finalize a deletion while a signed transaction of it may still be mined, so this is how such a
+transaction is cleared before its key is destroyed. Revoking
 an approval and pausing stay allowed while `deleting`: they only remove authority. A `deleted`
 workspace answers nothing but reading its state and its decision log, a repeat of its finalize,
 and a repeat of its own deletion envelope; creating a workspace with its id is `conflict`.
@@ -879,7 +969,7 @@ deletion.
 
 ## 9. What may vary after approval
 
-Only these four fields of the signed transaction are chosen after approval
+Only these fields of the signed transaction are chosen after approval
 (`TransactionParams`):
 
 | Field                  | Type             | Bound                                       |
@@ -901,7 +991,7 @@ its own `maxFeeWei`.
 
 A use of a mandate has no envelope of its own: the agent chooses the intent, and the intent is
 bound by the mandate the people approved (section 7, "Mandates") and by the wallet's policy. Its
-`maxFeeWei` is at most the mandate's `maxFeePerActionWei`, and the four fields above keep their
+`maxFeeWei` is at most the mandate's `maxFeePerActionWei`, and the fields above keep their
 bounds.
 
 ## 10. Request signatures between control plane and signer
@@ -926,8 +1016,17 @@ not do:
 
 - It does not authorize anything that adds authority or destroys a key. Signing, setting a
   policy, adding an approver, changing the threshold, resuming, retiring a wallet and deleting a
-  workspace all need passkey assertions that the signer verifies itself. Cancelling or
-  finalizing a retirement or a deletion needs only this signature (section 8).
+  workspace all need passkey assertions that the signer verifies itself. What needs only this
+  signature removes authority, keeps a key, or carries out what people already approved
+  (section 8): pausing a workspace, revoking an approval or a mandate, signing under a mandate,
+  repricing, cancelling a venue order, and cancelling or finalizing a retirement or a deletion.
+- One exception adds authority on this signature alone: creating a workspace with its first
+  approvers and admin threshold (`POST /v1/workspaces`). The signer trusts those first approvers
+  as given (trust on first use) and cannot check who they are; from then on the set changes only
+  with passkeys of existing approvers. Repeating the identical request changes nothing, and a
+  different request for an existing workspace is `conflict`. Creating a wallet
+  (`POST /v1/wallets`) also needs only this signature; the new wallet has no policy and signs
+  nothing until people approve one.
 - It does not stop a replay within the 60-second window. Single use comes from the envelope's
   nonce and the approval id.
 
@@ -937,14 +1036,14 @@ Each signer route belongs to one scope (`scope` in `signerRoutes`,
 [`signer/api.ts`](../packages/protocol/src/signer/api.ts)), and a request is authentic only
 under its own scope's secret:
 
-| Scope     | Secret                                      | Held by               | Routes                                                                                                                                                        |
-| --------- | ------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `control` | `signer-request-secret`                     | the server            | every route except the four below and `GET /healthz`                                                                                                          |
-| `confirm` | `confirm-request-secret`, at least 32 bytes | the `approve` service | `GET /v1/confirm/:approvalId`, `POST /v1/confirm/:approvalId/assertions`, `GET /v1/confirm/:approvalId/possession`, `POST /v1/confirm/:approvalId/possession` |
-| unsigned  | none                                        | anyone on the network | `GET /healthz`                                                                                                                                                |
+| Scope     | Secret                                                                                                                                    | Held by               | Routes                                                                                                                                                        |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `control` | `signer-request-secret` (the signer reads it from `SIGNER_HMAC_SECRET_FILE`)                                                              | the control plane     | every route except the `confirm` routes and `GET /healthz`                                                                                                    |
+| `confirm` | `confirm-request-secret` (the signer reads it from `SIGNER_CONFIRM_SECRET_FILE`, the `approve` service from `APPROVE_SIGNER_SECRET_FILE`) | the `approve` service | `GET /v1/confirm/:approvalId`, `POST /v1/confirm/:approvalId/assertions`, `GET /v1/confirm/:approvalId/possession`, `POST /v1/confirm/:approvalId/possession` |
+| unsigned  | none                                                                                                                                      | anyone on the network | `GET /healthz`                                                                                                                                                |
 
-A request signed with the other scope's secret is `unauthenticated` (401). The two secrets must
-differ; the signer refuses to start when they do not.
+A request signed with the other scope's secret is `unauthenticated` (401). Both secrets are at
+least 32 bytes and must differ; the signer refuses to start otherwise.
 
 ### Mutual TLS, when the signer runs on its own host
 
@@ -962,7 +1061,10 @@ TLS files the signer behaves exactly as the rest of this section describes. See
 
 The confirmation page ([`apps/approve`](../apps/approve)) shows one approval as the signer holds
 it and collects passkey assertions over its envelope. For an approver change it also takes the
-possession step of the person being added. Six signer routes serve it:
+possession step of the person being added. The `approve` service serves the page at
+`/a/:approvalId` and relays the page's calls (its own `/api/approvals/:approvalId…` routes) to the
+signer's `confirm` routes, signed with the `confirm` scope's secret
+([`apps/approve/src/app.ts`](../apps/approve/src/app.ts)). These signer routes serve it:
 
 | Route                                         | Scope   | Body and answer                                                                                                                |
 | --------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------ |
@@ -1061,8 +1163,14 @@ fingerprint comparison catches that ([`threat-model.md`](./threat-model.md#limit
 
 ## 11. Test vectors
 
-These come from [`packages/protocol/test/digests.test.ts`](../packages/protocol/test/digests.test.ts)
-and its fixtures. Each was reproduced independently with OpenSSL when this document was written:
+Each value below is pinned by a test that CI runs on every push (job `test`):
+[`packages/protocol/test/digests.test.ts`](../packages/protocol/test/digests.test.ts) and its
+fixtures, and, for the `retire-wallet` and `delete-workspace` envelopes,
+[`packages/protocol/test/lifecycle-envelopes.test.ts`](../packages/protocol/test/lifecycle-envelopes.test.ts).
+To check a change locally, run one of them from the repository root, for example
+`node_modules/.bin/vitest run packages/protocol/test/digests.test.ts`. Any SHA-256 tool
+reproduces them from the canonical JSON shown (pretty-printed here; hash its compact form, with
+no whitespace), for example OpenSSL:
 
 ```sh
 printf '%s\n%s' "askgina.os/v1/intent" '<intent JSON>' | openssl dgst -sha256
@@ -1437,40 +1545,37 @@ meaning of something that is hashed (an intent, a policy, an envelope, an audit 
 version, never an edit in place (the rule stated on `PROTOCOL_VERSION` in
 [`primitives.ts`](../packages/protocol/src/primitives.ts)). Existing digests then keep their
 meaning. A version 1 verifier never accepts a structure of another version, because every schema
-requires `v` to be exactly `1`. Changes that hash nothing, such as a new signer error code, are
-not version changes. Neither is a new kind of envelope with its own structure under its own tag,
-as `sweep-wallet` was: every existing digest and test vector keeps its value, and a verifier that
-does not know the kind refuses it as an invalid envelope. Nor is a new structure under a new
-tag, as the possession challenge (`askgina.os/v1/possession`) was: it changes no existing
-digest, and its tag keeps a possession challenge from ever standing in for an envelope's
-challenge, or an envelope's for it. Mandates were added the same way: the `Mandate` structure
-under `askgina.os/v1/mandate`, the `grant-mandate` envelope kind, and the use digest under
-`askgina.os/v1/mandate-use`. No existing digest or test vector changed, and a signer that does
-not know `grant-mandate` refuses it as an invalid envelope. The `cancel-transaction` envelope was
-added the same way, within version 1 (owner decision of 2026-11-15): it is a new kind under the
-existing `askgina.os/v1/authorize` tag, no existing structure changed shape or meaning, every
-existing digest and test vector keeps its value, and a signer that does not know the kind refuses
-it as an invalid envelope. Reprices hash nothing new: they are bound to the digest the signer
-stored at the first signature. The `retire-wallet` and `delete-workspace` envelopes were added
-the same way, within version 1 (owner decision D1 of
-[`specs/workspace-lifecycle.md`](../specs/workspace-lifecycle.md), 2026-11-15): new kinds under
-the existing `askgina.os/v1/authorize` tag, no existing digest or test vector changed, and a
-signer that does not know them refuses them as invalid envelopes. The lifecycle fields of
-`WorkspaceState` and `WalletState` and the new error codes hash nothing.
+requires `v` to be exactly `1`.
 
-Venue intents were added within version 1 by a different kind of additive change (owner
-decision D5 of [`specs/non-evm-operations.md`](../specs/non-evm-operations.md), 2026-11-15): an
-existing hashed union MAY gain a new member, and an existing structure MAY gain a new optional
-member, provided that (1) every existing value keeps its digest, because the new member is
-absent from it and no existing value can parse as the new one; (2) the new form has exactly one
-encoding, so an empty or defaulted new member is invalid rather than a second form of an old
-value; and (3) a verifier that does not know the change refuses every value that uses it as
-invalid. `Intent` gained the venue intent under the same `askgina.os/v1/intent` tag (its
-`VenueNetwork` `chainId` never overlaps a `ChainId`, and an older verifier refuses it as an
-invalid intent); `WalletPolicy` gained the optional `venues` member (absent means no venue rules,
-an empty `venues` is invalid, and an older verifier refuses a policy that has it as an unknown
-member); `ApproveIntentEnvelope.chainId` widened to `Network`. No existing digest or test vector
-changed. The signer's `/v1/sign`, mandate-use and reprice requests still take only EVM intents
-and refuse a venue intent as `invalid_request`; venue intents are signed by the new route
-`POST /v1/venue/sign` (section 8, "Venue orders"), and `WalletState` and `ApprovalState` gained
-the members `venueSpent` and `cloid`.
+The following changes are not version changes. In each, no existing digest or test vector
+changes, and a verifier that does not know a new hashed form refuses it as invalid:
+
+- A change that hashes nothing, such as a new signer error code, a new route, or a new member of
+  a signer answer (`WorkspaceState`, `WalletState`, `ApprovalState`).
+- A new kind of envelope under the existing `askgina.os/v1/authorize` tag, with any structure it
+  binds under its own new tag. A verifier that does not know the kind refuses it as an invalid
+  envelope.
+- A new structure under a new tag. The tag keeps it from ever standing in for an existing
+  structure's digest, or the other way round.
+- A new member of an existing hashed union, or a new optional member of an existing hashed
+  structure, provided that (1) every existing value keeps its digest, because the new member is
+  absent from it and no existing value can parse as the new one; (2) the new form has exactly one
+  encoding, so an empty or defaulted new member is invalid rather than a second form of an old
+  value; and (3) a verifier that does not know the change refuses every value that uses it.
+
+These were added within version 1 under those rules:
+
+- New envelope kinds: `sweep-wallet` (with the `Sweep` under `askgina.os/v1/sweep`),
+  `grant-mandate` (with the `Mandate` under `askgina.os/v1/mandate`), `cancel-transaction`,
+  `retire-wallet` and `delete-workspace`.
+- New structures under new tags: the possession challenge (`askgina.os/v1/possession`) and the
+  mandate use digest (`askgina.os/v1/mandate-use`).
+- Venue intents. `Intent` gained the venue intent under the same `askgina.os/v1/intent` tag: its
+  `VenueNetwork` `chainId` never overlaps a `ChainId`, and an older verifier refuses it as an
+  invalid intent. `WalletPolicy` gained the optional `venues` member: absent means no venue rules,
+  an empty `venues` is invalid, and an older verifier refuses a policy that has it as an unknown
+  member. `ApproveIntentEnvelope.chainId` widened to `Network`. The signer's `/v1/sign`,
+  mandate-use and reprice requests still take only EVM intents; venue intents are signed by
+  `POST /v1/venue/sign` (section 8, "Venue orders").
+- Reprices hash nothing new: they are bound to the digest the signer stored at the first
+  signature.

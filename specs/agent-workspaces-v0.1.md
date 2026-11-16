@@ -2,7 +2,7 @@
 
 - Branch: main
 - Status: In Progress
-- Owner(s): Eric Juta (delegated end to end to the coding agent on 2026-11-14)
+- Owner(s): the repository owner (delegated end to end to the coding agent on 2026-11-14)
 - Created: 2026-11-14
 - Last Updated: 2026-11-14
 - Links: [Wayfinder map](https://github.com/askgina/os/issues/1) | [Source idea](../docs/references/chatgpt-combine-encryption-approval-ux.md) | [Its verification](../docs/references/chatgpt-combine-encryption-approval-ux-verification.md) | [Research](./research/)
@@ -64,7 +64,7 @@ Success means:
 - [x] (2026-11-14 14:40Z) All five spikes finished; `./verify.sh` of world, OWS, passkey and eve re-run by the maintainer, all exit 0.
 - [x] (2026-11-14 15:10Z) Monorepo scaffold; `packages/protocol` (intents, policies, envelopes, evaluation, signer API, client, request signature, authorization verifier, soft authenticator); `packages/api`; `packages/keys`; `packages/world`; `packages/testkit`; server skeleton with schema and seams.
 - [x] (2026-11-14 15:05Z) Milestone 1: tests and hardening for `protocol` (171 tests), `api` (87), `keys` (49), `world` (ciphertext-at-rest proof as a test: 0 of 8 markers on the encrypting World, 8 of 8 on the stock one). Re-run by the maintainer.
-- [x] (2026-11-14 15:12Z) Milestone 2: signer service (46 tests, including the real OWS vault). Re-run by the maintainer after his own hardening changes.
+- [x] (2026-11-14 15:12Z) Milestone 2: signer service (46 tests, including the real OWS vault). Re-run by the maintainer after their own hardening changes.
 - [x] (2026-11-14 15:15Z) Milestones 3 and 4: the control plane, both halves (74 tests against real Postgres, a local chain and the real signer in process). Re-run by the maintainer. The process entry point has not been started.
 - [x] (2026-11-14 15:18Z) Local builds and whole-suite runs stopped: they need the owner's word (see Surprises). From here, build-level proof comes from CI.
 - [x] (2026-11-14 15:50Z) Four read-only reviews (signer and protocol, identity and directory, execution and MCP, integration and docs) found no way to forge an approval or move funds, and 32 defects. All fixed. The largest: recovery codes are gone, because a code relayed by the control plane let it choose the new key; when no approver is left, the operator of the signer's host enrolls one from its command line.
@@ -106,8 +106,8 @@ Success means:
   Evidence: CI run 43615606292. Consequence: an empty optional setting means unset; a rejected setting is named in the boot error (path and kind, never the value); `e2e/run.sh` prints the services' logs when the stack does not come up.
 - Observation: test servers on fixed ports inside Linux's ephemeral range (32768 and up) lose them now and then to another test's port-0 listener.
   Evidence: CI run 43615606292, `EADDRINUSE 127.0.0.1:55756`. Consequence: fixed test ports are below the range.
-- Observation: the owner's standing rule reserves local builds, whole test suites and coverage for CI unless he names the command. The maintainer read "ask for forgiveness not permission" as covering them, ran them, and told the parallel agents they could. That reading was wrong, and it was corrected when the rule was enforced at 15:18Z.
-  Evidence: this session. Consequence: everything proven before that time was proven by local runs that should have waited for his word; everything after it is proven by CI or is marked unproven.
+- Observation: the owner's standing rule reserves local builds, whole test suites and coverage for CI unless the owner names the command. The maintainer read "ask for forgiveness not permission" as covering them, ran them, and told the parallel agents they could. That reading was wrong, and it was corrected when the rule was enforced at 15:18Z.
+  Evidence: this session. Consequence: everything proven before that time was proven by local runs that should have waited for the owner's word; everything after it is proven by CI or is marked unproven.
 
 ## Decision Log
 
