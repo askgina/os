@@ -126,7 +126,7 @@ and sent with no person asked, and has no `approvalUrl`), or
 `"person"` when someone must approve it at `approvalUrl`. `propose_transfer` takes an optional
 `mandateId` to use exactly that mandate, or be refused with the reason. `get_intent` shows every
 attempt of a sent payment and why it is not mined yet; no tool lets an agent speed one up or
-cancel it. `propose_order` proposes a limit order on Hyperliquid's testnet (see below); a person
+cancel it. `propose_order` proposes a limit order on Hyperliquid (see below); a person
 always approves it, and `cancel_intent` also cancels the agent's own order at the venue.
 [`examples/scripted-agent`](examples/scripted-agent)
 is the smallest complete agent. [`examples/eve-agent`](examples/eve-agent) is a real agent
@@ -178,23 +178,28 @@ if the chain mines the payment first, the payment stands. Either way the payment
 the wallet's daily limit. The settings and what they cannot do are in
 [`deploy/README.md`](deploy/README.md#stuck-transactions).
 
-## Trade on Hyperliquid's testnet
+## Trade on Hyperliquid
 
-With `VENUES_FILE` set, an agent can propose a limit order on a Hyperliquid perpetual market,
-and a withdrawal of USDC from the wallet's Hyperliquid account to the wallet's own address. A
-person approves each on the confirmation page, which shows the market, side, size, limit price,
-notional, time in force, reduce-only and the submit window; no mandate covers an order. The
-signer encodes and signs the order itself, once per approval, inside the wallet's markets and
-notional caps, and the server posts it to the venue and follows it. The agent, or any owner or
-approver, can cancel that order with no passkey, also while the workspace is paused.
+Hyperliquid's testnet and mainnet are both supported. A venue is on only when the operator lists
+it in `VENUES_FILE` and people approve, with passkeys, wallet rules that name that network; there
+is no other switch. With that done, an agent can propose a limit order on a Hyperliquid
+perpetual market, and a withdrawal of USDC from the wallet's Hyperliquid account to the wallet's
+own address. A person approves each on the confirmation page, which shows the market, side,
+size, limit price, notional, time in force, reduce-only and the submit window; no mandate covers
+an order. The signer encodes and signs the order itself, once per approval, inside the wallet's
+markets and notional caps, and the server posts it to the venue and follows it. The agent, or
+any owner or approver, can cancel that order with no passkey, also while the workspace is
+paused.
 
-Limits: testnet only. The signer signs nothing for mainnet, and the server does not start with a
-mainnet venue configured; turning mainnet on is the owner's open decision. The notional caps limit new
-orders, not losses: what can be lost is the account's value at the venue. The signer never sees
-the venue, so fills, positions and the account's value are the venue's report. The encoder's
-signatures match the venue SDK's own vectors; everything else is unit-tested, with the
-real-stack gate pending, and nothing has run against the real testnet
-([`deploy/README.md`](deploy/README.md#venue-orders-hyperliquid-testnet)).
+Limits: on mainnet, orders and withdrawals move real funds. What bounds them is the same on both
+networks: a passkey approval of every order on the signer's confirmation page, the markets in the
+wallet's rules, the per-order and per-day notional caps, and the submit window. The notional caps
+limit new orders, not losses: what can be lost is the account's value at the venue. The signer
+never sees the venue, so fills, positions and the account's value are the venue's report. The
+encoder's signatures match the venue SDK's own vectors; the rest is covered by unit tests and by
+release gates against a fake venue, also in mainnet mode. No real mainnet order with real funds
+has ever been placed with this software, and nothing has run against the real testnet either
+([`deploy/README.md`](deploy/README.md#venue-orders-hyperliquid)).
 
 ## Retire a wallet or delete a workspace
 
@@ -273,9 +278,10 @@ chain only; retiring a wallet and deleting a workspace, with keys destroyed afte
 on the full stack; exporting, copying and importing a workspace and erasing a person, tested on
 the full stack; key-encryption keys in a keyring file or in OpenBao Transit, the OpenBao provider
 with unit tests only; limit orders on Hyperliquid perpetual markets and withdrawals to the
-wallet's own address, on Hyperliquid's testnet only, each approved with passkeys, the encoder
-proven against the venue SDK's signed vectors, the rest unit-tested with the real-stack gate
-pending, and never run against the real testnet.
+wallet's own address, on Hyperliquid's testnet and mainnet, each approved with passkeys, the
+encoder proven against the venue SDK's signed vectors, the rest covered by unit tests and by
+release gates against a fake venue, and never run against the real testnet or with real funds on
+mainnet.
 
 Beyond one machine ([`deploy/README.md`](deploy/README.md#running-the-signer-on-its-own-host)):
 
@@ -286,8 +292,8 @@ Beyond one machine ([`deploy/README.md`](deploy/README.md#running-the-signer-on-
 - Kubernetes manifests (`deploy/k8s/`): written; their CI job has not run.
 - HA Postgres: not built.
 
-Not in this release: mandates for contract calls or orders, other chains and venues, Hyperliquid
-mainnet, a bundled agent runtime, cloud KMS key management. The
+Not in this release: mandates for contract calls or orders, other chains and venues, a bundled
+agent runtime, cloud KMS key management. The
 [map of open questions](https://github.com/askgina/os/issues/1) lists what is planned and why.
 
 ## Documentation

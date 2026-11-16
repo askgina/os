@@ -31,8 +31,10 @@
  * transfer that one of the agent's live mandates covers is sent with no request, checked against
  * the wallet's limits too and counted for good; anything else opens a request as usual.
  *
- * An agent can also propose an order on Hyperliquid testnet (`kind: "order"`), checked against
- * the wallet's venue rules. No mandate ever covers one. Once approved, an immediate-or-cancel
+ * An agent can also propose an order on Hyperliquid (`kind: "order"`), on the network the
+ * wallet's venue rules name, checked against them. The fixture has both Hyperliquid networks set
+ * up (`VENUE_NETWORKS`), and its stand-in venue answers for either; nothing reaches the real
+ * venue. No mandate ever covers an order. Once approved, an immediate-or-cancel
  * order fills at its limit price at once; any other rests on the stand-in venue's book until
  * `cancelOrder` cancels it, with no passkey.
  *
@@ -107,7 +109,9 @@ import {
   type SignerDecision,
   type Sweep,
   sweepHash,
+  VENUE_NETWORK_NAMES,
   type VenueIntent,
+  type VenueNetwork,
   type WalletPolicy,
 } from "@askgina/os-protocol";
 import { z } from "zod";
@@ -898,6 +902,7 @@ function workspaceDetail(workspace: Workspace, userId: string): WorkspaceDetail 
     agents: workspace.agents,
     wallets: workspace.wallets,
     chains: CHAINS,
+    venueNetworks: VENUE_NETWORKS,
   };
 }
 
@@ -1180,6 +1185,12 @@ function propose(agentToken: string, body: Record<string, string>): IntentDetail
   return stripIntent(detail);
 }
 
+/**
+ * The venue networks the fixture has set up, as the server's `VENUES_FILE` would list them,
+ * testnet before mainnet. Both, so the policy editor offers the choice between them.
+ */
+const VENUE_NETWORKS: VenueNetwork[] = ["hyperliquid:testnet", "hyperliquid:mainnet"];
+
 /** What the stand-in venue reports an account holds, in USD: the bound on what can be lost. */
 const VENUE_ACCOUNT_VALUE_USD = "250";
 
@@ -1187,7 +1198,7 @@ const VENUE_ACCOUNT_VALUE_USD = "250";
 let nextVenueOrderId = 9_000_001;
 
 /**
- * An order at Hyperliquid testnet, as `propose_order` opens it on the real server: the coin is
+ * An order at Hyperliquid, as `propose_order` opens it on the real server: the coin is
  * named through the wallet's venue rules, which bind it to the index that is signed; the caps
  * are checked first; and people approve every order (no mandate covers one).
  */
@@ -1368,7 +1379,7 @@ function toE8(text: string): bigint {
 }
 
 /**
- * The wallet's account at Hyperliquid testnet for the wallet page, as the server gives it when a
+ * The wallet's account at Hyperliquid for the wallet page, as the server gives it when a
  * policy has venue rules or the wallet has ordered there: the signer's 24-hour count against the
  * daily cap, and what the stand-in venue reports: the account value the order card names, one
  * position per coin from the filled orders (entered at the latest fill's price, no unrealised
@@ -2503,12 +2514,13 @@ const handlers: Record<RouteName, Handler> = {
         `Approvals needed per payment can be at most ${workspace.adminThreshold}, the number needed for admin changes.`,
       );
     }
-    // Mirrors the server: mainnet venue support waits on its owner's decision.
-    if (draft.venues?.hyperliquid?.network === "hyperliquid:mainnet") {
+    // Mirrors the server: venue rules may only name a network this server has set up.
+    const venueNetwork = draft.venues?.hyperliquid?.network;
+    if (venueNetwork !== undefined && !VENUE_NETWORKS.includes(venueNetwork)) {
       throw new Refusal(
         "invalid_request",
-        "Hyperliquid mainnet is not allowed on this server.",
-        "venue_not_allowed",
+        "draft.venues: this venue network is not configured here",
+        "venue_not_configured",
       );
     }
     let proposed: WalletPolicy;
@@ -3659,7 +3671,12 @@ function confirmationLines(approval: Approval): { label: string; value: string }
             label: "Funds at the venue",
             value: "held by Hyperliquid; these caps limit new orders, not losses",
           },
-          { label: "Network", value: `Hyperliquid testnet (${chainId})` },
+          {
+            label: "Network",
+            value: venue
+              ? `${VENUE_NETWORK_NAMES[venue.network]} (${venue.network})`
+              : `Hyperliquid (${chainId})`,
+          },
           { label: "From wallet", value: `${subject.wallet.label} ${subject.wallet.address}` },
           { label: "Agent", value: subject.intent.agent.name },
           { label: "The agent's note", value: subject.intent.memo || "(none)" },
@@ -3700,6 +3717,10 @@ function confirmationLines(approval: Approval): { label: string; value: string }
         { label: "Approvals per payment", value: String(subject.proposed.approvals.threshold) },
         ...(rules
           ? [
+              {
+                label: "Hyperliquid network",
+                value: `${VENUE_NETWORK_NAMES[rules.network]} (${rules.network})`,
+              },
               ...rules.markets.map((market) => ({
                 label: "Market allowed",
                 value: `${market.coin} (index ${market.asset}): up to ${formatAmount(market.maxNotionalPerOrderUsd6, 6)} USD per order`,

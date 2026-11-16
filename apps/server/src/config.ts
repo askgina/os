@@ -33,11 +33,13 @@ export const VenueConfig = z.strictObject({
 export type VenueConfig = z.infer<typeof VenueConfig>;
 
 /**
- * Hosts of Hyperliquid's mainnet API. Until the owner decides whether and where mainnet venue
- * support may ship (D2 in `specs/non-evm-operations.md`), naming one stops the boot, whatever
- * network the entry claims.
+ * Hyperliquid's own API host for each network. An entry naming one of these hosts must name its
+ * network; any other host (a fake venue, a proxy) may name either network.
  */
-const MAINNET_VENUE_HOSTS = ["api.hyperliquid.xyz"];
+const HYPERLIQUID_API_HOSTS: Record<VenueNetwork, { host: string; name: string }> = {
+  "hyperliquid:testnet": { host: "api.hyperliquid-testnet.xyz", name: "testnet" },
+  "hyperliquid:mainnet": { host: "api.hyperliquid.xyz", name: "mainnet" },
+};
 
 const integer = (fallback: number, min: number, max: number) =>
   z.coerce.number().int().min(min).max(max).default(fallback);
@@ -145,8 +147,8 @@ const Environment = z
     /** JSON array of {@link ChainConfig}. */
     CHAINS_FILE: z.string().min(1),
     /**
-     * JSON array of {@link VenueConfig}, at most one per network. Unset: venue features answer
-     * "not configured". Testnet only: a mainnet entry stops the boot (D2).
+     * JSON array of {@link VenueConfig}, at most one per network, testnet or mainnet. Unset: venue
+     * features answer "not configured". Hyperliquid's own hosts must name their own network.
      */
     VENUES_FILE: optional(z.string().min(1)),
     /** Directory with the built UI (`apps/web/dist`). */
@@ -326,7 +328,7 @@ export interface Config {
   /** The prefix of the signer's admin commands on its host (`SIGNER_ADMIN_COMMAND`). */
   signerAdminCommand: string;
   chains: ChainConfig[];
-  /** The venues orders go to; empty when `VENUES_FILE` is unset. Never a mainnet venue (D2). */
+  /** The venues orders go to, at most one per network; empty when `VENUES_FILE` is unset. */
   venues: VenueConfig[];
   webDistDir: string | undefined;
   sessionTtlSeconds: number;
@@ -372,7 +374,10 @@ function vapidKeys(file: string): Pick<WebPushConfig, "vapidPrivateKey" | "vapid
   };
 }
 
-/** Read the venues file; a mainnet venue, or a second entry for one network, stops the boot. */
+/**
+ * Read the venues file. A second entry for one network, or one of Hyperliquid's own hosts named
+ * with the other network, stops the boot.
+ */
 function venues(file: string | undefined): VenueConfig[] {
   if (file === undefined) return [];
   let entries: VenueConfig[];
@@ -382,16 +387,17 @@ function venues(file: string | undefined): VenueConfig[] {
       .max(2)
       .parse(JSON.parse(readFileSync(file, "utf8")));
   } catch {
-    throw new ConfigError(
-      "VENUES_FILE: expected a JSON array of { network, apiUrl } with network hyperliquid:testnet",
-    );
+    throw new ConfigError("VENUES_FILE: expected a JSON array of { network, apiUrl }");
   }
   for (const entry of entries) {
     const host = new URL(entry.apiUrl).hostname.toLowerCase();
-    if (entry.network === "hyperliquid:mainnet" || MAINNET_VENUE_HOSTS.includes(host)) {
-      throw new ConfigError(
-        "VENUES_FILE: Hyperliquid mainnet is refused until the owner decides D2 (whether and where mainnet venue support may ship); configure hyperliquid:testnet only",
-      );
+    for (const network of VenueNetwork.options) {
+      const api = HYPERLIQUID_API_HOSTS[network];
+      if (host === api.host && entry.network !== network) {
+        throw new ConfigError(
+          `VENUES_FILE: ${api.host} is Hyperliquid's ${api.name} API; its entry must name ${network}`,
+        );
+      }
     }
   }
   if (new Set(entries.map((entry) => entry.network)).size !== entries.length) {

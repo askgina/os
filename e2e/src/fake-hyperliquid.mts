@@ -1,15 +1,17 @@
 /**
- * TEST EQUIPMENT. The fake Hyperliquid venue of the end-to-end stack: service `fake-hyperliquid`
- * in `e2e/compose.venue.yaml`, run by Node from the pinned image with the repository's
- * installed dependencies mounted read-only. Never deploy it and never point a real wallet at it.
+ * TEST EQUIPMENT. A fake Hyperliquid venue of the end-to-end stack: services `fake-hyperliquid`
+ * (testnet) and `fake-hyperliquid-mainnet` in `e2e/compose.venue.yaml`, run by Node from the
+ * pinned image with the repository's installed dependencies mounted read-only. Never deploy it
+ * and never point a real wallet at it.
  *
  * Everything it does is `FakeHyperliquid` in `packages/testkit/src/fake-hyperliquid.ts`; this
- * file only puts it on a port. It listens on the Compose `chain` network, where the server
- * reaches it as `http://fake-hyperliquid:8080`, and the overlay publishes the port on the host's
- * loopback only, for the gates.
+ * file only puts it on a port. `FAKE_HYPERLIQUID_NETWORK` names the network whose signatures it
+ * accepts: `testnet` (the default) or `mainnet`. It listens on the Compose `chain` network, where
+ * the server reaches it by its service name on port 8080, and the overlay publishes the port on
+ * the host's loopback only, for the gates.
  *
  *   GET  /healthz              200 once listening
- *   POST /exchange             order, cancelByCloid, withdraw3 (testnet signatures only)
+ *   POST /exchange             order, cancelByCloid, withdraw3 (its network's signatures only)
  *   POST /info                 meta, orderStatus, clearinghouseState, openOrders and
  *                              userNonFundingLedgerUpdates (the withdrawals it took)
  *   POST /control/accounts     {"address", "usdc"}: create an account or set its balance
@@ -28,10 +30,20 @@ import { createServer, type IncomingMessage } from "node:http";
 import {
   FAKE_HYPERLIQUID_MAX_BODY_BYTES,
   FakeHyperliquid,
+  type FakeNetwork,
 } from "@askgina/os-testkit/fake-hyperliquid";
 
 const PORT = 8080;
-const venue = new FakeHyperliquid({ network: "testnet" });
+
+/** The network whose signatures this venue accepts, from `FAKE_HYPERLIQUID_NETWORK`. */
+function networkFromEnvironment(): FakeNetwork {
+  const value = process.env.FAKE_HYPERLIQUID_NETWORK ?? "testnet";
+  if (value === "testnet" || value === "mainnet") return value;
+  throw new Error(`FAKE_HYPERLIQUID_NETWORK: expected testnet or mainnet, got "${value}"`);
+}
+
+const network = networkFromEnvironment();
+const venue = new FakeHyperliquid({ network });
 
 async function readBody(request: IncomingMessage): Promise<string | null> {
   const chunks: Buffer[] = [];
@@ -65,7 +77,7 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(PORT, () => {
-  process.stdout.write(`${JSON.stringify({ event: "listening", port: PORT })}\n`);
+  process.stdout.write(`${JSON.stringify({ event: "listening", port: PORT, network })}\n`);
 });
 // Stop at once when Compose stops the stack; nothing here needs saving.
 process.on("SIGTERM", () => process.exit(0));

@@ -1,11 +1,13 @@
-# Sign Hyperliquid testnet orders that the signer builds from an approved intent
+# Sign Hyperliquid orders that the signer builds from an approved intent
 
 - Branch: none yet
-- Status: Ready for Review (built 2026-11-15; every milestone green in CI run 43742600902; the
-  manual testnet proof is open because no funded testnet account exists)
+- Status: Ready for Review (Milestones 1 to 6 built 2026-11-15, green in CI run 43742600902; the
+  manual testnet proof is open because no funded testnet account exists). Milestone 7,
+  Hyperliquid mainnet (owner decision D2, decided 2026-11-16: mainnet is supported), is open;
+  see `Progress`.
 - Owner(s): Eric Juta
 - Created: 2026-11-14
-- Last Updated: 2026-11-15
+- Last Updated: 2026-11-16
 - Links: [Issue #21](https://github.com/askgina/os/issues/21) | [Map #18](https://github.com/askgina/os/issues/18) | [Research report](research/non-evm-operations.md)
 
 This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`,
@@ -35,10 +37,18 @@ general rule from the research report: the signer never accepts typed data, a me
 from the caller; it builds the venue's signed object from an approved intent. The same shape
 later carries Polymarket, Solana and signer-built swaps.
 
+The plan was first built for Hyperliquid testnet only. On 2026-11-16 the owner decided D2:
+mainnet venue support ships (Milestone 7). The same path then serves `hyperliquid:mainnet`.
+Turning a venue on takes two steps and no flag: the operator lists it in the server's
+`VENUES_FILE`, and a person approves with a passkey a wallet policy whose venue rules name that
+network. The signer signs for the network the approved policy names and nothing else. Using a
+venue is up to the person who runs the workspace. A real mainnet order with real funds has
+never been placed; mainnet is exercised only against the fake venue in mainnet mode.
+
 This plan is written for the research report's recommended options. Each choice that waits on
 the owner is marked **(depends on owner decision Dn)** and listed in the `Decision Log`.
 
-Non-goals, each out of scope for this plan: Hyperliquid mainnet; spot markets and HIP-3 DEXs;
+Non-goals, each out of scope for this plan: spot markets and HIP-3 DEXs;
 trigger (stop-loss, take-profit) orders, TWAP, modify and batch orders; leverage and margin-mode
 changes; builder codes; API (agent) wallets; subaccounts and vaults; `usdSend`, `spotSend`,
 `sendAsset`, `vaultTransfer`, `approveAgent`, `approveBuilderFee`, `scheduleCancel`; Polymarket;
@@ -73,7 +83,7 @@ Success means:
 - [x] (2026-11-15) Owner decisions D1 and D3 to D9 taken by the lead under Eric's delegation,
       each as the recommended option (see `Decision Log`). D2 (mainnet)
       stays open with Eric; until he answers, venues are testnet only and a mainnet venue is
-      refused at boot.
+      refused at boot. (D2 decided 2026-11-16 by Eric: mainnet is supported; see Milestone 7.)
 - [x] (2026-11-15) Milestone 1: protocol shapes, venue policy and evaluation, the order and
       withdrawal confirmation view, the four deny codes, `docs/approval-protocol.md` §1, §3, §4,
       §5, §7, §11 (three vectors, reproduced with OpenSSL) and §12. Local checks only, CI
@@ -124,7 +134,8 @@ Success means:
       on the changed files.
 - [x] (2026-11-15) Milestone 5: control plane: venue client, MCP tool, approval card, follow-up.
   - [x] (2026-11-15) Server half. `VENUES_FILE` (`apps/server/src/config.ts`, `VenueConfig`; a
-        `hyperliquid:mainnet` entry or an `api.hyperliquid.xyz` URL stops the boot naming D2);
+        `hyperliquid:mainnet` entry or an `api.hyperliquid.xyz` URL stops the boot naming D2,
+        superseded by Milestone 7);
         `apps/server/src/execution/venues/hyperliquid.ts` (`createHyperliquidClient`: `meta`,
         `orderStatus`, `post`, `accountValue`; 10-second timeout; an unreadable or lost answer is
         `VenueError` `venue_unreachable`, never a refusal); `apps/server/src/execution/orders.ts`
@@ -135,7 +146,8 @@ Success means:
         `whoami.venues`, `propose_transfer` with a venue network (withdrawal, `asset: "usdc"`),
         `cancel_intent` on a posted order; `POST /api/v1/intents/:intentId/cancel-order`
         (`cancelOrder`, owners and approvers, no passkey); the approval subject's `venue`
-        section; `PushFacts.operation` (D8); a draft naming mainnet is refused; workspace
+        section; `PushFacts.operation` (D8); a draft naming mainnet is refused (superseded by
+        Milestone 7); workspace
         templates carry `venues`. DTOs in `packages/api`: `IntentStatus` + `submitted`,
         `placed`, `filled`, `partially_filled`; `IntentDisplay` = `TransferDisplay` |
         `OrderDisplay`; `IntentSummary.chainId: Network`, `IntentSummary.order:
@@ -183,7 +195,8 @@ Success means:
         `venue_signatures.request`, and the intent ends `filled`; a resting GTC order is
         cancelled by the agent while the workspace is paused, no passkey used, the cancel the
         only other request and byte for byte `venue_cancels.request`; refusals before any
-        approval (market, order type, per-order cap, mainnet order, mainnet policy draft); a
+        approval (market, order type, per-order cap, mainnet order, mainnet policy draft; the
+        two mainnet refusals superseded by Milestone 7); a
         live mandate still leaves an order to a person and the signer logs no `sign-venue`
         (D7); a request whose 5-second window passed while the server was cut off from the
         venue is never posted and ends `expired`; a server killed after signing and before
@@ -210,14 +223,41 @@ Success means:
         server (`compose run --rm --no-deps`) with a mainnet network or the
         `api.hyperliquid.xyz` host in its venues file exits 1 with "Hyperliquid mainnet is
         refused", and with the testnet venue gets past its venues to the database (the
-        control); the memos and the `r` and `s` of every posted order and withdrawal are in no
+        control; this gate is superseded by Milestone 7); the memos and the `r` and `s` of
+        every posted order and withdrawal are in no
         column of Postgres (control: the workspace name is) and no `venue_orders.request` holds
         readable JSON. `deploy/split/control.compose.yaml` passes `VENUES_FILE` through by
         `extends` (checked with `docker compose config`). Local checks only, nothing run against
         a stack, CI pending: `tsc --noEmit` clean in `e2e`; Biome clean; every Compose
         combination parses. Left: the documents.
-- [ ] Manual testnet proof (D6; not CI; needs a funded testnet account; required before any
-      mainnet decision under D2).
+- [ ] Manual testnet proof (D6; not CI; needs a funded testnet account). Still not done. D2 was
+      decided on 2026-11-16 without it, so the gap is a risk carried into mainnet (see
+      `Risks and Open Questions`).
+- [ ] Milestone 7: Hyperliquid mainnet (D2 decided 2026-11-16). Each line is ticked only with
+      its evidence.
+  - [ ] Signer: signs a venue intent for the network the wallet's passkey-approved policy names,
+        including `hyperliquid:mainnet` under a mainnet policy; `SIGNABLE_VENUE_NETWORKS` and
+        its check deleted; an intent whose network differs from the policy's is refused
+        `venue_not_allowed` (unit test, both directions).
+  - [ ] Server: `VENUES_FILE` takes at most two entries, at most one per network, either
+        network; the boot stops only when `api.hyperliquid.xyz` is not paired with
+        `hyperliquid:mainnet` or `api.hyperliquid-testnet.xyz` with `hyperliquid:testnet`; any
+        other host is accepted with either network; config tests for each case.
+  - [ ] Server and API: a policy draft whose `venues.hyperliquid.network` is not configured is
+        refused `invalid_request`, code `venue_not_configured`; `WorkspaceDetail.venueNetworks`
+        in `packages/api` lists the configured networks (testnet first, empty without a venues
+        file); directory tests.
+  - [ ] Web: the wallet rules editor offers Hyperliquid only for configured networks and lets
+        the person choose the network when both are configured; journey.
+  - [ ] Release gates: a second fake venue in mainnet mode; a mainnet order approved under a
+        mainnet policy becomes one accepted request recovered to the wallet with `source` "a";
+        a cross-network intent is refused before anyone is asked; the pairing boot gate
+        replaces the mainnet-boot gate.
+  - [ ] Documents: `README.md`, `deploy/README.md`, `docs/threat-model.md`,
+        `docs/architecture.md` describe mainnet as supported and name its unproven parts.
+  - [ ] Green in CI: run <link to be filled>.
+  - [ ] Manual, not CI: a real mainnet order with real funds. Not done; needs the owner at the
+        phone and a funded mainnet account.
 
 ## Surprises & Discoveries
 
@@ -319,11 +359,12 @@ Success means:
   made additively instead: `spent` stays EVM only and venue spends are in a new
   `WalletState.venueSpent` (`{ chainId: VenueNetwork, asset: "usd6", amount }`). Milestone 5 may
   show it on the wallet page.
-- Observation (Milestone 4): D2 is open, so the signer itself refuses a `hyperliquid:mainnet`
+- Observation (Milestone 4): D2 was open then, so the signer itself refuses a `hyperliquid:mainnet`
   intent as `policy_denied` with `venue_not_allowed`, whatever the wallet's policy names
   (`SIGNABLE_VENUE_NETWORKS` in `venue-signing.ts`). The plan had only the server refuse mainnet
   at boot; without this a policy naming mainnet would make the signer sign mainnet orders that a
-  compromised control plane could post.
+  compromised control plane could post. (Superseded by Milestone 7: since D2 was decided on
+  2026-11-16, the signer signs the network the passkey-approved policy names.)
 - Observation (Milestone 4): a cancel's `expiresAfter` uses the order's own submit window
   (`expires_after − signed_at` of its `venue_signatures` row), not the current policy's, so a
   later policy without venue rules still lets the order be cancelled (D4). Nonces and expiries
@@ -346,7 +387,7 @@ Success means:
 - Observation (Milestone 5): `market_metadata_mismatch` is `conflict`, `invalid_tick`
   `invalid_request`, and a network that is not configured `invalid_request` with
   `venue_not_configured`; a mainnet request therefore answers `venue_not_configured`, because the
-  boot refuses a mainnet venue.
+  boot refuses a mainnet venue. (Superseded by Milestone 7: a mainnet venue can be configured.)
 - Observation (Milestone 5): `orderStatus` reports remaining and original size but no average
   price, so `averagePrice` is only known when the post's own answer was `filled`; a resting
   order that fills later shows its filled size and no average price.
@@ -381,19 +422,28 @@ Success means:
   unreachable `DATABASE_URL` (`database.invalid`), so that a build which stopped refusing a
   mainnet venue would fail at the database instead of joining the running stack as a second
   server; the testnet control run stops there, which shows the venues file was read and
-  passed.
+  passed. (Superseded by Milestone 7, whose pairing boot gate replaces this one.)
 - Observation (Milestone 2): the SDK writes `r` and `s` with `to_hex`, which drops leading zero
   digits (three of the vector values have 63 digits); the tests compare them as numbers. The SDK
   signs `withdraw3` with `signatureChainId` `0x66eee` on both networks; this plan uses `0xa4b1`
   (42161) on mainnet, which the SDK's comment allows ("can be any chain"). Only the testnet
   withdrawal is proven by a vector; the mainnet one only by recovery.
+- Observation (2026-11-16, D2 decided): mainnet needed no new signing code. The fake venue
+  (`packages/testkit/src/fake-hyperliquid.ts`) already implemented mainnet (`FakeNetwork`
+  `"mainnet"`, phantom agent `source` "a", `hyperliquidChain` "Mainnet"), and the signer's
+  encoder tests already carried the SDK's mainnet vectors for orders
+  (`apps/signer/test/vectors/hyperliquid-python-sdk.json`, `hyperliquid-encoding.test.ts`,
+  `ows.test.ts`). Supporting mainnet was therefore a removal of refusals (signer, server boot,
+  policy draft) plus gates. The mainnet withdrawal signature is still checked by recovery only;
+  no SDK vector covers it (see the Milestone 2 observation above).
 
 ## Decision Log
 
 Owner decisions D1 and D3 to D9 were taken on 2026-11-15 by the lead under Eric's delegation
 ("delegate to you on decisions like a CTO"), each as the option this plan recommended. D2
-(mainnet) stays open with Eric. Each was re-checked against main on
-2026-11-15; none is moot.
+(mainnet) was not delegated; Eric decided it on 2026-11-16 (below). Each was re-checked against
+main on 2026-11-15; none is moot. Earlier entries, observations and outcomes that say mainnet is
+refused describe the plan before 2026-11-16 and are history as of that date.
 
 - Decision (owner, D1, taken 2026-11-15 by the lead under Eric's delegation, as recommended):
   the first operation that is not an EVM transaction is a Hyperliquid perpetual limit order on
@@ -405,14 +455,26 @@ Owner decisions D1 and D3 to D9 were taken on 2026-11-15 by the lead under Eric'
   Re-check 2026-11-15: unchanged. Recommendation stands: still the smallest step that keeps
   "the signer builds what it signs".
   Date/Author: 2026-11-14 / research agent
-- Decision (owner, D2, **open: Eric's**): whether mainnet venue support ships. Until Eric
-  decides (research report, "Owner questions"), the plan builds only the
-  fail-closed default: venue support ships disabled (no `VENUES_FILE`), testnet only, and the
-  server refuses to start with a mainnet venue configured.
-  Rationale: mainnet moves real value at a venue; the feature stays off until the owner turns
-  it on. Not delegated.
-  Re-check 2026-11-15: unchanged.
-  Date/Author: 2026-11-14 / research agent
+- Decision (owner, D2, taken 2026-11-16 by Eric): mainnet venue support ships. In the design
+  (Milestone 7):
+  - the signer signs a venue intent for whichever network the wallet's passkey-approved policy
+    names; `SIGNABLE_VENUE_NETWORKS` and its check are deleted; every other refusal stays
+    (policy and network mismatch, caps, restore fence, pause, envelope mismatch);
+  - the server's boot refusal of a mainnet venue is replaced by a pairing check of Hyperliquid's
+    own hosts: `api.hyperliquid.xyz` must be listed as `hyperliquid:mainnet` and
+    `api.hyperliquid-testnet.xyz` as `hyperliquid:testnet`; any other host (a fake, a proxy) is
+    accepted with either network; `VENUES_FILE` holds at most one entry per network;
+  - a policy draft naming a venue network the server has not configured is refused
+    `invalid_request` with code `venue_not_configured`;
+  - `WorkspaceDetail.venueNetworks` tells the web app which networks are configured, and the
+    wallet rules editor offers only those and lets the person choose when both are;
+  - no environment flag or "enable mainnet" switch exists.
+    Rationale: the owner decided. Turning a venue on is the operator's configuration plus a
+    person's passkey approval of rules that name it; using a venue is up to the person who runs
+    the workspace. Before 2026-11-16 this entry was open and the plan shipped the fail-closed
+    default (testnet only, mainnet refused at boot and by the signer); that is history as of this
+    date.
+    Date/Author: 2026-11-16 / lead (open since 2026-11-14 / research agent)
 - Decision (owner, D3, taken 2026-11-15 by the lead under Eric's delegation, as recommended):
   Hyperliquid actions are signed by the wallet's own key; no API wallet is approved.
   Rationale: one signer process gains no isolation from a second key, `approveAgent` would be
@@ -527,6 +589,11 @@ Owner decisions D1 and D3 to D9 were taken on 2026-11-15 by the lead under Eric'
 
 ## Outcomes & Retrospective
 
+- Outcome (2026-11-16): owner decision D2 taken: mainnet venue support ships. Milestone 7 lists
+  what that takes; none of it is claimed here until its `Progress` lines are ticked with
+  evidence. A real mainnet order with real funds has never been placed, and the manual testnet
+  proof has not run either.
+
 - Outcome (2026-11-15, final): Milestones 1 to 6 are built on private `main` and green in CI.
   Evidence: run 43742600902 at `fddc68a`, all eleven jobs (check, test, ui, packages, k8s,
   stack amd64, arm64, tls, split, replicas, openbao). On `stack (amd64)` and `stack (arm64)`
@@ -543,8 +610,9 @@ Owner decisions D1 and D3 to D9 were taken on 2026-11-15 by the lead under Eric'
   One fix round on the way: Compose cannot put an inline config into a service with a
   read-only root, so the venues file is a read-only mount.
   Unproven: the real Hyperliquid testnet (the manual proof needs a funded testnet account,
-  which does not exist yet); the venue's real ledger and open-order shapes; mainnet, which is
-  refused in code until the owner decides D2.
+  which does not exist yet); the venue's real ledger and open-order shapes; mainnet, which was
+  refused in code until the owner decided D2 (decided 2026-11-16: mainnet is supported;
+  Milestone 7).
 
 - Outcome (Milestone 1, 2026-11-15, local checks only, CI pending): `packages/protocol/src/venues.ts`
   (`VenueNetwork`, `Network`, `Decimal`, `PositiveDecimal`, `Cloid`, `SpendAsset`,
@@ -581,7 +649,8 @@ Relevant repo rules:
 Terms:
 
 - **Venue**: a place an order is executed that is not an EVM chain transaction. Here only
-  Hyperliquid's own chain ("HyperCore"), reached through `https://api.hyperliquid-testnet.xyz`.
+  Hyperliquid's own chain ("HyperCore"), reached through `https://api.hyperliquid-testnet.xyz`
+  on testnet and, since D2 was decided on 2026-11-16, `https://api.hyperliquid.xyz` on mainnet.
 - **Venue network**: `hyperliquid:testnet` or `hyperliquid:mainnet`. It takes the place of an EVM
   chain id in an intent and an envelope.
 - **L1 action**: a Hyperliquid trading action (`order`, `cancelByCloid`). It is msgpack-encoded,
@@ -694,8 +763,8 @@ Assumptions:
 
 - The signer host's clock is synchronized (NTP). Hyperliquid accepts nonces within
   `(T − 2 days, T + 1 day)` of block time and rejects actions after `expiresAfter`.
-- The server can reach `api.hyperliquid-testnet.xyz` over HTTPS from the `chain` network
-  (`compose.yaml`, `networks`).
+- The server can reach `api.hyperliquid-testnet.xyz`, and `api.hyperliquid.xyz` when mainnet is
+  configured, over HTTPS from the `chain` network (`compose.yaml`, `networks`).
 - Perpetual asset indices in `meta.universe` do not change for a listed market. Not established
   from a primary source; the proposal-time metadata check (Milestone 5) refuses a mismatch.
 - The Hyperliquid facts in this plan (signing, nonces, `expiresAfter`, faucet) are from the
@@ -709,6 +778,9 @@ the control plane, then the stack gates. Every milestone ends with a CI job pass
 any milestone was delivered by the plans built since; Milestone 1 lost one step that mandates
 delivered (classifying policy codes as `denied`), and the order card moved from the web app to
 the signer's confirmation view (Milestones 1 and 4).
+
+Milestone 7 was added on 2026-11-16, when the owner decided D2 (mainnet ships). It removes the
+mainnet refusals written in Milestones 4 to 6 and adds the checks and gates that replace them.
 
 ### Milestone 1: Protocol shapes, venue policy, evaluation and the confirmation view
 
@@ -1076,14 +1148,15 @@ Acceptance (CI job `test`):
 
 Scope: agents can propose and cancel orders, people see orders in the inbox and the venue
 rules in the policy editor, the control plane submits and reconciles, and a waiting order is
-announced without its details. **(D1, D7 (a) and D8 (c) taken 2026-11-15; D2 open with Eric,
-so only the testnet path is built and mainnet is refused at boot)**
+announced without its details. **(D1, D7 (a) and D8 (c) taken 2026-11-15; D2 was open with Eric
+then, so only the testnet path was built and mainnet was refused at boot; superseded by
+Milestone 7)**
 
 Files and interfaces:
 
 - `apps/server/src/config.ts`: optional `VENUES_FILE`, a JSON array of `{ network: VenueNetwork,
   apiUrl: string }`. Absent means venue features answer "not configured". A
-  `hyperliquid:mainnet` entry fails boot with a message naming D2.
+  `hyperliquid:mainnet` entry fails boot with a message naming D2 (superseded by Milestone 7).
 - `apps/server/src/execution/venues/hyperliquid.ts` (new): `createHyperliquidClient({ apiUrl,
   fetch })` with `meta(): Promise<{ universe: { name: string; szDecimals: number; isDelisted?:
   boolean }[] }>` (`POST /info {"type":"meta"}`), `orderStatus(user, cloid)` (`POST /info
@@ -1247,6 +1320,62 @@ Acceptance (CI job `stack`, all three matrix entries, through `e2e/run.sh`):
 Manual or runtime validation (not CI; the owner funds it per D6): see `Validation and
 Acceptance`.
 
+### Milestone 7: Hyperliquid mainnet (D2 decided 2026-11-16)
+
+Scope: `hyperliquid:mainnet` becomes a supported venue network, equal to testnet. No new signing
+code: the encoder and vault already sign both networks (see Surprises, 2026-11-16). The work
+removes the refusals and puts the decision in two places that already exist: the operator's
+`VENUES_FILE` and the person's passkey-approved policy. There is no flag.
+
+Files and interfaces:
+
+- `packages/protocol/src/venues.ts`: unchanged; `VenueNetwork` stays
+  `z.enum(["hyperliquid:testnet", "hyperliquid:mainnet"])`.
+- `apps/signer/src/venue-signing.ts`: delete `SIGNABLE_VENUE_NETWORKS` and its check. The signer
+  signs a venue intent for the network the wallet's passkey-approved policy names
+  (`venues.hyperliquid.network` equal to `intent.chainId`; otherwise `venue_not_allowed`, as
+  `evaluateIntent` already answers). Every other refusal stays: policy and network mismatch,
+  caps, restore fence, pause, envelope mismatch.
+- `apps/server/src/config.ts`: `VENUES_FILE` is a JSON array of at most two
+  `{ network, apiUrl }`, at most one per network, either network. The boot stops only on a wrong
+  pairing of Hyperliquid's own hosts, with `ConfigError` text
+  `VENUES_FILE: api.hyperliquid.xyz is Hyperliquid's mainnet API; its entry must name
+  hyperliquid:mainnet` and its testnet twin for `api.hyperliquid-testnet.xyz`. Any other host
+  (a fake, a proxy) is accepted with either network. A file that does not parse stops the boot
+  with `VENUES_FILE: expected a JSON array of { network, apiUrl }`.
+- `apps/server/src/directory/routes.ts`: the mainnet refusal of a policy draft is removed. A
+  draft whose `venues.hyperliquid.network` is not one of the server's configured venue networks
+  is refused: `HttpError` `invalid_request`, message
+  `draft.venues: this venue network is not configured here`, code `venue_not_configured`.
+- `packages/api/src/dto.ts`: `WorkspaceDetail` gains `venueNetworks: z.array(VenueNetwork)`, a
+  sibling of `chains`: the networks in `VENUES_FILE`, `hyperliquid:testnet` before
+  `hyperliquid:mainnet`, empty when there is no venues file.
+- `apps/web`: the wallet rules editor offers Hyperliquid only for networks in `venueNetworks`
+  and lets the person choose the network when both are configured.
+- `e2e`: a second fake venue in mainnet mode (`FakeNetwork` `"mainnet"`) beside the testnet one
+  in the venue stack, both listed in the e2e venues file; the mainnet-boot gate is replaced by
+  the pairing boot gate.
+- Documents: `README.md`, `deploy/README.md` (`VENUES_FILE`: either network, the pairing rule),
+  `docs/threat-model.md` and `docs/architecture.md`.
+
+Acceptance:
+
+- Signer unit test: a mainnet intent under a mainnet policy is signed with `source` "a" and
+  recovers to the wallet; a testnet intent under a mainnet policy, and the reverse, is refused
+  `venue_not_allowed` and records nothing.
+- Server config tests: each pairing case above, the two-entry limit, a duplicate network, and
+  the parse error text.
+- Directory test: a draft naming an unconfigured network answers `venue_not_configured`; the
+  workspace detail lists `venueNetworks` in order.
+- Web journey: the rules editor shows the network choice only when both networks are configured.
+- CI job `stack`: a mainnet order approved under a mainnet policy becomes one accepted request at
+  the mainnet fake venue, recovered to the wallet by the fake and by the test; a cross-network
+  intent is refused before anyone is asked; a throwaway server whose venues file lists
+  `api.hyperliquid.xyz` as `hyperliquid:testnet` exits 1 with the pairing message, and one that
+  lists it as `hyperliquid:mainnet` gets past its venues to the database (the control).
+- Not CI and not done: a real mainnet order with real funds. It needs the owner at the phone and
+  a funded mainnet account; nothing claims it until it runs.
+
 ## Threat Model After This Change
 
 Code execution in the control plane, after this change:
@@ -1271,7 +1400,9 @@ Code execution in the control plane, after this change:
   per-order cap or the daily notional cap; trade a market the policy does not list; extend an
   order's submit window beyond the policy's; move funds out of the venue account to any address
   but the wallet's own; sign for mainnet with a testnet approval (the network is in the intent,
-  the envelope and the phantom agent's `source`); put an order's details into a notification
+  the envelope and the phantom agent's `source`); get a mainnet signature for a wallet whose
+  passkey-approved policy does not name `hyperliquid:mainnet` (Milestone 7); put an order's
+  details into a notification
   (the notification inputs have no field for them).
 - **Unchanged:** the signer host can do everything; a person who approves a true but harmful
   order because the control plane or an agent talked them into it is not stopped.
@@ -1399,8 +1530,9 @@ Automated validation (CI, every milestone):
 - `check`: Biome and `tsc` across the workspace.
 - `test`: `bun run test`, including the files named in Milestones 1 to 5.
 - `ui`: the order summary journey and the `approve` page's order view.
-- `stack` (amd64, arm64, tls): the release gates named in Milestone 6, together with every
-  existing gate (v0.1, trusted display, mandates, notifications).
+- `stack` (amd64, arm64, tls): the release gates named in Milestones 6 and 7 (Milestone 7 adds
+  a second fake venue in mainnet mode and the pairing boot gate), together with every existing
+  gate (v0.1, trusted display, mandates, notifications).
 
 Manual or runtime validation (owner-funded, D6; not CI):
 
@@ -1417,6 +1549,9 @@ Manual or runtime validation (owner-funded, D6; not CI):
 - Propose a GTC buy far below the market; approve; observe `placed`; `cancel_intent`; observe
   `cancelled`.
 - Record the order ids, cloids and times in `Artifacts and Notes`.
+- Mainnet with real funds (Milestone 7): not done. It needs the owner at the phone and a funded
+  mainnet account, and repeats the steps above with `hyperliquid:mainnet` and
+  `https://api.hyperliquid.xyz`.
 
 Regression checks:
 
@@ -1446,9 +1581,11 @@ Regression checks:
 
 ## Rollout and Operations
 
-- Feature flags/config/env vars: `VENUES_FILE` on the server (absent by default; testnet only in
-  this plan). No new signer configuration: the policy carries the rules, and venue network names
-  are in the signer's code.
+- Feature flags/config/env vars: `VENUES_FILE` on the server (absent by default: no venue; at
+  most one entry per network, either network since Milestone 7; Hyperliquid's own hosts must be
+  listed under their own network). No flag turns mainnet on: the operator's venues file and a
+  person's passkey-approved policy naming the network do. No new signer configuration: the
+  policy carries the rules, and venue network names are in the signer's code.
 - Deployment: signer first (it accepts the new shapes and still serves every existing request),
   then the server. A server ahead of the signer gets 404 on the new routes and fails the
   approval with that code.
@@ -1464,7 +1601,20 @@ Regression checks:
   Wallet ... does not exist"). Mitigation: Milestone 2's vectors from the venue's own SDK and an
   independent encoder in tests. A mismatch fails closed: nothing is executed.
 - Risk: Hyperliquid changes an action format or the hashing. Mitigation: the vectors are pinned
-  to an SDK commit; the manual testnet proof is repeated before any mainnet decision.
+  to an SDK commit. The manual testnet proof was meant to run before mainnet; it has not run,
+  and D2 was decided on 2026-11-16 without it. A wrong encoding still fails closed (the venue
+  recovers another address and refuses), but nothing has shown the real venue accepting one of
+  this signer's orders on either network.
+- Risk (Milestone 7): mainnet orders move real value, and no real mainnet order with real funds
+  has been placed; mainnet is exercised only against the fake venue in mainnet mode.
+  Mitigation: every order still needs a passkey approval of an order the signer showed, under
+  a policy that names mainnet, its markets and its caps; the venue account's deposit bounds the
+  loss. A first real order needs the owner at the phone and a funded mainnet account.
+- Risk (Milestone 7): only Hyperliquid's own two hosts are paired with their network. Any other
+  host in `VENUES_FILE` (a proxy) is trusted to forward to the network it is listed under. A
+  proxy listed under the wrong network would deliver an action signed for the other network;
+  the network is part of what is signed (`source`, `hyperliquidChain`), so the venue should
+  recover another address and refuse it. That follows from the signing scheme; no gate shows it.
 - Risk: OWS's EIP-712 encoder differs from viem's for these types. Mitigation: Milestone 3 signs
   the SDK vectors through real OWS; the signer checks every signature against viem's digest.
 - Risk: a policy's asset index stops naming its coin (relisting, reordering). Mitigation: the
@@ -1488,17 +1638,17 @@ Regression checks:
 - Risk: a resting order signed after the last backup cannot be cancelled after a restore (D9).
   Mitigation: D9 (a), taken 2026-11-15: documented in the restore steps, and the default
   policy draft allows only `Ioc`.
-- Open question, **Eric's** (D2, mainnet): see the research report's
-  "Owner questions". Not delegated; nothing in this plan answers them; mainnet stays refused at
-  boot.
+- Closed question (D2, mainnet): decided 2026-11-16 by Eric: mainnet venue support ships. See
+  the `Decision Log` entry D2 and Milestone 7.
 - Answered (2026-11-15, by the lead under Eric's delegation; no recommendation, so the
   conservative option): reduce-only orders stay under the per-order cap. Reason: the smaller
   change, and a cap that always applies fails closed.
 - Answered (2026-11-15, by the lead under Eric's delegation; no recommendation, so the
   conservative option): the testnet manual proof is not required to call Milestone 6 done; it
-  is its own Progress line, ticked only when run, and required before any mainnet decision
-  (D2). Reason: CI proves the milestone; the manual proof needs funds not in hand, and no
-  status claims it until it runs.
+  is its own Progress line, ticked only when run, and was to be required before any mainnet
+  decision (D2). Reason: CI proves the milestone; the manual proof needs funds not in hand, and
+  no status claims it until it runs. D2 was decided on 2026-11-16 before the proof ran; the gap
+  is the risk stated above.
 - Unconfirmed on 2026-11-15: the Hyperliquid and OWS facts above were not re-read. The migration
   numbers are re-checked against main at `61d0326`: signer schema 6 (next 7), server
   migrations through `0007_transaction_attempts` (next `0008`).
@@ -1515,10 +1665,10 @@ Research evidence, from the report:
     uint256 public userPauseBlockInterval = 100;
 
 Out of scope for this plan, each its own later ticket: Polymarket (needs a bound on a signed
-order's lifetime and answers to D2); Solana transfers; signer-built EVM swaps
+order's lifetime); Solana transfers; signer-built EVM swaps
 (`multicall(deadline, [exactInputSingle(...)])`, recipient fixed to the wallet, router never a
 call target); trading mandates (D7); Hyperliquid trigger orders, leverage changes, builder fees,
-spot, HIP-3 DEXs; mainnet.
+spot, HIP-3 DEXs.
 
 ## Revision Notes
 
@@ -1536,7 +1686,14 @@ spot, HIP-3 DEXs; mainnet.
   the three additive precedents now in §12. Status stays Draft; still six milestones, none
   delivered by other plans.
 - 2026-11-15: D1 and D3 to D9 taken by the lead under Eric's delegation, each as recommended
-  (D5 (a), D7 (a), D8 (c), D9 (a)); D2 stays open with Eric, mainnet refused at boot. The two
+  (D5 (a), D7 (a), D8 (c), D9 (a)); D2 stayed open with Eric then, mainnet refused at boot
+  (decided 2026-11-16: mainnet is supported; Milestone 7). The two
   open questions without a recommendation are answered with the conservative option. Repricing
   is built at `61d0326`: the signer migration is version 7 and the server migration
   `0008_venue_orders`; the repricing routes are named.
+- 2026-11-16: Owner decision D2 taken by Eric: mainnet venue support ships. Decision Log entry
+  rewritten as decided; Milestone 7 added to `Progress` (all lines unticked) and to `Plan of
+  Work`; one Surprises entry (mainnet needed no new signing code); the mainnet refusals of
+  Milestones 4 to 6 marked superseded rather than removed; non-goals, the open question, the
+  rollout line and the risks updated; the missing manual testnet proof is now stated as a risk
+  carried into mainnet. Title no longer says "testnet".

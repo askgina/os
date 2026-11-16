@@ -1,6 +1,13 @@
 {
   "version": 2,
   "skills": {
+    "install-anti-slop": {
+      "source": "K-Mistele/anti-slop",
+      "sourceType": "github",
+      "skillPath": "skills/install-anti-slop/SKILL.md",
+      "computedHash": "c97c2a32a43b3127ce5829b15949ce52f870b10950ee8695df9bc3f12388242b",
+      "installMode": "copy"
+    },
     "wayfinder": {
       "source": "mattpocock/skills",
       "sourceType": "github",

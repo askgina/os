@@ -1,1 +1,4 @@
-[{ "network": "hyperliquid:testnet", "apiUrl": "http://fake-hyperliquid:8080" }]
+[
+  { "network": "hyperliquid:testnet", "apiUrl": "http://fake-hyperliquid:8080" },
+  { "network": "hyperliquid:mainnet", "apiUrl": "http://fake-hyperliquid-mainnet:8080" }
+]

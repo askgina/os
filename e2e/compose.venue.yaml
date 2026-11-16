@@ -1,39 +1,55 @@
 # TEST EQUIPMENT. Overlay for the release gates only, on top of compose.yaml and
-# e2e/compose.e2e.yaml: a fake Hyperliquid venue (e2e/src/fake-hyperliquid.mts, which serves
-# packages/testkit/src/fake-hyperliquid.ts) and the server's VENUES_FILE pointing at it as
-# hyperliquid:testnet. The fake recovers every signer itself and calls nothing; it holds no funds.
-# Never use this overlay for a real deployment.
+# e2e/compose.e2e.yaml: two fake Hyperliquid venues (e2e/src/fake-hyperliquid.mts, which serves
+# packages/testkit/src/fake-hyperliquid.ts), one taking testnet signatures and one mainnet
+# signatures, and the server's VENUES_FILE naming both (e2e/venues.json). The fakes recover every
+# signer themselves and call nothing; they hold no funds. Never use this overlay for a real
+# deployment.
+
+# One fake venue, on the `chain` network, where the server reaches venues. Its port is published
+# on the host's loopback only, for the gates: they seed the wallet's account, set the book, read
+# what the venue took and re-post a recorded body. It runs from the repository's installed
+# dependencies, mounted read-only (paths are relative to the project directory, the repository
+# root): Node strips the types of the testkit source, which is outside node_modules once its
+# symlink is resolved.
+x-fake-hyperliquid: &fake-hyperliquid
+  image: node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
+  command: ["node", "/repo/e2e/src/fake-hyperliquid.mts"]
+  user: node
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp"]
+  volumes:
+    - ./e2e:/repo/e2e:ro
+    - ./packages/testkit:/repo/packages/testkit:ro
+    - ./node_modules:/repo/node_modules:ro
+  networks: [chain]
+  healthcheck:
+    test:
+      - CMD
+      - node
+      - -e
+      - "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+    interval: 1s
+    timeout: 3s
+    retries: 30
+
 services:
-  # On the `chain` network, where the server reaches venues. The port is published on the host's
-  # loopback only, for the gates: they seed the wallet's account, set the book, read what the
-  # venue took and re-post a recorded body. It runs from the repository's installed
-  # dependencies, mounted read-only (paths are relative to the project directory, the
-  # repository root): Node strips the types of the testkit source, which is outside
-  # node_modules once its symlink is resolved.
+  # The server's hyperliquid:testnet venue.
   fake-hyperliquid:
-    image: node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
-    command: ["node", "/repo/e2e/src/fake-hyperliquid.mts"]
-    user: node
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp"]
-    volumes:
-      - ./e2e:/repo/e2e:ro
-      - ./packages/testkit:/repo/packages/testkit:ro
-      - ./node_modules:/repo/node_modules:ro
+    <<: *fake-hyperliquid
+    environment:
+      FAKE_HYPERLIQUID_NETWORK: testnet
     ports:
       - "127.0.0.1:${E2E_VENUE_PORT:-55906}:8080"
-    networks: [chain]
-    healthcheck:
-      test:
-        - CMD
-        - node
-        - -e
-        - "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
-      interval: 1s
-      timeout: 3s
-      retries: 30
+
+  # The server's hyperliquid:mainnet venue: the same fake, taking mainnet signatures only.
+  fake-hyperliquid-mainnet:
+    <<: *fake-hyperliquid
+    environment:
+      FAKE_HYPERLIQUID_NETWORK: mainnet
+    ports:
+      - "127.0.0.1:${E2E_VENUE_MAINNET_PORT:-55907}:8080"
 
   server:
     environment:
@@ -44,3 +60,4 @@ services:
       - ./e2e/venues.json:/etc/os/venues.json:ro
     depends_on:
       fake-hyperliquid: { condition: service_healthy }
+      fake-hyperliquid-mainnet: { condition: service_healthy }

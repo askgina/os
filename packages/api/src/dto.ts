@@ -364,6 +364,8 @@ export const WorkspaceDetail = WorkspaceSummary.extend({
   agents: z.array(AgentSummary),
   wallets: z.array(WalletSummary),
   chains: z.array(ChainInfo),
+  /** The venue networks this server is configured for, testnet first; empty when none. */
+  venueNetworks: z.array(VenueNetwork),
 });
 export type WorkspaceDetail = z.infer<typeof WorkspaceDetail>;
 
@@ -431,7 +433,7 @@ export const PolicyDraft = z.strictObject({
     threshold: z.number().int().min(1).max(16),
     ttlSeconds: z.number().int().min(60).max(86_400),
   }),
-  /** What the wallet may do at venues; absent, nothing. A mainnet venue is refused (D2). */
+  /** What the wallet may do at venues; absent, nothing. The network must be configured here. */
   venues: VenueRules.optional(),
 });
 export type PolicyDraft = z.infer<typeof PolicyDraft>;

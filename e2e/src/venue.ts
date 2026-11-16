@@ -1,10 +1,11 @@
 /**
  * What the venue gates (`e2e/test/venue.spec.ts`) read and set around an order: the fake
- * Hyperliquid venue of `e2e/compose.venue.yaml` (TEST EQUIPMENT), through the control routes on
- * the port it publishes on the host's loopback; the signer's own record of what it signed, read
- * from its SQLite file; the server's sealed copy, read from Postgres; what a container of the
- * stack can reach; and how the server's boot treats a venues file. Nothing here reaches
- * Hyperliquid.
+ * Hyperliquid testnet and mainnet venues of `e2e/compose.venue.yaml` (TEST EQUIPMENT), through
+ * the control routes on the ports they publish on the host's loopback (every helper that talks
+ * to a fake takes its network, the testnet unless named); the signer's own record of what it
+ * signed, read from its SQLite file; the server's sealed copy, read from Postgres; what a
+ * container of the stack can reach; and how the server's boot treats a venues file. Nothing here
+ * reaches Hyperliquid.
  */
 import { execFile } from "node:child_process";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ import type {
   ExchangeRecord,
   FakeAsset,
   FakeCancel,
+  FakeNetwork,
   FakeOrder,
   FakeWithdrawal,
 } from "@askgina/os-testkit/fake-hyperliquid";
@@ -23,9 +25,24 @@ import { compose, composeArgs, containersOf, databaseUrl, docker, execIn, stack 
 const run = promisify(execFile);
 const ROOT = join(import.meta.dirname, "..", "..");
 
-/** Call one of the fake venue's control routes; fails on anything but a 2xx answer. */
-async function control(method: string, path: string, body?: unknown): Promise<string> {
-  const response = await fetch(`${stack.venueUrl}/control/${path}`, {
+/**
+ * The fake venue of each network: its Compose service, which the server reaches by name on the
+ * `chain` network, and the URL of the port it publishes on the host's loopback.
+ */
+const FAKES: Record<FakeNetwork, { service: string; url: string }> = {
+  testnet: { service: "fake-hyperliquid", url: stack.venueUrl },
+  mainnet: { service: "fake-hyperliquid-mainnet", url: stack.venueMainnetUrl },
+};
+const NETWORKS: readonly FakeNetwork[] = ["testnet", "mainnet"];
+
+/** Call one of a fake venue's control routes; fails on anything but a 2xx answer. */
+async function control(
+  network: FakeNetwork,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<string> {
+  const response = await fetch(`${FAKES[network].url}/control/${path}`, {
     method,
     ...(body === undefined
       ? {}
@@ -34,51 +51,70 @@ async function control(method: string, path: string, body?: unknown): Promise<st
   const text = await response.text();
   if (!response.ok) {
     throw new Error(
-      `the fake venue refused ${method} /control/${path}: ${response.status} ${text}`,
+      `the fake ${network} venue refused ${method} /control/${path}: ${response.status} ${text}`,
     );
   }
   return text;
 }
 
 /** Create the wallet's account at the venue, or set its USDC, as a deposit would. */
-export async function seedVenueAccount(address: string, usdc: string): Promise<void> {
-  await control("POST", "accounts", { address, usdc });
+export async function seedVenueAccount(
+  address: string,
+  usdc: string,
+  network: FakeNetwork = "testnet",
+): Promise<void> {
+  await control(network, "POST", "accounts", { address, usdc });
 }
 
 /** The perpetuals the venue lists; the asset index is the position. */
-export async function setVenueUniverse(universe: FakeAsset[]): Promise<void> {
-  await control("PUT", "meta", { universe });
+export async function setVenueUniverse(
+  universe: FakeAsset[],
+  network: FakeNetwork = "testnet",
+): Promise<void> {
+  await control(network, "PUT", "meta", { universe });
 }
 
 /** The best bid and ask of one asset; an order that crosses them fills at its limit price. */
-export async function setVenueBook(asset: number, bid: string, ask: string): Promise<void> {
-  await control("PUT", "book", { asset, bid, ask });
+export async function setVenueBook(
+  asset: number,
+  bid: string,
+  ask: string,
+  network: FakeNetwork = "testnet",
+): Promise<void> {
+  await control(network, "PUT", "book", { asset, bid, ask });
 }
 
 /** Every `/exchange` request the venue received, oldest first, with what it made of it. */
-export async function venueExchangeLog(): Promise<ExchangeRecord[]> {
-  return JSON.parse(await control("GET", "exchange")) as ExchangeRecord[];
+export async function venueExchangeLog(
+  network: FakeNetwork = "testnet",
+): Promise<ExchangeRecord[]> {
+  return JSON.parse(await control(network, "GET", "exchange")) as ExchangeRecord[];
 }
 
-export async function venueOrders(): Promise<FakeOrder[]> {
-  return JSON.parse(await control("GET", "orders")) as FakeOrder[];
+export async function venueOrders(network: FakeNetwork = "testnet"): Promise<FakeOrder[]> {
+  return JSON.parse(await control(network, "GET", "orders")) as FakeOrder[];
 }
 
-export async function venueCancels(): Promise<FakeCancel[]> {
-  return JSON.parse(await control("GET", "cancels")) as FakeCancel[];
+export async function venueCancels(network: FakeNetwork = "testnet"): Promise<FakeCancel[]> {
+  return JSON.parse(await control(network, "GET", "cancels")) as FakeCancel[];
 }
 
 /** Every withdrawal the venue took, oldest first, with the destination it was signed for. */
-export async function venueWithdrawals(): Promise<FakeWithdrawal[]> {
-  return JSON.parse(await control("GET", "withdrawals")) as FakeWithdrawal[];
+export async function venueWithdrawals(
+  network: FakeNetwork = "testnet",
+): Promise<FakeWithdrawal[]> {
+  return JSON.parse(await control(network, "GET", "withdrawals")) as FakeWithdrawal[];
 }
 
 /**
  * Post `body` to the venue's `/exchange` as anyone holding a copy of a signed request could
  * (the control plane, a log, the network), and return the venue's answer, parsed when it is JSON.
  */
-export async function postToVenue(body: string): Promise<{ status: number; answer: unknown }> {
-  const response = await fetch(`${stack.venueUrl}/exchange`, {
+export async function postToVenue(
+  body: string,
+  network: FakeNetwork = "testnet",
+): Promise<{ status: number; answer: unknown }> {
+  const response = await fetch(`${FAKES[network].url}/exchange`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body,
@@ -91,21 +127,22 @@ export async function postToVenue(body: string): Promise<{ status: number; answe
   }
 }
 
-/** The fake venue's IPv4 address on the Compose `chain` network, the only one it is on. */
-export async function venueAddress(): Promise<string> {
-  const [fake] = await containersOf("fake-hyperliquid");
-  if (fake === undefined) throw new Error("the stack has no fake-hyperliquid container");
-  const network = `${stack.project}_chain`;
+/** A fake venue's IPv4 address on the Compose `chain` network, the only one it is on. */
+export async function venueAddress(network: FakeNetwork = "testnet"): Promise<string> {
+  const { service } = FAKES[network];
+  const [fake] = await containersOf(service);
+  if (fake === undefined) throw new Error(`the stack has no ${service} container`);
+  const chain = `${stack.project}_chain`;
   const address = (
     await docker(
       "inspect",
       "--format",
-      `{{with index .NetworkSettings.Networks "${network}"}}{{.IPAddress}}{{end}}`,
+      `{{with index .NetworkSettings.Networks "${chain}"}}{{.IPAddress}}{{end}}`,
       fake,
     )
   ).trim();
   if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(address)) {
-    throw new Error(`the fake venue has no IPv4 address on ${network}: "${address}"`);
+    throw new Error(`the fake ${service} has no IPv4 address on ${chain}: "${address}"`);
   }
   return address;
 }
@@ -117,8 +154,8 @@ export interface ProbeRequest {
 }
 
 /**
- * From inside `container`: whether it resolves the fake venue's name, and the status each
- * request got, in order, or "unreachable" when it got no answer within 4 seconds.
+ * From inside `container`: whether it resolves the name of either fake venue, and the status
+ * each request got, in order, or "unreachable" when it got no answer within 4 seconds.
  */
 export async function reachFrom(
   container: string,
@@ -126,8 +163,13 @@ export async function reachFrom(
 ): Promise<{ resolvesVenue: boolean; statuses: (number | "unreachable")[] }> {
   const script = `
     const requests = ${JSON.stringify(requests)};
+    const names = ${JSON.stringify(NETWORKS.map((network) => FAKES[network].service))};
     (async () => {
-      const resolvesVenue = await require("node:dns/promises").lookup("fake-hyperliquid").then(() => true, () => false);
+      const { lookup } = require("node:dns/promises");
+      let resolvesVenue = false;
+      for (const name of names) {
+        if (await lookup(name).then(() => true, () => false)) resolvesVenue = true;
+      }
       const statuses = [];
       for (const { method, url } of requests) {
         const body = method === "POST" ? { headers: { "content-type": "application/json" }, body: "{}" } : {};
@@ -244,24 +286,33 @@ function cloidsOf(body: string): string[] {
   ].map((cloid) => cloid.toLowerCase());
 }
 
-/** Every `/exchange` request that names `cloid`, accepted or not, oldest first. */
-export async function requestsFor(cloid: string): Promise<ExchangeRecord[]> {
+/** Every `/exchange` request to one venue that names `cloid`, accepted or not, oldest first. */
+export async function requestsFor(
+  cloid: string,
+  network: FakeNetwork = "testnet",
+): Promise<ExchangeRecord[]> {
   const wanted = cloid.toLowerCase();
-  return (await venueExchangeLog()).filter((record) => cloidsOf(record.body).includes(wanted));
+  return (await venueExchangeLog(network)).filter((record) =>
+    cloidsOf(record.body).includes(wanted),
+  );
 }
 
-/** What the fake venue holds, for a failed gate's output. Never throws. */
+/** What each fake venue holds, for a failed gate's output. Never throws. */
 export async function venueReport(): Promise<string> {
-  try {
-    const [exchange, orders, cancels] = await Promise.all([
-      venueExchangeLog(),
-      venueOrders(),
-      venueCancels(),
-    ]);
-    return JSON.stringify({ exchange, orders, cancels }, null, 2);
-  } catch (error) {
-    return `the fake venue could not be read: ${(error as Error).message}`;
+  const report: Record<string, unknown> = {};
+  for (const network of NETWORKS) {
+    try {
+      const [exchange, orders, cancels] = await Promise.all([
+        venueExchangeLog(network),
+        venueOrders(network),
+        venueCancels(network),
+      ]);
+      report[network] = { exchange, orders, cancels };
+    } catch (error) {
+      report[network] = `the fake ${network} venue could not be read: ${(error as Error).message}`;
+    }
   }
+  return JSON.stringify(report, null, 2);
 }
 
 /** Where the signer keeps its state, inside its container (`SIGNER_DATA_DIR`). */

@@ -1,8 +1,10 @@
 /**
  * The venue gates (`specs/non-evm-operations.md`, Milestone 6), against a stack of their own
- * (`e2e/run.sh`) whose server names a fake Hyperliquid testnet venue (`e2e/compose.venue.yaml`,
- * TEST EQUIPMENT). The fake recovers the signer of every request with its own encoder, independent
- * of the signer's, and keeps everything it was sent. Nothing here reaches Hyperliquid.
+ * (`e2e/run.sh`) whose server names two fake Hyperliquid venues, one for the testnet and one for
+ * mainnet (`e2e/compose.venue.yaml`, TEST EQUIPMENT). Each fake recovers the signer of every
+ * request with its own encoder, independent of the signer's, as its network's venue does, and
+ * keeps everything it was sent. Nothing here reaches Hyperliquid, and no gate places an order
+ * with real funds.
  *
  * A person approves every order on the signer's confirmation page with a passkey; the server
  * posts the signer's request and follows the order. The gates check what reached the venue
@@ -11,20 +13,20 @@
  * The tests run in order and share state: the first claims the installation.
  */
 import { setTimeout as delay } from "node:timers/promises";
-import {
-  ApiError,
-  type IntentDetail,
-  type MandateDraft,
-  type PolicyDraft,
-  type VenueAccount,
-  type WalletSummary,
-  type WorkspaceDetail,
+import type {
+  IntentDetail,
+  MandateDraft,
+  PolicyDraft,
+  VenueAccount,
+  WalletSummary,
+  WorkspaceDetail,
 } from "@askgina/os-api";
 import type { ConfirmationView } from "@askgina/os-protocol";
 import type { SignerDecision } from "@askgina/os-protocol/signer";
 import { scanForMarkers } from "@askgina/os-testkit";
 import {
   type FakeAsset,
+  type FakeNetwork,
   parseExchangeBody,
   recoverExchangeSigner,
 } from "@askgina/os-testkit/fake-hyperliquid";
@@ -67,6 +69,7 @@ test.describe.configure({ mode: "serial" });
 
 const CHAIN = "eip155:31337";
 const TESTNET = "hyperliquid:testnet";
+const MAINNET = "hyperliquid:mainnet";
 const run = Date.now().toString(36);
 /** Text an agent types with an order. */
 const ORDER_MEMO = `ORDERMEMO${run} buy a little bitcoin`;
@@ -74,6 +77,8 @@ const ORDER_MEMO = `ORDERMEMO${run} buy a little bitcoin`;
 const NOTICE_MEMO = `NOTICEMARK${run} an order announced with no detail`;
 /** Text an agent types with a withdrawal from the venue. */
 const WITHDRAW_MEMO = `WITHDRAWMARK${run} take some of it home`;
+/** Text an agent types with an order on the mainnet venue. */
+const MAINNET_MEMO = `MAINNETMARK${run} an order for the mainnet venue`;
 const WORKSPACE_NAME = `Trading desk ${run}`;
 /** The only mandate recipient; the mandate gate never pays it. */
 const PAYEE = "0x000000000000000000000000000000000000b0b0";
@@ -109,7 +114,7 @@ const nowSeconds = () => Math.floor(Date.now() / 1000);
 
 type HyperliquidRules = NonNullable<NonNullable<PolicyDraft["venues"]>["hyperliquid"]>;
 
-/** An agent with its own wallet, under a policy that lets it trade BTC on the testnet. */
+/** An agent with its own wallet, under a policy that lets it trade BTC on one venue network. */
 interface Trader {
   agentId: PolicyDraft["requesters"][number];
   token: string;
@@ -122,16 +127,20 @@ let workspace: WorkspaceDetail;
 /** Trades within 50 USD an order and 200 a day, immediate-or-cancel or resting. */
 let trader: Trader;
 
-/** How a trader's wallet may trade BTC; the caps in whole USD. No withdrawals unless set. */
+/**
+ * How a trader's wallet may trade BTC; the caps in whole USD. On the testnet and with no
+ * withdrawals unless set.
+ */
 type TraderRules = Pick<HyperliquidRules, "timeInForce" | "submitWindowSeconds"> &
-  Partial<Pick<HyperliquidRules, "withdrawals">> & {
+  Partial<Pick<HyperliquidRules, "withdrawals" | "network">> & {
     perOrderUsd: string;
     perDayUsd: string;
   };
 
 /**
  * A policy for `agentId` that lets it pay on the local chain (so a mandate can be granted on its
- * wallet) and trade BTC on the Hyperliquid testnet within `rules`.
+ * wallet) and trade BTC on the Hyperliquid network `rules` name, the testnet unless named,
+ * within `rules`.
  */
 function policyFor(agentId: Trader["agentId"], rules: TraderRules): PolicyDraft {
   return {
@@ -144,7 +153,7 @@ function policyFor(agentId: Trader["agentId"], rules: TraderRules): PolicyDraft 
     approvals: { threshold: 1, ttlSeconds: 3600 },
     venues: {
       hyperliquid: {
-        network: TESTNET,
+        network: rules.network ?? TESTNET,
         markets: [{ asset: BTC, coin: "BTC", maxNotionalPerOrderUsd6: usd6(rules.perOrderUsd) }],
         maxNotionalPerDayUsd6: usd6(rules.perDayUsd),
         timeInForce: rules.timeInForce,
@@ -157,7 +166,7 @@ function policyFor(agentId: Trader["agentId"], rules: TraderRules): PolicyDraft 
 
 /**
  * A new agent with its own wallet, a policy from {@link policyFor} approved on the signer's
- * confirmation page, and an account at the venue holding 1,000 USDC.
+ * confirmation page, and an account holding 1,000 USDC at the venue of the policy's network.
  */
 async function newTrader(name: string, rules: TraderRules): Promise<Trader> {
   const created = await ada.api.call("createAgent", {
@@ -171,7 +180,11 @@ async function newTrader(name: string, rules: TraderRules): Promise<Trader> {
   });
   await ada.confirm(request.id);
   expect((await ada.settled(request.id)).status).toBe("executed");
-  await seedVenueAccount(created.wallet.address, "1000");
+  await seedVenueAccount(
+    created.wallet.address,
+    "1000",
+    rules.network === MAINNET ? "mainnet" : "testnet",
+  );
   return {
     agentId,
     token: created.token,
@@ -191,7 +204,7 @@ interface OrderInput {
   memo?: string;
 }
 
-/** The agent proposes a BTC order on the testnet; the answer is checked. */
+/** The agent proposes a BTC order, on the testnet unless `order` names a network; checked. */
 async function proposeOrder(agent: AgentConnection, order: OrderInput): Promise<Proposal> {
   return Proposal.parse(
     await agent.call("propose_order", {
@@ -244,20 +257,6 @@ async function toolRefusal(
   );
   if (!(outcome instanceof ToolRefused)) {
     throw new Error(`expected the tool to refuse, got ${String(outcome)}`);
-  }
-  return { code: outcome.code, detail: outcome.detail };
-}
-
-/** The code and reason the API refused `attempt` with; fails when it was not refused. */
-async function apiRefusal(
-  attempt: Promise<unknown>,
-): Promise<{ code: string; detail: string | undefined }> {
-  const outcome = await attempt.then(
-    () => null,
-    (error: unknown) => error,
-  );
-  if (!(outcome instanceof ApiError)) {
-    throw new Error(`expected the API to refuse, got ${String(outcome)}`);
   }
   return { code: outcome.code, detail: outcome.detail };
 }
@@ -341,16 +340,23 @@ async function walletVenue(wallet: WalletSummary): Promise<VenueAccount> {
   return detail.venue;
 }
 
-/** Expect `body` to be signed by `wallet`, recovered here from its bytes alone. */
-async function expectSignedBy(body: string, wallet: WalletSummary): Promise<void> {
+/**
+ * Expect `body` to be signed by `wallet` for `network`'s venue, the testnet unless named,
+ * recovered here from its bytes alone.
+ */
+async function expectSignedBy(
+  body: string,
+  wallet: WalletSummary,
+  network: FakeNetwork = "testnet",
+): Promise<void> {
   const parsed = parseExchangeBody(body);
   if (typeof parsed === "string") throw new Error(`the venue could not read a request: ${parsed}`);
-  expect(isAddressEqual(await recoverExchangeSigner(parsed, "testnet"), wallet.address)).toBe(true);
+  expect(isAddressEqual(await recoverExchangeSigner(parsed, network), wallet.address)).toBe(true);
 }
 
 // --- the server's way to the venue ------------------------------------------------------------
 
-/** The Compose network the server reaches venues on, and the only one the fake venue is on. */
+/** The Compose network the server reaches venues on, and the only one the fake venues are on. */
 const venueNetwork = () => `${stack.project}_chain`;
 
 async function serverContainer(): Promise<string> {
@@ -371,8 +377,8 @@ async function resolvesVenue(container: string): Promise<boolean> {
 }
 
 /**
- * Cut the server off from the venue, as a network fault would: it can still sign, read its
- * database and answer people, but nothing it posts can reach the venue.
+ * Cut the server off from the venues, as a network fault would: it can still sign, read its
+ * database and answer people, but nothing it posts can reach either venue.
  */
 async function cutServerFromVenue(container: string): Promise<void> {
   await docker("network", "disconnect", venueNetwork(), container);
@@ -404,7 +410,7 @@ test.beforeAll(async () => {
   await waitUntilHealthy();
 });
 
-// A failed gate prints what the fake venue took, which no container log shows.
+// A failed gate prints what the fake venues took, which no container log shows.
 test.afterEach(async () => {
   const info = test.info();
   if (info.status === info.expectedStatus) return;
@@ -425,10 +431,13 @@ test("a fresh installation, and an agent's wallet allowed to trade BTC on the Hy
   });
 });
 
-test("an agent has exactly eight tools, and sees the testnet venue and no other", async () => {
+test("an agent has exactly eight tools, and sees the two venues the server is configured with", async () => {
   expect(await trader.agent.tools()).toEqual(AGENT_TOOLS);
   const me = await trader.agent.call("whoami");
-  expect(me.venues).toEqual([{ network: TESTNET, name: "Hyperliquid testnet" }]);
+  expect(me.venues).toEqual([
+    { network: TESTNET, name: "Hyperliquid testnet" },
+    { network: MAINNET, name: "Hyperliquid mainnet" },
+  ]);
 });
 
 test("an order proposal becomes exactly one order at the venue after a passkey approval on the signer's page", async () => {
@@ -587,10 +596,11 @@ test("the agent cancels a resting order with no passkey, also while the workspac
   ]);
 });
 
-test("an order outside the wallet's policy, and any mainnet order or policy, is refused before anyone is asked", async () => {
+test("an order outside the wallet's policy, also one on a venue network the policy does not name, is refused before anyone is asked", async () => {
   const pendingBefore = await pendingApprovals();
   const intentsBefore = await intentCount(trader.agent);
   const requestsBefore = (await venueExchangeLog()).length;
+  const mainnetRequestsBefore = (await venueExchangeLog("mainnet")).length;
 
   // A market the venue lists and the policy does not.
   expect(
@@ -615,40 +625,133 @@ test("an order outside the wallet's policy, and any mainnet order or policy, is 
       proposeOrder(trader.agent, { side: "buy", size: "0.001", limitPrice: "65000" }),
     ),
   ).toEqual({ code: "policy_denied", detail: "over_per_tx_cap" });
-  // Mainnet: no server is configured with it (D2), so there is no such venue here.
+  // A venue the server is configured with, on a network the wallet's policy does not name: its
+  // approved rules are for the testnet.
   expect(
     await toolRefusal(
       proposeOrder(trader.agent, {
-        network: "hyperliquid:mainnet",
+        network: MAINNET,
         side: "buy",
         size: "0.0002",
         limitPrice: "65000",
       }),
     ),
-  ).toEqual({ code: "invalid_request", detail: "venue_not_configured" });
-  // Nor can a policy name it.
-  const mainnet = policyFor(trader.agentId, {
-    timeInForce: ["Ioc"],
-    perOrderUsd: "50",
-    perDayUsd: "200",
-    submitWindowSeconds: 300,
-  });
-  const rules = mainnet.venues?.hyperliquid;
-  if (rules === undefined) throw new Error("the policy has no venue rules");
-  rules.network = "hyperliquid:mainnet";
-  expect(
-    await apiRefusal(
-      ada.api.call("requestPolicy", {
-        params: { workspaceId: workspace.id, walletId: trader.wallet.id },
-        body: { draft: mainnet },
-      }),
-    ),
-  ).toEqual({ code: "invalid_request", detail: "venue_not_allowed" });
+  ).toEqual({ code: "policy_denied", detail: "venue_not_allowed" });
 
-  // No approval opened, nothing was recorded, and nothing reached the venue.
+  // No approval opened, nothing was recorded, and nothing reached either venue.
   expect(await pendingApprovals()).toBe(pendingBefore);
   expect(await intentCount(trader.agent)).toBe(intentsBefore);
   expect((await venueExchangeLog()).length).toBe(requestsBefore);
+  expect((await venueExchangeLog("mainnet")).length).toBe(mainnetRequestsBefore);
+});
+
+test("a wallet whose approved policy names Hyperliquid mainnet places an order on the mainnet venue, and neither venue accepts the other network's signature", async () => {
+  await setVenueUniverse(UNIVERSE, "mainnet");
+  await setVenueBook(BTC, "63000", "64000", "mainnet");
+  // Its policy, approved with the passkey like every other, names mainnet; its account is at
+  // the mainnet venue.
+  const mainnet = await newTrader("Mainnet", {
+    network: MAINNET,
+    timeInForce: ["Ioc"],
+    perOrderUsd: "25",
+    perDayUsd: "30",
+    submitWindowSeconds: 300,
+  });
+  const address = mainnet.wallet.address.toLowerCase();
+  // An account at the testnet venue too, so a request that venue refuses below is refused for
+  // the signer it recovers and not for a missing account.
+  await seedVenueAccount(mainnet.wallet.address, "1000", "testnet");
+  try {
+    const me = await mainnet.agent.call("whoami");
+    expect(JSON.stringify(me.wallets)).toContain(MAINNET);
+
+    const proposal = await proposeOrder(mainnet.agent, {
+      network: MAINNET,
+      side: "buy",
+      size: "0.0002",
+      limitPrice: "65000",
+      timeInForce: "Ioc",
+      memo: MAINNET_MEMO,
+    });
+    // A person approves it, as every order.
+    expect(proposal).toMatchObject({
+      authorizedBy: "person",
+      mandateId: null,
+      status: "pending_approval",
+    });
+    const approvalId = approvalIdOf(proposal);
+    expect(await signedRequest(approvalId)).toBeNull();
+    const link = await ada.confirmationLink(approvalId);
+    const view = await ada.readConfirmation(link);
+    expect(view).toMatchObject({ approvalId, kind: "approve-intent", state: "open" });
+    expect(view.title).toContain("Buy 0.0002 BTC");
+    expect(lineValue(view, "Network")).toContain(MAINNET);
+    await ada.approveOnConfirmationPage(link, view);
+    await ada.api.call("collectApproval", { params: { approvalId }, body: {} });
+    const filled = await settles(proposal.intentId);
+    expect(filled.status).toBe("filled");
+    expect(Number(filled.order?.filledSize)).toBe(0.0002);
+
+    // One request reached the mainnet venue, which recovered the wallet from a mainnet
+    // signature: byte for byte the request the signer signed once.
+    const signed = await signedOnce(approvalId);
+    const requests = await requestsFor(signed.cloid, "mainnet");
+    expect(requests).toHaveLength(1);
+    const [posted] = requests;
+    if (posted === undefined) throw new Error("no request reached the mainnet venue");
+    expect(posted).toMatchObject({ accepted: true, actionType: "order", dropped: false });
+    expect(posted.signer).toBe(address);
+    expect(posted.body).toBe(signed.request);
+    await expectSignedBy(posted.body, mainnet.wallet, "mainnet");
+    expect(await decisionsAbout(approvalId, "sign-venue")).toEqual([
+      expect.objectContaining({ outcome: "allowed" }),
+    ]);
+    expect(
+      (await venueOrders("mainnet"))
+        .filter((order) => order.cloid === signed.cloid.toLowerCase())
+        .map((order) => [order.status, Number(order.filledSize)]),
+    ).toEqual([["filled", 0.0002]]);
+
+    // The testnet venue was sent nothing for this wallet or this order.
+    expect(
+      (await venueExchangeLog("testnet")).filter((record) => record.signer === address),
+    ).toEqual([]);
+    expect(await requestsFor(signed.cloid, "testnet")).toEqual([]);
+
+    // The same bytes posted to the testnet venue: it recovers another signer from them, so it
+    // refuses them, though the wallet has an account there.
+    const crossed = await postToVenue(posted.body, "testnet");
+    expect(crossed.status).toBe(200);
+    expect(crossed.answer).toMatchObject({ status: "err" });
+    const onTestnet = await requestsFor(signed.cloid, "testnet");
+    expect(onTestnet.map((record) => record.accepted)).toEqual([false]);
+    expect(onTestnet[0]?.signer).not.toBeNull();
+    expect(onTestnet[0]?.signer).not.toBe(address);
+    expect(
+      (await venueOrders("testnet")).filter((order) => order.cloid === signed.cloid.toLowerCase()),
+    ).toEqual([]);
+
+    // And the other way: an order the testnet venue took from the first trader, posted to the
+    // mainnet venue, which now holds an account for that wallet too, recovers to another signer.
+    const traderAddress = trader.wallet.address.toLowerCase();
+    const testnetOrder = (await venueExchangeLog("testnet")).find(
+      (record) =>
+        record.accepted && record.actionType === "order" && record.signer === traderAddress,
+    );
+    if (testnetOrder === undefined) throw new Error("the testnet venue took no order from Trader");
+    await seedVenueAccount(trader.wallet.address, "1000", "mainnet");
+    const reverse = await postToVenue(testnetOrder.body, "mainnet");
+    expect(reverse.status).toBe(200);
+    expect(reverse.answer).toMatchObject({ status: "err" });
+    const onMainnet = (await venueExchangeLog("mainnet")).filter(
+      (record) => record.body === testnetOrder.body,
+    );
+    expect(onMainnet.map((record) => record.accepted)).toEqual([false]);
+    expect(onMainnet[0]?.signer).not.toBeNull();
+    expect(onMainnet[0]?.signer).not.toBe(traderAddress);
+  } finally {
+    await mainnet.agent.close();
+  }
 });
 
 test("an order is never signed under a mandate: with a live mandate, it still waits for a person (D7)", async () => {
@@ -1130,24 +1233,26 @@ test("an order's approval is announced to the webhook, signed, with no order fie
 const get = (url: string): ProbeRequest => ({ method: "GET", url });
 const post = (url: string): ProbeRequest => ({ method: "POST", url });
 
-test("the signer cannot reach the venue, which the server reaches, and no signer route signs typed data, a hash or a raw action", async () => {
-  const byName = "http://fake-hyperliquid:8080/healthz";
-  const byAddress = `http://${await venueAddress()}:8080/healthz`;
+test("the signer cannot reach either venue, which the server reaches, and no signer route signs typed data, a hash or a raw action", async () => {
+  const venues = [
+    get("http://fake-hyperliquid:8080/healthz"),
+    get(`http://${await venueAddress()}:8080/healthz`),
+    get("http://fake-hyperliquid-mainnet:8080/healthz"),
+    get(`http://${await venueAddress("mainnet")}:8080/healthz`),
+  ];
   const server = await serverContainer();
   const [signer] = await containersOf("signer");
   if (signer === undefined) throw new Error("the stack has no signer container");
 
-  // The control: the server resolves the fake venue and reaches it by name and by address.
-  expect(await reachFrom(server, [get(byName), get(byAddress)])).toEqual({
+  // The control: the server resolves each fake venue and reaches it by name and by address.
+  expect(await reachFrom(server, venues)).toEqual({
     resolvesVenue: true,
-    statuses: [200, 200],
+    statuses: [200, 200, 200, 200],
   });
-  // The signer does neither, and reaches nothing outside its own networks.
-  expect(
-    await reachFrom(signer, [get(byName), get(byAddress), get("https://example.com/")]),
-  ).toEqual({
+  // The signer does none of that, and reaches nothing outside its own networks.
+  expect(await reachFrom(signer, [...venues, get("https://example.com/")])).toEqual({
     resolvesVenue: false,
-    statuses: ["unreachable", "unreachable", "unreachable"],
+    statuses: ["unreachable", "unreachable", "unreachable", "unreachable", "unreachable"],
   });
 
   // From the signing network, where the server is: no route signs typed data, a hash or an
@@ -1171,23 +1276,30 @@ test("the signer cannot reach the venue, which the server reaches, and no signer
   });
 });
 
-test("a server configured with a Hyperliquid mainnet venue refuses to start, by network or by its API's host (D2)", async () => {
-  const refused = "Hyperliquid mainnet is refused";
-  // The control: the same start with the testnet venue gets past its venues and stops only at
-  // the database it is given, which no container can reach.
-  const testnet = await bootServerWith([
+test("a server whose venues file pairs one of Hyperliquid's own hosts with the wrong network refuses to start", async () => {
+  // The control: this stack's own venues file, both networks on fakes, gets past its venues and
+  // stops only at the database it is given, which no container can reach.
+  const both = await bootServerWith([
     { network: TESTNET, apiUrl: "http://fake-hyperliquid:8080" },
+    { network: MAINNET, apiUrl: "http://fake-hyperliquid-mainnet:8080" },
   ]);
-  expect(testnet.output).not.toContain(refused);
-  expect(testnet.output).toMatch(/"code":"(ENOTFOUND|EAI_AGAIN)"/);
-  expect(testnet.exitCode, testnet.output).toBe(1);
+  expect(both.output).not.toContain("is Hyperliquid's");
+  expect(both.output).toMatch(/"code":"(ENOTFOUND|EAI_AGAIN)"/);
+  expect(both.exitCode, both.output).toBe(1);
 
-  for (const venues of [
-    [{ network: "hyperliquid:mainnet", apiUrl: "http://fake-hyperliquid:8080" }],
-    [{ network: TESTNET, apiUrl: "https://api.hyperliquid.xyz" }],
-  ]) {
+  const wrong: [unknown, string][] = [
+    [
+      [{ network: TESTNET, apiUrl: "https://api.hyperliquid.xyz" }],
+      "api.hyperliquid.xyz is Hyperliquid's mainnet API",
+    ],
+    [
+      [{ network: MAINNET, apiUrl: "https://api.hyperliquid-testnet.xyz" }],
+      "api.hyperliquid-testnet.xyz is Hyperliquid's testnet API",
+    ],
+  ];
+  for (const [venues, refusal] of wrong) {
     const boot = await bootServerWith(venues);
-    expect(boot.output, JSON.stringify(venues)).toContain(refused);
+    expect(boot.output, JSON.stringify(venues)).toContain(refusal);
     expect(boot.exitCode, boot.output).toBe(1);
   }
 });
@@ -1195,7 +1307,7 @@ test("a server configured with a Hyperliquid mainnet venue refuses to start, by 
 test("what an agent typed with an order or a withdrawal, and every signed request, is in no column of the database in the clear", async () => {
   const bodies = [
     ...new Set(
-      (await venueExchangeLog())
+      [...(await venueExchangeLog()), ...(await venueExchangeLog("mainnet"))]
         .filter(
           (record) =>
             record.accepted && (record.actionType === "order" || record.actionType === "withdraw3"),
@@ -1210,7 +1322,13 @@ test("what an agent typed with an order or a withdrawal, and every signed reques
     return [parsed.signature.r.slice(2), parsed.signature.s.slice(2)];
   });
   const url = await databaseUrl();
-  const scan = await scanForMarkers(url, [ORDER_MEMO, NOTICE_MEMO, WITHDRAW_MEMO, ...signatures]);
+  const scan = await scanForMarkers(url, [
+    ORDER_MEMO,
+    NOTICE_MEMO,
+    WITHDRAW_MEMO,
+    MAINNET_MEMO,
+    ...signatures,
+  ]);
   expect(scan.hits).toEqual([]);
   // The control: a name a person typed is readable on purpose. If the scanner cannot find even
   // that, it is blind and the assertion above means nothing.

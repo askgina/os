@@ -4,7 +4,7 @@ This project lets AI agents propose payments from wallets they cannot spend from
 A person approves each payment with a passkey, on the signer's confirmation page. A separate
 signer service checks that passkey approval itself, checks the wallet's rules, and signs exactly
 one transaction. An agent can also propose a limit order on a Hyperliquid perpetual market, on
-Hyperliquid's testnet only: the signer builds and signs it after the same passkey approval, and
+Hyperliquid's testnet or mainnet: the signer builds and signs it after the same passkey approval, and
 the control plane posts it to the venue (see "A venue order, end to end").
 
 Everything runs on hardware you control. No hosted service is required.
@@ -21,23 +21,23 @@ files fix. Two companion documents go deeper:
 Each term below has one meaning everywhere in this repository. The definitions follow the plan's
 "Terms" list.
 
-| Term           | Meaning                                                                                                                                                                   |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Workspace      | The unit people share. It has members, agents and wallets.                                                                                                                |
-| Member         | A person in a workspace with one role: `owner`, `approver` or `viewer`.                                                                                                   |
-| Approver       | A member whose passkey the signer accepts for that workspace.                                                                                                             |
-| Agent          | A program you bring that talks to the system over MCP (Model Context Protocol). It has a token and one wallet of its own.                                                 |
-| Wallet         | An EVM address whose private key lives only in the signer. Kind `agent` or `treasury`. The same address is the wallet's Hyperliquid account.                              |
-| Intent         | One operation an agent proposes, such as "send 0.25 ETH to 0x1111…" or "buy 0.01 BTC perpetual at 65,000 USD". It never changes after it is made. Its hash identifies it. |
-| Venue          | An exchange the signer signs actions for but never talks to. One exists: Hyperliquid's testnet (`hyperliquid:testnet`). The control plane posts what the signer signed.   |
-| Policy         | The rules for one wallet: chains, which agents may propose, caps, allowed recipients and contracts, fee ceiling, how many approvals. The signer holds it.                 |
-| Envelope       | A small statement of one thing a person authorizes, such as "sign this intent under this policy". Its digest is what the passkey signs.                                   |
-| Authorization  | An envelope together with the passkey signatures (WebAuthn "assertions") over it.                                                                                         |
-| Mandate        | An approval given once, in advance, for one agent's transfers from one wallet to listed recipients, within caps, until an end time. The signer holds it.                  |
-| Signer         | The isolated service that holds the wallet keys and decides whether to sign.                                                                                              |
-| Control plane  | The server that people and agents talk to. It can ask the signer. It cannot make the signer sign.                                                                         |
-| World          | The Workflow SDK's name for its storage and job-queue backend.                                                                                                            |
-| KEK / data key | A key-encryption key kept outside the database (a keyring file, or an OpenBao Transit key), and a per-run or per-workspace key that the KEK wraps inside it.              |
+| Term           | Meaning                                                                                                                                                                                                          |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workspace      | The unit people share. It has members, agents and wallets.                                                                                                                                                       |
+| Member         | A person in a workspace with one role: `owner`, `approver` or `viewer`.                                                                                                                                          |
+| Approver       | A member whose passkey the signer accepts for that workspace.                                                                                                                                                    |
+| Agent          | A program you bring that talks to the system over MCP (Model Context Protocol). It has a token and one wallet of its own.                                                                                        |
+| Wallet         | An EVM address whose private key lives only in the signer. Kind `agent` or `treasury`. The same address is the wallet's Hyperliquid account.                                                                     |
+| Intent         | One operation an agent proposes, such as "send 0.25 ETH to 0x1111…" or "buy 0.01 BTC perpetual at 65,000 USD". It never changes after it is made. Its hash identifies it.                                        |
+| Venue          | An exchange the signer signs actions for but never talks to. One exists: Hyperliquid, on its testnet (`hyperliquid:testnet`) or mainnet (`hyperliquid:mainnet`). The control plane posts what the signer signed. |
+| Policy         | The rules for one wallet: chains, which agents may propose, caps, allowed recipients and contracts, fee ceiling, how many approvals. The signer holds it.                                                        |
+| Envelope       | A small statement of one thing a person authorizes, such as "sign this intent under this policy". Its digest is what the passkey signs.                                                                          |
+| Authorization  | An envelope together with the passkey signatures (WebAuthn "assertions") over it.                                                                                                                                |
+| Mandate        | An approval given once, in advance, for one agent's transfers from one wallet to listed recipients, within caps, until an end time. The signer holds it.                                                         |
+| Signer         | The isolated service that holds the wallet keys and decides whether to sign.                                                                                                                                     |
+| Control plane  | The server that people and agents talk to. It can ask the signer. It cannot make the signer sign.                                                                                                                |
+| World          | The Workflow SDK's name for its storage and job-queue backend.                                                                                                                                                   |
+| KEK / data key | A key-encryption key kept outside the database (a keyring file, or an OpenBao Transit key), and a per-run or per-workspace key that the KEK wraps inside it.                                                     |
 
 The schemas for intent, policy and envelope are in
 [`packages/protocol/src/intent.ts`](../packages/protocol/src/intent.ts),
@@ -67,7 +67,7 @@ flowchart LR
   end
   subgraph chainNet [chain network]
     R[(EVM JSON-RPC)]
-    H[(Hyperliquid testnet API, when VENUES_FILE names it)]
+    H[(Hyperliquid API, testnet or mainnet, when VENUES_FILE names it)]
   end
   B[Browser with passkey] -->|HTTPS, PUBLIC_ORIGIN and APPROVE_ORIGIN| C
   A -->|MCP with bearer token| C
@@ -282,7 +282,7 @@ the venue instead of broadcasting it to a chain
 
 | Step            | EVM payment                                              | Venue order                                                                                                                                                 |
 | --------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Proposed with   | `propose_transfer`, `propose_contract_call`              | `propose_order`; a withdrawal is `propose_transfer` on `hyperliquid:testnet`                                                                                |
+| Proposed with   | `propose_transfer`, `propose_contract_call`              | `propose_order`; a withdrawal is `propose_transfer` on `hyperliquid:testnet` or `hyperliquid:mainnet`                                                       |
 | Checked before  | The policy, a simulation                                 | The policy's venue rules, and the venue's metadata: the coin still at the policy's index and listed (`market_metadata_mismatch`), the tick (`invalid_tick`) |
 | Covered by      | One approval, or a mandate                               | One approval only: no mandate covers an order or a withdrawal (D7)                                                                                          |
 | Approved on     | The signer's confirmation page                           | The same page, showing market, index, side, size, limit price, notional, time in force, reduce-only, the submit window, and that caps are not loss caps     |
@@ -298,7 +298,7 @@ sequenceDiagram
   autonumber
   participant Ag as Agent (MCP client)
   participant S as Server (control plane)
-  participant H as Venue (Hyperliquid testnet)
+  participant H as Venue (Hyperliquid testnet or mainnet)
   participant P as Person (confirmation page + passkey)
   participant G as Signer
   Ag->>S: propose_order(network, coin, side, size, limitPrice, timeInForce, reduceOnly, memo)
@@ -321,10 +321,14 @@ sequenceDiagram
   S->>H: POST /exchange
 ```
 
-The signer signs only `hyperliquid:testnet`, a constant in its code, and the server stops at
-boot when `VENUES_FILE` names mainnet: whether mainnet may ship is the owner's open question
-(D2). Fills, positions and the account's value come from the venue through the control plane;
-the signer sees none of them, and the web app labels them as reported, not verified. What each
+Both networks are supported (decided 2026-11-16: mainnet is supported). The signer signs for the
+network the wallet's approved policy names, and on mainnet a signature moves real funds. The
+server stops at boot only when `VENUES_FILE` pairs one of Hyperliquid's own hosts with the other
+network (`api.hyperliquid.xyz` must name `hyperliquid:mainnet`, `api.hyperliquid-testnet.xyz`
+must name `hyperliquid:testnet`), and refuses a policy draft whose venue network it has no venue
+for (`venue_not_configured`). Fills, positions and the account's value come from the venue
+through the control plane; the signer sees none of them, and the web app labels them as
+reported, not verified. What each
 party can do is in [the threat model](./threat-model.md#venue-orders); the exact signing and
 cancel rules are in [the approval protocol, section 8](./approval-protocol.md#venue-orders).
 
@@ -643,7 +647,7 @@ What each party can do with them is in
 | Mutual TLS certificates and keys between the hosts                                                                                                                                                                                                    | Files in each host's secret volumes, installed by `init` from the operator's import directory                                                                                                                   | The operator                                                                                                   |
 | Each venue request the signer signed: its nonce at the venue, expiry, client order id and the exact body; every cancel it signed for an order; each wallet's last venue nonce per network; an order's notional in the spend ledger (`usd6`)           | Signer's SQLite, `venue_signatures`, `venue_cancels`, `venue_nonces`, `spends`                                                                                                                                  | Only the signer                                                                                                |
 | What the venue answered about each signed request: status, venue order id, filled size, average price, the venue's refusal text, with the request body sealed                                                                                         | Postgres, `os.venue_orders`                                                                                                                                                                                     | The server                                                                                                     |
-| The venues the server posts to                                                                                                                                                                                                                        | A JSON file named by `VENUES_FILE`; never a mainnet venue                                                                                                                                                       | The operator                                                                                                   |
+| The venues the server posts to                                                                                                                                                                                                                        | A JSON file named by `VENUES_FILE`: at most one entry per network, testnet or mainnet                                                                                                                           | The operator                                                                                                   |
 | Rate-limit buckets shared by every server replica                                                                                                                                                                                                     | Postgres, `os.rate_limits` (UNLOGGED: a crash or failover empties it)                                                                                                                                           | The server                                                                                                     |
 | Confirmation records, the hash of each link's token, assertions made on the confirmation page, possession challenges and proofs of new approver keys                                                                                                  | Signer's SQLite                                                                                                                                                                                                 | Only the signer                                                                                                |
 | Confirmation request secret                                                                                                                                                                                                                           | A file read by the signer and, as a copy, by the `approve` service                                                                                                                                              | The operator                                                                                                   |

@@ -190,7 +190,7 @@ An immediate-or-cancel order is already done; a good-till-cancelled or add-liqui
 may rest at the venue with no way for this system to cancel it. That is why the venue rules a
 policy starts from allow immediate or cancel only. After a restore, compare each wallet's resting
 orders on its wallet page, as the venue reports them, with the orders people approved since the
-backup (see "Venue orders (Hyperliquid testnet)").
+backup (see "Venue orders (Hyperliquid)").
 
 **Deleted workspaces stay in backups.** A backup set taken before a deletion holds the deleted
 workspace whole: `signer-data` holds its wallet keys, signed transactions, confirmations and
@@ -426,19 +426,23 @@ the payment. Such a transaction can still be cancelled: the cancel request is ne
 does not refuse it. The chain is not part of a backup; whatever attempt was mined meanwhile is
 found again by its hash.
 
-## Venue orders (Hyperliquid testnet)
+## Venue orders (Hyperliquid)
 
 An agent can propose a limit order on a Hyperliquid perpetual market with `propose_order`, and a
 withdrawal of USDC from the wallet's Hyperliquid account to the wallet's own address with
-`propose_transfer` on `hyperliquid:testnet`. A person approves each one on the confirmation page;
-the signer builds and signs the request, and the server posts it to the venue and follows it
-(`docs/architecture.md`, "A venue order, end to end"; `specs/non-evm-operations.md`).
+`propose_transfer` on the venue's network (`hyperliquid:testnet` or `hyperliquid:mainnet`). A
+person approves each one on the confirmation page; the signer builds and signs the request, and
+the server posts it to the venue and follows it (`docs/architecture.md`, "A venue order, end to
+end"; `specs/non-evm-operations.md`).
 
-Status: **testnet only, off by default.** The encoder and its signatures match the venue SDK's own
-signed vectors and the signer's routes are unit-tested, both green in CI; the server's half is
-unit-tested against a fake venue, and the real-stack gate is pending. Nothing has run against
-the real Hyperliquid testnet yet: no funded testnet account is in hand. Mainnet is refused:
-turning it on is the owner's open decision (D2).
+Status: **testnet and mainnet supported, off by default.** Decided 2026-11-16: mainnet is
+supported. A venue is on only when you list it in `VENUES_FILE` and people approve, with
+passkeys, wallet rules that name that network; there is no other switch. On mainnet, orders and
+withdrawals move real funds. The encoder and its signatures match the venue SDK's own signed
+vectors; the signer's routes and the server's half are covered by unit tests, and release gates
+run them against a fake venue, also in mainnet mode. No real mainnet order with real funds has
+ever been placed with this software, and nothing has run against the real Hyperliquid testnet
+either: no funded testnet account is in hand.
 
 | Setting       | Service | Meaning                                                                                                                                                                                                                    |
 | ------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -446,13 +450,25 @@ turning it on is the owner's open decision (D2).
 
 The signer needs no setting: a wallet's policy carries its venue rules (markets with their asset
 index and per-order cap, a daily cap, the allowed time in force, a submit window of 5 to 300
-seconds, whether withdrawals are allowed), and the networks it signs for are in its code.
+seconds, whether withdrawals are allowed) and the network they apply to. The signer signs for
+whichever network the approved policy names.
 
-To turn it on, write the file, for example `deploy/venues.json`:
+To turn it on, write the file, for example `deploy/venues.json`. For mainnet:
+
+    [{ "network": "hyperliquid:mainnet", "apiUrl": "https://api.hyperliquid.xyz" }]
+
+For the testnet:
 
     [{ "network": "hyperliquid:testnet", "apiUrl": "https://api.hyperliquid-testnet.xyz" }]
 
-mount it into the server with an override, and start the stack with it
+Or both, at most one entry per network:
+
+    [
+      { "network": "hyperliquid:testnet", "apiUrl": "https://api.hyperliquid-testnet.xyz" },
+      { "network": "hyperliquid:mainnet", "apiUrl": "https://api.hyperliquid.xyz" }
+    ]
+
+Then mount it into the server with an override, and start the stack with it
 (`docker compose -f compose.yaml -f compose.venues.yaml up -d`):
 
     # compose.venues.yaml
@@ -465,19 +481,28 @@ mount it into the server with an override, and start the stack with it
 
 The split layout's control host inherits the setting from `compose.yaml`; the Kubernetes
 manifests do not set it. The server reaches the venue over the `chain` network, which has
-internet access. Then an owner adds venue rules to the wallet's policy in the web app, and people
-approve the new policy on the confirmation page like any policy change. The rules a policy
+internet access. Then an owner adds venue rules to the wallet's policy in the web app, choosing
+the network when both are configured, and people approve the new policy on the confirmation
+page like any policy change. The web app offers only the networks in `VENUES_FILE`, and the
+server refuses a policy draft that names any other (`venue_not_configured`). The rules a policy
 starts from allow immediate or cancel only, with no withdrawals.
 
-**The boot refusal.** The server does not start when `VENUES_FILE` names `hyperliquid:mainnet`,
-or any network with the host `api.hyperliquid.xyz`. It logs `failed to start` with
-`reason: "VENUES_FILE: Hyperliquid mainnet is refused until the owner decides D2 (whether and
-where mainnet venue support may ship); configure hyperliquid:testnet only"` and exits. A file
-that is not such an array, or that names a network twice, stops it too. The signer refuses a
-mainnet order on its own as well, whatever the policy says (`venue_not_allowed`).
+**What bounds an order.** The same on both networks: a passkey approval of every order on the
+signer's confirmation page, the markets in the wallet's rules, the per-order and per-day
+notional caps, and the submit window. The caps limit new orders, not losses: what can be lost is
+the account's value at the venue. Give a mainnet wallet's rules few markets and small caps.
 
-**Funding the account.** This system builds no deposit. The testnet account is funded from
-outside it, by a transfer from another funded testnet account, or by an ordinary EVM payment to
+**The boot check.** The server does not start when an entry pairs one of Hyperliquid's own hosts
+with the other network: `api.hyperliquid.xyz` must name `hyperliquid:mainnet`, and
+`api.hyperliquid-testnet.xyz` must name `hyperliquid:testnet`. It logs `failed to start` with
+`reason: "VENUES_FILE: api.hyperliquid.xyz is Hyperliquid's mainnet API; its entry must name
+hyperliquid:mainnet"` (or the testnet twin) and exits. Any other host, such as a proxy or a fake
+venue, is accepted with either network. A file that is not such an array (`VENUES_FILE: expected
+a JSON array of { network, apiUrl }`), that has more than two entries, or that names a network
+twice, stops it too.
+
+**Funding the account.** This system builds no deposit. The account is funded from outside it,
+by a transfer from another funded account on the same network, or by an ordinary EVM payment to
 the venue's bridge that people approve. Hyperliquid's testnet faucet pays only addresses that
 deposited on mainnet. Neither way has been tried here.
 

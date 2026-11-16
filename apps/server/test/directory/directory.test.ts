@@ -26,7 +26,11 @@ let t: TestContext;
 let workspaceId: WorkspaceId;
 
 beforeAll(async () => {
-  t = await createTestContext({ label: "directory" });
+  // Only mainnet is configured, so a testnet draft names a network this server lacks.
+  t = await createTestContext({
+    label: "directory",
+    config: { venues: [{ network: "hyperliquid:mainnet", apiUrl: "http://127.0.0.1:9" }] },
+  });
   const created = await t.owner.browser.api.call("createWorkspace", { body: { name: "Ops" } });
   workspaceId = created.id;
 });
@@ -93,6 +97,7 @@ describe("workspaces", () => {
     expect(state.approvers.map((a) => a.credentialId)).toEqual([t.owner.credentialId]);
     const detail = await t.owner.browser.api.call("getWorkspace", { params: { workspaceId } });
     expect(detail.members).toMatchObject([{ role: "owner", approver: "active" }]);
+    expect(detail.venueNetworks).toEqual(["hyperliquid:mainnet"]);
   });
 
   it("answers not_found to someone who is not a member", async () => {
@@ -336,6 +341,42 @@ describe("agents and wallets", () => {
         }),
       ),
     ).toBe("invalid_request");
+  });
+
+  it("takes venue rules for a configured network, mainnet included, and refuses any other", async () => {
+    const api = t.owner.browser.api;
+    const params = { workspaceId, walletId };
+    const withVenue = (network: "hyperliquid:testnet" | "hyperliquid:mainnet"): PolicyDraft => ({
+      ...draft(agentId),
+      venues: {
+        hyperliquid: {
+          network,
+          markets: [{ asset: 3, coin: "BTC", maxNotionalPerOrderUsd6: "1000000000" }],
+          maxNotionalPerDayUsd6: "5000000000",
+          timeInForce: ["Gtc", "Ioc"],
+          submitWindowSeconds: 60,
+          withdrawals: false,
+        },
+      },
+    });
+    const refused = await api
+      .call("requestPolicy", { params, body: { draft: withVenue("hyperliquid:testnet") } })
+      .then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+    if (!(refused instanceof ApiError)) throw new Error("expected the API to refuse");
+    expect([refused.code, refused.detail, refused.message]).toEqual([
+      "invalid_request",
+      "venue_not_configured",
+      "draft.venues: this venue network is not configured here",
+    ]);
+    const opened = await api.call("requestPolicy", {
+      params,
+      body: { draft: withVenue("hyperliquid:mainnet") },
+    });
+    const [row] = await t.ctx.db.select().from(approvals).where(eq(approvals.id, opened.id));
+    expect(row?.status).toBe("pending");
   });
 
   it("disabling an agent marks it disabled", async () => {

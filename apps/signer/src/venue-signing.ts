@@ -47,17 +47,14 @@ import { encodeMsgpack, jsonToMsgpack, MsgpackMap, msgpackToJson } from "./venue
  *
  * Approving an order includes the right to cancel it (owner decision D4): the signer signs
  * `cancelByCloid` for an order it signed, with no passkey, also while the workspace is paused.
+ *
+ * Testnet and mainnet are signed alike (decided 2026-11-16: mainnet is supported). The network
+ * an intent may use is the one the wallet's passkey-approved policy names in
+ * `venues.hyperliquid.network`; any other network is refused as `venue_not_allowed`.
  */
 
 /** Decision-log actions, distinct from the EVM `sign`, `reprice` and `cancel-transaction`. */
 export const VENUE_ACTIONS = { sign: "sign-venue", cancel: "cancel-venue-order" } as const;
-
-/**
- * The venue networks this signer signs for. Mainnet waits on owner decision D2
- * (`specs/non-evm-operations.md`): until it is answered, a mainnet venue intent is
- * refused as `policy_denied` with `venue_not_allowed`, whatever the wallet's policy names.
- */
-export const SIGNABLE_VENUE_NETWORKS: readonly VenueNetwork[] = ["hyperliquid:testnet"];
 
 const DAY_SECONDS = 86_400;
 
@@ -311,9 +308,6 @@ export function createVenueOperations(internals: VenueInternals) {
           throw new SignerFailure("envelope_mismatch");
         }
         if (intentHash(intent) !== envelope.intentHash) throw new SignerFailure("intent_mismatch");
-        if (!SIGNABLE_VENUE_NETWORKS.includes(intent.chainId)) {
-          throw new SignerFailure("policy_denied", "venue_not_allowed");
-        }
 
         internals.assertCanSign(envelope.workspaceId, wallet.wallet_id);
         if (internals.requireWorkspace(envelope.workspaceId).paused === 1) {
@@ -357,7 +351,8 @@ export function createVenueOperations(internals: VenueInternals) {
             (chainId, asset) => spent.get(`${chainId}|${asset}`) ?? 0n,
           );
           if (!decision.allowed) throw new SignerFailure("policy_denied", decision.code);
-          // `evaluateIntent` allows a venue intent only under the venue's rules.
+          // `evaluateIntent` allows a venue intent only under the venue's rules, and only for the
+          // network those rules name.
           const rules = live.policy.venues?.hyperliquid;
           if (rules === undefined) throw new SignerFailure("internal");
 

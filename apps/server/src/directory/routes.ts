@@ -390,8 +390,8 @@ export async function createInviteIn(
 
 /**
  * Open a `set-policy` request for a wallet, replacing one still waiting. Refused with
- * `invalid_request` for an approval threshold above the workspace's admin threshold, a chain not
- * configured here, or a requester that is not an agent of the workspace.
+ * `invalid_request` for an approval threshold above the workspace's admin threshold, a chain or
+ * venue network not configured here, or a requester that is not an agent of the workspace.
  */
 export async function openPolicyRequest(
   ctx: AppContext,
@@ -414,12 +414,15 @@ export async function openPolicyRequest(
   if (unknownChain !== undefined) {
     throw new HttpError("invalid_request", "draft.chains: a chain is not configured here");
   }
-  // Until the owner decides whether and where mainnet venue support may ship (D2).
-  if (draft.venues?.hyperliquid?.network === "hyperliquid:mainnet") {
+  const venueNetwork = draft.venues?.hyperliquid?.network;
+  if (
+    venueNetwork !== undefined &&
+    !ctx.config.venues.some((venue) => venue.network === venueNetwork)
+  ) {
     throw new HttpError(
       "invalid_request",
-      "draft.venues: Hyperliquid mainnet is not supported; use hyperliquid:testnet",
-      "venue_not_allowed",
+      "draft.venues: this venue network is not configured here",
+      "venue_not_configured",
     );
   }
   if (draft.requesters.length > 0) {

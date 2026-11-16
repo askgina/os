@@ -4,7 +4,9 @@ import { AssetRef, ChainId } from "./primitives.ts";
 /**
  * A place an order is executed that is not an EVM chain transaction. It takes the place of an
  * EVM chain id in a venue intent and its envelope. Only Hyperliquid's own chain ("HyperCore")
- * for now; a mainnet venue is refused by the server at boot until its owner decides otherwise.
+ * for now, on testnet and mainnet, both supported alike. The server pairs Hyperliquid's own API
+ * hosts with their network at boot: `api.hyperliquid.xyz` must be configured as mainnet and
+ * `api.hyperliquid-testnet.xyz` as testnet.
  */
 export const VenueNetwork = z.enum(["hyperliquid:testnet", "hyperliquid:mainnet"]);
 export type VenueNetwork = z.infer<typeof VenueNetwork>;

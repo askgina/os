@@ -736,9 +736,9 @@ hash. `/v1/sign`, signing under a mandate and repricing refuse a venue intent as
 `invalid_request`.
 
 **Signing** follows steps 1 to 7 of the signing rule above, with `envelope.chainId` a venue
-network, and then refuses a network this signer does not sign for: only `hyperliquid:testnet`
-until owner decision D2 of [`specs/non-evm-operations.md`](../specs/non-evm-operations.md) is
-answered (`policy_denied` with `venue_not_allowed`, whatever the policy says). Step 8 does not
+network, `hyperliquid:testnet` or `hyperliquid:mainnet`; the signer signs for whichever network
+the wallet's approved policy names, and an intent for any other network fails `evaluateIntent`
+(rule 3 of the venue rules above: `policy_denied` with `venue_not_allowed`). Step 8 does not
 apply. In one database transaction with nothing awaited inside it: the fence, the lifecycle,
 the pause, the policy hash and the approvers are checked again; the envelope nonce is unused
 (`nonce_reused`); `evaluateIntent` against the 24-hour ledger passes (`policy_denied`); the

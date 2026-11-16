@@ -6,7 +6,7 @@ import {
   orderNotionalUsd6,
   VENUE_NETWORK_NAMES,
   type VenueIntent,
-  type VenueNetwork,
+  VenueNetwork,
   type WalletPolicy,
 } from "@askgina/os-protocol";
 import { formatUnits, parseUnits, UnitsError } from "./format.ts";
@@ -59,7 +59,7 @@ export interface MarketRow {
 export interface VenueRulesState {
   /** Whether the wallet may act on Hyperliquid at all; off leaves `venues` out of the policy. */
   enabled: boolean;
-  /** Kept from the current rules; new rules are for testnet only (mainnet waits on its owner). */
+  /** Kept from the current rules; new rules start on the first network this server has set up. */
   network: VenueNetwork;
   markets: MarketRow[];
   /** Most notional per 24 hours, in whole USD, as typed. */
@@ -81,15 +81,21 @@ export function newMarketRow(): MarketRow {
 }
 
 /**
- * What the venue section starts from: the current rules, or none, with the defaults a new set of
- * rules starts with when turned on: testnet, immediate or cancel only (an order that cannot rest
- * cannot be left behind at the venue), a 60-second submit window and no withdrawals.
+ * What the venue section starts from: the current rules, which keep their network, or none, with
+ * the defaults a new set of rules starts with when turned on: the first network the server has
+ * set up (`configured`, testnet before mainnet), immediate or cancel only (an order that cannot
+ * rest cannot be left behind at the venue), a 60-second submit window and no withdrawals.
  */
-export function venueRulesState(rules: HyperliquidRules | undefined): VenueRulesState {
+export function venueRulesState(
+  rules: HyperliquidRules | undefined,
+  configured: readonly VenueNetwork[],
+): VenueRulesState {
   if (!rules) {
     return {
       enabled: false,
-      network: "hyperliquid:testnet",
+      network:
+        VenueNetwork.options.find((network) => configured.includes(network)) ??
+        "hyperliquid:testnet",
       markets: [newMarketRow()],
       maxPerDay: "",
       timeInForce: ["Ioc"],
@@ -112,6 +118,20 @@ export function venueRulesState(rules: HyperliquidRules | undefined): VenueRules
     submitWindowSeconds: String(rules.submitWindowSeconds),
     withdrawals: rules.withdrawals,
   };
+}
+
+/**
+ * The networks the venue section offers: those the server has set up, testnet before mainnet,
+ * plus the network of rules already in force when the server no longer sets it up, so the
+ * section shows what the policy says. The server refuses rules for a network it has not set up.
+ */
+export function venueNetworkChoices(
+  configured: readonly VenueNetwork[],
+  state: Pick<VenueRulesState, "enabled" | "network">,
+): VenueNetwork[] {
+  return VenueNetwork.options.filter(
+    (network) => configured.includes(network) || (state.enabled && network === state.network),
+  );
 }
 
 function usd6(text: string, what: string): bigint {

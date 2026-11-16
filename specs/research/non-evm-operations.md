@@ -124,12 +124,12 @@ For every venue, the same three pieces. The table is the recommendation; the rea
 
 ### O1. Which venue first
 
-| Option                               | Size                                                                                                                              | Guarantees it keeps                                                                                                                                      | What it leaves open                                                                                                                                                  |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A. Hyperliquid limit orders, testnet | One builder module, a msgpack encoder for a closed set of types, one vault method, one sign route, one cancel route, venue client | one signature per approval; one placement (venue nonce); not usable after `expiresAfter`; cancel by cloid; deposit via existing EVM transfer bounds loss | leverage set at the venue; fills reported by the control plane; testnet funding needs a mainnet deposit or a transfer from a funded testnet account                  |
-| B. Polymarket V2 orders              | A plus API-key derivation (second typed data), Deposit Wallet or allowlisted EOA, pUSD wrapping and approvals                     | one signature per approval; one fill set per order hash                                                                                                  | no signed expiry, no per-order on-chain cancel; operator honours cancels; account-wide pause only after ≥ 100 blocks; the venue publishes access restrictions (F4.7) |
-| C. Signer-built EVM swap             | One operation kind and one calldata builder in the existing EVM path                                                              | all v0.1 guarantees; closes the router gap                                                                                                               | not a non-EVM operation; min-out is only as good as the quote the control plane showed                                                                               |
-| D. Solana transfers                  | New chain family in every layer: primitives, policy, signer builder, control-plane RPC client, balances, simulation               | all v0.1 guarantees with blockhash expiry                                                                                                                | largest surface; not an off-chain order, so it teaches nothing about F7                                                                                              |
+| Option                               | Size                                                                                                                              | Guarantees it keeps                                                                                                                                      | What it leaves open                                                                                                                                 |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A. Hyperliquid limit orders, testnet | One builder module, a msgpack encoder for a closed set of types, one vault method, one sign route, one cancel route, venue client | one signature per approval; one placement (venue nonce); not usable after `expiresAfter`; cancel by cloid; deposit via existing EVM transfer bounds loss | leverage set at the venue; fills reported by the control plane; testnet funding needs a mainnet deposit or a transfer from a funded testnet account |
+| B. Polymarket V2 orders              | A plus API-key derivation (second typed data), Deposit Wallet or allowlisted EOA, pUSD wrapping and approvals                     | one signature per approval; one fill set per order hash                                                                                                  | no signed expiry, no per-order on-chain cancel; operator honours cancels; account-wide pause only after ≥ 100 blocks                                |
+| C. Signer-built EVM swap             | One operation kind and one calldata builder in the existing EVM path                                                              | all v0.1 guarantees; closes the router gap                                                                                                               | not a non-EVM operation; min-out is only as good as the quote the control plane showed                                                              |
+| D. Solana transfers                  | New chain family in every layer: primitives, policy, signer builder, control-plane RPC client, balances, simulation               | all v0.1 guarantees with blockhash expiry                                                                                                                | largest surface; not an off-chain order, so it teaches nothing about F7                                                                             |
 
 ### O2. How the signer obtains what it signs
 
@@ -159,27 +159,26 @@ Stop and take-profit orders change this: cancelling a stop-loss removes protecti
 
 ## Recommendation
 
-This is a recommendation, not a decision. The owner's open questions are listed below it.
+This is a recommendation, not a decision. The owner's question below it was answered on 2026-11-16: mainnet is supported, so the testnet-only first step in point 2 was later widened to both networks (`specs/non-evm-operations.md`, Milestone 7).
 
 1. Add one generic shape to the protocol: an intent's operation may target a venue network (`hyperliquid:testnet`, `hyperliquid:mainnet`) instead of an EVM chain; venue operations carry no `maxFeeWei`; the policy gets an optional `venues.hyperliquid` member. Additive within version 1 (O5.1).
 2. First venue: Hyperliquid perpetual limit orders on testnet only (O1.A). The wallet's own key signs (O3.1). The signer builds the action from fields, fixes `grouping` to `"na"`, derives the cloid from the approval id, picks the nonce (monotonic per wallet and network) and `expiresAfter` (policy window, at most 300 seconds), and hands typed data with chain `eip155:1337` to OWS (O2.2). The order approval includes its cancel (O4.1). A withdrawal back to the wallet's own address, approved by passkey, completes the loop.
 3. Caps: per-order and rolling 24-hour notional in micro-USD, counted at signing; reduce-only orders count against the per-order cap only. Asset indices and coin names come from the passkey-approved policy. No builder fee in the first step.
 4. Do the signer-built swap (O1.C) as its own ticket. It closes the router gap that `docs/threat-model.md:54-59` already names, and it is the smallest change of all four.
-5. Do not start Polymarket until the owner answers the questions below and there is a way to bound a signed order's lifetime. Do not start Solana until there is a reason beyond coverage.
+5. Do not start Polymarket until there is a way to bound a signed order's lifetime. Do not start Solana until there is a reason beyond coverage.
 
 The Draft ExecPlan for option A is [`specs/non-evm-operations.md`](../non-evm-operations.md).
 
 ## Owner questions
 
-Whether to use a venue is up to the person who runs the workspace; the software takes no position on it. One question is left for the owner:
+Using a venue is up to the person who runs the workspace; the software takes no position on it.
 
-1. Should the open-source project ship venue support enabled, or disabled by default with the operator enabling it?
+The one question left for the owner (ship venue support enabled, or disabled by default with the operator enabling it) was decided on 2026-11-16: venue support stays off until the operator configures a venue, and once configured both networks, Hyperliquid testnet and mainnet, are supported. See D2 in [`specs/non-evm-operations.md`](../non-evm-operations.md).
 
 ## Limits
 
 - Nothing was run. No signature in this report was produced or verified; the encoding claims rest on reading the Hyperliquid Python SDK and its own test vectors, not on reproducing them.
 - The Hyperliquid and Polymarket documentation is mutable and was read on one day. Polymarket changed its order format, collateral and wallet model between April and May 2026 (F4.1, F4.4); the same could happen again.
 - The Solana facts in F6 are from general knowledge; the primary pages could not be fetched (HTTP 429).
-- The venues' terms were not assessed beyond reading their own published restriction pages.
 - The OWS typed-data encoder (F2.4) was read, not tested; whether it matches viem for the Hyperliquid `Agent` type is the first thing the plan's tests check.
 - Whether perp asset indices on Hyperliquid stay stable across listings and delistings was not established from a primary source; the plan treats a policy's index-to-name binding as the authority and checks it against live metadata only for early warning.

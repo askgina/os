@@ -8,7 +8,7 @@ import type {
   WorkspaceDetail,
   WorkspaceLifecycle,
 } from "@askgina/os-api";
-import type { WorkspaceId } from "@askgina/os-protocol";
+import { VenueNetwork, type WorkspaceId } from "@askgina/os-protocol";
 import { and, asc, count, eq, ne } from "drizzle-orm";
 import type { AppContext } from "../context.ts";
 import {
@@ -190,5 +190,8 @@ export async function workspaceDetail(
       walletSummary(wallet, agentRows.find((agent) => agent.walletId === wallet.id)?.id ?? null),
     ),
     chains: ctx.chains.list(),
+    venueNetworks: VenueNetwork.options.filter((network) =>
+      ctx.config.venues.some((venue) => venue.network === network),
+    ),
   };
 }

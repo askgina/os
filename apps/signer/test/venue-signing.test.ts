@@ -9,6 +9,7 @@ import {
   intentHash,
   newId,
   type VenueIntent,
+  type VenueNetwork,
 } from "@askgina/os-protocol";
 import type { HyperliquidRequest, SignerClient } from "@askgina/os-protocol/signer";
 import { referenceMsgpackEncode } from "@askgina/os-testkit/msgpack";
@@ -119,9 +120,13 @@ const signatureHex = ({ r, s, v }: HyperliquidRequest["signature"]) =>
 
 /**
  * Who signed an order or cancel request, recovered with an independent encoder: the reference
- * msgpack of the action exactly as the body carries it, then viem.
+ * msgpack of the action exactly as the body carries it, then viem. The agent `source` is "a" on
+ * mainnet and "b" on testnet, so a signature recovers to the wallet only for its own network.
  */
-async function l1Signer(request: HyperliquidRequest): Promise<string> {
+async function l1Signer(
+  request: HyperliquidRequest,
+  network: VenueNetwork = NETWORK,
+): Promise<string> {
   const connectionId = keccak256(
     concat([
       bytesToHex(referenceMsgpackEncode(request.action)),
@@ -140,7 +145,7 @@ async function l1Signer(request: HyperliquidRequest): Promise<string> {
       ],
     },
     primaryType: "Agent",
-    message: { source: "b", connectionId },
+    message: { source: network === "hyperliquid:mainnet" ? "a" : "b", connectionId },
     signature: signatureHex(request.signature),
   });
   return address.toLowerCase();
@@ -301,7 +306,7 @@ describe("signing an approved venue order", () => {
     ]);
   });
 
-  it("refuses what the policy does not allow, and mainnet whatever the policy says", async () => {
+  it("refuses what the policy does not allow", async () => {
     const world = await venueWorld();
     await refused(
       signVenue(world, orderIntent(world, { asset: 5 })),
@@ -319,14 +324,43 @@ describe("signing an approved venue order", () => {
       "over_per_tx_cap",
     );
 
+    const without = await setUpWorld(startSigner());
+    await refused(signVenue(without, orderIntent(without)), "policy_denied", "venue_not_allowed");
+  });
+
+  it("signs a mainnet order under a mainnet policy, and refuses the other network both ways", async () => {
     const mainnet = await venueWorld(startSigner(), { venue: { network: "hyperliquid:mainnet" } });
+    const intent: VenueIntent = { ...orderIntent(mainnet), chainId: "hyperliquid:mainnet" };
+    const authorization = approveIntent(mainnet, intent);
+    const signed = await mainnet.t.client.signVenue({ intent, authorization });
+    expect(signed).toMatchObject({
+      approvalId: authorization.envelope.approvalId,
+      network: "hyperliquid:mainnet",
+      account: mainnet.address,
+      cloid: cloidFor(authorization.envelope.approvalId),
+    });
+    expect(await l1Signer(signed.request, "hyperliquid:mainnet")).toBe(mainnet.address);
+    expect(await l1Signer(signed.request, "hyperliquid:testnet")).not.toBe(mainnet.address);
+    expect((await mainnet.t.client.getWallet(mainnet.walletId)).venueSpent).toEqual([
+      { chainId: "hyperliquid:mainnet", asset: "usd6", amount: "650000000" },
+    ]);
+
+    // A testnet intent is refused under the mainnet policy.
+    await refused(signVenue(mainnet, orderIntent(mainnet)), "policy_denied", "venue_not_allowed");
+
+    // A mainnet intent is refused under a testnet policy.
+    const testnet = await venueWorld();
     await refused(
-      signVenue(mainnet, { ...orderIntent(mainnet), chainId: "hyperliquid:mainnet" }),
+      signVenue(testnet, { ...orderIntent(testnet), chainId: "hyperliquid:mainnet" }),
       "policy_denied",
       "venue_not_allowed",
     );
-    const without = await setUpWorld(startSigner());
-    await refused(signVenue(without, orderIntent(without)), "policy_denied", "venue_not_allowed");
+    // Neither refusal spent anything: each wallet still signs on its own network.
+    expect((await signVenue(testnet)).network).toBe(NETWORK);
+    expect(
+      (await signVenue(mainnet, { ...orderIntent(mainnet), chainId: "hyperliquid:mainnet" }))
+        .network,
+    ).toBe("hyperliquid:mainnet");
   });
 
   it("refuses an expired envelope, a revoked approval, a removed approver, a paused workspace and a changed policy", async () => {

@@ -33,8 +33,10 @@ export E2E_SPLIT="$split"
 export E2E_REPLICAS="${E2E_REPLICAS:-0}"
 export E2E_OPENBAO="${E2E_OPENBAO:-0}"
 export E2E_OPENBAO_PORT="${E2E_OPENBAO_PORT:-55905}"
-# The fake Hyperliquid venue of the venue gates' stack (e2e/compose.venue.yaml), on the loopback.
+# The fake Hyperliquid testnet and mainnet venues of the venue gates' stack
+# (e2e/compose.venue.yaml), on the loopback.
 export E2E_VENUE_PORT="${E2E_VENUE_PORT:-55906}"
+export E2E_VENUE_MAINNET_PORT="${E2E_VENUE_MAINNET_PORT:-55907}"
 # A variant whose own gates run on a stack of their own before the release gates: `replicas` or
 # `openbao`, or none.
 variant=""
@@ -88,8 +90,9 @@ ui=(docker compose -p "${E2E_PROJECT}-ui" "${overlay[@]}")
 # The lifecycle gates' stack: the plain one with Web Push on (e2e/compose.lifecycle.yaml), so
 # erasing a person can remove a device they added. Only without TLS, split or a variant.
 lifecycle=(docker compose -p "${E2E_PROJECT}-lifecycle" -f compose.yaml -f e2e/compose.e2e.yaml -f e2e/compose.lifecycle.yaml --profile dev --profile agent)
-# The venue gates' stack: the plain one plus the fake Hyperliquid venue and the server's
-# VENUES_FILE naming it (e2e/compose.venue.yaml). Only without TLS, split or a variant.
+# The venue gates' stack: the plain one plus the fake Hyperliquid testnet and mainnet venues and
+# the server's VENUES_FILE naming both (e2e/compose.venue.yaml). Only without TLS, split or a
+# variant.
 venue=(docker compose -p "${E2E_PROJECT}-venue" -f compose.yaml -f e2e/compose.e2e.yaml -f e2e/compose.venue.yaml --profile dev --profile agent)
 # `init` is not listed: it runs once and exits, and the others depend on it; so do
 # `openbao-bootstrap` and the server.
@@ -124,8 +127,8 @@ logs() {
       docker compose -p "${project}-signer" "${signer_overlay[@]}" \
         logs --no-color --tail 300 init signer approve caddy 2>/dev/null || true
     elif [ "$project" = "${E2E_PROJECT}-venue" ]; then
-      # With the fake venue's own log; the venue gates print what it took when one fails.
-      "${venue[@]}" logs --no-color --tail 300 "${logged[@]}" fake-hyperliquid 2>/dev/null || true
+      # With the fake venues' own logs; the venue gates print what they took when one fails.
+      "${venue[@]}" logs --no-color --tail 300 "${logged[@]}" fake-hyperliquid fake-hyperliquid-mainnet 2>/dev/null || true
     else
       # Every container of each service: with two replicas, both servers.
       docker compose -p "$project" "${overlay[@]}" \
@@ -214,14 +217,14 @@ if [ "$tls" != "1" ] && [ "$split" != "1" ] && [ -z "$variant" ] && [ "$status" 
   fi
 fi
 
-# Third stack, empty: the venue gates (specs/non-evm-operations.md), with a fake Hyperliquid
-# testnet venue that checks every signature itself (e2e/compose.venue.yaml). Only this stack
-# names a venue, so every other gate runs as a deployment without VENUES_FILE does. Skipped over
-# HTTPS, split and for a variant, like the lifecycle gates: those change how the stack is laid
-# out, not what an order proves.
+# Third stack, empty: the venue gates (specs/non-evm-operations.md), with fake Hyperliquid testnet
+# and mainnet venues that check every signature themselves (e2e/compose.venue.yaml). Only this
+# stack names a venue, so every other gate runs as a deployment without VENUES_FILE does. Skipped
+# over HTTPS, split and for a variant, like the lifecycle gates: those change how the stack is
+# laid out, not what an order proves.
 if [ "$tls" != "1" ] && [ "$split" != "1" ] && [ -z "$variant" ] && [ "$status" -eq 0 ]; then
   remove
-  "${venue[@]}" up -d --wait --wait-timeout 300 "${services[@]}" fake-hyperliquid || status=$?
+  "${venue[@]}" up -d --wait --wait-timeout 300 "${services[@]}" fake-hyperliquid fake-hyperliquid-mainnet || status=$?
   if [ "$status" -eq 0 ]; then
     (cd e2e && E2E_PROJECT="${E2E_PROJECT}-venue" E2E_VENUE=1 bunx playwright test venue.spec.ts) || status=$?
   fi

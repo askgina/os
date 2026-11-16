@@ -21,6 +21,7 @@ import {
   type VenueOrderIntent,
   VenueRulesError,
   type VenueRulesState,
+  venueNetworkChoices,
   venueRuleRows,
   venueRulesState,
 } from "../src/lib/venue.ts";
@@ -83,14 +84,17 @@ function order(
   };
 }
 
+/** Both venue networks, as a server with both set up lists them. */
+const BOTH = ["hyperliquid:testnet", "hyperliquid:mainnet"] as const;
+
 /** The editor state for RULES, as typed, with `patch` applied. */
 function typed(patch: Partial<VenueRulesState> = {}): VenueRulesState {
-  return { ...venueRulesState(RULES), ...patch };
+  return { ...venueRulesState(RULES, BOTH), ...patch };
 }
 
 describe("the policy editor's venue section", () => {
   it("starts off, with immediate or cancel only, a 60-second window and no withdrawals", () => {
-    const state = venueRulesState(undefined);
+    const state = venueRulesState(undefined, BOTH);
     expect(state).toMatchObject({
       enabled: false,
       network: "hyperliquid:testnet",
@@ -103,8 +107,36 @@ describe("the policy editor's venue section", () => {
     expect(toVenueRules(state)).toBeUndefined();
   });
 
+  it("starts new rules on testnet when both networks are set up, else on the one that is", () => {
+    expect(venueRulesState(undefined, BOTH).network).toBe("hyperliquid:testnet");
+    expect(venueRulesState(undefined, ["hyperliquid:mainnet", "hyperliquid:testnet"]).network).toBe(
+      "hyperliquid:testnet",
+    );
+    expect(venueRulesState(undefined, ["hyperliquid:mainnet"]).network).toBe("hyperliquid:mainnet");
+    expect(venueRulesState(undefined, ["hyperliquid:testnet"]).network).toBe("hyperliquid:testnet");
+  });
+
+  it("keeps the network of rules already in force, whatever the server sets up", () => {
+    const mainnet = HyperliquidRules.parse({ ...RULES, network: "hyperliquid:mainnet" });
+    expect(venueRulesState(mainnet, ["hyperliquid:testnet"]).network).toBe("hyperliquid:mainnet");
+    expect(venueRulesState(RULES, ["hyperliquid:mainnet"]).network).toBe("hyperliquid:testnet");
+    expect(toVenueRules(venueRulesState(mainnet, BOTH))).toEqual(mainnet);
+  });
+
+  it("offers the networks the server sets up, and the one rules in force already name", () => {
+    const off = venueRulesState(undefined, []);
+    expect(venueNetworkChoices([], off)).toEqual([]);
+    expect(venueNetworkChoices(["hyperliquid:mainnet", "hyperliquid:testnet"], off)).toEqual([
+      ...BOTH,
+    ]);
+    expect(venueNetworkChoices(["hyperliquid:mainnet"], off)).toEqual(["hyperliquid:mainnet"]);
+    const kept = venueRulesState(RULES, ["hyperliquid:mainnet"]);
+    expect(venueNetworkChoices(["hyperliquid:mainnet"], kept)).toEqual([...BOTH]);
+    expect(venueNetworkChoices([], kept)).toEqual(["hyperliquid:testnet"]);
+  });
+
   it("reads current rules back in whole dollars and writes them unchanged", () => {
-    const state = venueRulesState(RULES);
+    const state = venueRulesState(RULES, BOTH);
     expect(state.enabled).toBe(true);
     expect(state.markets.map((row) => [row.coin, row.asset, row.maxPerOrder])).toEqual([
       ["BTC", "0", "50"],
@@ -115,7 +147,7 @@ describe("the policy editor's venue section", () => {
   });
 
   it("sorts markets by index and times in force as the policy holds them", () => {
-    const [btc, eth] = venueRulesState(RULES).markets;
+    const [btc, eth] = venueRulesState(RULES, BOTH).markets;
     if (!btc || !eth) throw new Error("expected two markets");
     const rules = toVenueRules(typed({ markets: [eth, btc], timeInForce: ["Ioc", "Alo"] }));
     expect(rules?.markets.map((market) => market.asset)).toEqual([0, 1]);

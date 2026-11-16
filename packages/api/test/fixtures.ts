@@ -157,6 +157,7 @@ export const workspace: WorkspaceDetail = {
       explorerUrl: "https://basescan.org",
     },
   ],
+  venueNetworks: ["hyperliquid:testnet"],
 };
 
 /** As a browser reports it: a 65-byte P-256 point and a 16-byte secret, unpadded base64url. */

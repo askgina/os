@@ -1579,17 +1579,18 @@ test("export, copy and import a workspace; erase a person", async ({
 });
 
 /**
- * An order on Hyperliquid testnet, on a fresh server. The owner turns on the wallet's venue
- * rules in the policy editor, which says up front that notional caps are not loss caps, and
- * approves them on the signer's page. The agent proposes a good-till-cancelled order: its
+ * An order on Hyperliquid mainnet, on a fresh server that has both Hyperliquid networks set up.
+ * The owner turns on the wallet's venue rules in the policy editor, which starts on testnet,
+ * picks mainnet, is told mainnet orders use real funds and that notional caps are not loss caps,
+ * and approves the rules on the signer's page. The agent proposes a good-till-cancelled order: its
  * request shows market, side, size, limit price, notional, time in force, reduce-only and the
  * submit window, with the venue account's value as what can be lost, and no network fee. It is
  * approved on the signer's page, rests at the stand-in venue, and is cancelled with no passkey.
  *
  * The agent's order is proposed through the fixture's `/__fixture/propose`, so this runs against
- * the fixture only.
+ * the fixture only; its stand-in venue answers for mainnet, and no real funds are involved.
  */
-test("an order on Hyperliquid testnet: venue rules, the order, where it rests, its cancel", async ({
+test("an order on Hyperliquid mainnet: venue rules, the order, where it rests, its cancel", async ({
   page,
   request,
   baseURL,
@@ -1623,6 +1624,12 @@ test("an order on Hyperliquid testnet: venue rules, the order, where it rests, i
     await page.getByLabel("Most per transaction ETH").fill("0.05");
     await page.getByLabel("Most per 24 hours ETH").fill("0.2");
     await page.getByLabel("Allow orders on Hyperliquid testnet").check();
+    const network = page.getByLabel("Hyperliquid network", { exact: true });
+    await expect(network).toHaveValue("hyperliquid:testnet");
+    await expect(page.getByText("Mainnet orders use real funds.")).toHaveCount(0);
+    await network.selectOption({ label: "Hyperliquid mainnet" });
+    await expect(page.getByText("Mainnet orders use real funds.")).toBeVisible();
+    await expect(page.getByLabel("Allow orders on Hyperliquid mainnet")).toBeChecked();
     await expect(page.getByText(/limit the notional of new orders, not losses/)).toBeVisible();
     await page.getByLabel("Coin, as Hyperliquid names it").fill("BTC");
     await page.getByLabel("Market index at Hyperliquid").fill("0");
@@ -1636,6 +1643,7 @@ test("an order on Hyperliquid testnet: venue rules, the order, where it rests, i
     await expect(page.getByRole("heading", { name: /Change the limits of/ })).toBeVisible();
     await expect(page.getByText("Hyperliquid BTC (index 0): per order")).toBeVisible();
     await expect(page.getByText("1,000 USD notional")).toBeVisible();
+    await expect(page.getByText("After: Hyperliquid mainnet")).toBeVisible();
     await shot("02-approval-policy");
     await approveOnSignerPage(page);
     await expect(page.getByText("Done. The change is in effect.")).toBeVisible();
@@ -1687,8 +1695,9 @@ test("an order on Hyperliquid testnet: venue rules, the order, where it rests, i
 
   await test.step("the wallet page shows the signer's count and the venue's report, labelled as such", async () => {
     await page.goto(walletUrl);
-    const account = page.getByRole("heading", { name: "Hyperliquid testnet account" });
+    const account = page.getByRole("heading", { name: "Hyperliquid mainnet account" });
     await expect(account).toBeVisible();
+    await expect(page.locator("dd").filter({ hasText: /^Hyperliquid mainnet$/ })).toBeVisible();
     await expect(page.getByText("Order notional signed in the last 24 hours")).toBeVisible();
     await expect(page.getByText("650 USD of 2,000 USD")).toBeVisible();
     await expect(page.getByText("Counted by the signer.")).toBeVisible();
@@ -1711,7 +1720,7 @@ test("an order on Hyperliquid testnet: venue rules, the order, where it rests, i
     await expect(page.getByRole("button", { name: "Cancel order" })).toHaveCount(0);
     await shot("07-order-cancelled");
     await page.goto(walletUrl);
-    await expect(page.getByRole("heading", { name: "Hyperliquid testnet account" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Hyperliquid mainnet account" })).toBeVisible();
     await expect(page.getByText("No resting orders.")).toBeVisible();
   });
 

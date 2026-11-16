@@ -4,7 +4,7 @@ import {
   type WalletDetail,
   type WorkspaceDetail,
 } from "@askgina/os-api";
-import type { HyperliquidRules } from "@askgina/os-protocol";
+import { type HyperliquidRules, VENUE_NETWORK_NAMES, VenueNetwork } from "@askgina/os-protocol";
 import { useMutation } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { Clock, Plus, Trash2, TriangleAlert } from "lucide-react";
@@ -60,6 +60,7 @@ import {
   VENUE_LOSS_BOUND,
   VenueRulesError,
   type VenueRulesState,
+  venueNetworkChoices,
   venueRulesState,
 } from "@/lib/venue.ts";
 
@@ -380,7 +381,7 @@ function initialState(wallet: WalletDetail, workspace: WorkspaceDetail): EditorS
       feeCeiling: "0.01",
       threshold: "1",
       ttlMinutes: "15",
-      venue: venueRulesState(undefined),
+      venue: venueRulesState(undefined, workspace.venueNetworks),
     };
   }
   return {
@@ -407,7 +408,7 @@ function initialState(wallet: WalletDetail, workspace: WorkspaceDetail): EditorS
     feeCeiling: formatUnits(policy.fees.maxPerTxWei, NATIVE_DECIMALS).replaceAll(",", ""),
     threshold: String(policy.approvals.threshold),
     ttlMinutes: String(Math.round(policy.approvals.ttlSeconds / 60)),
-    venue: venueRulesState(policy.venues?.hyperliquid),
+    venue: venueRulesState(policy.venues?.hyperliquid, workspace.venueNetworks),
   };
 }
 
@@ -779,6 +780,7 @@ function PolicyEditor({ wallet, workspace }: { wallet: WalletDetail; workspace: 
           </Group>
 
           <VenueRulesFields
+            configured={workspace.venueNetworks}
             state={state.venue}
             onChange={(patch) => update({ venue: { ...state.venue, ...patch } })}
           />
@@ -841,14 +843,17 @@ function PolicyEditor({ wallet, workspace }: { wallet: WalletDetail; workspace: 
 }
 
 /**
- * What the wallet may do on Hyperliquid: which perpetuals, each with its own cap per order, a cap
- * per 24 hours, which times in force, how long a signed order stays valid, and withdrawals. Off
- * by default; the caps are said up front to limit new orders, never losses.
+ * What the wallet may do on Hyperliquid: on which network, which perpetuals, each with its own
+ * cap per order, a cap per 24 hours, which times in force, how long a signed order stays valid,
+ * and withdrawals. Off by default, and offered only on the networks this server has set up
+ * (`configured`); the caps are said up front to limit new orders, never losses.
  */
 function VenueRulesFields({
+  configured,
   state,
   onChange,
 }: {
+  configured: readonly VenueNetwork[];
   state: VenueRulesState;
   onChange: (patch: Partial<VenueRulesState>) => void;
 }) {
@@ -857,18 +862,46 @@ function VenueRulesFields({
     onChange({
       markets: state.markets.map((row) => (row.key === key ? { ...row, ...patch } : row)),
     });
+  const choices = venueNetworkChoices(configured, state);
+  if (choices.length === 0) {
+    return <Group legend="Hyperliquid" hint="This server is not set up for Hyperliquid." />;
+  }
+  const mainnet = state.network === "hyperliquid:mainnet";
   return (
     <Group
       legend="Hyperliquid"
-      hint="Limit orders on Hyperliquid perpetuals, on testnet only. Every order still needs approval with a passkey."
+      hint="Limit orders on Hyperliquid perpetuals. Every order still needs approval with a passkey."
     >
       <Check
-        label="Allow orders on Hyperliquid testnet"
+        label={`Allow orders on ${VENUE_NETWORK_NAMES[state.network]}`}
         checked={state.enabled}
         onChange={() => onChange({ enabled: !state.enabled })}
       />
       {state.enabled ? (
         <>
+          {choices.length > 1 ? (
+            <Labelled id={`${id}-network`} label="Hyperliquid network">
+              <Select
+                id={`${id}-network`}
+                value={state.network}
+                aria-describedby={mainnet ? `${id}-network-funds` : undefined}
+                onChange={(event) => onChange({ network: VenueNetwork.parse(event.target.value) })}
+              >
+                {choices.map((network) => (
+                  <option key={network} value={network}>
+                    {VENUE_NETWORK_NAMES[network]}
+                  </option>
+                ))}
+              </Select>
+              {mainnet ? (
+                <p id={`${id}-network-funds`} className="text-sm font-medium">
+                  Mainnet orders use real funds.
+                </p>
+              ) : null}
+            </Labelled>
+          ) : mainnet ? (
+            <p className="text-sm font-medium">Mainnet orders use real funds.</p>
+          ) : null}
           <Alert tone="warning">
             <TriangleAlert aria-hidden />
             <p>{VENUE_LOSS_BOUND}</p>
@@ -997,7 +1030,15 @@ function VenueRulesFields({
   );
 }
 
-function Group({ legend, hint, children }: { legend: string; hint?: string; children: ReactNode }) {
+function Group({
+  legend,
+  hint,
+  children,
+}: {
+  legend: string;
+  hint?: string;
+  children?: ReactNode;
+}) {
   return (
     <fieldset className="grid grid-cols-1 gap-3">
       <legend className="mb-1 text-sm font-semibold">{legend}</legend>

@@ -20,10 +20,12 @@ export const stack = {
   /** OpenBao, with `E2E_OPENBAO=1`, through the port `e2e/compose.openbao.yaml` publishes. */
   openBaoUrl: `http://127.0.0.1:${Number(process.env.E2E_OPENBAO_PORT ?? 55905)}`,
   /**
-   * The fake Hyperliquid venue, with `E2E_VENUE=1`, through the port `e2e/compose.venue.yaml`
-   * publishes on the host's loopback.
+   * The fake Hyperliquid testnet venue, with `E2E_VENUE=1`, through the port
+   * `e2e/compose.venue.yaml` publishes on the host's loopback.
    */
   venueUrl: `http://127.0.0.1:${Number(process.env.E2E_VENUE_PORT ?? 55906)}`,
+  /** The fake Hyperliquid mainnet venue, with `E2E_VENUE=1`, the same way. */
+  venueMainnetUrl: `http://127.0.0.1:${Number(process.env.E2E_VENUE_MAINNET_PORT ?? 55907)}`,
 };
 
 /** `E2E_REPLICAS=1` (`e2e/run.sh`): two server replicas, from `e2e/compose.replicas.yaml`. */
@@ -31,8 +33,8 @@ const REPLICAS = process.env.E2E_REPLICAS === "1";
 /** `E2E_OPENBAO=1` (`e2e/run.sh`): keys in OpenBao Transit, from `e2e/compose.openbao.yaml`. */
 const OPENBAO = process.env.E2E_OPENBAO === "1";
 /**
- * `E2E_VENUE=1` (`e2e/run.sh`, the venue gates' own stack): the fake Hyperliquid venue and the
- * server's `VENUES_FILE` naming it, from `e2e/compose.venue.yaml`.
+ * `E2E_VENUE=1` (`e2e/run.sh`, the venue gates' own stack): the fake Hyperliquid testnet and
+ * mainnet venues and the server's `VENUES_FILE` naming both, from `e2e/compose.venue.yaml`.
  */
 const VENUE = process.env.E2E_VENUE === "1";
 /**
@@ -64,7 +66,7 @@ export const SERVICES = [
   "agent-gateway",
   "anvil",
   ...(OPENBAO ? ["openbao"] : []),
-  ...(VENUE ? ["fake-hyperliquid"] : []),
+  ...(VENUE ? ["fake-hyperliquid", "fake-hyperliquid-mainnet"] : []),
 ];
 
 type Side = "control" | "signer";
@@ -89,6 +91,7 @@ const SERVICE_NAMES = new Set([
   "openbao",
   "openbao-bootstrap",
   "fake-hyperliquid",
+  "fake-hyperliquid-mainnet",
 ]);
 /** The state volumes of {@link VOLUMES} that live in the signer project of a split stack. */
 const SIGNER_VOLUMES = ["signer-data", "signer-secrets"];
