@@ -121,8 +121,8 @@ Success means:
   - Not from the refactor, still open: a token with 37 to 255 decimals can be
     proposed and signed, but every HTTP answer that shows it fails the API's
     display schema (at most 36).
-  Evidence: `apps/server/test/execution/hardening.test.ts`, "answers a stored
-  value that no longer matches its schema as an internal error, and logs it".
+  - Evidence: `apps/server/test/execution/hardening.test.ts`, "answers a stored
+    value that no longer matches its schema as an internal error, and logs it".
 - Observation: two tests of the signer's pinned TLS failed once during
   verification because the lead's shell still exported
   `NODE_TLS_REJECT_UNAUTHORIZED=0` from a staging session. With it unset they
