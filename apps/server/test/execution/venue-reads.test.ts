@@ -475,7 +475,7 @@ describe("the read budget", () => {
   /** Every agent's and network's read bucket gone, then these two full and frozen. */
   const fullBudgets = async (agentId: AgentId) => {
     await f.t.ctx.db.delete(rateLimits).where(like(rateLimits.bucket, "venue-read:%"));
-    await frozen(agentBucket(agentId), 240);
+    await frozen(agentBucket(agentId), 600);
     await frozen(NETWORK_BUCKET, 600);
   };
 
@@ -525,7 +525,10 @@ describe("the read budget", () => {
     await fullBudgets(reader.id);
     const reads = venueReads(f.t.ctx, "hyperliquid:testnet", reader.id);
 
-    // Resting orders weigh 20: twelve of them spend the agent's 240.
+    // Simulate an agent with only part of its allowance remaining.
+    await frozen(agentBucket(reader.id), 240);
+
+    // Resting orders weigh 20: twelve spend the remaining 240.
     for (let i = 0; i < 12; i += 1) await reads.openOrders(reader.address);
     expect(await stored(agentBucket(reader.id))).toBe(0);
     expect(await stored(NETWORK_BUCKET)).toBe(360);
@@ -576,7 +579,7 @@ describe("the read budget", () => {
     const reads = venueReads(f.t.ctx, "hyperliquid:testnet", other.id);
     expect(await reads.fills(filler.address)).toHaveLength(100);
     // Admitted at its worst case, 20 + 2,000 / 20, and given back all but 20 + 100 / 20.
-    expect(await stored(agentBucket(other.id))).toBe(215);
+    expect(await stored(agentBucket(other.id))).toBe(575);
     expect(await stored(NETWORK_BUCKET)).toBe(575);
   });
 
@@ -588,7 +591,7 @@ describe("the read budget", () => {
     const release = served.hold();
     let refused = 0;
 
-    const attempts = Array.from({ length: 5 }, async () => {
+    const attempts = Array.from({ length: 8 }, async () => {
       try {
         return (await reads.fills(filler.address)).length;
       } catch (error) {
@@ -601,28 +604,28 @@ describe("the read budget", () => {
     await vi.waitFor(
       () => {
         expect(refused).toBe(3);
-        expect(infoRequests("userFills")).toBe(asked + 2);
+        expect(infoRequests("userFills")).toBe(asked + 5);
       },
       { timeout: 5_000 },
     );
 
-    // Two worst cases, 2 × 120, took the agent's whole 240; the three past it sent nothing.
+    // Five worst cases, 5 × 120, exhaust both budgets; the three past them sent nothing.
     expect(await stored(agentBucket(other.id))).toBe(0);
-    expect(await stored(NETWORK_BUCKET)).toBe(360);
+    expect(await stored(NETWORK_BUCKET)).toBe(0);
     release();
     const outcomes = await Promise.all(attempts);
 
-    expect(outcomes.filter((outcome) => outcome === 100)).toHaveLength(2);
+    expect(outcomes.filter((outcome) => outcome === 100)).toHaveLength(5);
     expect(outcomes.filter((outcome) => outcome instanceof HttpError)).toEqual([
       expect.objectContaining({ code: "rate_limited", detail: "venue_budget" }),
       expect.objectContaining({ code: "rate_limited", detail: "venue_budget" }),
       expect.objectContaining({ code: "rate_limited", detail: "venue_budget" }),
     ]);
 
-    // Each read gave back what its answer did not use: 240 − 2 × 25, and 600 − 2 × 25.
-    expect(await stored(agentBucket(other.id))).toBe(190);
-    expect(await stored(NETWORK_BUCKET)).toBe(550);
-    expect(infoRequests("userFills")).toBe(asked + 2);
+    // Each read gave back what its answer did not use: 600 − 5 × 25.
+    expect(await stored(agentBucket(other.id))).toBe(475);
+    expect(await stored(NETWORK_BUCKET)).toBe(475);
+    expect(infoRequests("userFills")).toBe(asked + 5);
   });
 
   it("refuses a network the server is not configured for, before any budget is taken", async () => {
