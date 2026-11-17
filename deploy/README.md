@@ -556,14 +556,15 @@ the `apiUrl` of the network in the call, at `/info`, with a body it builds itsel
 names no address or URL. Every venue request, orders included, follows no redirect and reads at
 most 4 MiB of answer; anything else is `venue_unreachable`. So that reads never take the request
 allowance order handling needs, they have a budget of the venue's request weight: 600 units a
-minute for each network and 240 for each agent, half of the 1,200 the venue allows one client
+minute for each network and 600 for each agent, half of the 1,200 the venue allows one client
 address. A read past it is refused with `rate_limited`, detail `venue_budget`, and nothing is
 sent; order handling takes from no budget. The weights are the venue's (2 for mids, a book or an
 account; 20 for markets, candles, resting orders, fills or a fee rate; one more for every 60
 candles or 20 fills an answer holds). A fills read is admitted at the most its answer can weigh
 (120, for the venue's 2,000 fills) and a candles read at what its time range allows, so reads
 made at once never overdraw a bucket; each gives back the unused part once its answer is in. So
-one agent has at most two fills reads on their way at a time. The buckets are rows in
+one agent has at most five fills reads on their way at a time, sharing the network budget with
+all other agents. The buckets are rows in
 `os.rate_limits`, shared by every replica, and assume the replicas reach the venue from one
 address. Each process reuses an answer of markets for 15 seconds, of mids or a book for 1
 second, of candles for 5 seconds (a candles read with no end time asks up to the start of the

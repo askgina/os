@@ -19,12 +19,12 @@ import {
 /**
  * The venue counts the request weight of each client address, reads and signed requests
  * together, against 1,200 a minute (its "Rate limits and user limits" page). Reads agents ask for
- * may use half of that on each network, and one agent 240 of it; order handling takes from no
+ * may use half of that on each network, shared by all agents; order handling takes from no
  * bucket and keeps the rest.
  */
 export const VENUE_READ_WEIGHT_PER_MINUTE = 600;
 
-export const AGENT_VENUE_READ_WEIGHT_PER_MINUTE = 240;
+export const AGENT_VENUE_READ_WEIGHT_PER_MINUTE = 600;
 
 /** Each read's weight, from the venue's page. */
 const WEIGHT = {
